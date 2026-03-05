@@ -1,0 +1,35 @@
+{
+  "name": "copilotoffice",
+  "version": "1.0.0",
+  "description": "A 2D pixel-art game where you interact with Copilot agents in a virtual office",
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "build:game": "esbuild src/main.ts --bundle --outfile=dist/game.bundle.js --platform=browser --format=iife --global-name=CopilotOffice",
+    "build:electron": "esbuild electron/main.ts electron/preload.ts electron/cli-bridge.ts electron/events-watcher.ts --bundle --outdir=dist/electron --platform=node --format=cjs --packages=external",
+    "build": "npm run build:game && npm run build:electron",
+    "start": "npm run build && electron .",
+    "dev": "concurrently \"npm run build:game -- --watch\" \"npm run build:electron -- --watch\" \"electron .\"",
+    "electron": "electron ."
+  },
+  "keywords": [
+    "copilot",
+    "game",
+    "pixel-art",
+    "electron"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "electron": "^40.6.1",
+    "node-pty": "^1.1.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.9.3"
+  }
+}

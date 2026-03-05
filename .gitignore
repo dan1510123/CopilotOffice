@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Electron
+out/
+*.exe
+*.dmg
+*.app
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Session/temp files
+copilot-office-sessions.json
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional: lock files (uncomment if desired)
+# package-lock.json

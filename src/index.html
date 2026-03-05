@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copilot Office</title>
+  <link rel="stylesheet" href="../node_modules/xterm/css/xterm.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #1a1a2e;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    #game-container {
+      width: 100%;
+      height: calc(100% - 32px);
+      position: relative;
+    }
+    #game-container canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    /* xterm terminal styling */
+    .xterm {
+      height: 100%;
+    }
+    .xterm-viewport {
+      overflow-y: auto !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container"></div>
+  <script src="../dist/game.bundle.js"></script>
+</body>
+</html>
