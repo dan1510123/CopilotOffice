@@ -1,8 +1,6 @@
 // Office Manager - handles multiple offices with separate sessions
 // Each office has its own working directory and set of agents
 
-import { OfficeState } from './engine/officeState';
-
 export interface OfficeConfig {
   id: string;
   name: string;
@@ -10,9 +8,16 @@ export interface OfficeConfig {
   createdAt: number;
 }
 
+export interface AgentStatus {
+  agentId: string;
+  currentTool: string | null;
+  isWaiting: boolean;
+  bubbleType: 'permission' | 'waiting' | null;
+}
+
 export interface OfficeData {
   config: OfficeConfig;
-  state: OfficeState;
+  agents: Map<string, AgentStatus>;
   agentTools: Map<string, { toolId: string; name: string; status: string }[]>;
 }
 
@@ -58,7 +63,7 @@ export class OfficeManager {
     
     const data: OfficeData = {
       config,
-      state: new OfficeState(),
+      agents: new Map(),
       agentTools: new Map(),
     };
     
@@ -140,7 +145,7 @@ export class OfficeManager {
     if (officeId) {
       const office = this.offices.get(officeId);
       if (office) {
-        office.state.removeAgent(sessionId);
+        office.agents.delete(sessionId);
         office.agentTools.delete(sessionId);
       }
     }
@@ -179,7 +184,7 @@ export class OfficeManager {
         for (const config of data.offices) {
           const officeData: OfficeData = {
             config,
-            state: new OfficeState(),
+            agents: new Map(),
             agentTools: new Map(),
           };
           this.offices.set(config.id, officeData);
@@ -197,6 +202,41 @@ export class OfficeManager {
     }
   }
   
+  // Agent status helpers
+  getAgentStatus(officeId: string, agentId: string): AgentStatus | undefined {
+    return this.offices.get(officeId)?.agents.get(agentId);
+  }
+
+  setAgentActive(officeId: string, agentId: string, toolName: string | null, status: string | null): void {
+    const office = this.offices.get(officeId);
+    if (!office) return;
+    const existing = office.agents.get(agentId) ?? { agentId, currentTool: null, isWaiting: false, bubbleType: null };
+    existing.currentTool = toolName;
+    existing.isWaiting = false;
+    existing.bubbleType = null;
+    office.agents.set(agentId, existing);
+  }
+
+  setAgentWaiting(officeId: string, agentId: string): void {
+    const office = this.offices.get(officeId);
+    if (!office) return;
+    const existing = office.agents.get(agentId) ?? { agentId, currentTool: null, isWaiting: false, bubbleType: null };
+    existing.currentTool = null;
+    existing.isWaiting = true;
+    existing.bubbleType = 'waiting';
+    office.agents.set(agentId, existing);
+  }
+
+  clearAgentBubble(officeId: string, agentId: string): void {
+    const office = this.offices.get(officeId);
+    if (!office) return;
+    const existing = office.agents.get(agentId);
+    if (existing) {
+      existing.bubbleType = null;
+      existing.isWaiting = false;
+    }
+  }
+
   // Ensure at least one office exists
   ensureDefaultOffice(): void {
     if (this.offices.size === 0) {

@@ -51,9 +51,11 @@ export class EventsWatcher {
   private fileExistsTimer: NodeJS.Timeout | null = null;
   private callback: EventCallback | null = null;
   private stopped: boolean = false;
+  private reading: boolean = false;
 
   private static readonly POLL_INTERVAL_MS = 500;
   private static readonly FILE_CHECK_INTERVAL_MS = 200;
+  private static readonly MAX_FILE_WAIT_MS = 60_000;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -78,25 +80,34 @@ export class EventsWatcher {
     this.callback = onEvent;
     this.stopped = false;
 
-    // Check if file exists
-    if (fs.existsSync(this.filePath)) {
-      this.startWatching();
-    } else {
-      // Poll for file to appear
-      console.log(`[EventsWatcher] Waiting for events.jsonl: ${this.filePath}`);
-      this.fileExistsTimer = setInterval(() => {
-        if (this.stopped) {
-          if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
-          return;
-        }
-        if (fs.existsSync(this.filePath)) {
-          console.log(`[EventsWatcher] Found events.jsonl`);
-          if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
-          this.fileExistsTimer = null;
-          this.startWatching();
-        }
-      }, EventsWatcher.FILE_CHECK_INTERVAL_MS);
-    }
+    // Check if file exists (async)
+    fs.promises.access(this.filePath, fs.constants.F_OK)
+      .then(() => this.startWatching())
+      .catch(() => {
+        // Poll for file to appear, with a max wait
+        console.log(`[EventsWatcher] Waiting for events.jsonl: ${this.filePath}`);
+        const startTime = Date.now();
+        this.fileExistsTimer = setInterval(() => {
+          if (this.stopped) {
+            if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
+            return;
+          }
+          if (Date.now() - startTime > EventsWatcher.MAX_FILE_WAIT_MS) {
+            console.warn(`[EventsWatcher] Timed out waiting for events.jsonl after ${EventsWatcher.MAX_FILE_WAIT_MS / 1000}s`);
+            if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
+            this.fileExistsTimer = null;
+            return;
+          }
+          fs.promises.access(this.filePath, fs.constants.F_OK)
+            .then(() => {
+              console.log(`[EventsWatcher] Found events.jsonl`);
+              if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
+              this.fileExistsTimer = null;
+              this.startWatching();
+            })
+            .catch(() => { /* not yet */ });
+        }, EventsWatcher.FILE_CHECK_INTERVAL_MS);
+      });
   }
 
   private startWatching(): void {
@@ -118,35 +129,42 @@ export class EventsWatcher {
     }, EventsWatcher.POLL_INTERVAL_MS);
   }
 
-  private readNewLines(): void {
+  private async readNewLines(): Promise<void> {
+    // Prevent overlapping async reads
+    if (this.reading) return;
+    this.reading = true;
     try {
-      const stat = fs.statSync(this.filePath);
+      const stat = await fs.promises.stat(this.filePath);
       if (stat.size <= this.fileOffset) return;
 
-      const buf = Buffer.alloc(stat.size - this.fileOffset);
-      const fd = fs.openSync(this.filePath, 'r');
-      fs.readSync(fd, buf, 0, buf.length, this.fileOffset);
-      fs.closeSync(fd);
-      this.fileOffset = stat.size;
+      const handle = await fs.promises.open(this.filePath, 'r');
+      try {
+        const buf = Buffer.alloc(stat.size - this.fileOffset);
+        await handle.read(buf, 0, buf.length, this.fileOffset);
+        this.fileOffset = stat.size;
 
-      const text = this.lineBuffer + buf.toString('utf-8');
-      const lines = text.split('\n');
-      this.lineBuffer = lines.pop() || '';
+        const text = this.lineBuffer + buf.toString('utf-8');
+        const lines = text.split('\n');
+        this.lineBuffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const event = JSON.parse(line) as CopilotEvent;
-          if (this.callback) {
-            this.callback(event);
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line) as CopilotEvent;
+            if (this.callback) {
+              this.callback(event);
+            }
+          } catch (e) {
+            console.log(`[EventsWatcher] Failed to parse line: ${e}`);
           }
-        } catch (e) {
-          // Ignore malformed lines
-          console.log(`[EventsWatcher] Failed to parse line: ${e}`);
         }
+      } finally {
+        await handle.close();
       }
     } catch (e) {
       // File may not exist or be locked
+    } finally {
+      this.reading = false;
     }
   }
 

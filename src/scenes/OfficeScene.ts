@@ -3,9 +3,8 @@ import { Player } from '../entities/Player';
 import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
-import { VolleyballGame } from '../ui/VolleyballGame';
-import { ArcadeGame } from '../ui/ArcadeGame';
 import { AGENTS, AgentConfig } from '../config/agents';
+import { InputManager } from '../input/InputManager';
 
 interface DeskInfo {
   sprite: Phaser.GameObjects.Sprite;
@@ -21,11 +20,8 @@ interface GameTable {
 }
 
 // Feature flags
-const ENABLE_PING_PONG = true;
-const ENABLE_VOLLEYBALL = false;
-const ENABLE_DECORATIONS = true;
-const ENABLE_MCDONALDS = false;
-const ENABLE_ARCADE = true;
+const ENABLE_PING_PONG = false;
+const ENABLE_DECORATIONS = false;
 
 export class OfficeScene extends Phaser.Scene {
   private player!: Player;
@@ -33,23 +29,12 @@ export class OfficeScene extends Phaser.Scene {
   private desks: DeskInfo[] = [];
   private terminalOverlay!: TerminalOverlay;
   private pongGame!: PongGame;
-  private volleyballGame!: VolleyballGame;
-  private arcadeGame!: ArcadeGame;
   private pingPongTable: GameTable | null = null;
-  private volleyballCourt: GameTable | null = null;
-  private mcdonaldsStand: GameTable | null = null;
-  private arcadeMachine: GameTable | null = null;
   private nearPingPong: boolean = false;
-  private nearVolleyball: boolean = false;
-  private nearMcdonalds: boolean = false;
-  private nearArcade: boolean = false;
   private pingPongPrompt!: Phaser.GameObjects.Text;
-  private volleyballPrompt!: Phaser.GameObjects.Text;
-  private mcdonaldsPrompt!: Phaser.GameObjects.Text;
-  private arcadePrompt!: Phaser.GameObjects.Text;
-  private tileSize: number = 64; // Bigger tiles!
-  private mapWidth: number = 27; // Added 2 tiles to right
-  private mapHeight: number = 16;
+  private tileSize: number = 64;
+  private mapWidth: number = 20;
+  private mapHeight: number = 12;
   private interactKey!: Phaser.Input.Keyboard.Key;
   private walls!: Phaser.Physics.Arcade.StaticGroup;
   private nearestNPC: NPC | null = null;
@@ -57,6 +42,10 @@ export class OfficeScene extends Phaser.Scene {
   private titleText!: Phaser.GameObjects.Text;
   private instructionText!: Phaser.GameObjects.Text;
   private spriteScale: number = 1;
+  private playerMovementEnabled: boolean = true;
+  private playerHasEntered: boolean = false;
+  private waitingForEntrance: boolean = true;
+  private inputManager!: InputManager;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -81,30 +70,32 @@ export class OfficeScene extends Phaser.Scene {
     // Create the office layout
     this.createOfficeLayout();
     
-    // Create player at the boss desk area
+    // Create player off-screen below the entrance
+    const entranceX = this.mapWidth * this.tileSize / 2;
+    const entranceY = (this.mapHeight + 1) * this.tileSize;
     this.player = new Player(
       this,
-      this.mapWidth * this.tileSize / 2,
-      (this.mapHeight - 3) * this.tileSize
+      entranceX,
+      entranceY
     );
     this.player.setScale(this.spriteScale);
-    this.player.setDepth(50); // Player always in front
+    this.player.setDepth(50);
+    this.player.setVisible(false);
+    this.player.disableMovement();
     
     // Create NPCs
     this.createNPCs();
     
+    // Create InputManager (must be before TerminalOverlay)
+    this.inputManager = new InputManager(this);
+    console.log('[OfficeScene] InputManager created');
+
     // Create terminal overlay (replaces dialog box)
-    this.terminalOverlay = new TerminalOverlay(this);
-    
+    this.terminalOverlay = new TerminalOverlay(this, this.inputManager);
+
     // Create pong game overlay
     this.pongGame = new PongGame(this);
-    
-    // Create volleyball game overlay
-    this.volleyballGame = new VolleyballGame(this);
-    
-    // Create arcade game overlay
-    this.arcadeGame = new ArcadeGame(this);
-    
+
     // Create ping pong prompt (hidden by default)
     this.pingPongPrompt = this.add.text(0, 0, '[E] Play Ping Pong', {
       font: 'bold 14px monospace',
@@ -115,40 +106,7 @@ export class OfficeScene extends Phaser.Scene {
     this.pingPongPrompt.setOrigin(0.5, 1);
     this.pingPongPrompt.setDepth(100);
     this.pingPongPrompt.setVisible(false);
-    
-    // Create volleyball prompt (hidden by default)
-    this.volleyballPrompt = this.add.text(0, 0, '[E] Play Volleyball', {
-      font: 'bold 14px monospace',
-      color: '#ffcc00',
-      backgroundColor: '#000000',
-      padding: { x: 8, y: 4 },
-    });
-    this.volleyballPrompt.setOrigin(0.5, 1);
-    this.volleyballPrompt.setDepth(100);
-    this.volleyballPrompt.setVisible(false);
-    
-    // Create McDonald's nuggets prompt (hidden by default)
-    this.mcdonaldsPrompt = this.add.text(0, 0, '🍟 [E] Buy McNuggets', {
-      font: 'bold 14px monospace',
-      color: '#ffc72c',
-      backgroundColor: '#da291c',
-      padding: { x: 8, y: 4 },
-    });
-    this.mcdonaldsPrompt.setOrigin(0.5, 1);
-    this.mcdonaldsPrompt.setDepth(100);
-    this.mcdonaldsPrompt.setVisible(false);
-    
-    // Create arcade prompt (hidden by default)
-    this.arcadePrompt = this.add.text(0, 0, '🕹️ [E] Play Asteroids', {
-      font: 'bold 14px monospace',
-      color: '#00ffff',
-      backgroundColor: '#1a1a1a',
-      padding: { x: 8, y: 4 },
-    });
-    this.arcadePrompt.setOrigin(0.5, 1);
-    this.arcadePrompt.setDepth(100);
-    this.arcadePrompt.setVisible(false);
-    
+
     // Pre-start copilot sessions for all agents in background
     this.preStartAgentSessions();
     
@@ -165,7 +123,7 @@ export class OfficeScene extends Phaser.Scene {
     const instructionFontSize = Math.max(14, Math.floor(screenHeight / 70));
     
     // Add title
-    this.titleText = this.add.text(screenWidth / 2, 10, '🏢 COPILOT OFFICE', {
+    this.titleText = this.add.text(screenWidth / 2, 10, '🏢 AGENCY OFFICE', {
       font: `bold ${titleFontSize}px monospace`,
       color: '#ffffff',
     });
@@ -173,9 +131,9 @@ export class OfficeScene extends Phaser.Scene {
     this.titleText.setScrollFactor(0);
     this.titleText.setDepth(100);
     
-    // Add instructions
+    // Add instructions (initially show entrance prompt)
     this.instructionText = this.add.text(screenWidth / 2, screenHeight - 20, 
-      '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent', {
+      '[Space / Enter] Enter the office', {
       font: `${instructionFontSize}px monospace`,
       color: '#888888',
     });
@@ -186,6 +144,80 @@ export class OfficeScene extends Phaser.Scene {
     // Camera setup - no follow needed since room fits
     this.cameras.main.setBounds(0, 0, this.mapWidth * this.tileSize, this.mapHeight * this.tileSize);
     this.cameras.main.centerOn(this.mapWidth * this.tileSize / 2, this.mapHeight * this.tileSize / 2);
+
+    // Listen for terminal open/close from main.ts to toggle player movement
+    this.game.events.on('terminal:open', () => {
+      this.playerMovementEnabled = false;
+      this.player.disableMovement();
+    }, this);
+
+    this.game.events.on('terminal:close', () => {
+      this.playerMovementEnabled = true;
+      this.player.enableMovement();
+    }, this);
+
+    // Allow external UI (e.g. overview panel) to open agent terminal directly
+    this.game.events.on('open:agent:terminal', (agentId: string) => {
+      const agent = AGENTS.find(a => a.id === agentId);
+      if (agent) this.startConversation(agent);
+    }, this);
+
+    // Highlight the NPC whose terminal is open
+    this.game.events.on('npc:highlight', (agentId: string) => {
+      for (const npc of this.npcs) {
+        npc.setHighlighted(npc.config.id === agentId);
+      }
+    }, this);
+
+    this.game.events.on('npc:clear-highlight', () => {
+      for (const npc of this.npcs) {
+        npc.setHighlighted(false);
+      }
+    }, this);
+
+    // Listen for office switch to reinitialize if needed
+    this.game.events.on('office:switch', (_officeId: string, _workingDir: string) => {
+      console.log(`[OfficeScene] Office switched to: ${_officeId}`);
+    }, this);
+
+    // Click on NPC → open / switch conversation immediately.
+    // Click on empty canvas → regain keyboard focus so player can move again.
+    this.input.on('pointerdown', (
+      _pointer: Phaser.Input.Pointer,
+      currentlyOver: Phaser.GameObjects.GameObject[]
+    ) => {
+      if (this.waitingForEntrance) {
+        this.triggerEntrance();
+        return;
+      }
+      const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
+      if (clickedNPC) {
+        this.startConversation(clickedNPC.config);
+      } else {
+        // Background click — give game focus back
+        console.log('[OfficeScene] background click — returning focus to game');
+        this.terminalOverlay.blurTerminal();
+        this.playerMovementEnabled = true;
+        this.player.enableMovement();
+      }
+    });
+
+    // Listen for Space / Enter to enter the office
+    if (this.input.keyboard) {
+      const spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+      const enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+      spaceKey.on('down', () => { if (this.waitingForEntrance) this.triggerEntrance(); });
+      enterKey.on('down', () => { if (this.waitingForEntrance) this.triggerEntrance(); });
+    }
+
+    // Initialise InputManager state to "game" (the default mode at startup)
+    this.inputManager.switchToGame('OfficeScene.create() initial state');
+
+    // Clean up InputManager when the scene shuts down
+    this.events.on('shutdown', () => {
+      console.log('[OfficeScene] shutdown — destroying InputManager');
+      this.inputManager.destroy();
+    }, this);
   }
 
   private createOfficeLayout(): void {
@@ -217,7 +249,7 @@ export class OfficeScene extends Phaser.Scene {
     // === SKYSCRAPER WINDOWS (visual only - no collision for boundaries) ===
     // Top windows at row 0 (decorative - world bounds handle top)
     for (let x = 1; x < this.mapWidth - 1; x++) {
-      const windowType = (x >= 10 && x <= 14) ? 'window_sun' : 'window';
+      const windowType = (x >= 8 && x <= 12) ? 'window_sun' : 'window';
       addDecor(x * this.tileSize + this.tileSize/2, this.tileSize/2, windowType);
     }
     
@@ -244,10 +276,18 @@ export class OfficeScene extends Phaser.Scene {
       addDecor(corner.x * this.tileSize + this.tileSize/2, corner.y * this.tileSize + this.tileSize/2, 'window_corner');
     });
     
-    // Bottom wall (decorative)
+    // Bottom wall (decorative) - centre 4 tiles are grand entrance doors
+    const doorCols = new Set([8, 9, 10, 11]);
     for (let x = 1; x < this.mapWidth - 1; x++) {
-      addDecor(x * this.tileSize + this.tileSize/2, (this.mapHeight - 1) * this.tileSize + this.tileSize/2, 'wall');
+      if (doorCols.has(x)) continue;
+      const wx = x * this.tileSize + this.tileSize / 2;
+      const wy = (this.mapHeight - 1) * this.tileSize + this.tileSize / 2;
+      addDecor(wx, wy, 'wall');
     }
+
+    // Grand entrance doors + entrance rug
+    this.createGrandDoors();
+    this.createEntranceRug();
     
     // Add agent desks (decorative only - no collision)
     AGENTS.forEach(agent => {
@@ -271,7 +311,7 @@ export class OfficeScene extends Phaser.Scene {
     
     // Boss desk at center bottom (large desk) - NO collision so player can walk through
     const bossDeskX = this.mapWidth * this.tileSize / 2;
-    const bossDeskY = (this.mapHeight - 4) * this.tileSize + this.tileSize/2;
+    const bossDeskY = (this.mapHeight - 6) * this.tileSize + this.tileSize/2;
     
     // Create larger boss desk (3 tiles wide) - decorative only, no collision
     for (let i = -1; i <= 1; i++) {
@@ -283,13 +323,6 @@ export class OfficeScene extends Phaser.Scene {
     
     // Boss chair (behind desk, where player spawns)
     addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair');
-    
-    // "YOU" label - scale font with screen
-    const labelFontSize = Math.max(12, Math.floor(this.tileSize / 4));
-    this.add.text(bossDeskX, bossDeskY + this.tileSize + this.tileSize/2, 'YOU', {
-      font: `bold ${labelFontSize}px monospace`,
-      color: '#ffcc00',
-    }).setOrigin(0.5, 0);
     
     // Add some decorations (no collision)
     if (ENABLE_DECORATIONS) {
@@ -304,12 +337,12 @@ export class OfficeScene extends Phaser.Scene {
       addDecor(3 * this.tileSize + this.tileSize/2, (this.mapHeight - 3) * this.tileSize + this.tileSize/2, 'coffee');
       
       // Bookshelf on left wall
+      addDecor(2 * this.tileSize + this.tileSize/2, 3 * this.tileSize + this.tileSize/2, 'bookshelf');
       addDecor(2 * this.tileSize + this.tileSize/2, 4 * this.tileSize + this.tileSize/2, 'bookshelf');
-      addDecor(2 * this.tileSize + this.tileSize/2, 5 * this.tileSize + this.tileSize/2, 'bookshelf');
       
       // Filing cabinets near boss desk
-      addDecor(8 * this.tileSize + this.tileSize/2, (this.mapHeight - 3) * this.tileSize + this.tileSize/2, 'cabinet');
-      addDecor((this.mapWidth - 9) * this.tileSize + this.tileSize/2, (this.mapHeight - 3) * this.tileSize + this.tileSize/2, 'cabinet');
+      addDecor(6 * this.tileSize + this.tileSize/2, (this.mapHeight - 3) * this.tileSize + this.tileSize/2, 'cabinet');
+      addDecor((this.mapWidth - 7) * this.tileSize + this.tileSize/2, (this.mapHeight - 3) * this.tileSize + this.tileSize/2, 'cabinet');
       
       // Whiteboard on right side
       const whiteboardSprite = this.add.sprite(
@@ -320,8 +353,8 @@ export class OfficeScene extends Phaser.Scene {
       whiteboardSprite.setScale(scale);
       
       // Wall clock near top
-      addDecor(6 * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'clock');
-      addDecor((this.mapWidth - 7) * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'clock');
+      addDecor(5 * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'clock');
+      addDecor((this.mapWidth - 6) * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'clock');
       
       // Couch in break area (right side)
       const couchSprite = this.add.sprite(
@@ -332,20 +365,19 @@ export class OfficeScene extends Phaser.Scene {
       couchSprite.setScale(scale);
       
       // Trash cans near desks
-      addDecor(4 * this.tileSize + this.tileSize/2, 6 * this.tileSize + this.tileSize/2, 'trash');
-      addDecor((this.mapWidth - 5) * this.tileSize + this.tileSize/2, 6 * this.tileSize + this.tileSize/2, 'trash');
+      addDecor(4 * this.tileSize + this.tileSize/2, 5 * this.tileSize + this.tileSize/2, 'trash');
+      addDecor((this.mapWidth - 5) * this.tileSize + this.tileSize/2, 5 * this.tileSize + this.tileSize/2, 'trash');
       
       // Wall art/posters
-      addDecor(10 * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'poster');
-      addDecor((this.mapWidth - 11) * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'poster');
+      addDecor(7 * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'poster');
+      addDecor((this.mapWidth - 8) * this.tileSize + this.tileSize/2, 2 * this.tileSize + this.tileSize/2, 'poster');
       
       // More plants for ambiance
-      addDecor(5 * this.tileSize + this.tileSize/2, (this.mapHeight - 5) * this.tileSize + this.tileSize/2, 'plant');
-      addDecor((this.mapWidth - 6) * this.tileSize + this.tileSize/2, (this.mapHeight - 5) * this.tileSize + this.tileSize/2, 'plant');
+      addDecor(5 * this.tileSize + this.tileSize/2, (this.mapHeight - 4) * this.tileSize + this.tileSize/2, 'plant');
+      addDecor((this.mapWidth - 6) * this.tileSize + this.tileSize/2, (this.mapHeight - 4) * this.tileSize + this.tileSize/2, 'plant');
     }
     
-    // Add a carpet/rug in the middle area
-    this.createCarpet(this.mapWidth / 2, this.mapHeight / 2 + 1, 8, 4);
+    // (rug moved to entrance area)
     
     // Ping pong table (left of center)
     if (ENABLE_PING_PONG) {
@@ -363,72 +395,166 @@ export class OfficeScene extends Phaser.Scene {
       };
     }
     
-    // Volleyball court (right of center)
-    if (ENABLE_VOLLEYBALL) {
-      const volleyballX = Math.floor(this.mapWidth / 2 + 3) * this.tileSize + this.tileSize / 2;
-      const volleyballY = Math.floor(this.mapHeight / 2) * this.tileSize + this.tileSize / 2;
-      const volleyballSprite = addDecor(volleyballX, volleyballY, 'volleyball');
-      volleyballSprite.setScale(scale);
-      volleyballSprite.setDepth(5);
-      
-      // Track volleyball court for interaction
-      this.volleyballCourt = {
-        sprite: volleyballSprite,
-        x: volleyballX,
-        y: volleyballY,
-      };
-    }
-    
-    // McDonald's nuggets stand (right side of building)
-    if (ENABLE_MCDONALDS) {
-      const mcdonaldsX = (this.mapWidth - 4) * this.tileSize + this.tileSize / 2;
-      const mcdonaldsY = Math.floor(this.mapHeight / 2 + 2) * this.tileSize + this.tileSize / 2;
-      const mcdonaldsSprite = addDecor(mcdonaldsX, mcdonaldsY, 'mcdonalds');
-      mcdonaldsSprite.setScale(scale);
-      mcdonaldsSprite.setDepth(5);
-      
-      // Track McDonald's stand for interaction
-      this.mcdonaldsStand = {
-        sprite: mcdonaldsSprite,
-        x: mcdonaldsX,
-        y: mcdonaldsY,
-      };
-    }
-    
-    // Arcade machine (right of center, near the break area)
-    if (ENABLE_ARCADE) {
-      const arcadeX = Math.floor(this.mapWidth / 2 + 3) * this.tileSize + this.tileSize / 2;
-      const arcadeY = Math.floor(this.mapHeight / 2) * this.tileSize + this.tileSize / 2;
-      const arcadeSprite = addDecor(arcadeX, arcadeY, 'arcade');
-      arcadeSprite.setScale(scale);
-      arcadeSprite.setDepth(5);
-      
-      // Track arcade machine for interaction
-      this.arcadeMachine = {
-        sprite: arcadeSprite,
-        x: arcadeX,
-        y: arcadeY,
-      };
-    }
+    // Volleyball court (right of center) - removed
+    // McDonald's nuggets stand - removed
+    // Arcade machine - removed
   }
 
-  private createCarpet(centerX: number, centerY: number, width: number, height: number): void {
-    const carpetGraphics = this.add.graphics();
-    carpetGraphics.fillStyle(0x4a3728, 0.6);
-    carpetGraphics.fillRect(
-      (centerX - width / 2) * this.tileSize,
-      (centerY - height / 2) * this.tileSize,
-      width * this.tileSize,
-      height * this.tileSize
-    );
-    carpetGraphics.lineStyle(2, 0x6a4738, 0.8);
-    carpetGraphics.strokeRect(
-      (centerX - width / 2) * this.tileSize + 4,
-      (centerY - height / 2) * this.tileSize + 4,
-      width * this.tileSize - 8,
-      height * this.tileSize - 8
-    );
-    carpetGraphics.setDepth(-1);
+  private createGrandDoors(): void {
+    const ts = this.tileSize;
+    const doorY = (this.mapHeight - 1) * ts;
+    const leftX = 8 * ts;
+    const centerX = 10 * ts;
+    const rightX = 10 * ts;
+
+    const g = this.add.graphics();
+
+    // Full doorframe background
+    g.fillStyle(0x1a0a00, 1);
+    g.fillRect(leftX, doorY, 4 * ts, ts);
+
+    // Left door panel (2 tiles wide)
+    g.fillStyle(0x8b4513, 1);
+    g.fillRect(leftX + 3, doorY + 2, 2 * ts - 6, ts - 4);
+    // Upper raised panel
+    g.fillStyle(0xa0622d, 1);
+    g.fillRect(leftX + 10, doorY + 6, 2 * ts - 22, ts * 0.3);
+    // Lower raised panel
+    g.fillRect(leftX + 10, doorY + ts * 0.52, 2 * ts - 22, ts * 0.34);
+    // Gold handle (inner edge)
+    g.fillStyle(0xffd700, 1);
+    g.fillRoundedRect(centerX - 16, doorY + ts * 0.38, 8, 8, 2);
+
+    // Right door panel (2 tiles wide, mirrored)
+    g.fillStyle(0x8b4513, 1);
+    g.fillRect(rightX + 3, doorY + 2, 2 * ts - 6, ts - 4);
+    g.fillStyle(0xa0622d, 1);
+    g.fillRect(rightX + 12, doorY + 6, 2 * ts - 22, ts * 0.3);
+    g.fillRect(rightX + 12, doorY + ts * 0.52, 2 * ts - 22, ts * 0.34);
+    g.fillStyle(0xffd700, 1);
+    g.fillRoundedRect(rightX + 8, doorY + ts * 0.38, 8, 8, 2);
+
+    // Center seam between the two doors
+    g.fillStyle(0x0e0600, 1);
+    g.fillRect(centerX - 2, doorY, 4, ts);
+
+    // Ornamental header bar (gold trim across top)
+    g.fillStyle(0xdaa520, 1);
+    g.fillRect(leftX + 6, doorY, 4 * ts - 12, 3);
+
+    g.setDepth(0);
+  }
+
+  private createEntranceRug(): void {
+    const ts = this.tileSize;
+    const rugWidthTiles = 8;
+    const rugX = (this.mapWidth / 2 - rugWidthTiles / 2) * ts;
+    const rugY = (this.mapHeight - 2.4) * ts;
+    const rugW = rugWidthTiles * ts;
+    const rugH = ts * 1.4;
+
+    const g = this.add.graphics();
+
+    // Shadow underneath the rug
+    g.fillStyle(0x000000, 0.15);
+    g.fillRoundedRect(rugX + 4, rugY + 4, rugW, rugH, 8);
+
+    // Main rug body — deep burnt orange
+    g.fillStyle(0xd4600a, 1);
+    g.fillRoundedRect(rugX, rugY, rugW, rugH, 8);
+
+    // Woven texture — alternating horizontal stripes
+    for (let row = 0; row < rugH - 12; row += 6) {
+      const alpha = (row % 12 === 0) ? 0.08 : 0.04;
+      g.fillStyle(0x000000, alpha);
+      g.fillRect(rugX + 8, rugY + 6 + row, rugW - 16, 3);
+    }
+
+    // Subtle vertical fiber lines
+    for (let col = 0; col < rugW - 16; col += 10) {
+      g.fillStyle(0xffffff, 0.03);
+      g.fillRect(rugX + 8 + col, rugY + 6, 1, rugH - 12);
+    }
+
+    // Outer decorative border — dark brown frame
+    g.lineStyle(5, 0x7a2e00, 1);
+    g.strokeRoundedRect(rugX + 3, rugY + 3, rugW - 6, rugH - 6, 7);
+
+    // Inner decorative border — gold/amber trim
+    g.lineStyle(2, 0xe8a030, 0.8);
+    g.strokeRoundedRect(rugX + 10, rugY + 10, rugW - 20, rugH - 20, 4);
+
+    // Fringe along top edge
+    for (let fx = rugX + 12; fx < rugX + rugW - 12; fx += 8) {
+      g.fillStyle(0xc45a08, 0.9);
+      g.fillRect(fx, rugY - 4, 3, 6);
+    }
+    // Fringe along bottom edge
+    for (let fx = rugX + 12; fx < rugX + rugW - 12; fx += 8) {
+      g.fillStyle(0xc45a08, 0.9);
+      g.fillRect(fx, rugY + rugH - 2, 3, 6);
+    }
+
+    // Corner tassels
+    const tassel = (cx: number, cy: number) => {
+      g.fillStyle(0xe8a030, 0.9);
+      g.fillRect(cx - 2, cy, 4, 8);
+      g.fillRect(cx - 5, cy, 3, 6);
+      g.fillRect(cx + 3, cy, 3, 6);
+    };
+    tassel(rugX + 8, rugY + rugH - 1);
+    tassel(rugX + rugW - 8, rugY + rugH - 1);
+    tassel(rugX + 8, rugY - 7);
+    tassel(rugX + rugW - 8, rugY - 7);
+
+    g.setDepth(1);
+
+    // "ENTER" text — bold white with subtle shadow
+    const shadowText = this.add.text(rugX + rugW / 2 + 2, rugY + rugH / 2 + 2, 'ENTER', {
+      fontFamily: 'monospace',
+      fontSize: `${ts * 0.55}px`,
+      color: '#000000',
+      fontStyle: 'bold',
+    });
+    shadowText.setOrigin(0.5, 0.5);
+    shadowText.setAlpha(0.3);
+    shadowText.setDepth(2);
+
+    const enterText = this.add.text(rugX + rugW / 2, rugY + rugH / 2, 'ENTER', {
+      fontFamily: 'monospace',
+      fontSize: `${ts * 0.55}px`,
+      color: '#ffffff',
+      fontStyle: 'bold',
+    });
+    enterText.setOrigin(0.5, 0.5);
+    enterText.setDepth(2);
+  }
+
+  private triggerEntrance(): void {
+    if (!this.waitingForEntrance || this.playerHasEntered) return;
+    this.waitingForEntrance = false;
+    this.playerHasEntered = true;
+
+    // Make player visible at the entrance (just below bottom wall)
+    const entranceX = this.mapWidth * this.tileSize / 2;
+    const startY = (this.mapHeight + 1) * this.tileSize;
+    const targetY = (this.mapHeight - 3) * this.tileSize;
+    this.player.setPosition(entranceX, startY);
+    this.player.setVisible(true);
+
+    // Tween player walking up into the office
+    this.tweens.add({
+      targets: this.player,
+      y: targetY,
+      duration: 1200,
+      ease: 'Sine.easeOut',
+      onComplete: () => {
+        this.player.enableMovement();
+        this.instructionText.setText(
+          '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent'
+        );
+      },
+    });
   }
 
   private createNPCs(): void {
@@ -445,58 +571,38 @@ export class OfficeScene extends Phaser.Scene {
       const savedSessionId = await window.copilotBridge.getSessionId('admin');
       
       if (savedSessionId) {
-        console.log(`[CopilotOffice] Resuming admin session: ${savedSessionId}`);
+        console.log(`[AgencyOffice] Resuming admin session: ${savedSessionId}`);
       } else {
-        console.log('[CopilotOffice] Starting new admin session (no saved session found)');
+        console.log('[AgencyOffice] Starting new admin session (no saved session found)');
       }
       
       await window.copilotBridge.terminalStart('admin', adminAgent?.workingDir);
-      console.log('[CopilotOffice] Admin (Alice) session ready');
+      console.log('[AgencyOffice] Admin (Alice) session ready');
     }
   }
 
   update(): void {
-    // Don't update if any mini-game is active
-    if (this.pongGame.getIsVisible() || this.volleyballGame.getIsVisible() || this.arcadeGame.getIsVisible()) {
+    // Don't update if player hasn't entered, pong game, or terminal overlay is active
+    if (!this.playerHasEntered || this.pongGame.getIsVisible() || !this.playerMovementEnabled) {
       return;
     }
-    
+
     // Update player
     this.player.update();
-    
+
     // Check for nearest NPC or desk
     this.updateNearestInteractable();
-    
+
     // Check for ping pong table proximity
     this.updatePingPongProximity();
-    
-    // Check for volleyball court proximity
-    this.updateVolleyballProximity();
-    
-    // Check for McDonald's proximity
-    this.updateMcdonaldsProximity();
-    
-    // Check for arcade machine proximity
-    this.updateArcadeProximity();
-    
+
     // Check for interaction (E key)
     if (Phaser.Input.Keyboard.JustDown(this.interactKey) && !this.terminalOverlay.getIsVisible()) {
-      if (this.nearMcdonalds) {
-        // Buy nuggets!
-        this.buyNuggets();
-      } else if (this.nearArcade) {
-        // Start arcade game
-        this.startArcadeGame();
-      } else if (this.nearPingPong) {
-        // Start pong game
+      if (this.nearPingPong) {
         this.startPongGame();
-      } else if (this.nearVolleyball) {
-        // Start volleyball game
-        this.startVolleyballGame();
       } else if (this.nearestNPC) {
         this.startConversation(this.nearestNPC.config);
       } else if (this.nearestDesk) {
-        // Find the agent for this desk
         const agent = AGENTS.find(a => a.id === this.nearestDesk!.agentId);
         if (agent) {
           this.startConversation(agent);
@@ -510,17 +616,16 @@ export class OfficeScene extends Phaser.Scene {
       this.nearPingPong = false;
       return;
     }
-    
+
     const dist = Phaser.Math.Distance.Between(
       this.player.x, this.player.y,
       this.pingPongTable.x, this.pingPongTable.y
     );
-    
+
     const interactionDistance = this.tileSize * 2;
     this.nearPingPong = dist < interactionDistance;
-    
-    // Show/hide prompt
-    if (this.nearPingPong && !this.terminalOverlay.getIsVisible() && !this.nearVolleyball) {
+
+    if (this.nearPingPong && !this.terminalOverlay.getIsVisible()) {
       this.pingPongPrompt.setPosition(this.pingPongTable.x, this.pingPongTable.y - 40);
       this.pingPongPrompt.setVisible(true);
     } else {
@@ -528,152 +633,11 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  private updateVolleyballProximity(): void {
-    if (!this.volleyballCourt) {
-      this.nearVolleyball = false;
-      return;
-    }
-    
-    const dist = Phaser.Math.Distance.Between(
-      this.player.x, this.player.y,
-      this.volleyballCourt.x, this.volleyballCourt.y
-    );
-    
-    const interactionDistance = this.tileSize * 2;
-    this.nearVolleyball = dist < interactionDistance;
-    
-    // Show/hide prompt (volleyball takes priority if player is closer to it)
-    if (this.nearVolleyball && !this.terminalOverlay.getIsVisible()) {
-      // Check if volleyball is closer than ping pong
-      const pingPongDist = this.pingPongTable ? 
-        Phaser.Math.Distance.Between(this.player.x, this.player.y, this.pingPongTable.x, this.pingPongTable.y) : 
-        Infinity;
-      
-      if (dist <= pingPongDist) {
-        this.volleyballPrompt.setPosition(this.volleyballCourt.x, this.volleyballCourt.y - 40);
-        this.volleyballPrompt.setVisible(true);
-        this.pingPongPrompt.setVisible(false);
-      }
-    } else {
-      this.volleyballPrompt.setVisible(false);
-    }
-  }
-
-  private updateMcdonaldsProximity(): void {
-    if (!this.mcdonaldsStand) {
-      this.nearMcdonalds = false;
-      return;
-    }
-    
-    const dist = Phaser.Math.Distance.Between(
-      this.player.x, this.player.y,
-      this.mcdonaldsStand.x, this.mcdonaldsStand.y
-    );
-    
-    const interactionDistance = this.tileSize * 2;
-    this.nearMcdonalds = dist < interactionDistance;
-    
-    // Show/hide prompt
-    if (this.nearMcdonalds && !this.terminalOverlay.getIsVisible()) {
-      this.mcdonaldsPrompt.setPosition(this.mcdonaldsStand.x, this.mcdonaldsStand.y - 40);
-      this.mcdonaldsPrompt.setVisible(true);
-    } else {
-      this.mcdonaldsPrompt.setVisible(false);
-    }
-  }
-
-  private buyNuggets(): void {
-    this.mcdonaldsPrompt.setVisible(false);
-    
-    // Show a fun nugget purchase message
-    const messages = [
-      "🍗 You got a 10-piece McNuggets! Yum!",
-      "🍟 Enjoy your crispy nuggets with BBQ sauce!",
-      "🍗 Ba da ba ba ba... I'm lovin' it!",
-      "🍟 20-piece? You're hungry! Here you go!",
-      "🍗 Spicy nuggets? Bold choice! Enjoy!",
-    ];
-    const message = messages[Math.floor(Math.random() * messages.length)];
-    
-    // Create floating text
-    const floatingText = this.add.text(
-      this.mcdonaldsStand!.x, 
-      this.mcdonaldsStand!.y - 60,
-      message,
-      {
-        font: 'bold 16px monospace',
-        color: '#ffc72c',
-        backgroundColor: '#da291c',
-        padding: { x: 10, y: 6 },
-      }
-    );
-    floatingText.setOrigin(0.5, 1);
-    floatingText.setDepth(200);
-    
-    // Animate and destroy
-    this.tweens.add({
-      targets: floatingText,
-      y: floatingText.y - 50,
-      alpha: 0,
-      duration: 2000,
-      ease: 'Power2',
-      onComplete: () => floatingText.destroy(),
-    });
-  }
-
   private startPongGame(): void {
     this.player.disableMovement();
     this.pingPongPrompt.setVisible(false);
-    
+
     this.pongGame.show(() => {
-      this.player.enableMovement();
-    });
-  }
-
-  private startVolleyballGame(): void {
-    this.player.disableMovement();
-    this.volleyballPrompt.setVisible(false);
-    
-    this.volleyballGame.show(() => {
-      this.player.enableMovement();
-    });
-  }
-
-  private updateArcadeProximity(): void {
-    if (!this.arcadeMachine) {
-      this.nearArcade = false;
-      return;
-    }
-    
-    const dist = Phaser.Math.Distance.Between(
-      this.player.x, this.player.y,
-      this.arcadeMachine.x, this.arcadeMachine.y
-    );
-    
-    const interactionDistance = this.tileSize * 2;
-    this.nearArcade = dist < interactionDistance;
-    
-    // Show/hide prompt (arcade takes priority if closer than ping pong)
-    if (this.nearArcade && !this.terminalOverlay.getIsVisible()) {
-      const pingPongDist = this.pingPongTable ? 
-        Phaser.Math.Distance.Between(this.player.x, this.player.y, this.pingPongTable.x, this.pingPongTable.y) : 
-        Infinity;
-      
-      if (dist <= pingPongDist) {
-        this.arcadePrompt.setPosition(this.arcadeMachine.x, this.arcadeMachine.y - 40);
-        this.arcadePrompt.setVisible(true);
-        this.pingPongPrompt.setVisible(false);
-      }
-    } else {
-      this.arcadePrompt.setVisible(false);
-    }
-  }
-
-  private startArcadeGame(): void {
-    this.player.disableMovement();
-    this.arcadePrompt.setVisible(false);
-    
-    this.arcadeGame.show(() => {
       this.player.enableMovement();
     });
   }
@@ -735,7 +699,10 @@ export class OfficeScene extends Phaser.Scene {
 
   private startConversation(agent: AgentConfig): void {
     this.player.disableMovement();
-    
+
+    // Emit to main.ts so it can open the terminal panel
+    this.game.events.emit('agent:interact', agent.id);
+
     this.terminalOverlay.show(
       agent,
       () => {

@@ -12,8 +12,8 @@ export interface CopilotEvent {
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
-  terminalStart: (agentId: string, workingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
-    return ipcRenderer.invoke('terminal-start', agentId, workingDir);
+  terminalStart: (agentId: string, workingDir?: string, cols?: number, rows?: number): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
+    return ipcRenderer.invoke('terminal-start', agentId, workingDir, cols, rows);
   },
   terminalWrite: (agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-write', agentId, data);
@@ -26,6 +26,15 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   terminalExists: (agentId: string): Promise<boolean> => {
     return ipcRenderer.invoke('terminal-exists', agentId);
+  },
+  terminalAttach: (agentId: string): Promise<{ success: boolean; scrollback?: string[] }> => {
+    return ipcRenderer.invoke('terminal-attach', agentId);
+  },
+  terminalDetach: (agentId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('terminal-detach', agentId);
+  },
+  terminalPopOut: (agentId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('terminal-pop-out', agentId);
   },
   
   // Session persistence
@@ -42,6 +51,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => {
     ipcRenderer.on('terminal-exit', (_event, agentId, exitCode) => callback(agentId, exitCode));
+  },
+  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => {
+    ipcRenderer.on('terminal-preload-status', (_event, agentId, status) => callback(agentId, status));
   },
   
   // Copilot activity event listeners
@@ -86,15 +98,19 @@ declare global {
   
   interface Window {
     copilotBridge: {
-      terminalStart: (agentId: string, workingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
+      terminalStart: (agentId: string, workingDir?: string, cols?: number, rows?: number) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalResize: (agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
       terminalKill: (agentId: string) => Promise<{ success: boolean; error?: string }>;
       terminalExists: (agentId: string) => Promise<boolean>;
+      terminalAttach: (agentId: string) => Promise<{ success: boolean; scrollback?: string[] }>;
+      terminalDetach: (agentId: string) => Promise<{ success: boolean }>;
+      terminalPopOut: (agentId: string) => Promise<{ success: boolean }>;
       saveSessionId: (agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       getSessionId: (agentId: string) => Promise<string | null>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
+      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;
       onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => void;
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => void;
       onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => void;

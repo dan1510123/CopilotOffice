@@ -156,6 +156,28 @@ export class BootScene extends Phaser.Scene {
       accessoryColor: 0xff88ff,
     });
 
+    // Gene - Generalist (casual blue coat, holding a book)
+    this.createHeroSprite('npc_generalist', {
+      skinColor: 0xffdbac,
+      hairColor: 0x224488,
+      hairStyle: 'short',
+      bodyColor: 0x4488cc,
+      bodyStyle: 'coat',
+      accessory: 'book',
+      accessoryColor: 0x88bbee,
+    });
+
+    // Arthur - The Architect (dark cloak, blueprint scroll)
+    this.createHeroSprite('npc_architect', {
+      skinColor: 0xd4a574,
+      hairColor: 0x1a1a1a,
+      hairStyle: 'long',
+      bodyColor: 0x1a1a2e,
+      bodyStyle: 'cloak',
+      accessory: 'blueprint',
+      accessoryColor: 0x8888ff,
+    });
+
     // ===== FURNITURE SPRITES =====
     
     // Desk tile (wooden desk)
@@ -196,6 +218,60 @@ export class BootScene extends Phaser.Scene {
     wallGraphics.fillRect(0, 28, 32, 4);
     wallGraphics.generateTexture('wall', 32, 32);
     wallGraphics.destroy();
+
+    // Door tile (entrance doors in bottom wall)
+    const doorGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Outer door frame (dark wood)
+    doorGraphics.fillStyle(0x2a1a0a, 1);
+    doorGraphics.fillRect(0, 0, 32, 32);
+    // Door panel (warm wood)
+    doorGraphics.fillStyle(0xc4833c, 1);
+    doorGraphics.fillRect(3, 2, 26, 30);
+    // Upper glass panel
+    doorGraphics.fillStyle(0x88ccee, 1);
+    doorGraphics.fillRect(5, 4, 22, 11);
+    // Glass shine highlight
+    doorGraphics.fillStyle(0xaaddff, 1);
+    doorGraphics.fillRect(6, 5, 7, 4);
+    // Lower wood raised panel
+    doorGraphics.fillStyle(0xb07030, 1);
+    doorGraphics.fillRect(5, 17, 22, 13);
+    // Divider between glass and panel
+    doorGraphics.fillStyle(0x2a1a0a, 1);
+    doorGraphics.fillRect(5, 15, 22, 2);
+    // Center seam (double door split)
+    doorGraphics.fillRect(15, 0, 2, 32);
+    // Door handles (gold)
+    doorGraphics.fillStyle(0xe0c060, 1);
+    doorGraphics.fillRect(10, 13, 5, 2);
+    doorGraphics.fillRect(17, 13, 5, 2);
+    doorGraphics.generateTexture('door', 32, 32);
+    doorGraphics.destroy();
+
+    // Welcome mat tile
+    const matGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Mat body (deep burgundy)
+    matGraphics.fillStyle(0x7a1515, 1);
+    matGraphics.fillRect(0, 5, 32, 22);
+    // Gold border
+    matGraphics.fillStyle(0xcc9900, 1);
+    matGraphics.fillRect(0, 5, 32, 3);
+    matGraphics.fillRect(0, 24, 32, 3);
+    matGraphics.fillRect(0, 8, 3, 16);
+    matGraphics.fillRect(29, 8, 3, 16);
+    // Inner field (slightly lighter red)
+    matGraphics.fillStyle(0xaa2222, 1);
+    matGraphics.fillRect(3, 8, 26, 16);
+    // Centre diamond motif in gold
+    matGraphics.fillStyle(0xcc9900, 1);
+    matGraphics.fillRect(15, 11, 2, 10);  // vertical stem
+    matGraphics.fillRect(11, 15, 10, 2);  // horizontal stem
+    matGraphics.fillRect(14, 10, 4, 2);   // top cap
+    matGraphics.fillRect(14, 20, 4, 2);   // bottom cap
+    matGraphics.fillRect(10, 14, 2, 4);   // left cap
+    matGraphics.fillRect(20, 14, 2, 4);   // right cap
+    matGraphics.generateTexture('welcome_mat', 32, 32);
+    matGraphics.destroy();
 
     // Chair (office chair)
     const chairGraphics = this.make.graphics({ x: 0, y: 0 });
@@ -1064,6 +1140,37 @@ export class BootScene extends Phaser.Scene {
         g.fillRect(22, 12, 2, 2);
         g.fillRect(30, 10, 2, 2);
         g.fillRect(26, 8, 2, 2);
+        break;
+      case 'book':
+        // Open book held on left side
+        g.fillStyle(0x5a3010, 1);  // spine
+        g.fillRect(0, 18, 4, 14);
+        g.fillStyle(config.accessoryColor, 1);  // cover
+        g.fillRect(1, 19, 7, 12);
+        g.fillStyle(0xffffff, 1);  // pages
+        g.fillRect(2, 20, 5, 10);
+        g.fillStyle(0xaaaaaa, 1);  // page lines
+        g.fillRect(3, 22, 3, 1);
+        g.fillRect(3, 24, 3, 1);
+        g.fillRect(3, 26, 3, 1);
+        break;
+      case 'blueprint':
+        // Rolled blueprint scroll on right side
+        g.fillStyle(0x2244aa, 1);  // blueprint blue paper
+        g.fillRect(24, 12, 7, 18);
+        g.fillStyle(config.accessoryColor, 1);  // grid lines
+        g.fillRect(25, 15, 5, 1);
+        g.fillRect(25, 18, 5, 1);
+        g.fillRect(25, 21, 5, 1);
+        g.fillRect(27, 14, 1, 10);
+        // Scroll ends (rolled paper)
+        g.fillStyle(0xddddcc, 1);
+        g.fillRect(23, 11, 9, 3);
+        g.fillRect(23, 27, 9, 3);
+        // Sparkle (architect magic)
+        g.fillStyle(0xaaaaff, 1);
+        g.fillRect(20, 8, 2, 2);
+        g.fillRect(22, 10, 2, 2);
         break;
     }
     

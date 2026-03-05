@@ -2,6 +2,18 @@ import Phaser from 'phaser';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { AgentConfig } from '../config/agents';
+import { InputManager } from '../input/InputManager';
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`IPC timeout: ${label} after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
+const IPC_TIMEOUT = 10_000;
 
 export class TerminalOverlay {
   private scene: Phaser.Scene;
@@ -17,9 +29,11 @@ export class TerminalOverlay {
   private terminalDiv: HTMLDivElement | null = null;
   private sessionId: string | null = null;
   private sessionIdElement: HTMLSpanElement | null = null;
+  private inputManager: InputManager;
 
-  constructor(scene: Phaser.Scene) {
+  constructor(scene: Phaser.Scene, inputManager: InputManager) {
     this.scene = scene;
+    this.inputManager = inputManager;
     this.setupTerminalListeners();
   }
 
@@ -64,7 +78,10 @@ export class TerminalOverlay {
         
         // Save session ID for persistence (resume on game restart)
         if (this.currentAgentId && window.copilotBridge) {
-          window.copilotBridge.saveSessionId(this.currentAgentId, this.sessionId);
+          withTimeout(
+            window.copilotBridge.saveSessionId(this.currentAgentId, this.sessionId),
+            IPC_TIMEOUT, 'saveSessionId'
+          ).catch(() => { /* non-critical */ });
         }
         break;
       }
@@ -115,7 +132,6 @@ export class TerminalOverlay {
       }
     }
 
-    // Show container
     if (this.container) {
       this.container.style.display = 'flex';
     }
@@ -135,7 +151,7 @@ export class TerminalOverlay {
     if (!this.terminal) {
       this.createTerminal();
     } else {
-      // Clear terminal when switching to different agent
+      // Reusing existing terminal for a returning session — clear screen but preserve state
       this.terminal.clear();
     }
 
@@ -144,50 +160,79 @@ export class TerminalOverlay {
 
     // Check if terminal session exists, if not start one
     if (window.copilotBridge) {
-      const exists = await window.copilotBridge.terminalExists(agent.id);
-      if (!exists) {
-        await this.startNewSession(agent.id, agent.workingDir);
-      } else {
-        // Session exists - try to get saved session ID
-        const savedId = await window.copilotBridge.getSessionId(agent.id);
-        if (savedId) {
-          this.sessionId = savedId;
-          this.updateSessionDisplay();
+      try {
+        const exists = await withTimeout(
+          window.copilotBridge.terminalExists(agent.id),
+          IPC_TIMEOUT, 'terminalExists'
+        );
+        if (!exists) {
+          await this.startNewSession(agent.id, agent.workingDir);
+        } else {
+          // Session exists - reattach by triggering a resize (SIGWINCH), which forces
+          // the Copilot CLI TUI to fully redraw at the correct dimensions and cursor position.
+          // Do NOT replay raw scrollback — it fights with the live PTY cursor position.
+          await withTimeout(
+            window.copilotBridge.terminalAttach(agent.id),
+            IPC_TIMEOUT, 'terminalAttach'
+          );
+
+          // Fit the xterm viewport first, then send resize to PTY
+          this.fitAddon?.fit();
+          const dims = this.fitAddon?.proposeDimensions();
+          if (dims && window.copilotBridge) {
+            await withTimeout(
+              window.copilotBridge.terminalResize(agent.id, dims.cols, dims.rows),
+              IPC_TIMEOUT, 'terminalResize'
+            ).catch(() => {});
+          }
+
+          // Try to get saved session ID
+          const savedId = await withTimeout(
+            window.copilotBridge.getSessionId(agent.id),
+            IPC_TIMEOUT, 'getSessionId'
+          );
+          if (savedId) {
+            this.sessionId = savedId;
+            this.updateSessionDisplay();
+          }
         }
+      } catch (e) {
+        this.terminal?.writeln(`\r\n\x1b[31m[${e}]\x1b[0m\r\n`);
       }
       
       // Resize terminal - need to wait for container to be fully rendered
       if (this.fitAddon && this.terminal) {
-        // Do multiple fits to ensure proper sizing
         const doFit = () => {
           this.fitAddon?.fit();
           const dims = this.fitAddon?.proposeDimensions();
           if (dims && window.copilotBridge) {
-            window.copilotBridge.terminalResize(agent.id, dims.cols, dims.rows);
+            withTimeout(
+              window.copilotBridge.terminalResize(agent.id, dims.cols, dims.rows),
+              IPC_TIMEOUT, 'terminalResize'
+            ).catch(() => { /* non-critical */ });
           }
+          this.terminal?.focus();
         };
-        setTimeout(doFit, 50);
-        setTimeout(doFit, 150);
-        setTimeout(doFit, 300);
+        // Run after layout is painted (rAF → rAF ensures two frames so flex layout settles)
+        requestAnimationFrame(() => requestAnimationFrame(doFit));
       }
     }
 
     this.isVisible = true;
-    
-    // Disable Phaser keyboard when terminal is shown
-    if (this.scene.input.keyboard) {
-      this.scene.input.keyboard.enabled = false;
-    }
-    
-    // Focus terminal after a delay to ensure it's ready
-    setTimeout(() => {
-      if (this.terminal) {
-        this.terminal.focus();
-      }
-    }, 200);
 
-    // Setup F10 close handler
-    this.setupKeyboardHandler();
+    // Highlight the matching NPC in the game and glow the profile canvas
+    this.scene.game.events.emit('npc:highlight', agent.id);
+    const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+    if (spriteCanvas) {
+      const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
+      spriteCanvas.style.boxShadow = `0 0 18px 6px ${colorHex}99, 0 0 6px 2px ${colorHex}`;
+      spriteCanvas.style.border = `2px solid ${colorHex}`;
+    }
+
+    // F10 always closes — active regardless of which side has keyboard focus
+    this.inputManager.activateTerminalF10(() => this.hide());
+
+    this.focusTerminal();
   }
 
   private drawAgentSprite(agent: AgentConfig): void {
@@ -219,8 +264,15 @@ export class TerminalOverlay {
     if (el) {
       el.textContent = 'starting...';
     }
-    
-    const result = await window.copilotBridge.terminalStart(agentId, workingDir);
+
+    // Fit xterm first so we know the real dimensions to spawn the PTY at
+    this.fitAddon?.fit();
+    const dims = this.fitAddon?.proposeDimensions();
+
+    const result = await withTimeout(
+      window.copilotBridge.terminalStart(agentId, workingDir, dims?.cols, dims?.rows),
+      IPC_TIMEOUT, 'terminalStart'
+    );
     if (!result.success) {
       this.terminal?.writeln(`Failed to start terminal: ${result.error}`);
     }
@@ -244,19 +296,17 @@ export class TerminalOverlay {
     this.container = document.createElement('div');
     this.container.id = 'terminal-overlay';
     this.container.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 80%;
-      height: 80%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
       background: #0a0a14;
-      border: 2px solid #3a5a8a;
-      border-radius: 8px;
+      border: none;
+      border-radius: 0;
       display: none;
       flex-direction: column;
       z-index: 10000;
-      box-shadow: 0 0 40px rgba(0, 100, 200, 0.4);
     `;
 
     // Header
@@ -272,22 +322,34 @@ export class TerminalOverlay {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-shrink: 0;
     `;
     this.container.appendChild(this.headerElement);
 
-    // Terminal container
-    this.terminalDiv = document.createElement('div');
-    this.terminalDiv.id = 'terminal-container';
-    this.terminalDiv.style.cssText = `
+    // Terminal container — outer div holds the padding; xterm opens into the inner div.
+    // IMPORTANT: never add padding to the element xterm.open() is called on — it breaks
+    // FitAddon geometry and misaligns the internal textarea/canvas overlay.
+    const terminalOuter = document.createElement('div');
+    terminalOuter.id = 'terminal-container';
+    terminalOuter.style.cssText = `
       flex: 1;
-      padding: 5px;
+      overflow: hidden;
+      min-height: 0;
+      padding: 10px;
+      box-sizing: border-box;
+    `;
+    this.terminalDiv = document.createElement('div');
+    this.terminalDiv.style.cssText = `
+      width: 100%;
+      height: 100%;
       overflow: hidden;
     `;
-    // Click to focus terminal
-    this.terminalDiv.addEventListener('click', () => {
+    terminalOuter.appendChild(this.terminalDiv);
+    // Click anywhere in the padded area to focus terminal
+    terminalOuter.addEventListener('click', () => {
       this.terminal?.focus();
     });
-    this.container.appendChild(this.terminalDiv);
+    this.container.appendChild(terminalOuter);
 
     // Footer with session info and agent sprite
     this.footerElement = document.createElement('div');
@@ -300,6 +362,7 @@ export class TerminalOverlay {
       color: #888;
       border-radius: 0 0 6px 6px;
       display: flex;
+      flex-shrink: 0;
       justify-content: space-between;
       align-items: center;
     `;
@@ -341,7 +404,8 @@ export class TerminalOverlay {
     
     this.container.appendChild(this.footerElement);
 
-    document.body.appendChild(this.container);
+    const terminalPanel = document.getElementById('terminal-panel') || document.body;
+    terminalPanel.appendChild(this.container);
 
     // Get reference to session ID element
     this.sessionIdElement = document.getElementById('session-id-display') as HTMLSpanElement;
@@ -379,7 +443,10 @@ export class TerminalOverlay {
     this.terminal?.writeln('\x1b[33m[Starting new session...]\x1b[0m\r\n');
     
     // Kill existing and start new
-    await window.copilotBridge.terminalKill(this.currentAgentId);
+    await withTimeout(
+      window.copilotBridge.terminalKill(this.currentAgentId),
+      IPC_TIMEOUT, 'terminalKill'
+    ).catch(() => { /* may already be dead */ });
     await this.startNewSession(this.currentAgentId, this.currentAgent.workingDir);
   }
 
@@ -391,7 +458,6 @@ export class TerminalOverlay {
     style.textContent = `
       .xterm {
         height: 100%;
-        padding: 10px;
       }
       .xterm-viewport {
         background-color: #0a0a14 !important;
@@ -434,7 +500,7 @@ export class TerminalOverlay {
         brightWhite: '#ffffff',
       },
       fontFamily: 'Cascadia Code, Consolas, Monaco, monospace',
-      fontSize: 24,
+      fontSize: 16,
       lineHeight: 1.2,
       cursorBlink: true,
       cursorStyle: 'block',
@@ -467,125 +533,26 @@ export class TerminalOverlay {
     });
   }
 
-  private escapeHandler: ((event: KeyboardEvent) => void) | null = null;
+  /** Give keyboard focus to the terminal. Safe to call when already focused. */
+  focusTerminal(): void {
+    console.log('[TerminalOverlay] focusTerminal() — delegating to InputManager');
+    this.inputManager.switchToTerminal(
+      'TerminalOverlay.focusTerminal()',
+      () => this.handleNewSession()
+    );
+    this.inputManager.focusTerminalXterm(this.terminal);
+  }
+
+  /** Give keyboard focus back to the game canvas. Safe to call when already blurred. */
+  blurTerminal(): void {
+    console.log('[TerminalOverlay] blurTerminal() — delegating to InputManager');
+    this.inputManager.switchToGame('TerminalOverlay.blurTerminal()');
+    this.inputManager.blurTerminalXterm(this.terminal);
+  }
 
   private setupKeyboardHandler(): void {
-    // Disable Phaser keyboard capture when terminal is visible
-    if (this.scene.input.keyboard) {
-      this.scene.input.keyboard.enabled = false;
-    }
-    
-    // Remove any existing handler
-    if (this.escapeHandler) {
-      document.removeEventListener('keydown', this.escapeHandler, true);
-    }
-    
-    this.escapeHandler = (event: KeyboardEvent) => {
-      // Only handle specific keys, let everything else through to terminal
-      // F10 to close - rarely used in terminals
-      if (event.key === 'F10' && this.isVisible) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        this.hide();
-        return;
-      }
-      // Ctrl+Shift+N for new session
-      if (event.ctrlKey && event.shiftKey && event.key === 'N' && this.isVisible) {
-        event.preventDefault();
-        event.stopPropagation();
-        this.handleNewSession();
-        return;
-      }
-      
-      // FORCE forward spacebar and other commonly blocked keys directly to PTY
-      if (this.isVisible && this.currentAgentId && window.copilotBridge) {
-        // Spacebar
-        if (event.key === ' ' || event.code === 'Space') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, ' ');
-          return;
-        }
-        // Enter
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\r');
-          return;
-        }
-        // Backspace
-        if (event.key === 'Backspace') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x7f');
-          return;
-        }
-        // Tab
-        if (event.key === 'Tab') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\t');
-          return;
-        }
-        // Arrow keys
-        if (event.key === 'ArrowUp') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x1b[A');
-          return;
-        }
-        if (event.key === 'ArrowDown') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x1b[B');
-          return;
-        }
-        if (event.key === 'ArrowRight') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x1b[C');
-          return;
-        }
-        if (event.key === 'ArrowLeft') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x1b[D');
-          return;
-        }
-        // Regular printable characters (single char, no modifiers except shift)
-        if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, event.key);
-          return;
-        }
-        // Ctrl+C
-        if (event.ctrlKey && event.key === 'c') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x03');
-          return;
-        }
-        // Ctrl+D
-        if (event.ctrlKey && event.key === 'd') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x04');
-          return;
-        }
-        // Ctrl+L (clear)
-        if (event.ctrlKey && event.key === 'l') {
-          event.preventDefault();
-          event.stopPropagation();
-          window.copilotBridge.terminalWrite(this.currentAgentId, '\x0c');
-          return;
-        }
-      }
-    };
-    
-    // Use capture phase (true) to intercept before anything else
-    document.addEventListener('keydown', this.escapeHandler, true);
+    // Retained for backward-compat; now handled entirely by InputManager.
+    // Calling focusTerminal() above already invokes InputManager.switchToTerminal().
   }
 
   hide(): void {
@@ -593,23 +560,29 @@ export class TerminalOverlay {
       this.container.style.display = 'none';
     }
     this.isVisible = false;
-    
-    // Re-enable Phaser keyboard
-    if (this.scene.input.keyboard) {
-      this.scene.input.keyboard.enabled = true;
+
+    // F10 handler is now managed by InputManager (deactivated below)
+
+    this.inputManager.deactivateTerminalF10();
+
+    this.blurTerminal();
+
+    // Clear NPC highlight and profile canvas glow
+    this.scene.game.events.emit('npc:clear-highlight');
+    const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+    if (spriteCanvas) {
+      spriteCanvas.style.boxShadow = '';
+      spriteCanvas.style.border = '';
     }
-    
-    // Remove F10 handler
-    if (this.escapeHandler) {
-      document.removeEventListener('keydown', this.escapeHandler, true);
-      this.escapeHandler = null;
-    }
-    
+
     // Don't kill the terminal - keep session alive in background!
-    
+
     if (this.onCloseCallback) {
       this.onCloseCallback();
     }
+
+    // Return keyboard focus to the game canvas
+    this.scene.game.canvas.focus();
   }
 
   getIsVisible(): boolean {
@@ -619,7 +592,10 @@ export class TerminalOverlay {
   // Get if an agent has an active terminal session
   async hasSession(agentId: string): Promise<boolean> {
     if (window.copilotBridge) {
-      return window.copilotBridge.terminalExists(agentId);
+      return withTimeout(
+        window.copilotBridge.terminalExists(agentId),
+        IPC_TIMEOUT, 'terminalExists'
+      ).catch(() => false);
     }
     return false;
   }
