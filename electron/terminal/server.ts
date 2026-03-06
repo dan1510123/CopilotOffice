@@ -36,6 +36,7 @@ const agentScrollbackBuffers: Map<string, string[]> = new Map();
 // Session persistence
 const SESSION_FILE = path.join(process.cwd(), 'copilot-office-sessions.json');
 let agentSessionIds: Map<string, string> = new Map();
+let agentSessionHistory: Map<string, string[]> = new Map();
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -64,8 +65,21 @@ async function loadSessionIds(): Promise<void> {
   try {
     const raw = await fs.promises.readFile(SESSION_FILE, 'utf8').catch(() => null);
     if (raw) {
-      agentSessionIds = new Map(Object.entries(JSON.parse(raw)));
-      console.log('[TermServer] Loaded saved sessions:', agentSessionIds.size);
+      const parsed = JSON.parse(raw);
+      // Migrate: old flat format → new { current, history } format
+      if (parsed.current && typeof parsed.current === 'object') {
+        agentSessionIds = new Map(Object.entries(parsed.current));
+        agentSessionHistory = new Map(
+          Object.entries(parsed.history || {}).map(([k, v]) => [k, v as string[]])
+        );
+      } else {
+        // Legacy flat format: { agentId: sessionId }
+        agentSessionIds = new Map(Object.entries(parsed));
+        agentSessionHistory = new Map();
+        // Persist migration immediately
+        await saveSessionIds();
+      }
+      console.log('[TermServer] Loaded saved sessions:', agentSessionIds.size, 'history entries:', agentSessionHistory.size);
     }
   } catch (e) {
     console.error('[TermServer] Failed to load session IDs:', e);
@@ -74,10 +88,24 @@ async function loadSessionIds(): Promise<void> {
 
 async function saveSessionIds(): Promise<void> {
   try {
-    const data = Object.fromEntries(agentSessionIds);
+    const data = {
+      current: Object.fromEntries(agentSessionIds),
+      history: Object.fromEntries(agentSessionHistory),
+    };
     await fs.promises.writeFile(SESSION_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
     console.error('[TermServer] Failed to save session IDs:', e);
+  }
+}
+
+function archiveSessionId(agentId: string): void {
+  const oldId = agentSessionIds.get(agentId);
+  if (oldId) {
+    const history = agentSessionHistory.get(agentId) || [];
+    if (!history.includes(oldId)) {
+      history.push(oldId);
+      agentSessionHistory.set(agentId, history);
+    }
   }
 }
 
@@ -121,7 +149,7 @@ async function startTerminalForAgent(
   if (!sessionId) {
     sessionId = crypto.randomUUID();
     agentSessionIds.set(agentId, sessionId);
-    saveSessionIds();
+    await saveSessionIds();
     console.log(`[TermServer] New session GUID for ${agentId}: ${sessionId}`);
   } else {
     console.log(`[TermServer] Reusing session GUID for ${agentId}: ${sessionId}`);
@@ -163,7 +191,7 @@ async function startTerminalForAgent(
 
     agentToTerminal.set(agentId, terminalKey);
     agentSessionIds.set(agentId, sessionId);
-    saveSessionIds();
+    await saveSessionIds();
 
     // EventsWatcher
     const watcher = new EventsWatcher(sessionId);
@@ -265,6 +293,13 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           proc.process.kill();
           ptyProcesses.delete(key!);
           agentToTerminal.delete(msg.agentId);
+          // Archive old session ID and clear it so next start generates a fresh one
+          archiveSessionId(msg.agentId);
+          agentSessionIds.delete(msg.agentId);
+          await saveSessionIds();
+          // Stop event watcher
+          const w = agentWatchers.get(msg.agentId);
+          if (w) { w.stop(); agentWatchers.delete(msg.agentId); }
           send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         } catch (error) {
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
@@ -301,7 +336,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'save-session-id': {
       agentSessionIds.set(msg.agentId, msg.sessionId);
-      saveSessionIds();
+      await saveSessionIds();
       console.log(`[TermServer] Saved session for ${msg.agentId}: ${msg.sessionId}`);
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
@@ -329,6 +364,46 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       } catch (error) {
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
       }
+      break;
+    }
+
+    case 'reset-session': {
+      console.log(`[TermServer] Resetting session for ${msg.agentId}`);
+      // Kill PTY if alive
+      const resetKey = getTerminalKey(msg.agentId);
+      const resetProc = resetKey ? ptyProcesses.get(resetKey) : null;
+      if (resetProc) {
+        try { resetProc.process.kill(); } catch { /* ignore */ }
+        ptyProcesses.delete(resetKey!);
+        agentToTerminal.delete(msg.agentId);
+      }
+      // Stop event watcher
+      const resetWatcher = agentWatchers.get(msg.agentId);
+      if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(msg.agentId); }
+      // Clear scrollback
+      agentScrollbackBuffers.delete(msg.agentId);
+      activeAgentViewers.delete(msg.agentId);
+      // Archive old session ID and generate new one (but don't start PTY)
+      archiveSessionId(msg.agentId);
+      const newSessionId = crypto.randomUUID();
+      agentSessionIds.set(msg.agentId, newSessionId);
+      await saveSessionIds();
+      console.log(`[TermServer] Reset session for ${msg.agentId}: new GUID ${newSessionId}`);
+      send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: newSessionId } });
+      break;
+    }
+
+    case 'get-session-history': {
+      const history = agentSessionHistory.get(msg.agentId) || [];
+      send({ type: 'response', requestId: msg.requestId, result: history });
+      break;
+    }
+
+    case 'clear-session-history': {
+      agentSessionHistory.delete(msg.agentId);
+      await saveSessionIds();
+      console.log(`[TermServer] Cleared session history for ${msg.agentId}`);
+      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
     }
 

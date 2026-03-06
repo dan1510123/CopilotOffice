@@ -20,6 +20,11 @@ interface GameTable {
   y: number;
 }
 
+interface ExitDoor {
+  x: number;
+  y: number;
+}
+
 // Feature flags
 const ENABLE_PING_PONG = false;
 const ENABLE_DECORATIONS = false;
@@ -44,8 +49,10 @@ export class OfficeScene extends Phaser.Scene {
   private instructionText!: Phaser.GameObjects.Text;
   private spriteScale: number = 1;
   private playerMovementEnabled: boolean = true;
-  private playerHasEntered: boolean = false;
-  private waitingForEntrance: boolean = true;
+  private playerInScene: boolean = false;
+  private exitDoors: ExitDoor[] = [];
+  private nearestExitDoor: ExitDoor | null = null;
+  private exitPrompt!: Phaser.GameObjects.Text;
   private inputManager!: InputManager;
 
   constructor() {
@@ -108,6 +115,23 @@ export class OfficeScene extends Phaser.Scene {
     this.pingPongPrompt.setDepth(100);
     this.pingPongPrompt.setVisible(false);
 
+    // Create exit prompt (hidden by default)
+    this.exitPrompt = this.add.text(0, 0, '[E] Exit', {
+      font: 'bold 14px monospace',
+      color: '#ffcc00',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 4 },
+    });
+    this.exitPrompt.setOrigin(0.5, 1);
+    this.exitPrompt.setDepth(100);
+    this.exitPrompt.setVisible(false);
+
+    // Register exit zone at the center of the grand entrance doors
+    this.exitDoors.push({
+      x: 10 * this.tileSize,
+      y: (this.mapHeight - 1) * this.tileSize,
+    });
+
     // Pre-start copilot sessions for all agents in background
     this.preStartAgentSessions();
     
@@ -149,12 +173,12 @@ export class OfficeScene extends Phaser.Scene {
     // Listen for terminal open/close from main.ts to toggle player movement
     this.game.events.on('terminal:open', () => {
       this.playerMovementEnabled = false;
-      this.player.disableMovement();
+      if (this.playerInScene) this.player.disableMovement();
     }, this);
 
     this.game.events.on('terminal:close', () => {
       this.playerMovementEnabled = true;
-      this.player.enableMovement();
+      if (this.playerInScene) this.player.enableMovement();
     }, this);
 
     // Allow external UI (e.g. overview panel) to open agent terminal directly
@@ -199,7 +223,7 @@ export class OfficeScene extends Phaser.Scene {
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
       if (clickedNPC) {
         this.startConversation(clickedNPC.config);
-      } else if (!this.waitingForEntrance) {
+      } else if (this.playerInScene) {
         // Background click — give game focus back
         console.log('[OfficeScene] background click — returning focus to game');
         this.terminalOverlay.blurTerminal();
@@ -212,8 +236,8 @@ export class OfficeScene extends Phaser.Scene {
     if (this.input.keyboard) {
       const spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
       const enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
-      spaceKey.on('down', () => { if (this.waitingForEntrance) this.triggerEntrance(); });
-      enterKey.on('down', () => { if (this.waitingForEntrance) this.triggerEntrance(); });
+      spaceKey.on('down', () => { if (!this.playerInScene) this.triggerEntrance(); });
+      enterKey.on('down', () => { if (!this.playerInScene) this.triggerEntrance(); });
     }
 
     // Initialise InputManager state to "game" (the default mode at startup)
@@ -537,9 +561,8 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private triggerEntrance(): void {
-    if (!this.waitingForEntrance || this.playerHasEntered) return;
-    this.waitingForEntrance = false;
-    this.playerHasEntered = true;
+    if (this.playerInScene) return;
+    this.playerInScene = true;
 
     // Make player visible at the entrance (just below bottom wall)
     const entranceX = this.mapWidth * this.tileSize / 2;
@@ -557,7 +580,7 @@ export class OfficeScene extends Phaser.Scene {
       onComplete: () => {
         this.player.enableMovement();
         this.instructionText.setText(
-          '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent'
+          '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent / Exit'
         );
       },
     });
@@ -589,7 +612,7 @@ export class OfficeScene extends Phaser.Scene {
 
   update(): void {
     // Don't update if player hasn't entered, pong game, or terminal overlay is active
-    if (!this.playerHasEntered || this.pongGame.getIsVisible() || !this.playerMovementEnabled) {
+    if (!this.playerInScene || this.pongGame.getIsVisible() || !this.playerMovementEnabled) {
       return;
     }
 
@@ -602,10 +625,15 @@ export class OfficeScene extends Phaser.Scene {
     // Check for ping pong table proximity
     this.updatePingPongProximity();
 
+    // Check for exit door proximity
+    this.updateExitDoorProximity();
+
     // Check for interaction (E key)
     if (Phaser.Input.Keyboard.JustDown(this.interactKey) && !this.terminalOverlay.getIsVisible()) {
       if (this.nearPingPong) {
         this.startPongGame();
+      } else if (this.nearestExitDoor) {
+        this.triggerExit();
       } else if (this.nearestNPC) {
         this.startConversation(this.nearestNPC.config);
       } else if (this.nearestDesk) {
@@ -645,6 +673,50 @@ export class OfficeScene extends Phaser.Scene {
 
     this.pongGame.show(() => {
       this.player.enableMovement();
+    });
+  }
+
+  private updateExitDoorProximity(): void {
+    const interactionDistance = this.tileSize * 2;
+    let nearest: ExitDoor | null = null;
+    let nearestDist = interactionDistance;
+
+    this.exitDoors.forEach(door => {
+      const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, door.x, door.y);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = door;
+      }
+    });
+
+    this.nearestExitDoor = nearest;
+
+    if (nearest && !this.terminalOverlay.getIsVisible()) {
+      this.exitPrompt.setPosition((nearest as ExitDoor).x, (nearest as ExitDoor).y - 40);
+      this.exitPrompt.setVisible(true);
+    } else {
+      this.exitPrompt.setVisible(false);
+    }
+  }
+
+  private triggerExit(): void {
+    if (!this.playerInScene) return;
+    this.playerInScene = false;
+    this.player.disableMovement();
+    this.exitPrompt.setVisible(false);
+
+    const exitX = this.player.x;
+    const exitY = (this.mapHeight + 2) * this.tileSize;
+
+    this.tweens.add({
+      targets: this.player,
+      y: exitY,
+      duration: 1000,
+      ease: 'Sine.easeIn',
+      onComplete: () => {
+        this.player.setVisible(false);
+        this.instructionText.setText('[Space / Enter] Enter the office');
+      },
     });
   }
 
@@ -704,7 +776,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
-    if (!this.waitingForEntrance) {
+    if (this.playerInScene) {
       this.player.disableMovement();
     }
 
@@ -714,7 +786,7 @@ export class OfficeScene extends Phaser.Scene {
     this.terminalOverlay.show(
       agent,
       () => {
-        if (!this.waitingForEntrance) {
+        if (this.playerInScene) {
           this.player.enableMovement();
         }
         // Update badges when closing terminal

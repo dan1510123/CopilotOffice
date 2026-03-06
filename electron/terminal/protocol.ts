@@ -78,6 +78,24 @@ export interface MsgResetAllSessions {
   requestId: string;
 }
 
+export interface MsgResetSession {
+  type: 'reset-session';
+  requestId: string;
+  agentId: string;
+}
+
+export interface MsgGetSessionHistory {
+  type: 'get-session-history';
+  requestId: string;
+  agentId: string;
+}
+
+export interface MsgClearSessionHistory {
+  type: 'clear-session-history';
+  requestId: string;
+  agentId: string;
+}
+
 export type MainToServer =
   | MsgStart
   | MsgWrite
@@ -90,7 +108,10 @@ export type MainToServer =
   | MsgSaveSessionId
   | MsgPopOut
   | MsgShutdown
-  | MsgResetAllSessions;
+  | MsgResetAllSessions
+  | MsgResetSession
+  | MsgGetSessionHistory
+  | MsgClearSessionHistory;
 
 // ── Server → Main ───────────────────────────────────────────────
 

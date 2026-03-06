@@ -47,6 +47,15 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   resetAllSessions: (): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('reset-all-sessions');
   },
+  resetSession: (agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
+    return ipcRenderer.invoke('terminal-reset-session', agentId);
+  },
+  getSessionHistory: (agentId: string): Promise<string[]> => {
+    return ipcRenderer.invoke('terminal-get-session-history', agentId);
+  },
+  clearSessionHistory: (agentId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('terminal-clear-session-history', agentId);
+  },
   
   // Terminal event listeners
   onTerminalData: (callback: (agentId: string, data: string) => void) => {
@@ -112,6 +121,9 @@ declare global {
       saveSessionId: (agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       getSessionId: (agentId: string) => Promise<string | null>;
       resetAllSessions: () => Promise<{ success: boolean }>;
+      resetSession: (agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
+      getSessionHistory: (agentId: string) => Promise<string[]>;
+      clearSessionHistory: (agentId: string) => Promise<{ success: boolean }>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;

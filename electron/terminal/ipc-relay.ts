@@ -184,5 +184,17 @@ export class TerminalRelay {
     ipcMain.handle('reset-all-sessions', () =>
       this.request({ type: 'reset-all-sessions', requestId: this.id() })
     );
+
+    ipcMain.handle('terminal-reset-session', (_event, agentId: string) =>
+      this.request({ type: 'reset-session', requestId: this.id(), agentId })
+    );
+
+    ipcMain.handle('terminal-get-session-history', (_event, agentId: string) =>
+      this.request({ type: 'get-session-history', requestId: this.id(), agentId })
+    );
+
+    ipcMain.handle('terminal-clear-session-history', (_event, agentId: string) =>
+      this.request({ type: 'clear-session-history', requestId: this.id(), agentId })
+    );
   }
 }

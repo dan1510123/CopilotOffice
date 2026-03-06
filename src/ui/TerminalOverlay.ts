@@ -29,6 +29,7 @@ export class TerminalOverlay {
   private terminalDiv: HTMLDivElement | null = null;
   private sessionId: string | null = null;
   private sessionIdElement: HTMLSpanElement | null = null;
+  private historyPopover: HTMLDivElement | null = null;
   private inputManager: InputManager;
 
   constructor(scene: Phaser.Scene, inputManager: InputManager) {
@@ -384,10 +385,15 @@ export class TerminalOverlay {
     `;
     this.footerElement.appendChild(agentDisplay);
     
-    // Right side: New session button
-    const newSessionBtn = document.createElement('button');
-    newSessionBtn.textContent = '🔄 New Session';
-    newSessionBtn.style.cssText = `
+    // Right side: Button grid (Session History + Clear History | New Session + Close Session)
+    const buttonGrid = document.createElement('div');
+    buttonGrid.style.cssText = `
+      display: grid;
+      grid-template-columns: auto auto;
+      gap: 8px;
+    `;
+
+    const btnStyle = `
       background: #2a3a4a;
       border: 1px solid #4a5a6a;
       color: #aaa;
@@ -395,12 +401,47 @@ export class TerminalOverlay {
       border-radius: 4px;
       cursor: pointer;
       font-family: 'Cascadia Code', Consolas, monospace;
-      font-size: 14px;
+      font-size: 13px;
+      white-space: nowrap;
     `;
+
+    // Session History button (top-left)
+    const historyBtn = document.createElement('button');
+    historyBtn.textContent = '📜 Session History';
+    historyBtn.style.cssText = btnStyle;
+    historyBtn.onmouseover = () => historyBtn.style.background = '#3a4a5a';
+    historyBtn.onmouseout = () => historyBtn.style.background = '#2a3a4a';
+    historyBtn.onclick = () => this.toggleSessionHistory(historyBtn);
+    buttonGrid.appendChild(historyBtn);
+
+    // New Session button (top-right)
+    const newSessionBtn = document.createElement('button');
+    newSessionBtn.textContent = '🔄 New Session';
+    newSessionBtn.style.cssText = btnStyle;
     newSessionBtn.onmouseover = () => newSessionBtn.style.background = '#3a4a5a';
     newSessionBtn.onmouseout = () => newSessionBtn.style.background = '#2a3a4a';
     newSessionBtn.onclick = () => this.handleNewSession();
-    this.footerElement.appendChild(newSessionBtn);
+    buttonGrid.appendChild(newSessionBtn);
+
+    // Clear History button (bottom-left)
+    const clearHistoryBtn = document.createElement('button');
+    clearHistoryBtn.textContent = '🗑️ Clear History';
+    clearHistoryBtn.style.cssText = btnStyle;
+    clearHistoryBtn.onmouseover = () => clearHistoryBtn.style.background = '#3a4a5a';
+    clearHistoryBtn.onmouseout = () => clearHistoryBtn.style.background = '#2a3a4a';
+    clearHistoryBtn.onclick = () => this.handleClearHistory();
+    buttonGrid.appendChild(clearHistoryBtn);
+
+    // Close Session button (bottom-right)
+    const closeSessionBtn = document.createElement('button');
+    closeSessionBtn.textContent = '⏹ Close Session';
+    closeSessionBtn.style.cssText = btnStyle + 'color: #ff8888;';
+    closeSessionBtn.onmouseover = () => { closeSessionBtn.style.background = '#4a2a2a'; };
+    closeSessionBtn.onmouseout = () => { closeSessionBtn.style.background = '#2a3a4a'; };
+    closeSessionBtn.onclick = () => this.handleCloseSession();
+    buttonGrid.appendChild(closeSessionBtn);
+
+    this.footerElement.appendChild(buttonGrid);
     
     this.container.appendChild(this.footerElement);
 
@@ -448,6 +489,122 @@ export class TerminalOverlay {
       IPC_TIMEOUT, 'terminalKill'
     ).catch(() => { /* may already be dead */ });
     await this.startNewSession(this.currentAgentId, this.currentAgent.workingDir);
+  }
+
+  private async handleCloseSession(): Promise<void> {
+    if (!this.currentAgentId) return;
+
+    try {
+      const result = await withTimeout(
+        window.copilotBridge.resetSession(this.currentAgentId),
+        IPC_TIMEOUT, 'resetSession'
+      );
+      if (result.success && result.sessionId) {
+        this.sessionId = result.sessionId;
+        this.updateSessionDisplay();
+      }
+    } catch { /* ignore */ }
+
+    // Reset NPC badge to slacking
+    this.scene.game.events.emit('agent:status', this.currentAgentId, 'slacking');
+
+    this.hide();
+  }
+
+  private async toggleSessionHistory(anchorBtn: HTMLButtonElement): Promise<void> {
+    // If popover already visible, close it
+    if (this.historyPopover) {
+      this.closeHistoryPopover();
+      return;
+    }
+    if (!this.currentAgentId) return;
+
+    let history: string[] = [];
+    try {
+      history = await withTimeout(
+        window.copilotBridge.getSessionHistory(this.currentAgentId),
+        IPC_TIMEOUT, 'getSessionHistory'
+      );
+    } catch { /* ignore */ }
+
+    this.historyPopover = document.createElement('div');
+    this.historyPopover.style.cssText = `
+      position: absolute;
+      bottom: 100%;
+      right: 0;
+      margin-bottom: 8px;
+      background: #1a1a2e;
+      border: 1px solid #3a5a8a;
+      border-radius: 6px;
+      padding: 12px;
+      min-width: 320px;
+      max-height: 250px;
+      overflow-y: auto;
+      z-index: 10001;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 12px;
+      box-shadow: 0 -4px 12px rgba(0,0,0,0.5);
+    `;
+
+    if (history.length === 0) {
+      this.historyPopover.innerHTML = '<div style="color: #666; text-align: center; padding: 10px;">No previous sessions</div>';
+    } else {
+      const title = document.createElement('div');
+      title.textContent = `Session History (${history.length})`;
+      title.style.cssText = 'color: #4a9eff; font-weight: bold; margin-bottom: 8px; font-size: 13px;';
+      this.historyPopover.appendChild(title);
+
+      // Show most recent first
+      for (let i = history.length - 1; i >= 0; i--) {
+        const entry = document.createElement('div');
+        entry.style.cssText = `
+          color: #888;
+          padding: 4px 8px;
+          border-radius: 3px;
+          margin-bottom: 2px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        `;
+        entry.innerHTML = `<span style="color: #555;">#${i + 1}</span><span style="color: #aaa; user-select: all;">${history[i]}</span>`;
+        this.historyPopover.appendChild(entry);
+      }
+    }
+
+    // Position relative to the footer
+    if (this.footerElement) {
+      this.footerElement.style.position = 'relative';
+      this.footerElement.appendChild(this.historyPopover);
+    }
+
+    // Close on click outside
+    const closeHandler = (e: MouseEvent) => {
+      if (this.historyPopover && !this.historyPopover.contains(e.target as Node) && e.target !== anchorBtn) {
+        this.closeHistoryPopover();
+        document.removeEventListener('click', closeHandler);
+      }
+    };
+    // Delay to avoid immediate close from the button click
+    setTimeout(() => document.addEventListener('click', closeHandler), 0);
+  }
+
+  private closeHistoryPopover(): void {
+    if (this.historyPopover && this.historyPopover.parentNode) {
+      this.historyPopover.parentNode.removeChild(this.historyPopover);
+    }
+    this.historyPopover = null;
+  }
+
+  private async handleClearHistory(): Promise<void> {
+    if (!this.currentAgentId) return;
+    try {
+      await withTimeout(
+        window.copilotBridge.clearSessionHistory(this.currentAgentId),
+        IPC_TIMEOUT, 'clearSessionHistory'
+      );
+    } catch { /* ignore */ }
+    // Close popover if open
+    this.closeHistoryPopover();
   }
 
   private injectStyles(): void {
@@ -560,6 +717,7 @@ export class TerminalOverlay {
       this.container.style.display = 'none';
     }
     this.isVisible = false;
+    this.closeHistoryPopover();
 
     // F10 handler is now managed by InputManager (deactivated below)
 
