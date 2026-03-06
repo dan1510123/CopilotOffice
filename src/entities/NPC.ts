@@ -109,7 +109,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     
     // Session message count text
     this.sessionText = scene.add.text(x + 16 * spriteScale, y - 24 * spriteScale, '', {
-      font: `bold ${badgeFontSize}px monospace`,
+      font: `bold ${badgeFontSize * 4}px monospace`,
       color: '#ffffff',
     });
     this.sessionText.setOrigin(0.5, 0.5);
@@ -143,9 +143,9 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     }
 
     this.sessionBadge.fillStyle(colors.fill, 1);
-    this.sessionBadge.fillCircle(0, 0, 8 * scale);
-    this.sessionBadge.lineStyle(1, colors.stroke, 1);
-    this.sessionBadge.strokeCircle(0, 0, 8 * scale);
+    this.sessionBadge.fillCircle(0, 0, 16 * scale);
+    this.sessionBadge.lineStyle(2, colors.stroke, 1);
+    this.sessionBadge.strokeCircle(0, 0, 16 * scale);
   }
 
   private _drawHighlightRing(color: number, scale: number): void {

@@ -505,8 +505,8 @@ export class TerminalOverlay {
       }
     } catch { /* ignore */ }
 
-    // Reset NPC badge to slacking
-    this.scene.game.events.emit('agent:status', this.currentAgentId, 'slacking');
+    // Notify the app to set this agent to slacking
+    this.scene.game.events.emit('agent:session:closed', this.currentAgentId);
 
     this.hide();
   }

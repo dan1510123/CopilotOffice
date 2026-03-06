@@ -620,4 +620,13 @@ phaserGame.events.once('ready', () => {
   drawOverviewSprites();
 });
 
+// When a session is closed via the Close Session button, set agent to slacking
+phaserGame.events.on('agent:session:closed', (agentId: string) => {
+  const officeId = officeManager.currentOfficeId;
+  if (officeId) officeManager.setAgentSlacking(officeId, agentId);
+  phaserGame?.events.emit('agent:status:changed', agentId);
+  updateTerminalContent();
+  updateStatusBar();
+});
+
 console.log('[AgencyOffice] Started - Phaser 3 renderer with multi-office support');
