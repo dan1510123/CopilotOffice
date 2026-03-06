@@ -1,4 +1,8 @@
 import Phaser from 'phaser';
+import {
+  Direction, directionFromVelocity, getStandFrame,
+  walkAnimKey, registerWalkAnimations,
+} from '../sprites/DirectionalSprite';
 
 export class Player extends Phaser.Physics.Arcade.Sprite {
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -7,16 +11,21 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   private baseSpeed: number = 300;
   private sprintMultiplier: number = 2;
   private isMovementEnabled: boolean = true;
+  private currentDirection: Direction = Direction.DOWN;
+  private isWalking: boolean = false;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
-    super(scene, x, y, 'player');
+    super(scene, x, y, 'player', getStandFrame(Direction.DOWN));
     
     scene.add.existing(this);
     scene.physics.add.existing(this);
     
     this.setCollideWorldBounds(true);
-    this.setSize(24, 24);
-    this.setOffset(4, 8);
+    this.setSize(16, 18);
+    this.setOffset(8, 8); // center 16x18 body in 32x34 frame: (32-16)/2=8, (34-18)/2=8
+
+    // Register walk animations for the player spritesheet
+    registerWalkAnimations(scene.anims, 'player');
     
     // Set up input
     if (scene.input.keyboard) {
@@ -33,9 +42,9 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
 
   setScale(x: number, y?: number): this {
     super.setScale(x, y);
-    // Scale hitbox proportionally
-    this.setSize(24 * x, 24 * x);
-    this.setOffset(4 * x, 8 * x);
+    // Scale hitbox: size in world pixels, offset in FRAME coords (Phaser applies scale)
+    this.setSize(16, 18);
+    this.setOffset(8, 8);
     return this;
   }
 
@@ -46,6 +55,15 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   disableMovement(): void {
     this.isMovementEnabled = false;
     this.setVelocity(0, 0);
+    this.stopWalking();
+  }
+
+  private stopWalking(): void {
+    if (this.isWalking) {
+      this.isWalking = false;
+      this.anims.stop();
+      this.setFrame(getStandFrame(this.currentDirection));
+    }
   }
 
   update(): void {
@@ -83,6 +101,20 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     body.setVelocity(vx * currentSpeed, vy * currentSpeed);
     if (vx !== 0 && vy !== 0) {
       body.velocity.normalize().scale(currentSpeed);
+    }
+
+    // Update direction and walk animation
+    const newDir = directionFromVelocity(vx, vy);
+    if (newDir !== null) {
+      const dirChanged = newDir !== this.currentDirection;
+      this.currentDirection = newDir;
+
+      if (!this.isWalking || dirChanged) {
+        this.isWalking = true;
+        this.anims.play(walkAnimKey('player', this.currentDirection), true);
+      }
+    } else {
+      this.stopWalking();
     }
   }
 }

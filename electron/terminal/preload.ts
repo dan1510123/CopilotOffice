@@ -27,7 +27,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   terminalExists: (agentId: string): Promise<boolean> => {
     return ipcRenderer.invoke('terminal-exists', agentId);
   },
-  terminalAttach: (agentId: string): Promise<{ success: boolean; scrollback?: string[] }> => {
+  terminalAttach: (agentId: string): Promise<{ success: boolean; scrollback?: string }> => {
     return ipcRenderer.invoke('terminal-attach', agentId);
   },
   terminalDetach: (agentId: string): Promise<{ success: boolean }> => {
@@ -37,10 +37,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('terminal-pop-out', agentId);
   },
   
-  // Session persistence
-  saveSessionId: (agentId: string, sessionId: string): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('save-session-id', agentId, sessionId);
-  },
+  // Session persistence (server is the single source of truth for session IDs)
   getSessionId: (agentId: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-session-id', agentId);
   },
@@ -55,6 +52,12 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   clearSessionHistory: (agentId: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('terminal-clear-session-history', agentId);
+  },
+  listActiveTerminals: (): Promise<string[]> => {
+    return ipcRenderer.invoke('list-active-terminals');
+  },
+  queryAgentStatuses: (): Promise<Record<string, { alive: boolean; ready: boolean }>> => {
+    return ipcRenderer.invoke('query-agent-statuses');
   },
   
   // Terminal event listeners
@@ -81,6 +84,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   onCopilotTurnEnd: (callback: (agentId: string) => void) => {
     ipcRenderer.on('copilot-turn-end', (_event, agentId) => callback(agentId));
   },
+  onCopilotTurnStart: (callback: (agentId: string) => void) => {
+    ipcRenderer.on('copilot-turn-start', (_event, agentId) => callback(agentId));
+  },
   onCopilotUserMessage: (callback: (agentId: string) => void) => {
     ipcRenderer.on('copilot-user-message', (_event, agentId) => callback(agentId));
   },
@@ -94,7 +100,18 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.removeAllListeners('copilot-tool-start');
     ipcRenderer.removeAllListeners('copilot-tool-complete');
     ipcRenderer.removeAllListeners('copilot-turn-end');
+    ipcRenderer.removeAllListeners('copilot-turn-start');
     ipcRenderer.removeAllListeners('copilot-user-message');
+  },
+  
+  // Signal the main process that the next reload should restart the terminal server
+  requestHardReload: (): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('request-hard-reload');
+  },
+
+  // Native OS notifications
+  showNativeNotification: (title: string, body: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('show-native-notification', title, body);
   },
 });
 
@@ -115,15 +132,16 @@ declare global {
       terminalResize: (agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
       terminalKill: (agentId: string) => Promise<{ success: boolean; error?: string }>;
       terminalExists: (agentId: string) => Promise<boolean>;
-      terminalAttach: (agentId: string) => Promise<{ success: boolean; scrollback?: string[] }>;
+      terminalAttach: (agentId: string) => Promise<{ success: boolean; scrollback?: string }>;
       terminalDetach: (agentId: string) => Promise<{ success: boolean }>;
       terminalPopOut: (agentId: string) => Promise<{ success: boolean }>;
-      saveSessionId: (agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       getSessionId: (agentId: string) => Promise<string | null>;
       resetAllSessions: () => Promise<{ success: boolean }>;
       resetSession: (agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
       getSessionHistory: (agentId: string) => Promise<string[]>;
       clearSessionHistory: (agentId: string) => Promise<{ success: boolean }>;
+      listActiveTerminals: () => Promise<string[]>;
+      queryAgentStatuses: () => Promise<Record<string, { alive: boolean; ready: boolean }>>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;
@@ -131,9 +149,12 @@ declare global {
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => void;
       onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => void;
       onCopilotTurnEnd: (callback: (agentId: string) => void) => void;
+      onCopilotTurnStart: (callback: (agentId: string) => void) => void;
       onCopilotUserMessage: (callback: (agentId: string) => void) => void;
       removeTerminalListeners: () => void;
       removeCopilotListeners: () => void;
+      requestHardReload: () => Promise<{ success: boolean }>;
+      showNativeNotification: (title: string, body: string) => Promise<{ success: boolean }>;
     };
   }
 }

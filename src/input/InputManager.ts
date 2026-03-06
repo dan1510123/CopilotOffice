@@ -75,8 +75,9 @@ export class InputManager {
    * is ready (there is a 100 ms delay before xterm accepts focus).
    *
    * @param onNewSession callback invoked when Ctrl+Shift+N is pressed
+   * @param onToggleFullscreen callback invoked when Ctrl+F is pressed
    */
-  switchToTerminal(reason: string, onNewSession: () => void): void {
+  switchToTerminal(reason: string, onNewSession: () => void, onToggleFullscreen?: () => void): void {
     console.log(
       `[InputManager] ── switchToTerminal() ──────────────────────────────────\n` +
       `  reason  : "${reason}"\n` +
@@ -85,7 +86,7 @@ export class InputManager {
     );
 
     this.game.deactivate(reason);
-    this.terminal.activateShortcuts(onNewSession);
+    this.terminal.activateShortcuts(onNewSession, onToggleFullscreen);
     this.global.setMode('terminal');
     this.currentFocus = 'terminal';
 
@@ -109,16 +110,26 @@ export class InputManager {
   }
 
   /**
-   * Focus the xterm Terminal instance.  Includes the 100 ms delay required
-   * for reliable focus transfer after the DOM has updated.
+   * Focus the xterm Terminal instance with retry.  Includes the 100 ms delay
+   * required for reliable focus transfer after the DOM has updated, plus up to
+   * 2 retries with increasing backoff if initial focus doesn't stick.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   focusTerminalXterm(terminal: any): void {
     console.log(`[InputManager] focusTerminalXterm() scheduled (+100ms) | time: ${Date.now()}`);
-    setTimeout(() => {
-      terminal?.focus();
-      console.log(`[InputManager] focusTerminalXterm() executed | time: ${Date.now()}`);
-    }, 100);
+    const attempt = (n: number, delay: number) => {
+      setTimeout(() => {
+        terminal?.focus();
+        console.log(`[InputManager] focusTerminalXterm() attempt ${n} executed | time: ${Date.now()}`);
+        // Check if xterm's textarea actually received focus
+        const textarea = terminal?.textarea as HTMLTextAreaElement | undefined;
+        if (textarea && document.activeElement !== textarea && n < 3) {
+          console.warn(`[InputManager] focus attempt ${n} didn't stick — retrying (+${delay * 2}ms)`);
+          attempt(n + 1, delay * 2);
+        }
+      }, delay);
+    };
+    attempt(1, 100);
   }
 
   /** Blur the xterm Terminal instance (return DOM focus away from xterm). */

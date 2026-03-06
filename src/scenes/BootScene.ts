@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { generatePlayerSpritesheet, generateHeroSpritesheet } from '../sprites/SpriteGenerator';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -38,48 +39,13 @@ export class BootScene extends Phaser.Scene {
   }
 
   private generatePlaceholderSprites(): void {
-    // ===== PLAYER SPRITE (Office Boss in suit) =====
-    const playerGraphics = this.make.graphics({ x: 0, y: 0 });
-    // Hair (dark)
-    playerGraphics.fillStyle(0x2a1a0a, 1);
-    playerGraphics.fillRect(10, 2, 12, 6);
-    // Face/head (skin tone)
-    playerGraphics.fillStyle(0xffdbac, 1);
-    playerGraphics.fillRect(10, 6, 12, 10);
-    // Eyes
-    playerGraphics.fillStyle(0x000000, 1);
-    playerGraphics.fillRect(12, 9, 2, 2);
-    playerGraphics.fillRect(18, 9, 2, 2);
-    // Smile
-    playerGraphics.fillRect(14, 13, 4, 1);
-    // Suit jacket (navy blue)
-    playerGraphics.fillStyle(0x1a2a4a, 1);
-    playerGraphics.fillRect(6, 16, 20, 12);
-    // White shirt/collar
-    playerGraphics.fillStyle(0xffffff, 1);
-    playerGraphics.fillRect(13, 16, 6, 4);
-    // Red tie
-    playerGraphics.fillStyle(0xcc2222, 1);
-    playerGraphics.fillRect(15, 18, 2, 8);
-    // Hands (skin)
-    playerGraphics.fillStyle(0xffdbac, 1);
-    playerGraphics.fillRect(4, 24, 4, 4);
-    playerGraphics.fillRect(24, 24, 4, 4);
-    // Pants (dark)
-    playerGraphics.fillStyle(0x1a1a2a, 1);
-    playerGraphics.fillRect(10, 28, 5, 4);
-    playerGraphics.fillRect(17, 28, 5, 4);
-    // Shoes
-    playerGraphics.fillStyle(0x111111, 1);
-    playerGraphics.fillRect(9, 31, 6, 2);
-    playerGraphics.fillRect(17, 31, 6, 2);
-    playerGraphics.generateTexture('player', 32, 34);
-    playerGraphics.destroy();
+    // ===== CHARACTER SPRITESHEETS (4 directions × 3 walk frames) =====
+    generatePlayerSpritesheet(this);
 
     // ===== AGENT SPRITES (8-bit heroes) =====
     
     // Azure - Cloud Wizard (blue robes, staff)
-    this.createHeroSprite('npc_azure', {
+    generateHeroSpritesheet(this, 'npc_azure', {
       skinColor: 0xffdbac,
       hairColor: 0x4488ff,
       hairStyle: 'spiky',
@@ -90,7 +56,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Validator - Knight with shield (green armor)
-    this.createHeroSprite('npc_validator', {
+    generateHeroSpritesheet(this, 'npc_validator', {
       skinColor: 0xffdbac,
       hairColor: 0x2a1a0a,
       hairStyle: 'helmet',
@@ -102,7 +68,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Deployer - Rocket pilot (orange suit, goggles)
-    this.createHeroSprite('npc_deployer', {
+    generateHeroSpritesheet(this, 'npc_deployer', {
       skinColor: 0xffdbac,
       hairColor: 0x5a3a1a,
       hairStyle: 'goggles',
@@ -113,7 +79,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Doctor - Medic (red cross, white coat)
-    this.createHeroSprite('npc_doctor', {
+    generateHeroSpritesheet(this, 'npc_doctor', {
       skinColor: 0x8b6914,
       hairColor: 0x1a1a1a,
       hairStyle: 'short',
@@ -124,7 +90,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Scout - Ranger (purple cloak, binoculars)
-    this.createHeroSprite('npc_scout', {
+    generateHeroSpritesheet(this, 'npc_scout', {
       skinColor: 0xffdbac,
       hairColor: 0x8844aa,
       hairStyle: 'long',
@@ -135,7 +101,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Accountant - Treasure keeper (gold accents, coins)
-    this.createHeroSprite('npc_accountant', {
+    generateHeroSpritesheet(this, 'npc_accountant', {
       skinColor: 0xc68642,
       hairColor: 0x1a1a1a,
       hairStyle: 'bun',
@@ -146,7 +112,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Office Admin - Meta wizard (magenta/pink, recursive symbol)
-    this.createHeroSprite('npc_admin', {
+    generateHeroSpritesheet(this, 'npc_admin', {
       skinColor: 0xffdbac,
       hairColor: 0xff44ff,
       hairStyle: 'spiky',
@@ -157,7 +123,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Gene - Generalist (casual blue coat, holding a book)
-    this.createHeroSprite('npc_generalist', {
+    generateHeroSpritesheet(this, 'npc_generalist', {
       skinColor: 0xffdbac,
       hairColor: 0x224488,
       hairStyle: 'short',
@@ -168,7 +134,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Arthur - The Architect (dark cloak, blueprint scroll)
-    this.createHeroSprite('npc_architect', {
+    generateHeroSpritesheet(this, 'npc_architect', {
       skinColor: 0xd4a574,
       hairColor: 0x1a1a1a,
       hairStyle: 'long',
@@ -178,35 +144,75 @@ export class BootScene extends Phaser.Scene {
       accessoryColor: 0x8888ff,
     });
 
+    // Dan - The Debugger (green coat, magnifying glass)
+    generateHeroSpritesheet(this, 'npc_debugger', {
+      skinColor: 0xffdbac,
+      hairColor: 0x2a2a2a,
+      hairStyle: 'short',
+      bodyColor: 0x22cc44,
+      bodyStyle: 'coat',
+      accessory: 'book',
+      accessoryColor: 0x66ff88,
+    });
+
     // ===== FURNITURE SPRITES =====
     
-    // Desk tile - top-down view (walnut surface with wood grain)
+    // Desk tile - Pokemon-style 3/4 perspective (surface + short front legs)
+    // Total: 32x30 — tabletop 22px + legs 8px (≈1/4 player height for behind effect)
     const deskGraphics = this.make.graphics({ x: 0, y: 0 });
-    // Drop shadow (bottom-right gives depth)
-    deskGraphics.fillStyle(0x1e0e04, 1);
-    deskGraphics.fillRect(3, 3, 29, 29);
-    // Desk surface
+
+    // --- Top portion (y=0..3): front edge/lip of the tabletop ---
+    deskGraphics.fillStyle(0x4a1e08, 1);
+    deskGraphics.fillRect(1, 0, 30, 4);
+    // Slight highlight on top edge of lip
+    deskGraphics.fillStyle(0x5a2e0e, 1);
+    deskGraphics.fillRect(1, 0, 30, 1);
+
+    // --- Middle portion (y=4..21): desk surface from above ---
+    // Base surface
     deskGraphics.fillStyle(0x7a4520, 1);
-    deskGraphics.fillRect(1, 1, 28, 28);
+    deskGraphics.fillRect(1, 4, 30, 18);
     // Surface highlight (lighter center)
     deskGraphics.fillStyle(0x8c5228, 1);
-    deskGraphics.fillRect(2, 2, 25, 25);
-    // Wood grain lines (horizontal)
+    deskGraphics.fillRect(2, 5, 28, 15);
+    // Wood grain lines
     deskGraphics.fillStyle(0x5e3312, 1);
-    deskGraphics.fillRect(3, 6,  22, 1);
-    deskGraphics.fillRect(3, 11, 24, 1);
-    deskGraphics.fillRect(3, 16, 20, 1);
-    deskGraphics.fillRect(3, 21, 23, 1);
-    deskGraphics.fillRect(3, 25, 18, 1);
+    deskGraphics.fillRect(3, 7,  24, 1);
+    deskGraphics.fillRect(3, 11, 22, 1);
+    deskGraphics.fillRect(3, 15, 26, 1);
+    deskGraphics.fillRect(3, 19, 20, 1);
     // Top-left edge highlight
     deskGraphics.fillStyle(0xaa6a38, 1);
-    deskGraphics.fillRect(1, 1, 1, 27);
-    deskGraphics.fillRect(1, 1, 27, 1);
-    // Bottom-right inner shadow
+    deskGraphics.fillRect(1, 4, 1, 17);
+    deskGraphics.fillRect(1, 4, 29, 1);
+    // Bottom-right inner shadow on surface
     deskGraphics.fillStyle(0x5a2e0e, 1);
-    deskGraphics.fillRect(26, 2, 1, 26);
-    deskGraphics.fillRect(2, 26, 25, 1);
-    deskGraphics.generateTexture('desk', 32, 32);
+    deskGraphics.fillRect(30, 5, 1, 16);
+
+    // --- Bottom portion (y=22..29): front edge + short legs ---
+    // Front edge of tabletop (2px thick)
+    deskGraphics.fillStyle(0x4a1e08, 1);
+    deskGraphics.fillRect(1, 22, 30, 2);
+
+    // Dark space under the desk (between legs)
+    deskGraphics.fillStyle(0x111111, 1);
+    deskGraphics.fillRect(1, 24, 30, 6);
+
+    // Left leg (4px wide, 6px tall)
+    deskGraphics.fillStyle(0x5a2e0e, 1);
+    deskGraphics.fillRect(1, 24, 4, 6);
+    // Left leg highlight (inner edge)
+    deskGraphics.fillStyle(0x6b3a18, 1);
+    deskGraphics.fillRect(4, 24, 1, 6);
+
+    // Right leg (4px wide, 6px tall)
+    deskGraphics.fillStyle(0x5a2e0e, 1);
+    deskGraphics.fillRect(27, 24, 4, 6);
+    // Right leg shadow (inner edge)
+    deskGraphics.fillStyle(0x3e1a06, 1);
+    deskGraphics.fillRect(27, 24, 1, 6);
+
+    deskGraphics.generateTexture('desk', 32, 30);
     deskGraphics.destroy();
 
     // Floor tile - hardwood panels, 3 staggered rows per tile
@@ -677,6 +683,38 @@ export class BootScene extends Phaser.Scene {
     bookshelfGraphics.generateTexture('bookshelf', 32, 32);
     bookshelfGraphics.destroy();
 
+    // Basketball hoop (wall-mounted, top-down/front view)
+    const hoopGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Pole / wall mount
+    hoopGraphics.fillStyle(0x666666, 1);
+    hoopGraphics.fillRect(14, 0, 4, 12);
+    // Backboard
+    hoopGraphics.fillStyle(0xffffff, 1);
+    hoopGraphics.fillRect(4, 2, 24, 14);
+    hoopGraphics.fillStyle(0xcccccc, 1);
+    hoopGraphics.fillRect(5, 3, 22, 12);
+    // Backboard square target
+    hoopGraphics.lineStyle(1, 0xff0000, 1);
+    hoopGraphics.strokeRect(10, 5, 12, 8);
+    // Rim (orange ring)
+    hoopGraphics.fillStyle(0xff4400, 1);
+    hoopGraphics.fillRect(8, 16, 16, 2);
+    hoopGraphics.fillRect(7, 16, 2, 4);
+    hoopGraphics.fillRect(23, 16, 2, 4);
+    // Net (white dangles)
+    hoopGraphics.fillStyle(0xffffff, 0.7);
+    hoopGraphics.fillRect(9, 18, 1, 8);
+    hoopGraphics.fillRect(12, 18, 1, 10);
+    hoopGraphics.fillRect(16, 18, 1, 10);
+    hoopGraphics.fillRect(19, 18, 1, 9);
+    hoopGraphics.fillRect(22, 18, 1, 8);
+    // Net cross threads
+    hoopGraphics.fillStyle(0xffffff, 0.4);
+    hoopGraphics.fillRect(9, 22, 14, 1);
+    hoopGraphics.fillRect(10, 25, 12, 1);
+    hoopGraphics.generateTexture('basketball_hoop', 32, 32);
+    hoopGraphics.destroy();
+
     // Coffee machine
     const coffeeGraphics = this.make.graphics({ x: 0, y: 0 });
     // Machine body
@@ -978,258 +1016,6 @@ export class BootScene extends Phaser.Scene {
     arcadeGraphics.fillRect(10, 52, 28, 4);
     arcadeGraphics.generateTexture('arcade', 48, 56);
     arcadeGraphics.destroy();
-  }
-
-  private createHeroSprite(name: string, config: {
-    skinColor: number;
-    hairColor: number;
-    hairStyle: string;
-    helmetColor?: number;
-    bodyColor: number;
-    bodyStyle: string;
-    accessory: string;
-    accessoryColor: number;
-  }): void {
-    const g = this.make.graphics({ x: 0, y: 0 });
-    
-    // Base head shape (skin)
-    g.fillStyle(config.skinColor, 1);
-    g.fillRect(10, 6, 12, 12);
-    
-    // Eyes
-    g.fillStyle(0x000000, 1);
-    g.fillRect(12, 10, 2, 3);
-    g.fillRect(18, 10, 2, 3);
-    // Eye shine
-    g.fillStyle(0xffffff, 1);
-    g.fillRect(12, 10, 1, 1);
-    g.fillRect(18, 10, 1, 1);
-    
-    // Hair/helmet styles
-    switch (config.hairStyle) {
-      case 'spiky':
-        g.fillStyle(config.hairColor, 1);
-        g.fillRect(8, 2, 16, 6);
-        g.fillTriangle(8, 2, 12, 2, 10, -2);
-        g.fillTriangle(14, 2, 18, 2, 16, -3);
-        g.fillTriangle(20, 2, 24, 2, 22, -1);
-        break;
-      case 'helmet':
-        g.fillStyle(config.helmetColor || config.hairColor, 1);
-        g.fillRect(8, 0, 16, 10);
-        g.fillStyle(0x666666, 1);
-        g.fillRect(10, 8, 12, 2);
-        // Visor
-        g.fillStyle(0x88ccff, 1);
-        g.fillRect(11, 4, 10, 4);
-        break;
-      case 'goggles':
-        g.fillStyle(config.hairColor, 1);
-        g.fillRect(10, 2, 12, 6);
-        // Goggles
-        g.fillStyle(0x444444, 1);
-        g.fillRect(8, 6, 16, 4);
-        g.fillStyle(0xffaa44, 1);
-        g.fillRect(10, 7, 5, 2);
-        g.fillRect(17, 7, 5, 2);
-        break;
-      case 'short':
-        g.fillStyle(config.hairColor, 1);
-        g.fillRect(10, 2, 12, 5);
-        break;
-      case 'long':
-        g.fillStyle(config.hairColor, 1);
-        g.fillRect(8, 2, 16, 8);
-        g.fillRect(6, 8, 4, 12);
-        g.fillRect(22, 8, 4, 12);
-        break;
-      case 'bun':
-        g.fillStyle(config.hairColor, 1);
-        g.fillRect(10, 3, 12, 5);
-        g.fillCircle(16, 2, 4);
-        break;
-    }
-    
-    // Body styles
-    switch (config.bodyStyle) {
-      case 'robe':
-        g.fillStyle(config.bodyColor, 1);
-        g.fillRect(6, 18, 20, 14);
-        g.fillTriangle(6, 32, 26, 32, 16, 18);
-        // Robe trim
-        g.fillStyle(0xffcc00, 1);
-        g.fillRect(14, 18, 4, 14);
-        break;
-      case 'armor':
-        g.fillStyle(config.bodyColor, 1);
-        g.fillRect(6, 18, 20, 12);
-        // Shoulder pads
-        g.fillRect(2, 18, 6, 6);
-        g.fillRect(24, 18, 6, 6);
-        // Belt
-        g.fillStyle(0x8b4513, 1);
-        g.fillRect(6, 26, 20, 3);
-        // Legs
-        g.fillStyle(0x666666, 1);
-        g.fillRect(8, 30, 6, 4);
-        g.fillRect(18, 30, 6, 4);
-        break;
-      case 'pilot':
-        g.fillStyle(config.bodyColor, 1);
-        g.fillRect(8, 18, 16, 10);
-        // Suit details
-        g.fillStyle(0xffffff, 1);
-        g.fillRect(10, 18, 2, 4);
-        g.fillRect(20, 18, 2, 4);
-        // Belt with buckle
-        g.fillStyle(0x333333, 1);
-        g.fillRect(8, 26, 16, 2);
-        g.fillStyle(0xffcc00, 1);
-        g.fillRect(14, 26, 4, 2);
-        // Boots
-        g.fillStyle(0x333333, 1);
-        g.fillRect(8, 28, 6, 6);
-        g.fillRect(18, 28, 6, 6);
-        break;
-      case 'coat':
-        g.fillStyle(config.bodyColor, 1);
-        g.fillRect(6, 18, 20, 14);
-        // Coat lapels
-        g.fillStyle(0xdddddd, 1);
-        g.fillRect(10, 18, 4, 8);
-        g.fillRect(18, 18, 4, 8);
-        // Shirt
-        g.fillStyle(0x88ccff, 1);
-        g.fillRect(13, 18, 6, 6);
-        // Pants
-        g.fillStyle(0x2a2a4a, 1);
-        g.fillRect(10, 30, 5, 4);
-        g.fillRect(17, 30, 5, 4);
-        break;
-      case 'cloak':
-        g.fillStyle(config.bodyColor, 1);
-        g.fillRect(4, 16, 24, 16);
-        // Hood shadow
-        g.fillStyle(0x000000, 0.3);
-        g.fillRect(8, 4, 16, 4);
-        // Inner tunic
-        g.fillStyle(0x4a3a5a, 1);
-        g.fillRect(12, 20, 8, 10);
-        break;
-      case 'vest':
-        // Shirt
-        g.fillStyle(0xffffff, 1);
-        g.fillRect(8, 18, 16, 10);
-        // Vest
-        g.fillStyle(config.bodyColor, 1);
-        g.fillRect(6, 18, 6, 12);
-        g.fillRect(20, 18, 6, 12);
-        // Bow tie
-        g.fillStyle(0xaa0000, 1);
-        g.fillRect(13, 18, 6, 3);
-        // Pants
-        g.fillStyle(0x1a1a1a, 1);
-        g.fillRect(10, 28, 5, 6);
-        g.fillRect(17, 28, 5, 6);
-        break;
-    }
-    
-    // Accessories
-    switch (config.accessory) {
-      case 'staff':
-        g.fillStyle(0x8b4513, 1);
-        g.fillRect(26, 4, 3, 28);
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillCircle(28, 4, 4);
-        break;
-      case 'shield':
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillRect(0, 18, 6, 12);
-        g.fillStyle(0xffffff, 1);
-        g.fillRect(1, 22, 4, 4);
-        break;
-      case 'rocket':
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillRect(26, 20, 5, 10);
-        g.fillTriangle(26, 20, 31, 20, 28, 14);
-        // Flames
-        g.fillStyle(0xff4400, 1);
-        g.fillRect(26, 30, 5, 3);
-        g.fillStyle(0xffff00, 1);
-        g.fillRect(27, 31, 3, 2);
-        break;
-      case 'stethoscope':
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillCircle(16, 28, 3);
-        g.fillStyle(0x333333, 1);
-        g.fillRect(14, 20, 2, 6);
-        g.fillRect(16, 20, 2, 6);
-        break;
-      case 'binoculars':
-        g.fillStyle(0x333333, 1);
-        g.fillRect(0, 14, 5, 6);
-        g.fillRect(2, 12, 6, 4);
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillCircle(2, 17, 2);
-        break;
-      case 'coins':
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillCircle(4, 26, 4);
-        g.fillCircle(6, 22, 3);
-        g.fillCircle(2, 30, 3);
-        g.fillStyle(0xaa8800, 1);
-        g.fillRect(3, 25, 2, 2);
-        break;
-      case 'meta':
-        // Recursive/inception symbol - a mini screen showing the game
-        g.fillStyle(0x222222, 1);
-        g.fillRect(24, 14, 8, 10);
-        g.fillStyle(config.accessoryColor, 1);
-        g.fillRect(25, 15, 6, 8);
-        // Tiny recursive figure inside
-        g.fillStyle(0xff00ff, 1);
-        g.fillRect(27, 17, 2, 4);
-        // Sparkles around (meta magic)
-        g.fillStyle(0xffaaff, 1);
-        g.fillRect(22, 12, 2, 2);
-        g.fillRect(30, 10, 2, 2);
-        g.fillRect(26, 8, 2, 2);
-        break;
-      case 'book':
-        // Open book held on left side
-        g.fillStyle(0x5a3010, 1);  // spine
-        g.fillRect(0, 18, 4, 14);
-        g.fillStyle(config.accessoryColor, 1);  // cover
-        g.fillRect(1, 19, 7, 12);
-        g.fillStyle(0xffffff, 1);  // pages
-        g.fillRect(2, 20, 5, 10);
-        g.fillStyle(0xaaaaaa, 1);  // page lines
-        g.fillRect(3, 22, 3, 1);
-        g.fillRect(3, 24, 3, 1);
-        g.fillRect(3, 26, 3, 1);
-        break;
-      case 'blueprint':
-        // Rolled blueprint scroll on right side
-        g.fillStyle(0x2244aa, 1);  // blueprint blue paper
-        g.fillRect(24, 12, 7, 18);
-        g.fillStyle(config.accessoryColor, 1);  // grid lines
-        g.fillRect(25, 15, 5, 1);
-        g.fillRect(25, 18, 5, 1);
-        g.fillRect(25, 21, 5, 1);
-        g.fillRect(27, 14, 1, 10);
-        // Scroll ends (rolled paper)
-        g.fillStyle(0xddddcc, 1);
-        g.fillRect(23, 11, 9, 3);
-        g.fillRect(23, 27, 9, 3);
-        // Sparkle (architect magic)
-        g.fillStyle(0xaaaaff, 1);
-        g.fillRect(20, 8, 2, 2);
-        g.fillRect(22, 10, 2, 2);
-        break;
-    }
-    
-    g.generateTexture(name, 32, 34);
-    g.destroy();
   }
 
   create(): void {

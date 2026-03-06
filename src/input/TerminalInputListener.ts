@@ -46,15 +46,25 @@ export class TerminalInputListener {
 
   /**
    * Activate shortcut intercepts for terminal keyboard focus.
-   * Intercepts: Ctrl+Shift+N (new session).
+   * Intercepts: Ctrl+Shift+N (new session), Ctrl+F (toggle fullscreen).
    * Does NOT stop propagation for other keys — xterm must receive them.
    */
-  activateShortcuts(onNewSession: () => void): void {
+  activateShortcuts(onNewSession: () => void, onToggleFullscreen?: () => void): void {
     this.deactivateShortcuts(); // idempotent
 
     this.shortcutHandler = (event: KeyboardEvent) => {
       // Skip if F10 — handled by f10Handler
       if (event.key === 'F10') return;
+
+      if (event.ctrlKey && !event.shiftKey && event.key === 'f') {
+        console.log(
+          `[TerminalInput] Ctrl+F intercepted — toggle fullscreen | time: ${Date.now()}`
+        );
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onToggleFullscreen?.();
+        return;
+      }
 
       if (event.ctrlKey && event.shiftKey && event.key === 'N') {
         console.log(
@@ -67,13 +77,11 @@ export class TerminalInputListener {
       }
 
       // All other keys pass through to xterm without interference.
-      // Log only if verbose debugging is useful (uncomment below):
-      // console.log(`[TerminalInput] key "${event.key}" passing through to xterm`);
     };
 
     document.addEventListener('keydown', this.shortcutHandler, true);
     console.log(
-      '[TerminalInput] shortcut handler installed (capture phase) — intercepts: Ctrl+Shift+N'
+      '[TerminalInput] shortcut handler installed (capture phase) — intercepts: Ctrl+F, Ctrl+Shift+N'
     );
   }
 

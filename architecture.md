@@ -1,4 +1,4 @@
-# Agency Office — Architecture Reference
+# Copilot Office — Architecture Reference
 
 > **Purpose**: Deep-detail documentation of every subsystem so you can understand the
 > entire codebase without reading source. Written to support re-architecture decisions.
@@ -23,7 +23,7 @@
 
 ## 1. Overview
 
-Agency Office is a 2D pixel-art RPG-style desktop app where the player walks around a
+Copilot Office is a 2D pixel-art RPG-style desktop app where the player walks around a
 virtual office and talks to NPC agents. Each NPC wraps a Copilot CLI session inside an
 xterm.js terminal, so conversations are real AI interactions — not scripted dialog.
 
@@ -87,7 +87,7 @@ xterm.js terminal, so conversations are real AI interactions — not scripted di
 ### Directory Structure
 
 ```
-AgencyOffice/
+CopilotOffice/
 ├── electron/                    # Node.js main process
 │   ├── main.ts                  # Window, IPC handlers, PTY management
 │   ├── preload.ts               # Context bridge (copilotBridge API)
@@ -160,9 +160,9 @@ esbuild src/main.ts
   --outfile=dist/game.bundle.js
   --platform=browser
   --format=iife
-  --global-name=AgencyOffice
+  --global-name=CopilotOffice
 ```
-- IIFE format exposes `window.AgencyOffice` global
+- IIFE format exposes `window.CopilotOffice` global
 - Browser platform — no Node.js APIs available
 - Single output file loaded by `src/index.html`
 
@@ -299,7 +299,7 @@ One-way events sent from main → renderer via `webContents.send()`:
    - Terminal type: `xterm-256color`
    - Initial size: 120 cols × 30 rows
    - Working directory: `process.cwd()` or custom `workingDir` joined to cwd
-   - Environment: inherits `process.env` + `AGENCY_OFFICE_PROCESS=true` + `AGENCY_OFFICE_AGENT={agentId}`
+   - Environment: inherits `process.env` + `COPILOT_OFFICE_PROCESS=true` + `COPILOT_OFFICE_AGENT={agentId}`
 4. Create `EventsWatcher` for the session
 5. Register data handler with batching
 6. After 500ms delay: write `copilot --resume {sessionId}\r` to PTY
@@ -510,7 +510,7 @@ const ENABLE_ARCADE       = true;
 9. `preStartAgentSessions()` — background-start the admin agent
 10. Register **E key** for interactions
 11. Add player-wall collider
-12. Display title ("🏢 AGENCY OFFICE") and control instructions
+12. Display title ("🏢 COPILOT OFFICE") and control instructions
 
 **Office Layout** (`createOfficeLayout`):
 

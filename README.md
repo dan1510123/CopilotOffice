@@ -1,4 +1,4 @@
-# Agency Office 🏢
+# Copilot Office 🏢
 
 A 2D pixel-art RPG-style game where you walk around a virtual office and interact with AI agents. Each agent runs as a real Copilot CLI session with full coding capabilities.
 
@@ -34,7 +34,7 @@ A 2D pixel-art RPG-style game where you walk around a virtual office and interac
 ### Installation
 
 ```bash
-cd AgencyOffice
+cd CopilotOffice
 npm install
 ```
 
@@ -61,7 +61,7 @@ npm run dev
 ## Project Structure
 
 ```
-AgencyOffice/
+CopilotOffice/
 ├── electron/               # Node.js main process
 │   ├── main.ts             # Electron window, IPC handlers
 │   ├── preload.ts          # Context bridge (exposes APIs to renderer)

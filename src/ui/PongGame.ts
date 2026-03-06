@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { Depths } from '../config/depths';
 
 export class PongGame {
   private scene: Phaser.Scene;
@@ -68,7 +69,7 @@ export class PongGame {
     const top = centerY - this.gameHeight / 2;
     
     this.container = this.scene.add.container(0, 0);
-    this.container.setDepth(200);
+    this.container.setDepth(Depths.MINI_GAMES);
     this.container.setVisible(false);
     
     // Dark overlay behind game

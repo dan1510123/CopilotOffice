@@ -1,4 +1,4 @@
-# Focus Summary — Agency Office Input & Focus Model
+# Focus Summary — Copilot Office Input & Focus Model
 
 This document is the canonical specification for how keyboard focus and input
 capture work between the **Game pane** (Phaser canvas) and the **Terminal pane**

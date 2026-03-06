@@ -51,7 +51,7 @@ export class EventsWatcher {
   private fileExistsTimer: NodeJS.Timeout | null = null;
   private callback: EventCallback | null = null;
   private stopped: boolean = false;
-  private reading: boolean = false;
+  private watchingFile: boolean = false;
 
   private static readonly POLL_INTERVAL_MS = 500;
   private static readonly FILE_CHECK_INTERVAL_MS = 200;
@@ -80,41 +80,41 @@ export class EventsWatcher {
     this.callback = onEvent;
     this.stopped = false;
 
-    // Check if file exists (async)
-    fs.promises.access(this.filePath, fs.constants.F_OK)
-      .then(() => this.startWatching())
-      .catch(() => {
-        // Poll for file to appear, with a max wait
-        console.log(`[EventsWatcher] Waiting for events.jsonl: ${this.filePath}`);
-        const startTime = Date.now();
-        this.fileExistsTimer = setInterval(() => {
-          if (this.stopped) {
-            if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
-            return;
-          }
-          if (Date.now() - startTime > EventsWatcher.MAX_FILE_WAIT_MS) {
-            console.warn(`[EventsWatcher] Timed out waiting for events.jsonl after ${EventsWatcher.MAX_FILE_WAIT_MS / 1000}s`);
-            if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
-            this.fileExistsTimer = null;
-            return;
-          }
-          fs.promises.access(this.filePath, fs.constants.F_OK)
-            .then(() => {
-              console.log(`[EventsWatcher] Found events.jsonl`);
-              if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
-              this.fileExistsTimer = null;
-              this.startWatching();
-            })
-            .catch(() => { /* not yet */ });
-        }, EventsWatcher.FILE_CHECK_INTERVAL_MS);
-      });
+    // Check if file exists (sync for immediate startup)
+    try {
+      fs.accessSync(this.filePath, fs.constants.F_OK);
+      this.startWatching();
+    } catch {
+      // Poll for file to appear, with a max wait
+      console.log(`[EventsWatcher] Waiting for events.jsonl: ${this.filePath}`);
+      const startTime = Date.now();
+      this.fileExistsTimer = setInterval(() => {
+        if (this.stopped) {
+          if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
+          return;
+        }
+        if (Date.now() - startTime > EventsWatcher.MAX_FILE_WAIT_MS) {
+          console.warn(`[EventsWatcher] Timed out waiting for events.jsonl after ${EventsWatcher.MAX_FILE_WAIT_MS / 1000}s`);
+          if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
+          this.fileExistsTimer = null;
+          return;
+        }
+        try {
+          fs.accessSync(this.filePath, fs.constants.F_OK);
+          console.log(`[EventsWatcher] Found events.jsonl`);
+          if (this.fileExistsTimer) clearInterval(this.fileExistsTimer);
+          this.fileExistsTimer = null;
+          this.startWatching();
+        } catch { /* not yet */ }
+      }, EventsWatcher.FILE_CHECK_INTERVAL_MS);
+    }
   }
 
   private startWatching(): void {
     // Read any existing content first
     this.readNewLines();
 
-    // Primary: fs.watch
+    // Primary: fs.watch (event-driven, fast but unreliable on some platforms)
     try {
       this.watcher = fs.watch(this.filePath, () => {
         if (!this.stopped) this.readNewLines();
@@ -123,48 +123,57 @@ export class EventsWatcher {
       console.log(`[EventsWatcher] fs.watch failed: ${e}`);
     }
 
-    // Secondary: polling fallback
+    // Secondary: fs.watchFile (stat-based polling, reliable on all platforms)
+    try {
+      fs.watchFile(this.filePath, { interval: EventsWatcher.POLL_INTERVAL_MS }, () => {
+        if (!this.stopped) this.readNewLines();
+      });
+      this.watchingFile = true;
+    } catch (e) {
+      console.log(`[EventsWatcher] fs.watchFile failed: ${e}`);
+    }
+
+    // Tertiary: manual poll as last resort
     this.pollTimer = setInterval(() => {
       if (!this.stopped) this.readNewLines();
     }, EventsWatcher.POLL_INTERVAL_MS);
   }
 
-  private async readNewLines(): Promise<void> {
-    // Prevent overlapping async reads
-    if (this.reading) return;
-    this.reading = true;
+  /** Synchronous read — no reading guard needed, every trigger processes immediately. */
+  readNewLines(): void {
     try {
-      const stat = await fs.promises.stat(this.filePath);
+      const stat = fs.statSync(this.filePath);
       if (stat.size <= this.fileOffset) return;
 
-      const handle = await fs.promises.open(this.filePath, 'r');
-      try {
-        const buf = Buffer.alloc(stat.size - this.fileOffset);
-        await handle.read(buf, 0, buf.length, this.fileOffset);
-        this.fileOffset = stat.size;
+      const bytesToRead = stat.size - this.fileOffset;
+      const buf = Buffer.alloc(bytesToRead);
+      const fd = fs.openSync(this.filePath, 'r');
+      fs.readSync(fd, buf, 0, buf.length, this.fileOffset);
+      fs.closeSync(fd);
+      this.fileOffset = stat.size;
 
-        const text = this.lineBuffer + buf.toString('utf-8');
-        const lines = text.split('\n');
-        this.lineBuffer = lines.pop() || '';
+      const text = this.lineBuffer + buf.toString('utf-8');
+      const lines = text.split('\n');
+      this.lineBuffer = lines.pop() || '';
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line) as CopilotEvent;
-            if (this.callback) {
-              this.callback(event);
-            }
-          } catch (e) {
-            console.log(`[EventsWatcher] Failed to parse line: ${e}`);
+      let eventCount = 0;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as CopilotEvent;
+          eventCount++;
+          if (this.callback) {
+            this.callback(event);
           }
+        } catch (e) {
+          console.log(`[EventsWatcher] Failed to parse line: ${e}`);
         }
-      } finally {
-        await handle.close();
+      }
+      if (eventCount > 0) {
+        console.log(`[EventsWatcher] Read ${eventCount} event(s), +${bytesToRead}B, offset now ${this.fileOffset}`);
       }
     } catch (e) {
-      // File may not exist or be locked
-    } finally {
-      this.reading = false;
+      // File may not exist or be locked — next poll will retry
     }
   }
 
@@ -179,6 +188,11 @@ export class EventsWatcher {
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
+    }
+
+    if (this.watchingFile) {
+      try { fs.unwatchFile(this.filePath); } catch { /* ignore */ }
+      this.watchingFile = false;
     }
     
     if (this.pollTimer) {

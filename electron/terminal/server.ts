@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { EventsWatcher, CopilotEvent, formatToolStatus } from './events-watcher';
 import type { MainToServer, ServerToMain } from './protocol';
 
@@ -29,9 +29,13 @@ const agentToTerminal: Map<string, string> = new Map();
 const activeAgentViewers: Set<string> = new Set();
 const agentWatchers: Map<string, EventsWatcher> = new Map();
 
-// Per-agent scrollback buffer
-const MAX_BUFFER_LINES = 500;
+// Track per-agent ready state so it can be queried by the renderer
+const agentReadyState: Map<string, boolean> = new Map();
+
+// Per-agent raw scrollback buffer (preserves ANSI escape sequences)
+const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB
 const agentScrollbackBuffers: Map<string, string[]> = new Map();
+const agentScrollbackBytes: Map<string, number> = new Map();
 
 // Session persistence
 const SESSION_FILE = path.join(process.cwd(), 'copilot-office-sessions.json');
@@ -51,13 +55,15 @@ function appendToScrollback(agentId: string, data: string): void {
   if (!buf) {
     buf = [];
     agentScrollbackBuffers.set(agentId, buf);
+    agentScrollbackBytes.set(agentId, 0);
   }
-  const lines = data.split('\n');
-  for (const line of lines) {
-    buf.push(line);
-  }
-  if (buf.length > MAX_BUFFER_LINES) {
-    buf.splice(0, buf.length - MAX_BUFFER_LINES);
+  buf.push(data);
+  const currentBytes = (agentScrollbackBytes.get(agentId) || 0) + data.length;
+  agentScrollbackBytes.set(agentId, currentBytes);
+  // Trim oldest chunks if over byte limit
+  while ((agentScrollbackBytes.get(agentId) || 0) > MAX_BUFFER_BYTES && buf.length > 1) {
+    const removed = buf.shift()!;
+    agentScrollbackBytes.set(agentId, (agentScrollbackBytes.get(agentId) || 0) - removed.length);
   }
 }
 
@@ -118,13 +124,28 @@ function getTerminalKey(agentId: string): string | null {
 
 function killAllPtyProcesses(): void {
   console.log(`[TermServer] Killing ${ptyProcesses.size} PTY processes`);
-  ptyProcesses.forEach((proc, key) => {
-    try { proc.process.kill(); } catch (e) { /* ignore */ }
-  });
+  ptyProcesses.forEach((proc) => killPtyProcess(proc));
   ptyProcesses.clear();
   agentToTerminal.clear();
   agentWatchers.forEach((w) => w.stop());
   agentWatchers.clear();
+}
+
+/** Platform-aware process-tree kill. On Windows, uses taskkill /T /F to kill
+ *  the entire tree (shell + copilot CLI + children). Single canonical kill
+ *  function — all PTY kill sites must use this, never bare proc.process.kill(). */
+function killPtyProcess(proc: PtyProcess): void {
+  try {
+    if (os.platform() === 'win32') {
+      try {
+        execSync(`taskkill /T /F /PID ${proc.pid}`, { stdio: 'ignore' });
+      } catch {
+        proc.process.kill();
+      }
+    } else {
+      proc.process.kill();
+    }
+  } catch { /* process already dead */ }
 }
 
 // ── PTY Lifecycle ───────────────────────────────────────────────
@@ -168,8 +189,8 @@ async function startTerminalForAgent(
 
   const taggedEnv = {
     ...process.env,
-    AGENCY_OFFICE_PROCESS: 'true',
-    AGENCY_OFFICE_AGENT: agentId,
+    COPILOT_OFFICE_PROCESS: 'true',
+    COPILOT_OFFICE_AGENT: agentId,
   } as { [key: string]: string };
 
   try {
@@ -193,26 +214,69 @@ async function startTerminalForAgent(
     agentSessionIds.set(agentId, sessionId);
     await saveSessionIds();
 
-    // EventsWatcher
+    // Signal that the PTY is spawned and copilot CLI is starting
+    send({ type: 'terminal-preload-status', agentId, status: 'preloading' });
+
+    // EventsWatcher — defer start so the preloading signal has time to reach
+    // the renderer and render 'starting' before the watcher processes historical
+    // events and potentially fires signalReady() (which sends 'ready').
     const watcher = new EventsWatcher(sessionId);
     agentWatchers.set(agentId, watcher);
 
-    watcher.start((event: CopilotEvent) => {
-      if (!activeAgentViewers.has(agentId)) return;
-      send({ type: 'copilot-event', agentId, event });
+    let hasSignalledReady = false;
+    let skippedEventCount = 0;
+    agentReadyState.set(agentId, false);
+
+    const signalReady = () => {
+      if (hasSignalledReady) return;
+      hasSignalledReady = true;
+      agentReadyState.set(agentId, true);
+      console.log(`[TermServer] Agent ${agentId} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
+      send({ type: 'terminal-preload-status', agentId, status: 'ready' });
+    };
+
+    const watcherCallback = (event: CopilotEvent) => {
+      // Primary ready signal: first turn_end means copilot CLI has finished loading
+      if (!hasSignalledReady && (event.type === 'assistant.turn_end' || event.type === 'user.message')) {
+        signalReady();
+      }
+
+      // Only forward AFTER the agent is ready — during startup, old events
+      // from resumed sessions would interfere with the custom startup detection.
+      if (!hasSignalledReady) {
+        skippedEventCount++;
+        return;
+      }
 
       if (event.type === 'tool.execution_start') {
         const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
+        console.log(`[TermServer] Forwarding tool_start for ${agentId}: ${d.toolName}`);
         send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
       } else if (event.type === 'tool.execution_complete') {
         const d = event.data as { toolCallId: string; success: boolean };
+        console.log(`[TermServer] Forwarding tool_complete for ${agentId}: ${d.toolCallId}`);
         send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
       } else if (event.type === 'assistant.turn_end') {
+        console.log(`[TermServer] Forwarding turn_end for ${agentId}`);
         send({ type: 'copilot-turn-end', agentId });
+      } else if (event.type === 'assistant.turn_start') {
+        console.log(`[TermServer] Forwarding turn_start for ${agentId}`);
+        send({ type: 'copilot-turn-start', agentId });
       } else if (event.type === 'user.message') {
+        console.log(`[TermServer] Forwarding user_message for ${agentId}`);
         send({ type: 'copilot-user-message', agentId });
       }
-    });
+
+      // Only forward the verbose raw copilot-event when someone is viewing
+      if (activeAgentViewers.has(agentId)) {
+        send({ type: 'copilot-event', agentId, event });
+      }
+    };
+
+    // Defer watcher start by 100ms so the 'preloading' IPC message has time to
+    // reach the renderer and render 'starting' before the watcher processes
+    // historical events and fires signalReady() (which sends 'ready').
+    setTimeout(() => watcher.start(watcherCallback), 100);
 
     // Batched PTY data output
     const MAX_PENDING_BYTES = 65536;
@@ -229,6 +293,11 @@ async function startTerminalForAgent(
 
     proc.onData((data: string) => {
       appendToScrollback(agentId, data);
+      // Primary ready signal: "Environment loaded" in PTY output
+      if (!hasSignalledReady && data.includes('Environment loaded')) {
+        console.log(`[TermServer] Primary ready signal for ${agentId}: "Environment loaded" detected`);
+        signalReady();
+      }
       if (!activeAgentViewers.has(agentId)) return;
       pendingData += data;
       if (pendingData.length >= MAX_PENDING_BYTES) {
@@ -244,6 +313,8 @@ async function startTerminalForAgent(
       ptyProcesses.delete(terminalKey);
       activeAgentViewers.delete(agentId);
       agentScrollbackBuffers.delete(agentId);
+      agentScrollbackBytes.delete(agentId);
+      agentReadyState.delete(agentId);
       const w = agentWatchers.get(agentId);
       if (w) { w.stop(); agentWatchers.delete(agentId); }
     });
@@ -290,7 +361,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
         try {
-          proc.process.kill();
+          killPtyProcess(proc);
           ptyProcesses.delete(key!);
           agentToTerminal.delete(msg.agentId);
           // Archive old session ID and clear it so next start generates a fresh one
@@ -300,6 +371,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // Stop event watcher
           const w = agentWatchers.get(msg.agentId);
           if (w) { w.stop(); agentWatchers.delete(msg.agentId); }
+          agentReadyState.delete(msg.agentId);
           send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         } catch (error) {
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
@@ -313,8 +385,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'attach': {
       console.log(`[TermServer] Attaching viewer for ${msg.agentId}`);
       activeAgentViewers.add(msg.agentId);
-      const scrollback = agentScrollbackBuffers.get(msg.agentId) || [];
-      send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback } });
+      const chunks = agentScrollbackBuffers.get(msg.agentId) || [];
+      const rawScrollback = chunks.join('');
+      send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback: rawScrollback } });
       break;
     }
 
@@ -331,14 +404,6 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'get-session-id': {
       send({ type: 'response', requestId: msg.requestId, result: agentSessionIds.get(msg.agentId) || null });
-      break;
-    }
-
-    case 'save-session-id': {
-      agentSessionIds.set(msg.agentId, msg.sessionId);
-      await saveSessionIds();
-      console.log(`[TermServer] Saved session for ${msg.agentId}: ${msg.sessionId}`);
-      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
     }
 
@@ -373,15 +438,17 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const resetKey = getTerminalKey(msg.agentId);
       const resetProc = resetKey ? ptyProcesses.get(resetKey) : null;
       if (resetProc) {
-        try { resetProc.process.kill(); } catch { /* ignore */ }
+        killPtyProcess(resetProc);
         ptyProcesses.delete(resetKey!);
         agentToTerminal.delete(msg.agentId);
       }
       // Stop event watcher
       const resetWatcher = agentWatchers.get(msg.agentId);
       if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(msg.agentId); }
+      agentReadyState.delete(msg.agentId);
       // Clear scrollback
       agentScrollbackBuffers.delete(msg.agentId);
+      agentScrollbackBytes.delete(msg.agentId);
       activeAgentViewers.delete(msg.agentId);
       // Archive old session ID and generate new one (but don't start PTY)
       archiveSessionId(msg.agentId);
@@ -411,6 +478,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       console.log('[TermServer] Resetting all sessions — killing PTYs and generating new GUIDs');
       killAllPtyProcesses();
       agentScrollbackBuffers.clear();
+      agentScrollbackBytes.clear();
       // Regenerate a fresh GUID for every agent that had a session
       for (const agentId of agentSessionIds.keys()) {
         agentSessionIds.set(agentId, crypto.randomUUID());
@@ -418,6 +486,28 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       await saveSessionIds();
       console.log('[TermServer] All sessions reset, new GUIDs saved');
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
+    case 'list-active': {
+      const activeAgentIds = Array.from(agentToTerminal.keys()).filter(id => {
+        const key = agentToTerminal.get(id);
+        return key && ptyProcesses.has(key);
+      });
+      console.log(`[TermServer] Active terminals: ${activeAgentIds.join(', ') || '(none)'}`);
+      send({ type: 'response', requestId: msg.requestId, result: activeAgentIds });
+      break;
+    }
+
+    case 'query-agent-statuses': {
+      const statuses: Record<string, { alive: boolean; ready: boolean }> = {};
+      for (const [agentId] of agentToTerminal) {
+        const key = agentToTerminal.get(agentId);
+        const alive = !!(key && ptyProcesses.has(key));
+        const ready = agentReadyState.get(agentId) ?? false;
+        statuses[agentId] = { alive, ready };
+      }
+      send({ type: 'response', requestId: msg.requestId, result: statuses });
       break;
     }
 

@@ -56,13 +56,6 @@ export interface MsgGetSessionId {
   agentId: string;
 }
 
-export interface MsgSaveSessionId {
-  type: 'save-session-id';
-  requestId: string;
-  agentId: string;
-  sessionId: string;
-}
-
 export interface MsgPopOut {
   type: 'pop-out';
   requestId: string;
@@ -96,6 +89,16 @@ export interface MsgClearSessionHistory {
   agentId: string;
 }
 
+export interface MsgListActive {
+  type: 'list-active';
+  requestId: string;
+}
+
+export interface MsgQueryAgentStatuses {
+  type: 'query-agent-statuses';
+  requestId: string;
+}
+
 export type MainToServer =
   | MsgStart
   | MsgWrite
@@ -105,13 +108,14 @@ export type MainToServer =
   | MsgDetach
   | MsgExists
   | MsgGetSessionId
-  | MsgSaveSessionId
   | MsgPopOut
   | MsgShutdown
   | MsgResetAllSessions
   | MsgResetSession
   | MsgGetSessionHistory
-  | MsgClearSessionHistory;
+  | MsgClearSessionHistory
+  | MsgListActive
+  | MsgQueryAgentStatuses;
 
 // ── Server → Main ───────────────────────────────────────────────
 
@@ -157,9 +161,20 @@ export interface SrvCopilotTurnEnd {
   agentId: string;
 }
 
+export interface SrvCopilotTurnStart {
+  type: 'copilot-turn-start';
+  agentId: string;
+}
+
 export interface SrvCopilotUserMessage {
   type: 'copilot-user-message';
   agentId: string;
+}
+
+export interface SrvTerminalPreloadStatus {
+  type: 'terminal-preload-status';
+  agentId: string;
+  status: 'preloading' | 'ready' | 'failed';
 }
 
 export interface SrvResponse {
@@ -176,5 +191,7 @@ export type ServerToMain =
   | SrvCopilotToolStart
   | SrvCopilotToolComplete
   | SrvCopilotTurnEnd
+  | SrvCopilotTurnStart
   | SrvCopilotUserMessage
+  | SrvTerminalPreloadStatus
   | SrvResponse;

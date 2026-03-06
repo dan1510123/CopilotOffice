@@ -1,10 +1,10 @@
 # Agent Status Reference
 
-This document defines the agent status tracking model used in Agency Office. Reference this from `.github/copilot-instructions.md` or custom instructions to understand agent states.
+This document defines the agent status tracking model used in Copilot Office. Reference this from `.github/copilot-instructions.md` or custom instructions to understand agent states.
 
 ## Status Model
 
-Agency Office uses a **two-tier status model**:
+Copilot Office uses a **two-tier status model**:
 
 - **AgentState** — top-level: `slacking` or `active`
 - **ActiveSubState** — when active: `initializing`, `ready`, `waiting`, or `thinking`
@@ -38,6 +38,13 @@ Agency Office uses a **two-tier status model**:
 - **Color**: `#ffb86c` (orange)
 - **Icon**: ⏳
 - **When**: Copilot turn ends (`onCopilotTurnEnd`)
+
+### Error ❌
+- **State**: `active` → `error`
+- **Meaning**: Agent failed to start or timed out during startup
+- **Color**: `#f44` (red)
+- **Icon**: ❌
+- **When**: Preload failed, or agent was stuck in `starting` for >60 seconds
 
 ### Thinking ⚡
 - **State**: `active` → `thinking`
@@ -84,7 +91,7 @@ Terminal killed at any point → **Slacking**
 
 ```typescript
 type AgentState = 'slacking' | 'active';
-type ActiveSubState = 'initializing' | 'ready' | 'waiting' | 'thinking';
+type ActiveSubState = 'initializing' | 'ready' | 'waiting' | 'thinking' | 'error';
 
 interface AgentStatus {
   agentId: string;
@@ -103,4 +110,5 @@ interface AgentStatus {
 | Initializing | Yellow `⟳ Initializing...` | Yellow badge + ⟳ | `⟳ N` |
 | Ready | Cyan `✓ Ready` | Cyan badge + ✓ | `✓ N` |
 | Waiting | Orange `⏳ Waiting for input` | Orange badge + ⏳ | `⏳ N` |
+| Error | Red `❌ Error: {detail}` | Red badge + ❌ | `❌ N` |
 | Thinking | Green `⚡ Thinking: {detail}` | Green pulsing badge + ⚡ | `⚡ N` |

@@ -28,9 +28,19 @@ export const AGENTS: AgentConfig[] = [
     skill: 'general',
     sprite: 'npc_architect',
     color: 0x1a1a2e,  // Dark blue-black
-    position: { x: 6, y: 3 },  // chair-architect (same row as Gene)
+    position: { x: 4, y: 7 },  // bottom-left, mirroring Alice's bottom-right
     greeting: "⚡ I am Arthur, The Architect. I design systems, orchestrate plans, and spin up agents to execute complex tasks. Tell me your vision, and I'll build the team to make it happen.",
     description: 'The Architect',
+  },
+  {
+    id: 'debugger',
+    name: 'Dan',
+    skill: 'general',
+    sprite: 'npc_debugger',
+    color: 0x22cc44,  // Green
+    position: { x: 16, y: 3 },  // Right side, mirroring Gene's left-side position
+    greeting: "🔍 Hey there! I'm Dan the Debugger. Got a tricky bug? Let me dig in — I live for stack traces, breakpoints, and hunting down root causes!",
+    description: 'The Debugger',
   },
   {
     id: 'admin',
@@ -39,8 +49,8 @@ export const AGENTS: AgentConfig[] = [
     sprite: 'npc_admin',
     color: 0xff69b4,  // Hot pink
     position: { x: 15, y: 7 },  // chair-alice (right lower)
-    greeting: "🎮 Hey! I'm Alice, the Office Admin. I have direct access to this game's UI code - want to change how something looks, add features, or fix bugs in Agency Office? I'm your girl!",
+    greeting: "🎮 Hey! I'm Alice, the Office Admin. I have direct access to this game's UI code - want to change how something looks, add features, or fix bugs in Copilot Office? I'm your girl!",
     description: 'Office Admin',
-    workingDir: 'src',  // Points to UI/scene code only
+    workingDir: '.',  // Points to whole project
   },
 ];

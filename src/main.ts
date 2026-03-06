@@ -1,4 +1,4 @@
-// AgencyOffice - Main Entry Point
+// CopilotOffice - Main Entry Point
 // Phaser 3 office visualization with split terminal view
 
 import Phaser from 'phaser';
@@ -6,6 +6,9 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { officeManager } from './office/officeManager';
 import { AGENTS } from './config/agents';
+import { ToastNotificationManager } from './ui/ToastNotification';
+import { NotificationService } from './ui/NotificationService';
+import { NotificationSettingsPanel } from './ui/NotificationSettingsPanel';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -16,11 +19,20 @@ function getCurrentAgentTools(): Map<string, { toolId: string; name: string; sta
 }
 
 let selectedAgentId: string | null = null;
-let interactingWithAgent: string | null = null;
 let phaserGameRef: Phaser.Game | undefined;
+let debugMode = false;
+
+/** Log only when debug mode is active */
+function debugLog(...args: unknown[]): void {
+  if (debugMode) console.log('[Debug]', ...args);
+}
 
 // ── Agent Preload Status ────────────────────────────────────────
 const agentPreloadStatus: Map<string, 'preloading' | 'ready' | 'failed'> = new Map();
+
+// When true, IPC event handlers block status transitions while agent is in 'starting' state.
+// Server-side filtering already handles historical events, so this is a secondary safety net.
+const ENABLE_STARTING_GUARD = false;
 
 // ── Debounced Updates ────────────────────────────────────────────
 let pendingStatusBarUpdate = false;
@@ -47,7 +59,9 @@ function scheduleTerminalContentUpdate() {
 // ── DOM Setup ────────────────────────────────────────────────────
 
 const container = document.getElementById('game-container')!;
-container.style.cssText = 'display: flex; flex-direction: column; width: 100%; height: calc(100% - 32px);';
+// Clear stale DOM on soft reload — prevents duplicate elements when main.ts re-executes
+container.innerHTML = '';
+container.style.cssText = 'display: flex; flex-direction: column; width: 100%; height: calc(100% - 58px);';
 
 // Office tabs bar
 const tabsBar = document.createElement('div');
@@ -60,7 +74,7 @@ tabsBar.style.cssText = `
   padding: 0 16px;
   height: 72px;
   flex-shrink: 0;
-  font-size: 36px;
+  font-size: 22px;
 `;
 container.appendChild(tabsBar);
 
@@ -71,6 +85,7 @@ container.appendChild(mainContent);
 
 // Left panel: Phaser renders here
 const officePanel = document.createElement('div');
+officePanel.id = 'office-panel';
 officePanel.style.cssText = 'width: 50%; height: 100%; position: relative;';
 mainContent.appendChild(officePanel);
 
@@ -119,7 +134,7 @@ function renderOfficeTabs() {
         <span>${office.name}</span>
         <span class="edit-office-btn" data-office-id="${office.id}" style="
           color: #666;
-          font-size: 24px;
+          font-size: 14px;
           padding: 4px 8px;
           border-radius: 4px;
         ">⚙</span>
@@ -137,6 +152,32 @@ function renderOfficeTabs() {
       font-family: monospace;
       color: #4a4;
     ">+ New Office</div>
+    <div style="flex: 1;"></div>
+    <div id="debug-toggle-btn" style="
+      padding: 8px 16px;
+      background: ${debugMode ? '#3a2a1a' : '#252538'};
+      border: 2px solid ${debugMode ? '#ff8800' : '#444'};
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: monospace;
+      color: ${debugMode ? '#ff8800' : '#666'};
+      font-size: 16px;
+      user-select: none;
+      transition: all 0.2s;
+      ${debugMode ? 'box-shadow: 0 0 8px #ff880044;' : ''}
+    ">🐛 Debug</div>
+    <div id="notif-settings-btn" style="
+      padding: 8px 16px;
+      background: #252538;
+      border: 2px solid #444;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: monospace;
+      color: #666;
+      font-size: 16px;
+      user-select: none;
+      transition: all 0.2s;
+    ">🔔</div>
   `;
 
   tabsBar.innerHTML = html;
@@ -162,10 +203,22 @@ function renderOfficeTabs() {
   });
 
   document.getElementById('new-office-btn')?.addEventListener('click', showNewOfficeDialog);
+
+  document.getElementById('debug-toggle-btn')?.addEventListener('click', () => {
+    debugMode = !debugMode;
+    phaserGame?.events.emit('debug:toggle', debugMode);
+    renderOfficeTabs();
+    // Return focus to the game so player movement isn't interrupted
+    phaserGame?.events.emit('game:panel:clicked');
+    console.log(`[Debug] Debug mode ${debugMode ? 'ON' : 'OFF'}`);
+  });
+
+  document.getElementById('notif-settings-btn')?.addEventListener('click', () => {
+    notificationSettingsPanel.toggle();
+  });
 }
 
 function switchToOffice(officeId: string) {
-  interactingWithAgent = null;
   selectedAgentId = null;
 
   officeManager.switchOffice(officeId);
@@ -175,6 +228,9 @@ function switchToOffice(officeId: string) {
   renderOfficeTabs();
   updateTerminalContent();
   updateStatusBar();
+
+  // Re-sync agent statuses for the new office
+  syncAgentStatuses();
 
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
 }
@@ -269,11 +325,58 @@ statusBar.style.cssText = `
   align-items: center;
   padding: 0 22px;
   font-family: monospace;
-  font-size: 22px;
+  font-size: 16px;
   color: #888;
   z-index: 100;
 `;
 document.body.appendChild(statusBar);
+
+// ── Notifications ────────────────────────────────────────────────
+const toastManager = new ToastNotificationManager(document.body);
+
+function formatElapsed(startTime: number | null): string {
+  if (!startTime) return '';
+  const seconds = Math.floor((Date.now() - startTime) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}m ${secs}s`;
+}
+
+// Helper to find agent config by id
+function getAgentConfig(agentId: string) {
+  return AGENTS.find(a => a.id === agentId);
+}
+
+const notificationService = new NotificationService(
+  toastManager,
+  (agentId) => {
+    const agent = getAgentConfig(agentId);
+    if (!agent) return undefined;
+    return { name: agent.name, color: agent.color };
+  },
+  (agentId) => {
+    selectedAgentId = agentId;
+    const oId = officeManager.currentOfficeId;
+    if (oId) officeManager.clearUnread(oId, agentId);
+    updateTerminalContent();
+    phaserGame?.events.emit('open:agent:terminal', agentId);
+  },
+);
+
+/** Send a notification (also increments unread count). */
+function notifyAgent(agentId: string, eventType: import('./config/notifications').NotificationEventType, context?: { toolName?: string }) {
+  const officeId = officeManager.currentOfficeId;
+  if (officeId) {
+    // Build a short label for the unread badge
+    const agent = getAgentConfig(agentId);
+    const label = agent ? agent.name : agentId;
+    officeManager.incrementUnread(officeId, agentId, label);
+  }
+  notificationService.notify(agentId, eventType, context, selectedAgentId);
+}
+
+const notificationSettingsPanel = new NotificationSettingsPanel(notificationService);
 
 // ── Terminal Content Updates ────────────────────────────────────
 
@@ -281,13 +384,10 @@ let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
 
 function updateTerminalContent() {
-  if (interactingWithAgent) return;
   scheduleTerminalContentUpdate();
 }
 
 function updateTerminalContentNow() {
-  if (interactingWithAgent) return;
-
   const agentTools = getCurrentAgentTools();
   const office = officeManager.currentOffice;
 
@@ -313,10 +413,10 @@ function updateTerminalContentNow() {
     if (liveStatus) {
       if (liveStatus.state === 'active') {
         switch (liveStatus.subState) {
-          case 'initializing':
-            statusDot = '#ff4';
-            statusLabel = 'Initializing...';
-            statusIcon = '⟳';
+          case 'starting':
+            statusDot = '#ff9944';
+            statusLabel = 'Starting...';
+            statusIcon = '🚀';
             break;
           case 'ready':
             statusDot = '#4af';
@@ -335,6 +435,13 @@ function updateTerminalContentNow() {
               : 'Thinking...';
             statusIcon = '⚡';
             break;
+          case 'error':
+            statusDot = '#f44';
+            statusLabel = liveStatus.thinkingDetail
+              ? `Error: ${liveStatus.thinkingDetail}`
+              : 'Error';
+            statusIcon = '❌';
+            break;
         }
       }
     }
@@ -343,23 +450,58 @@ function updateTerminalContentNow() {
     const isSelected = agent.id === selectedAgentId;
     const borderColor = isSelected ? '#6677ff' : '#252540';
     const bgColor = isSelected ? '#1e1e3a' : '#13131f';
+    const unread = liveStatus?.unreadCount || 0;
+    const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
+    const lastAction = liveStatus?.lastCompletedAction || '';
+    const toolCount = tools.length;
+
+    // Badge HTML (unread count)
+    const badgeHtml = unread > 0 ? `
+      <div style="
+        position: absolute; top: -4px; right: -4px;
+        background: #e55; color: #fff;
+        font-size: 10px; font-weight: bold;
+        min-width: 18px; height: 18px;
+        border-radius: 9px;
+        display: flex; align-items: center; justify-content: center;
+        padding: 0 4px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+      ">${unread}</div>` : '';
+
+    // Elapsed time display
+    const elapsedHtml = elapsed ? `<span data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: 10px; margin-left: 8px;">⏱ ${elapsed}</span>` : '';
+
+    // Tool queue badge
+    const queueHtml = toolCount > 1 ? `<span style="
+      background: #334; color: #aac; font-size: 9px;
+      padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+    ">${toolCount} tools</span>` : '';
+
+    // Last completed action row
+    const lastActionHtml = lastAction ? `
+      <div style="font-size: 10px; color: #5a5a7a; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        ✓ Last: ${lastAction}
+      </div>` : '';
 
     html += `
       <div class="agent-card" data-agent="${agent.id}" style="
         background: ${bgColor};
         border: 1.5px solid ${borderColor};
         border-radius: 10px;
-        padding: 14px 16px;
+        padding: 20px 18px;
         margin-bottom: 10px;
         cursor: pointer;
         transition: border-color 0.15s;
         display: flex;
         align-items: stretch;
         gap: 14px;
+        position: relative;
+        min-height: 100px;
       ">
+        ${badgeHtml}
         <div style="
           flex-shrink: 0;
-          width: 64px;
+          width: 72px;
           background: ${colorHex}22;
           border: 1px solid ${colorHex}44;
           border-radius: 8px;
@@ -374,21 +516,26 @@ function updateTerminalContentNow() {
             style="image-rendering: pixelated; width: 64px; height: 68px; display: block;"
           ></canvas>
         </div>
-        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; gap: 4px;">
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; gap: 6px;">
           <div>
             <div style="font-weight: bold; color: #dde; font-size: 15px;">${agent.name}</div>
-            <div style="color: #778; font-size: 11px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
+            <div style="color: #778; font-size: 11px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
           </div>
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
-            <div style="
-              font-size: 11px;
-              color: ${statusDot};
-              display: flex; align-items: center; gap: 4px;
-            ">
-              <span style="font-size: 8px;">●</span>
-              <span>${statusLabel}</span>
+          <div>
+            <div style="display: flex; align-items: center; flex-wrap: wrap; margin-top: 4px;">
+              <div style="
+                font-size: 11px;
+                color: ${statusDot};
+                display: flex; align-items: center; gap: 4px;
+              ">
+                <span style="font-size: 8px;">●</span>
+                <span>${statusIcon} ${statusLabel}</span>
+              </div>
+              ${elapsedHtml}
+              ${queueHtml}
             </div>
-            ${tools.length > 0 ? `<div style="color: #667; font-size: 10px;">▸ ${tools[tools.length - 1].status}</div>` : ''}
+            ${tools.length > 0 ? `<div style="color: #667; font-size: 10px; margin-top: 3px;">▸ ${tools[tools.length - 1].status}</div>` : ''}
+            ${lastActionHtml}
           </div>
         </div>
       </div>
@@ -433,6 +580,9 @@ function setupTerminalClickHandler() {
       const agentId = (card as HTMLElement).dataset.agent ?? null;
       if (!agentId) return;
       selectedAgentId = agentId;
+      // Clear unread badge when opening an agent
+      const officeId = officeManager.currentOfficeId;
+      if (officeId) officeManager.clearUnread(officeId, agentId);
       updateTerminalContent();
       // Open the agent's terminal overlay via OfficeScene
       phaserGame?.events.emit('open:agent:terminal', agentId);
@@ -441,8 +591,6 @@ function setupTerminalClickHandler() {
 }
 
 function stopInteraction() {
-  interactingWithAgent = null;
-  phaserGame?.events.emit('terminal:close');
   updateTerminalContent();
   updateStatusBar();
 }
@@ -463,7 +611,21 @@ if (window.copilotBridge) {
     }
     agentTools.get(agentId)!.push({ toolId, name: toolName, status });
 
-    officeManager.setAgentThinking(officeId, agentId, `${toolName}`, toolName);
+    // Don't change status while agent is still starting — wait for the preload ready signal
+    const current = officeManager.getAgentStatus(officeId, agentId);
+    if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
+      if (toolName === 'ask_user') {
+        officeManager.setAgentWaiting(officeId, agentId);
+        console.log(`[Office] Status: ${agentId} → waiting (ask_user)`);
+        notifyAgent(agentId, 'askUser');
+      } else {
+        officeManager.setAgentThinking(officeId, agentId, `${toolName}`);
+        console.log(`[Office] Status: ${agentId} → thinking (${toolName})`);
+        notifyAgent(agentId, 'toolStart', { toolName });
+      }
+    } else {
+      console.log(`[Office] [BLOCKED] Tool start for ${agentId} blocked by starting guard (subState=${current?.subState})`);
+    }
 
     phaserGame?.events.emit('agent:tool:start', agentId, toolName, status);
 
@@ -480,15 +642,25 @@ if (window.copilotBridge) {
 
     const tools = agentTools.get(agentId);
     if (tools) {
+      // Find the completed tool's name before removing
+      const completedTool = tools.find(t => t.toolId === toolId);
+      const completedToolName = completedTool?.name || 'tool';
       const remaining = tools.filter(t => t.toolId !== toolId);
       agentTools.set(agentId, remaining);
 
-      if (remaining.length === 0) {
-        // No more tools running — go to ready (turn-end will set waiting if appropriate)
-        officeManager.setAgentReady(officeId, agentId);
-      } else {
-        const last = remaining[remaining.length - 1];
-        officeManager.setAgentThinking(officeId, agentId, `${last.name}`, last.name);
+      // Track last completed action
+      officeManager.setLastCompletedAction(officeId, agentId, completedToolName);
+      notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
+
+      // Don't change status while agent is still starting — wait for the preload ready signal
+      const current = officeManager.getAgentStatus(officeId, agentId);
+      if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
+        if (remaining.length === 0) {
+          officeManager.setAgentReady(officeId, agentId);
+        } else {
+          const last = remaining[remaining.length - 1];
+          officeManager.setAgentThinking(officeId, agentId, `${last.name}`);
+        }
       }
     }
 
@@ -500,7 +672,32 @@ if (window.copilotBridge) {
   window.copilotBridge.onCopilotTurnEnd((agentId) => {
     console.log(`[Office] Turn end: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
-    if (officeId) officeManager.setAgentWaiting(officeId, agentId);
+    if (officeId) {
+      // Don't change status while agent is still starting — wait for the preload ready signal
+      const current = officeManager.getAgentStatus(officeId, agentId);
+      if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
+        officeManager.setAgentReady(officeId, agentId);
+      }
+      notifyAgent(agentId, 'turnEnd');
+    }
+    phaserGame?.events.emit('agent:status:changed', agentId);
+    updateTerminalContent();
+    updateStatusBar();
+  });
+
+  window.copilotBridge.onCopilotTurnStart((agentId) => {
+    console.log(`[Office] Turn start: ${agentId}`);
+    const officeId = officeManager.currentOfficeId;
+    if (!officeId) return;
+    // Don't change status while agent is still starting — wait for the preload ready signal
+    const current = officeManager.getAgentStatus(officeId, agentId);
+    if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
+      officeManager.setAgentThinking(officeId, agentId, 'Processing...');
+      console.log(`[Office] Status: ${agentId} → thinking (turn start)`);
+      notifyAgent(agentId, 'turnStart');
+    } else {
+      console.log(`[Office] [BLOCKED] Turn start for ${agentId} blocked by starting guard`);
+    }
     phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
@@ -509,8 +706,15 @@ if (window.copilotBridge) {
   window.copilotBridge.onCopilotUserMessage((agentId) => {
     console.log(`[Office] User message: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
-    // User sent a message — agent is now thinking (processing the message)
-    if (officeId) officeManager.setAgentThinking(officeId, agentId, 'Processing...', null);
+    if (!officeId) return;
+    // Don't overwrite the starting state — copilot-turn-end will clear it to ready
+    const current = officeManager.getAgentStatus(officeId, agentId);
+    if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
+      officeManager.setAgentThinking(officeId, agentId, 'Processing...');
+      console.log(`[Office] Status: ${agentId} → thinking (user message)`);
+    } else {
+      console.log(`[Office] [BLOCKED] User message for ${agentId} blocked by starting guard`);
+    }
     phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
   });
@@ -521,14 +725,24 @@ if (window.copilotBridge) {
 
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
+      const current = officeManager.getAgentStatus(officeId, agentId);
       if (status === 'preloading') {
-        officeManager.setAgentInitializing(officeId, agentId);
-      } else if (status === 'ready') {
-        // Only set to ready if not already in a more advanced state
-        const current = officeManager.getAgentStatus(officeId, agentId);
-        if (!current || current.state === 'slacking' || current.subState === 'initializing') {
-          officeManager.setAgentReady(officeId, agentId);
+        if (!current || current.state === 'slacking') {
+          officeManager.setAgentStarting(officeId, agentId);
         }
+      } else if (status === 'ready') {
+        // This is the ONLY path allowed to transition out of starting state
+        officeManager.setAgentReady(officeId, agentId);
+        // Clear any stale tool state accumulated from historical events during startup
+        const agentTools = getCurrentAgentTools();
+        if (agentTools.has(agentId)) {
+          agentTools.set(agentId, []);
+        }
+        notifyAgent(agentId, 'sessionReady');
+      } else if (status === 'failed') {
+        console.warn(`[Office] Preload FAILED for ${agentId}`);
+        officeManager.setAgentError(officeId, agentId, 'Preload failed');
+        notifyAgent(agentId, 'sessionError');
       }
     }
 
@@ -539,6 +753,95 @@ if (window.copilotBridge) {
 
 }
 
+// ── Agent Status Sync ─────────────────────────────────────────────
+
+/** Reconcile officeManager state with actual terminal server state. */
+async function syncAgentStatuses(): Promise<void> {
+  if (!window.copilotBridge) return;
+  try {
+    const statuses = await window.copilotBridge.queryAgentStatuses();
+    const officeId = officeManager.currentOfficeId;
+    if (!officeId) return;
+
+    let changed = false;
+    const STARTING_TIMEOUT_MS = 60_000; // 1 minute timeout for stuck starting state
+    const now = Date.now();
+
+    for (const agent of AGENTS) {
+      const serverStatus = statuses[agent.id];
+      const current = officeManager.getAgentStatus(officeId, agent.id);
+
+      // Timeout: if agent has been in 'starting' for too long, transition to error
+      if (current?.subState === 'starting' && current.activityStartTime
+          && (now - current.activityStartTime) > STARTING_TIMEOUT_MS) {
+        console.warn(`[Office] Agent ${agent.id} stuck in starting for >${STARTING_TIMEOUT_MS / 1000}s — transitioning to error`);
+        officeManager.setAgentError(officeId, agent.id, 'Startup timed out');
+        changed = true;
+        continue;
+      }
+
+      if (serverStatus?.alive) {
+        if (serverStatus.ready) {
+          // Agent is alive and ready — if we think it's slacking or starting, fix it
+          if (!current || current.state === 'slacking') {
+            officeManager.setAgentReady(officeId, agent.id);
+            changed = true;
+          } else if (current.subState === 'starting') {
+            officeManager.setAgentReady(officeId, agent.id);
+            changed = true;
+          }
+        } else {
+          // Agent is alive but not yet ready — should be starting
+          if (!current || current.state === 'slacking') {
+            officeManager.setAgentStarting(officeId, agent.id);
+            changed = true;
+          }
+        }
+      } else {
+        // Agent has no running PTY — should be slacking
+        if (current && current.state === 'active') {
+          officeManager.setAgentSlacking(officeId, agent.id);
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      for (const agent of AGENTS) {
+        phaserGame?.events.emit('agent:status:changed', agent.id);
+      }
+      updateTerminalContent();
+      updateStatusBar();
+    }
+  } catch (e) {
+    console.warn('[Office] Failed to sync agent statuses:', e);
+  }
+}
+
+// Initial sync on startup (replaces the old listActiveTerminals approach)
+syncAgentStatuses();
+
+// Periodic sync every 10 seconds to catch missed events and dead sessions
+const STATUS_SYNC_INTERVAL_MS = 10_000;
+setInterval(syncAgentStatuses, STATUS_SYNC_INTERVAL_MS);
+
+// ── Elapsed Time Ticker ─────────────────────────────────────────────
+// Updates elapsed time displays on dashboard cards every second (DOM-only, no full re-render)
+const ELAPSED_TICK_MS = 1000;
+setInterval(() => {
+  const office = officeManager.currentOffice;
+  if (!office) return;
+  for (const agent of AGENTS) {
+    const status = office.agents.get(agent.id);
+    if (!status?.activityStartTime) continue;
+    if (status.subState !== 'thinking' && status.subState !== 'waiting' && status.subState !== 'starting') continue;
+    const el = document.querySelector(`[data-elapsed-agent="${agent.id}"]`) as HTMLElement | null;
+    if (el) {
+      el.textContent = `⏱ ${formatElapsed(status.activityStartTime)}`;
+    }
+  }
+}, ELAPSED_TICK_MS);
+
 // ── Status Bar ────────────────────────────────────────────────────
 
 function updateStatusBarNow() {
@@ -548,31 +851,33 @@ function updateStatusBarNow() {
 
   // Count per state
   const slackingCount = AGENTS.length - agents.filter(a => a.state === 'active').length;
-  const initCount = agents.filter(a => a.subState === 'initializing').length;
+  const startingCount = agents.filter(a => a.subState === 'starting').length;
   const readyCount = agents.filter(a => a.subState === 'ready').length;
   const waitingCount = agents.filter(a => a.subState === 'waiting').length;
   const thinkingCount = agents.filter(a => a.subState === 'thinking').length;
+  const errorCount = agents.filter(a => a.subState === 'error').length;
 
   const html = `
     <span style="margin-right: 29px; color: #8af;">${officeName}</span>
     <span style="margin-right: 22px; color: #555;">💤 Slacking ${slackingCount}</span>
-    ${initCount > 0 ? `<span style="margin-right: 22px; color: #ff4;">⟳ Initializing ${initCount}</span>` : ''}
+    <span style="margin-right: 22px; color: #ff9944;">🚀 Starting ${startingCount}</span>
     ${readyCount > 0 ? `<span style="margin-right: 22px; color: #4af;">✓ Ready ${readyCount}</span>` : ''}
     <span style="margin-right: 22px; color: #50fa7b;">⚡ Thinking ${thinkingCount}</span>
     <span style="margin-right: 22px; color: #ffb86c;">⏳ Waiting ${waitingCount}</span>
+    ${errorCount > 0 ? `<span style="margin-right: 22px; color: #f44;">❌ Error ${errorCount}</span>` : ''}
     <span style="flex: 1;"></span>
     <button id="reset-sessions-btn" style="
       background: #3a1a1a;
       border: 1px solid #c44;
       color: #f88;
       font-family: monospace;
-      font-size: 18px;
+      font-size: 14px;
       padding: 4px 16px;
       border-radius: 4px;
       cursor: pointer;
       margin-right: 24px;
     ">⟳ Reset All Sessions</button>
-    <span style="color: #666; font-size: 14px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
+    <span style="color: #666; font-size: 10px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
   `;
 
   if (html !== lastStatusBarHtml) {
@@ -615,6 +920,12 @@ officePanel.addEventListener('click', () => {
   canvas?.focus();
 });
 
+// Clicking the game panel should blur the terminal (DOM-level, bypasses Phaser input)
+officePanel.addEventListener('mousedown', () => {
+  console.log('[main] game panel mousedown — emitting game:panel:clicked');
+  phaserGame?.events.emit('game:panel:clicked');
+});
+
 // Once Phaser boots and textures are ready, draw sprites for the overview cards
 phaserGame.events.once('ready', () => {
   drawOverviewSprites();
@@ -629,4 +940,15 @@ phaserGame.events.on('agent:session:closed', (agentId: string) => {
   updateStatusBar();
 });
 
-console.log('[AgencyOffice] Started - Phaser 3 renderer with multi-office support');
+// Sync status bar whenever any agent status changes (e.g. Starting set by OfficeScene)
+phaserGame.events.on('agent:status:changed', () => {
+  updateStatusBar();
+});
+
+// When a terminal is reattached, sync the agent's status from the server
+phaserGame.events.on('agent:reattached', (agentId: string) => {
+  console.log(`[Office] Agent reattached: ${agentId}`);
+  syncAgentStatuses();
+});
+
+console.log('[CopilotOffice] Started - Phaser 3 renderer with multi-office support');

@@ -1,34 +1,76 @@
-import { app, BrowserWindow, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, Notification } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execSync, ChildProcess } from 'child_process';
 import { TerminalRelay } from './terminal/ipc-relay';
 
 // ── Feature Flags ───────────────────────────────────────────────
 const OPEN_DEVTOOLS_ON_START = true;
+
+// ── Orphan Cleanup ──────────────────────────────────────────────
+// Kill stale processes tagged with COPILOT_OFFICE_PROCESS from previous
+// crashed sessions. Best-effort — startup must not fail if none exist.
+
+function killOrphanedProcesses(): void {
+  try {
+    if (process.platform === 'win32') {
+      // wmic returns lines like "ProcessId\r\n1234\r\n5678\r\n"
+      const out = execSync(
+        'wmic process where "CommandLine like \'%COPILOT_OFFICE_PROCESS%\'" get ProcessId',
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
+      );
+      const pids = out.split(/\r?\n/)
+        .map((l) => parseInt(l.trim(), 10))
+        .filter((n) => !isNaN(n) && n !== process.pid);
+      if (pids.length > 0) {
+        console.log(`[Main] Killing ${pids.length} orphaned COPILOT_OFFICE processes:`, pids);
+        for (const pid of pids) {
+          try { execSync(`taskkill /T /F /PID ${pid}`, { stdio: 'ignore' }); } catch { /* ignore */ }
+        }
+      }
+    } else {
+      const out = execSync('pgrep -f COPILOT_OFFICE_PROCESS || true', {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+      const pids = out.split(/\r?\n/)
+        .map((l) => parseInt(l.trim(), 10))
+        .filter((n) => !isNaN(n) && n !== process.pid);
+      if (pids.length > 0) {
+        console.log(`[Main] Killing ${pids.length} orphaned COPILOT_OFFICE processes:`, pids);        for (const pid of pids) {
+          try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
+        }
+      }
+    }
+  } catch {
+    // Best-effort — don't block startup
+  }
+}
 
 // ── State ───────────────────────────────────────────────────────
 
 let mainWindow: BrowserWindow | null = null;
 let watcherProcess: ChildProcess | null = null;
 const relay = new TerminalRelay(() => mainWindow);
+/** Set by renderer before Ctrl+Shift+R hard reload to signal server restart. */
+let pendingHardReload = false;
 
 // ── File Watcher ────────────────────────────────────────────────
 
 function startFileWatcher(): void {
-  const agencyOfficePath = path.join(process.cwd(), 'AgencyOffice');
+  const copilotOfficePath = path.join(process.cwd(), 'CopilotOffice');
 
-  if (!fs.existsSync(path.join(agencyOfficePath, 'package.json'))) {
+  if (!fs.existsSync(path.join(copilotOfficePath, 'package.json'))) {
     if (fs.existsSync(path.join(process.cwd(), 'src', 'main.ts'))) {
-      watcherProcess = spawn('npx', ['esbuild', 'src/main.ts', '--bundle', '--outfile=dist/game.bundle.js', '--platform=browser', '--format=iife', '--global-name=AgencyOffice', '--watch'], {
+      watcherProcess = spawn('npx', ['esbuild', 'src/main.ts', '--bundle', '--outfile=dist/game.bundle.js', '--platform=browser', '--format=iife', '--global-name=CopilotOffice', '--watch'], {
         cwd: process.cwd(),
         shell: true,
         stdio: 'pipe',
       });
     }
   } else {
-    watcherProcess = spawn('npx', ['esbuild', 'src/main.ts', '--bundle', '--outfile=dist/game.bundle.js', '--platform=browser', '--format=iife', '--global-name=AgencyOffice', '--watch'], {
-      cwd: agencyOfficePath,
+    watcherProcess = spawn('npx', ['esbuild', 'src/main.ts', '--bundle', '--outfile=dist/game.bundle.js', '--platform=browser', '--format=iife', '--global-name=CopilotOffice', '--watch'], {
+      cwd: copilotOfficePath,
       shell: true,
       stdio: 'pipe',
     });
@@ -57,7 +99,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 2560,
     height: 1440,
-    title: 'Agency Office',
+    title: 'Copilot Office',
     webPreferences: {
       preload: path.join(__dirname, 'terminal', 'preload.js'),
       contextIsolation: true,
@@ -73,12 +115,16 @@ function createWindow(): void {
   }
 
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace) => {
-    if (isInPlace) {
-      console.log('[Main] Page reload — restarting terminal server');
-      relay.shutdown();
-      relay.spawnServer(__dirname).catch((e) =>
+    if (isInPlace && pendingHardReload) {
+      console.log('[Main] Hard reload — restarting terminal server');
+      pendingHardReload = false;
+      relay.shutdown().then(() =>
+        relay.spawnServer(__dirname)
+      ).catch((e) =>
         console.error('[Main] Failed to respawn after reload:', e)
       );
+    } else if (isInPlace) {
+      console.log('[Main] Soft reload — keeping terminal server alive');
     }
   });
 
@@ -99,7 +145,29 @@ app.whenReady().then(async () => {
   // consume keydown events before the renderer can handle them.
   Menu.setApplicationMenu(null);
 
+  killOrphanedProcesses();
+
   relay.registerIpc();
+  ipcMain.handle('request-hard-reload', () => {
+    console.log('[Main] Hard reload requested by renderer');
+    pendingHardReload = true;
+    return { success: true };
+  });
+
+  // Native OS notification support
+  ipcMain.handle('show-native-notification', (_event, title: string, body: string) => {
+    if (!Notification.isSupported()) return { success: false };
+    const notification = new Notification({ title, body });
+    notification.on('click', () => {
+      // Bring the app window to front when notification is clicked
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
+    });
+    notification.show();
+    return { success: true };
+  });
   await relay.spawnServer(__dirname);
   startFileWatcher();
   createWindow();

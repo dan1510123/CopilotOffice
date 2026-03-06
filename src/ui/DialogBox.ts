@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { AgentConfig } from '../config/agents';
+import { Depths } from '../config/depths';
 
 interface ConversationMessage {
   role: 'user' | 'agent';
@@ -109,7 +110,7 @@ export class DialogBox {
       this.instructionText,
     ]);
     
-    this.container.setDepth(1000);
+    this.container.setDepth(Depths.DIALOG);
     this.container.setVisible(false);
 
     // Cursor blink animation

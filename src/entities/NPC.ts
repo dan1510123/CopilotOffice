@@ -1,14 +1,19 @@
 import Phaser from 'phaser';
 import { AgentConfig } from '../config/agents';
 import { AgentStatus } from '../office/officeManager';
+import { Depths, ySortDepth } from '../config/depths';
+import {
+  Direction, getStandFrame, registerWalkAnimations,
+} from '../sprites/DirectionalSprite';
 
 // Badge color config per status
 const BADGE_COLORS: Record<string, { fill: number; stroke: number }> = {
   slacking:     { fill: 0x555555, stroke: 0x666666 },
-  initializing: { fill: 0xffff44, stroke: 0xffff88 },
+  starting:     { fill: 0xff9944, stroke: 0xffbb66 },
   ready:        { fill: 0x44aaff, stroke: 0x66ccff },
   waiting:      { fill: 0xffb86c, stroke: 0xffcc88 },
   thinking:     { fill: 0x50fa7b, stroke: 0x66ff99 },
+  error:        { fill: 0xff4444, stroke: 0xff6666 },
 };
 
 export class NPC extends Phaser.Physics.Arcade.Sprite {
@@ -32,23 +37,29 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     const x = config.position.x * tileSize + tileSize / 2;
     const y = config.position.y * tileSize + tileSize / 2;
     
-    super(scene, x, y, config.sprite);
+    super(scene, x, y, config.sprite, getStandFrame(Direction.DOWN));
     this.config = config;
     this.spriteScale = spriteScale;
     
     scene.add.existing(this);
-    scene.physics.add.existing(this, true); // Static body
+    scene.physics.add.existing(this, false); // Dynamic body (immovable)
+    (this.body as Phaser.Physics.Arcade.Body).setImmovable(true);
+    (this.body as Phaser.Physics.Arcade.Body).moves = false;
+
+    // Register walk animations for this NPC's spritesheet
+    registerWalkAnimations(scene.anims, config.sprite);
     
-    // Scale sprite
+    // Scale sprite — body size in world pixels, offset in FRAME coords (Phaser applies scale)
     this.setScale(spriteScale);
-    this.setSize(28 * spriteScale, 28 * spriteScale);
-    this.setOffset(2 * spriteScale, 4 * spriteScale);
+    this.setSize(8, 8);
+    this.setOffset(12, 13); // center 8px body in 32x34 frame: (32-8)/2=12, (34-8)/2=13
+    this.setDepth(ySortDepth(y, scene.physics.world.bounds.bottom));
 
     // Highlight glow shown on hover (behind sprite)
     this.highlightGlow = scene.add.graphics();
     this.highlightGlow.setPosition(x, y);
     this.highlightGlow.setVisible(false);
-    this.highlightGlow.setDepth(4);
+    this.highlightGlow.setDepth(Depths.NPC_EFFECTS);
     const gr = 17 * spriteScale;
     this.highlightGlow.fillStyle(0xffff88, 0.25);
     this.highlightGlow.fillCircle(0, 0, gr * 1.4);
@@ -59,7 +70,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.highlightRing = scene.add.graphics();
     this.highlightRing.setPosition(x, y);
     this.highlightRing.setAlpha(0);
-    this.highlightRing.setDepth(3);
+    this.highlightRing.setDepth(Depths.NPC_EFFECTS);
     this._drawHighlightRing(0x6677ff, spriteScale);
 
     // Make clickable and hoverable
@@ -87,7 +98,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       align: 'center',
     });
     this.nameLabel.setOrigin(0.5, 1);
-    this.nameLabel.setDepth(10);
+    this.nameLabel.setDepth(Depths.NPC_LABELS);
 
     // Add description label below the name, above the sprite
     const descFontSize = Math.max(10, Math.floor(tileSize / 5.5));
@@ -99,22 +110,22 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       align: 'center',
     });
     this.descriptionLabel.setOrigin(0.5, 0);
-    this.descriptionLabel.setDepth(10);
+    this.descriptionLabel.setDepth(Depths.NPC_LABELS);
 
     // Add session badge (shows when there's an active conversation)
     this.sessionBadge = scene.add.graphics();
     this.sessionBadge.setPosition(x + 16 * spriteScale, y - 24 * spriteScale);
-    this.sessionBadge.setDepth(11);
+    this.sessionBadge.setDepth(Depths.BADGES);
     this.updateSessionBadge(spriteScale);
     
-    // Session message count text
-    this.sessionText = scene.add.text(x + 16 * spriteScale, y - 24 * spriteScale, '', {
+    // Session status icon text
+    this.sessionText = scene.add.text(x + 16 * spriteScale, y - 24 * spriteScale, '💤', {
       font: `bold ${badgeFontSize * 4}px monospace`,
       color: '#ffffff',
     });
     this.sessionText.setOrigin(0.5, 0.5);
-    this.sessionText.setVisible(false);
-    this.sessionText.setDepth(12);
+    this.sessionText.setVisible(true);
+    this.sessionText.setDepth(Depths.BADGES + 1);
     
     // Add interaction indicator (hidden by default) - above the name
     this.indicator = scene.add.sprite(x, y - 48 * spriteScale, 'indicator');
@@ -137,14 +148,9 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     const stateKey = this.currentBadgeState;
     const colors = BADGE_COLORS[stateKey] || BADGE_COLORS.slacking;
 
-    if (stateKey === 'slacking') {
-      // No badge when slacking (or a dim one)
-      return;
-    }
-
-    this.sessionBadge.fillStyle(colors.fill, 1);
+    this.sessionBadge.fillStyle(colors.fill, stateKey === 'slacking' ? 0.7 : 1);
     this.sessionBadge.fillCircle(0, 0, 16 * scale);
-    this.sessionBadge.lineStyle(2, colors.stroke, 1);
+    this.sessionBadge.lineStyle(2, colors.stroke, stateKey === 'slacking' ? 0.5 : 1);
     this.sessionBadge.strokeCircle(0, 0, 16 * scale);
   }
 
@@ -159,6 +165,24 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     // Filled centre tint
     this.highlightRing.fillStyle(color, 0.12);
     this.highlightRing.fillCircle(0, 0, 22 * scale);
+  }
+
+  /** Change the NPC's facing direction (for future movement support). */
+  setDirection(direction: Direction): void {
+    this.setFrame(getStandFrame(direction));
+  }
+
+  /** Visual bump feedback when player collides with this NPC */
+  bump(): void {
+    if (this.scene.tweens.isTweening(this)) return;
+    this.scene.tweens.add({
+      targets: this,
+      scaleX: this.spriteScale * 1.08,
+      scaleY: this.spriteScale * 0.94,
+      duration: 80,
+      yoyo: true,
+      ease: 'Sine.easeOut',
+    });
   }
 
   setHighlighted(on: boolean): void {
@@ -206,9 +230,12 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.hasActiveSession = hasSession;
     if (!hasSession) {
       this.updateBadgeForState('slacking');
+      this.sessionText.setText('💤');
+      this.sessionText.setVisible(true);
+      return;
     }
     
-    if (hasSession && messageCount !== undefined && messageCount > 0) {
+    if (hasSession && messageCount!== undefined && messageCount > 0) {
       this.sessionText.setText(messageCount.toString());
       this.sessionText.setVisible(true);
     } else {
@@ -221,7 +248,8 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     if (!status || status.state === 'slacking') {
       this.hasActiveSession = false;
       this.updateBadgeForState('slacking');
-      this.sessionText.setVisible(false);
+      this.sessionText.setText('💤');
+      this.sessionText.setVisible(true);
       return;
     }
 
@@ -229,24 +257,16 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     const stateKey = status.subState || 'ready';
     this.updateBadgeForState(stateKey);
 
-    // Show thinking detail as badge text
-    if (stateKey === 'thinking' && status.thinkingDetail) {
-      const shortDetail = status.thinkingDetail.length > 5
-        ? status.thinkingDetail.substring(0, 5)
-        : status.thinkingDetail;
-      this.sessionText.setText(shortDetail);
-      this.sessionText.setVisible(true);
-    } else {
-      // Show status icon in badge
-      const icons: Record<string, string> = {
-        initializing: '⟳',
-        ready: '✓',
-        waiting: '⏳',
-        thinking: '⚡',
-      };
-      this.sessionText.setText(icons[stateKey] || '');
-      this.sessionText.setVisible(stateKey !== 'slacking');
-    }
+    // Show status icon in badge
+    const icons: Record<string, string> = {
+      starting: '🚀',
+      ready:    '✓',
+      waiting:  '⏳',
+      thinking: '🧠',
+      error:    '❌',
+    };
+    this.sessionText.setText(icons[stateKey] || '');
+    this.sessionText.setVisible(stateKey !== 'slacking');
   }
 
   private updateBadgeForState(stateKey: string): void {
@@ -261,11 +281,11 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       this.sessionBadge.setScale(1);
     }
 
-    if (stateKey === 'thinking') {
+    if (stateKey === 'thinking' || stateKey === 'starting') {
       this.badgePulseTween = this.scene.tweens.add({
         targets: this.sessionBadge,
-        scaleX: { from: 0.85, to: 1.15 },
-        scaleY: { from: 0.85, to: 1.15 },
+        scaleX: { from: 0.925, to: 1.075 },
+        scaleY: { from: 0.925, to: 1.075 },
         duration: 600,
         yoyo: true,
         repeat: -1,

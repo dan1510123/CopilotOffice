@@ -26,15 +26,26 @@ export class TerminalOverlay {
   private onCloseCallback: (() => void) | null = null;
   private headerElement: HTMLDivElement | null = null;
   private footerElement: HTMLDivElement | null = null;
+  private spriteCardElement: HTMLDivElement | null = null;
   private terminalDiv: HTMLDivElement | null = null;
   private sessionId: string | null = null;
   private sessionIdElement: HTMLSpanElement | null = null;
   private historyPopover: HTMLDivElement | null = null;
   private inputManager: InputManager;
+  private isFullWidth: boolean = false;
+  private fullscreenBtn: HTMLButtonElement | null = null;
+  private isFocused: boolean = false;
+  private resizeHandler: (() => void) | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private refitTimers: ReturnType<typeof setTimeout>[] = [];
+
+  private static readonly STORAGE_KEY = 'agencyOffice:terminalFullWidth';
 
   constructor(scene: Phaser.Scene, inputManager: InputManager) {
     this.scene = scene;
     this.inputManager = inputManager;
+    // Load persisted fullscreen preference
+    this.isFullWidth = localStorage.getItem(TerminalOverlay.STORAGE_KEY) === 'true';
     this.setupTerminalListeners();
   }
 
@@ -56,37 +67,13 @@ export class TerminalOverlay {
     }
   }
 
-  private parseSessionId(data: string): void {
-    // Look for session ID patterns in copilot output
-    // Copilot typically shows session path like: ~/.copilot/session-state/abc-123-def-456
-    const patterns = [
-      // UUID format (8-4-4-4-12)
-      /session-state[\/\\]([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i,
-      // Any path with session-state followed by ID
-      /session-state[\/\\]([a-f0-9-]{20,})/i,
-      // "Session: <id>" or "session: <id>"
-      /[Ss]ession[:\s]+([a-f0-9-]{36})/,
-      /[Ss]ession[:\s]+([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/,
-      // Session ID on its own line (UUID format)
-      /\b([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\b/,
-    ];
-    
-    for (const pattern of patterns) {
-      const match = data.match(pattern);
-      if (match && match[1] && match[1].length >= 20) {
-        this.sessionId = match[1];
-        this.updateSessionDisplay();
-        
-        // Save session ID for persistence (resume on game restart)
-        if (this.currentAgentId && window.copilotBridge) {
-          withTimeout(
-            window.copilotBridge.saveSessionId(this.currentAgentId, this.sessionId),
-            IPC_TIMEOUT, 'saveSessionId'
-          ).catch(() => { /* non-critical */ });
-        }
-        break;
-      }
-    }
+  private parseSessionId(_data: string): void {
+    // No-op: Session IDs are now exclusively managed by the terminal server.
+    // Previously this parsed UUIDs from CLI output and overwrote the server's
+    // session mapping via saveSessionId(), causing cross-agent contamination
+    // (e.g. generalist and architect sharing the same UUID).
+    // The server is the single source of truth — see startNewSession() and
+    // the show() reattach path which read the session ID from the server.
   }
 
   private updateSessionDisplay(): void {
@@ -121,7 +108,7 @@ export class TerminalOverlay {
           <span style="color: #888; font-size: 14px;">${agent.description}</span>
         </div>
         <div style="display: flex; align-items: center; gap: 15px;">
-          <span style="color: #666; font-size: 14px;">[F10] Close  [Ctrl+Shift+N] New Session</span>
+          <span style="color: #666; font-size: 14px;">[F10] Close  [Ctrl+Shift+N] New Session  [Ctrl+F] Fullscreen</span>
           <button id="close-terminal-btn" style="background: #ff4444; border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 16px;">✕ CLOSE</button>
         </div>
       `;
@@ -136,6 +123,15 @@ export class TerminalOverlay {
     if (this.container) {
       this.container.style.display = 'flex';
     }
+
+    // Show the SpriteCard
+    if (this.spriteCardElement) {
+      this.spriteCardElement.style.display = 'flex';
+    }
+
+    // Apply panel layout based on persisted fullscreen preference
+    this.applyPanelLayout();
+    this.updateFullscreenButton();
     
     // Update agent display in footer
     const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
@@ -169,23 +165,23 @@ export class TerminalOverlay {
         if (!exists) {
           await this.startNewSession(agent.id, agent.workingDir);
         } else {
-          // Session exists - reattach by triggering a resize (SIGWINCH), which forces
-          // the Copilot CLI TUI to fully redraw at the correct dimensions and cursor position.
-          // Do NOT replay raw scrollback — it fights with the live PTY cursor position.
-          await withTimeout(
+          // Session exists - reattach and replay scrollback to sync xterm with PTY state.
+          // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
+          // at the same position as the live PTY.
+          const attachResult = await withTimeout(
             window.copilotBridge.terminalAttach(agent.id),
             IPC_TIMEOUT, 'terminalAttach'
           );
 
-          // Fit the xterm viewport first, then send resize to PTY
-          this.fitAddon?.fit();
-          const dims = this.fitAddon?.proposeDimensions();
-          if (dims && window.copilotBridge) {
-            await withTimeout(
-              window.copilotBridge.terminalResize(agent.id, dims.cols, dims.rows),
-              IPC_TIMEOUT, 'terminalResize'
-            ).catch(() => {});
+          if (attachResult?.scrollback && this.terminal) {
+            this.terminal.write(attachResult.scrollback);
           }
+
+          // Notify main.ts to refresh this agent's badge status
+          this.scene.game.events.emit('agent:reattached', agent.id);
+
+          // Do NOT fit() here — the container may not be visible/laid out yet.
+          // All sizing is deferred to the post-layout rAF block below.
 
           // Try to get saved session ID
           const savedId = await withTimeout(
@@ -201,21 +197,13 @@ export class TerminalOverlay {
         this.terminal?.writeln(`\r\n\x1b[31m[${e}]\x1b[0m\r\n`);
       }
       
-      // Resize terminal - need to wait for container to be fully rendered
+      // Resize terminal — use debouncedRefit for multi-stage layout settling.
+      // Defer focus until after refit so xterm state is fully synced before input.
       if (this.fitAddon && this.terminal) {
-        const doFit = () => {
-          this.fitAddon?.fit();
-          const dims = this.fitAddon?.proposeDimensions();
-          if (dims && window.copilotBridge) {
-            withTimeout(
-              window.copilotBridge.terminalResize(agent.id, dims.cols, dims.rows),
-              IPC_TIMEOUT, 'terminalResize'
-            ).catch(() => { /* non-critical */ });
-          }
+        this.debouncedRefit();
+        requestAnimationFrame(() => {
           this.terminal?.focus();
-        };
-        // Run after layout is painted (rAF → rAF ensures two frames so flex layout settles)
-        requestAnimationFrame(() => requestAnimationFrame(doFit));
+        });
       }
     }
 
@@ -276,6 +264,10 @@ export class TerminalOverlay {
     );
     if (!result.success) {
       this.terminal?.writeln(`Failed to start terminal: ${result.error}`);
+    } else if (result.sessionId) {
+      // Use the server's authoritative session ID — never parse it from CLI output
+      this.sessionId = result.sessionId;
+      this.updateSessionDisplay();
     }
   }
 
@@ -346,35 +338,65 @@ export class TerminalOverlay {
       overflow: hidden;
     `;
     terminalOuter.appendChild(this.terminalDiv);
-    // Click anywhere in the padded area to focus terminal
-    terminalOuter.addEventListener('click', () => {
-      this.terminal?.focus();
+    // Click anywhere in the terminal area to re-focus (switches input + restores visuals)
+    terminalOuter.addEventListener('mousedown', () => {
+      if (this.isVisible && !this.isFocused) {
+        this.focusTerminal();
+      }
     });
     this.container.appendChild(terminalOuter);
 
-    // Footer with session info and agent sprite
-    this.footerElement = document.createElement('div');
-    this.footerElement.style.cssText = `
-      padding: 15px 20px;
+    const terminalPanel = document.getElementById('terminal-panel') || document.body;
+    terminalPanel.appendChild(this.container);
+
+    // Click anywhere in the terminal overlay to re-focus
+    this.container.addEventListener('mousedown', () => {
+      if (this.isVisible && !this.isFocused) {
+        this.focusTerminal();
+      }
+    });
+
+    // Create the SpriteCard — a full-width bar mounted outside the terminal overlay
+    this.createSpriteCard();
+
+    // Get reference to session ID element
+    this.sessionIdElement = document.getElementById('session-id-display') as HTMLSpanElement;
+    if (this.sessionIdElement) {
+      this.sessionIdElement.onclick = () => this.copySessionId();
+    }
+
+    // Add xterm.css styles
+    this.injectStyles();
+  }
+
+  /** Create the SpriteCard — a full-width bottom bar showing agent sprite, info, and controls. */
+  private createSpriteCard(): void {
+    this.spriteCardElement = document.createElement('div');
+    this.spriteCardElement.id = 'sprite-card';
+    this.spriteCardElement.style.cssText = `
+      width: 100%;
       background: #1a1a2e;
       border-top: 1px solid #3a5a8a;
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 14px;
       color: #888;
-      border-radius: 0 0 6px 6px;
-      display: flex;
+      display: none;
       flex-shrink: 0;
       justify-content: space-between;
       align-items: center;
+      padding: 15px 30px;
+      box-sizing: border-box;
+      position: relative;
+      z-index: 10001;
     `;
-    
-    // Left side: Agent sprite and name (big)
+
+    // Left side: Agent sprite and name
     const agentDisplay = document.createElement('div');
     agentDisplay.id = 'agent-display';
     agentDisplay.style.cssText = `
       display: flex;
       align-items: center;
-      gap: 15px;
+      gap: 20px;
     `;
     agentDisplay.innerHTML = `
       <canvas id="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 160px; height: 170px; border-radius: 8px;"></canvas>
@@ -383,13 +405,13 @@ export class TerminalOverlay {
         <span style="color: #666; font-size: 12px;">Session ID: <span id="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
       </div>
     `;
-    this.footerElement.appendChild(agentDisplay);
-    
-    // Right side: Button grid (Session History + Clear History | New Session + Close Session)
+    this.spriteCardElement.appendChild(agentDisplay);
+
+    // Right side: Button grid
     const buttonGrid = document.createElement('div');
     buttonGrid.style.cssText = `
       display: grid;
-      grid-template-columns: auto auto;
+      grid-template-columns: auto auto auto;
       gap: 8px;
     `;
 
@@ -405,7 +427,6 @@ export class TerminalOverlay {
       white-space: nowrap;
     `;
 
-    // Session History button (top-left)
     const historyBtn = document.createElement('button');
     historyBtn.textContent = '📜 Session History';
     historyBtn.style.cssText = btnStyle;
@@ -414,7 +435,6 @@ export class TerminalOverlay {
     historyBtn.onclick = () => this.toggleSessionHistory(historyBtn);
     buttonGrid.appendChild(historyBtn);
 
-    // New Session button (top-right)
     const newSessionBtn = document.createElement('button');
     newSessionBtn.textContent = '🔄 New Session';
     newSessionBtn.style.cssText = btnStyle;
@@ -423,7 +443,6 @@ export class TerminalOverlay {
     newSessionBtn.onclick = () => this.handleNewSession();
     buttonGrid.appendChild(newSessionBtn);
 
-    // Clear History button (bottom-left)
     const clearHistoryBtn = document.createElement('button');
     clearHistoryBtn.textContent = '🗑️ Clear History';
     clearHistoryBtn.style.cssText = btnStyle;
@@ -432,7 +451,6 @@ export class TerminalOverlay {
     clearHistoryBtn.onclick = () => this.handleClearHistory();
     buttonGrid.appendChild(clearHistoryBtn);
 
-    // Close Session button (bottom-right)
     const closeSessionBtn = document.createElement('button');
     closeSessionBtn.textContent = '⏹ Close Session';
     closeSessionBtn.style.cssText = btnStyle + 'color: #ff8888;';
@@ -441,21 +459,25 @@ export class TerminalOverlay {
     closeSessionBtn.onclick = () => this.handleCloseSession();
     buttonGrid.appendChild(closeSessionBtn);
 
-    this.footerElement.appendChild(buttonGrid);
-    
-    this.container.appendChild(this.footerElement);
+    this.fullscreenBtn = document.createElement('button');
+    this.fullscreenBtn.textContent = this.isFullWidth ? '⛶ Half' : '⛶ Fullscreen';
+    this.fullscreenBtn.style.cssText = btnStyle + 'color: #88ccff;';
+    this.fullscreenBtn.onmouseover = () => { if (this.fullscreenBtn) this.fullscreenBtn.style.background = '#2a3a5a'; };
+    this.fullscreenBtn.onmouseout = () => { if (this.fullscreenBtn) this.fullscreenBtn.style.background = '#2a3a4a'; };
+    this.fullscreenBtn.onclick = () => this.toggleFullWidth();
+    this.fullscreenBtn.title = 'Toggle fullscreen (Ctrl+F)';
+    buttonGrid.appendChild(this.fullscreenBtn);
 
-    const terminalPanel = document.getElementById('terminal-panel') || document.body;
-    terminalPanel.appendChild(this.container);
+    this.spriteCardElement.appendChild(buttonGrid);
 
-    // Get reference to session ID element
-    this.sessionIdElement = document.getElementById('session-id-display') as HTMLSpanElement;
-    if (this.sessionIdElement) {
-      this.sessionIdElement.onclick = () => this.copySessionId();
+    // Mount to #game-container so it spans full width, between mainContent and status bar
+    const gameContainer = document.getElementById('game-container');
+    if (gameContainer) {
+      gameContainer.appendChild(this.spriteCardElement);
     }
 
-    // Add xterm.css styles
-    this.injectStyles();
+    // Keep footerElement reference pointing to spriteCard for history popover positioning
+    this.footerElement = this.spriteCardElement;
   }
 
   private copySessionId(): void {
@@ -678,16 +700,96 @@ export class TerminalOverlay {
       }
     });
 
-    // Handle resize
-    window.addEventListener('resize', () => {
-      if (this.isVisible && this.fitAddon && this.terminal && this.currentAgentId) {
-        this.fitAddon.fit();
-        const dims = this.fitAddon.proposeDimensions();
-        if (dims && window.copilotBridge) {
-          window.copilotBridge.terminalResize(this.currentAgentId, dims.cols, dims.rows);
-        }
+    // Handle resize — store reference for cleanup in destroy()
+    this.resizeHandler = () => {
+      if (this.isVisible) {
+        this.debouncedRefit();
+      }
+    };
+    window.addEventListener('resize', this.resizeHandler);
+
+    // ResizeObserver catches CSS-driven panel resizes that window.resize misses
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.isVisible) {
+        this.debouncedRefit();
       }
     });
+    if (this.terminalDiv) {
+      this.resizeObserver.observe(this.terminalDiv);
+    }
+  }
+
+  /** Toggle between half-width and full-width terminal panel. */
+  private toggleFullWidth(): void {
+    this.isFullWidth = !this.isFullWidth;
+    localStorage.setItem(TerminalOverlay.STORAGE_KEY, String(this.isFullWidth));
+    console.log(`[TerminalOverlay] toggleFullWidth() — now ${this.isFullWidth ? 'full' : 'half'}`);
+    this.applyPanelLayout();
+    this.updateFullscreenButton();
+    this.debouncedRefit();
+  }
+
+  /** Apply panel widths based on isFullWidth state. */
+  private applyPanelLayout(): void {
+    const officePanel = document.getElementById('office-panel');
+    const terminalPanel = document.getElementById('terminal-panel');
+    if (!officePanel || !terminalPanel) return;
+
+    if (this.isFullWidth) {
+      officePanel.style.display = 'none';
+      terminalPanel.style.width = '100%';
+    } else {
+      officePanel.style.display = 'block';
+      officePanel.style.width = '50%';
+      terminalPanel.style.width = '50%';
+    }
+  }
+
+  /** Restore half-width layout (used when hiding terminal). */
+  private restorePanelLayout(): void {
+    const officePanel = document.getElementById('office-panel');
+    const terminalPanel = document.getElementById('terminal-panel');
+    if (!officePanel || !terminalPanel) return;
+
+    officePanel.style.display = 'block';
+    officePanel.style.width = '50%';
+    terminalPanel.style.width = '50%';
+  }
+
+  /** Re-fit xterm after panel resize and notify PTY of new dimensions.
+   *  Multi-stage: immediate → 150ms → 350ms to catch late layout shifts. */
+  private debouncedRefit(): void {
+    if (!this.fitAddon || !this.terminal || !this.currentAgentId) return;
+
+    // Cancel any pending refit timers
+    for (const t of this.refitTimers) clearTimeout(t);
+    this.refitTimers.length = 0;
+
+    const doFit = () => {
+      this.fitAddon?.fit();
+      const dims = this.fitAddon?.proposeDimensions();
+      if (dims && window.copilotBridge && this.currentAgentId) {
+        window.copilotBridge.terminalResize(this.currentAgentId, dims.cols, dims.rows);
+      }
+    };
+
+    // Stage 1: immediate (next frame)
+    requestAnimationFrame(() => {
+      doFit();
+      // Stage 2: after 150ms
+      this.refitTimers.push(setTimeout(() => {
+        doFit();
+        // Stage 3: after 350ms
+        this.refitTimers.push(setTimeout(doFit, 200));
+      }, 150));
+    });
+  }
+
+  /** Update the fullscreen toggle button label. */
+  private updateFullscreenButton(): void {
+    if (this.fullscreenBtn) {
+      this.fullscreenBtn.textContent = this.isFullWidth ? '⛶ Half' : '⛶ Fullscreen';
+    }
   }
 
   /** Give keyboard focus to the terminal. Safe to call when already focused. */
@@ -695,9 +797,25 @@ export class TerminalOverlay {
     console.log('[TerminalOverlay] focusTerminal() — delegating to InputManager');
     this.inputManager.switchToTerminal(
       'TerminalOverlay.focusTerminal()',
-      () => this.handleNewSession()
+      () => this.handleNewSession(),
+      () => this.toggleFullWidth()
     );
     this.inputManager.focusTerminalXterm(this.terminal);
+
+    // Restore NPC highlight for the active agent
+    if (this.currentAgent) {
+      this.scene.game.events.emit('npc:highlight', this.currentAgent.id);
+      // Restore sprite canvas glow
+      const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+      if (spriteCanvas) {
+        const colorHex = '#' + this.currentAgent.color.toString(16).padStart(6, '0');
+        spriteCanvas.style.boxShadow = `0 0 18px 6px ${colorHex}99, 0 0 6px 2px ${colorHex}`;
+        spriteCanvas.style.border = `2px solid ${colorHex}`;
+      }
+    }
+
+    // Remove dimmed visual state
+    this.setTerminalFocusVisual(true);
   }
 
   /** Give keyboard focus back to the game canvas. Safe to call when already blurred. */
@@ -705,6 +823,28 @@ export class TerminalOverlay {
     console.log('[TerminalOverlay] blurTerminal() — delegating to InputManager');
     this.inputManager.switchToGame('TerminalOverlay.blurTerminal()');
     this.inputManager.blurTerminalXterm(this.terminal);
+
+    // Clear NPC highlight glow
+    this.scene.game.events.emit('npc:clear-highlight');
+
+    // Clear sprite canvas glow
+    const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+    if (spriteCanvas) {
+      spriteCanvas.style.boxShadow = '';
+      spriteCanvas.style.border = '';
+    }
+
+    // Apply dimmed visual state
+    this.setTerminalFocusVisual(false);
+  }
+
+  /** Apply or remove the visual focus/blur state on the terminal panel. */
+  private setTerminalFocusVisual(focused: boolean): void {
+    this.isFocused = focused;
+    if (this.spriteCardElement && this.spriteCardElement.style.display !== 'none') {
+      this.spriteCardElement.style.background = focused ? '#1a1a2e' : '#111118';
+      this.spriteCardElement.style.borderTopColor = focused ? '#3a5a8a' : '#2a2a3a';
+    }
   }
 
   private setupKeyboardHandler(): void {
@@ -716,8 +856,15 @@ export class TerminalOverlay {
     if (this.container) {
       this.container.style.display = 'none';
     }
+    // Hide the SpriteCard
+    if (this.spriteCardElement) {
+      this.spriteCardElement.style.display = 'none';
+    }
     this.isVisible = false;
     this.closeHistoryPopover();
+
+    // Always restore half-width so the game is visible
+    this.restorePanelLayout();
 
     // F10 handler is now managed by InputManager (deactivated below)
 
@@ -725,8 +872,10 @@ export class TerminalOverlay {
 
     this.blurTerminal();
 
-    // Clear NPC highlight and profile canvas glow
-    this.scene.game.events.emit('npc:clear-highlight');
+    // Reset visual state to full opacity (blurTerminal dims it, but hide removes it entirely)
+    this.setTerminalFocusVisual(true);
+
+    // Clear profile canvas glow (NPC highlight already cleared by blurTerminal)
     const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
     if (spriteCanvas) {
       spriteCanvas.style.boxShadow = '';
@@ -759,11 +908,27 @@ export class TerminalOverlay {
   }
 
   destroy(): void {
+    // Cancel pending refit timers
+    for (const t of this.refitTimers) clearTimeout(t);
+    this.refitTimers.length = 0;
+    // Remove window resize listener
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
+    // Disconnect ResizeObserver
+    if (this.resizeObserver) {
+      this.resizeObserver.disconnect();
+      this.resizeObserver = null;
+    }
     if (this.terminal) {
       this.terminal.dispose();
     }
     if (this.container && this.container.parentNode) {
       this.container.parentNode.removeChild(this.container);
+    }
+    if (this.spriteCardElement && this.spriteCardElement.parentNode) {
+      this.spriteCardElement.parentNode.removeChild(this.spriteCardElement);
     }
     if (window.copilotBridge) {
       window.copilotBridge.removeTerminalListeners();

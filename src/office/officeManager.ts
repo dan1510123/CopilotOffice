@@ -9,7 +9,22 @@ export interface OfficeConfig {
 }
 
 export type AgentState = 'slacking' | 'active';
-export type ActiveSubState = 'initializing' | 'ready' | 'waiting' | 'thinking';
+export type ActiveSubState = 'starting' | 'ready' | 'waiting' | 'thinking' | 'error';
+
+// Effective state combines state + subState into a single key for transition validation.
+// 'slacking' when state is slacking; otherwise the subState value.
+type EffectiveState = 'slacking' | ActiveSubState;
+
+// Valid state transitions — each key maps to the set of states it can transition TO.
+// Transitions not listed here will log a warning but still execute (backward compat).
+const VALID_TRANSITIONS: Record<EffectiveState, Set<EffectiveState>> = {
+  slacking: new Set(['starting', 'ready']),
+  starting: new Set(['ready', 'error', 'slacking']),
+  ready:    new Set(['thinking', 'waiting', 'slacking']),
+  thinking: new Set(['ready', 'waiting', 'thinking', 'slacking']),
+  waiting:  new Set(['thinking', 'ready', 'slacking']),
+  error:    new Set(['slacking', 'starting']),
+};
 
 export interface AgentStatus {
   agentId: string;
@@ -17,6 +32,11 @@ export interface AgentStatus {
   subState: ActiveSubState | null;   // null when slacking
   thinkingDetail: string | null;     // what agent is doing when thinking
   currentTool: string | null;        // raw tool name for backward compat
+  // Enhanced tracking fields
+  unreadCount: number;               // notifications unseen by user
+  lastEvent: string | null;          // last notable event description
+  activityStartTime: number | null;  // Date.now() when entering thinking/waiting
+  lastCompletedAction: string | null; // e.g. "edit on src/main.ts"
 }
 
 export interface OfficeData {
@@ -216,55 +236,81 @@ export class OfficeManager {
     if (!office) return null;
     let status = office.agents.get(agentId);
     if (!status) {
-      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null };
+      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null, unreadCount: 0, lastEvent: null, activityStartTime: null, lastCompletedAction: null };
       office.agents.set(agentId, status);
     }
     return status;
   }
 
+  private getEffectiveState(status: AgentStatus): EffectiveState {
+    return status.state === 'slacking' ? 'slacking' : (status.subState || 'ready');
+  }
+
+  private validateTransition(agentId: string, status: AgentStatus, target: EffectiveState): void {
+    const from = this.getEffectiveState(status);
+    if (from === target) return; // self-transition always ok
+    if (!VALID_TRANSITIONS[from]?.has(target)) {
+      console.warn(`[OfficeManager] Invalid transition: ${agentId} ${from} → ${target}`);
+    }
+  }
+
   setAgentSlacking(officeId: string, agentId: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    this.validateTransition(agentId, status, 'slacking');
     status.state = 'slacking';
     status.subState = null;
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.activityStartTime = null;
   }
 
-  setAgentInitializing(officeId: string, agentId: string): void {
+  setAgentStarting(officeId: string, agentId: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    if (status.subState === 'starting') return; // already starting — dedup
+    this.validateTransition(agentId, status, 'starting');
     status.state = 'active';
-    status.subState = 'initializing';
+    status.subState = 'starting';
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.activityStartTime = Date.now();
   }
 
   setAgentReady(officeId: string, agentId: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    this.validateTransition(agentId, status, 'ready');
     status.state = 'active';
     status.subState = 'ready';
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.activityStartTime = null;
   }
 
   setAgentWaiting(officeId: string, agentId: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    this.validateTransition(agentId, status, 'waiting');
     status.state = 'active';
     status.subState = 'waiting';
     status.thinkingDetail = null;
     status.currentTool = null;
+    if (!status.activityStartTime) status.activityStartTime = Date.now();
   }
 
-  setAgentThinking(officeId: string, agentId: string, detail: string | null, toolName: string | null): void {
+  setAgentThinking(officeId: string, agentId: string, detail: string | null): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    this.validateTransition(agentId, status, 'thinking');
     status.state = 'active';
     status.subState = 'thinking';
     status.thinkingDetail = detail;
-    status.currentTool = toolName;
+    // currentTool is derived from the agentTools stack
+    const office = this.offices.get(officeId);
+    const tools = office?.agentTools.get(agentId);
+    status.currentTool = tools?.length ? tools[tools.length - 1].name : null;
+    if (!status.activityStartTime) status.activityStartTime = Date.now();
   }
 
   clearAgentThinkingDetail(officeId: string, agentId: string): void {
@@ -273,6 +319,37 @@ export class OfficeManager {
     if (status.subState === 'thinking') {
       status.thinkingDetail = null;
     }
+  }
+
+  incrementUnread(officeId: string, agentId: string, event: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.unreadCount++;
+    status.lastEvent = event;
+  }
+
+  clearUnread(officeId: string, agentId: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.unreadCount = 0;
+    status.lastEvent = null;
+  }
+
+  setAgentError(officeId: string, agentId: string, detail: string | null = null): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    this.validateTransition(agentId, status, 'error');
+    status.state = 'active';
+    status.subState = 'error';
+    status.thinkingDetail = detail;
+    status.currentTool = null;
+    status.activityStartTime = null;
+  }
+
+  setLastCompletedAction(officeId: string, agentId: string, action: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.lastCompletedAction = action;
   }
 
   // Ensure at least one office exists

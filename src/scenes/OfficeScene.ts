@@ -3,9 +3,16 @@ import { Player } from '../entities/Player';
 import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
+import { BasketballGame } from '../ui/BasketballGame';
 import { AGENTS, AgentConfig } from '../config/agents';
+import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
+
+/** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
+function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
+  if (scene.physics.world.drawDebug) console.log('[Debug]', ...args);
+}
 
 interface DeskInfo {
   sprite: Phaser.GameObjects.Sprite;
@@ -28,6 +35,7 @@ interface ExitDoor {
 // Feature flags
 const ENABLE_PING_PONG = false;
 const ENABLE_DECORATIONS = false;
+const ENABLE_BASKETBALL = false;
 
 export class OfficeScene extends Phaser.Scene {
   private player!: Player;
@@ -35,14 +43,19 @@ export class OfficeScene extends Phaser.Scene {
   private desks: DeskInfo[] = [];
   private terminalOverlay!: TerminalOverlay;
   private pongGame!: PongGame;
+  private basketballGame!: BasketballGame;
   private pingPongTable: GameTable | null = null;
+  private basketballHoop: GameTable | null = null;
   private nearPingPong: boolean = false;
+  private nearBasketball: boolean = false;
   private pingPongPrompt!: Phaser.GameObjects.Text;
+  private basketballPrompt!: Phaser.GameObjects.Text;
   private tileSize: number = 64;
   private mapWidth: number = 20;
   private mapHeight: number = 12;
   private interactKey!: Phaser.Input.Keyboard.Key;
   private walls!: Phaser.Physics.Arcade.StaticGroup;
+  private furniture!: Phaser.Physics.Arcade.StaticGroup;
   private nearestNPC: NPC | null = null;
   private nearestDesk: DeskInfo | null = null;
   private titleText!: Phaser.GameObjects.Text;
@@ -87,7 +100,7 @@ export class OfficeScene extends Phaser.Scene {
       entranceY
     );
     this.player.setScale(this.spriteScale);
-    this.player.setDepth(50);
+    this.player.setDepth(ySortDepth(this.player.y, this.physics.world.bounds.bottom));
     this.player.setVisible(false);
     this.player.disableMovement();
     
@@ -104,6 +117,9 @@ export class OfficeScene extends Phaser.Scene {
     // Create pong game overlay
     this.pongGame = new PongGame(this);
 
+    // Create basketball game overlay
+    this.basketballGame = new BasketballGame(this);
+
     // Create ping pong prompt (hidden by default)
     this.pingPongPrompt = this.add.text(0, 0, '[E] Play Ping Pong', {
       font: 'bold 14px monospace',
@@ -112,10 +128,21 @@ export class OfficeScene extends Phaser.Scene {
       padding: { x: 8, y: 4 },
     });
     this.pingPongPrompt.setOrigin(0.5, 1);
-    this.pingPongPrompt.setDepth(100);
+    this.pingPongPrompt.setDepth(Depths.UI_OVERLAY);
     this.pingPongPrompt.setVisible(false);
 
-    // Create exit prompt (hidden by default)
+    // Create basketball prompt (hidden by default)
+    this.basketballPrompt = this.add.text(0, 0, '[E] Play Basketball', {
+      font: 'bold 14px monospace',
+      color: '#ff8c00',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 4 },
+    });
+    this.basketballPrompt.setOrigin(0.5, 1);
+    this.basketballPrompt.setDepth(Depths.UI_OVERLAY);
+    this.basketballPrompt.setVisible(false);
+
+    // Create exit prompt(hidden by default)
     this.exitPrompt = this.add.text(0, 0, '[E] Exit', {
       font: 'bold 14px monospace',
       color: '#ffcc00',
@@ -123,7 +150,7 @@ export class OfficeScene extends Phaser.Scene {
       padding: { x: 8, y: 4 },
     });
     this.exitPrompt.setOrigin(0.5, 1);
-    this.exitPrompt.setDepth(100);
+    this.exitPrompt.setDepth(Depths.UI_OVERLAY);
     this.exitPrompt.setVisible(false);
 
     // Register exit zone at the center of the grand entrance doors
@@ -142,19 +169,28 @@ export class OfficeScene extends Phaser.Scene {
     
     // Add collision between player and walls
     this.physics.add.collider(this.player, this.walls);
+
+    // Add collision between player and furniture (desks, chairs, game tables)
+    this.physics.add.collider(this.player, this.furniture);
+
+    // Add collision between player and NPCs (with bump feedback)
+    this.physics.add.collider(this.player, this.npcs, (_player, npcObj) => {
+      const npc = npcObj as NPC;
+      npc.bump();
+    });
     
     // Font sizes based on screen
     const titleFontSize = Math.max(24, Math.floor(screenHeight / 40));
     const instructionFontSize = Math.max(14, Math.floor(screenHeight / 70));
     
     // Add title
-    this.titleText = this.add.text(screenWidth / 2, 10, '🏢 AGENCY OFFICE', {
+    this.titleText = this.add.text(screenWidth / 2, 10, '🏢 COPILOT OFFICE', {
       font: `bold ${titleFontSize}px monospace`,
       color: '#ffffff',
     });
     this.titleText.setOrigin(0.5, 0);
     this.titleText.setScrollFactor(0);
-    this.titleText.setDepth(100);
+    this.titleText.setDepth(Depths.UI_OVERLAY);
     
     // Add instructions (initially show entrance prompt)
     this.instructionText = this.add.text(screenWidth / 2, screenHeight - 78, 
@@ -164,24 +200,13 @@ export class OfficeScene extends Phaser.Scene {
     });
     this.instructionText.setOrigin(0.5, 1);
     this.instructionText.setScrollFactor(0);
-    this.instructionText.setDepth(100);
+    this.instructionText.setDepth(Depths.UI_OVERLAY);
 
     // Camera setup - no follow needed since room fits
     this.cameras.main.setBounds(0, 0, this.mapWidth * this.tileSize, this.mapHeight * this.tileSize);
     this.cameras.main.centerOn(this.mapWidth * this.tileSize / 2, this.mapHeight * this.tileSize / 2);
 
-    // Listen for terminal open/close from main.ts to toggle player movement
-    this.game.events.on('terminal:open', () => {
-      this.playerMovementEnabled = false;
-      if (this.playerInScene) this.player.disableMovement();
-    }, this);
-
-    this.game.events.on('terminal:close', () => {
-      this.playerMovementEnabled = true;
-      if (this.playerInScene) this.player.enableMovement();
-    }, this);
-
-    // Allow external UI (e.g. overview panel) to open agent terminal directly
+    // Allow external UI(e.g. overview panel) to open agent terminal directly
     this.game.events.on('open:agent:terminal', (agentId: string) => {
       const agent = AGENTS.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
@@ -209,9 +234,23 @@ export class OfficeScene extends Phaser.Scene {
       this.updateSessionBadges();
     }, this);
 
+    // Sync NPC badges with current officeManager state on scene start.
+    // This catches status updates that fired before this listener was registered (e.g. after soft reload).
+    this.updateSessionBadges();
+
     // Listen for office switch to reinitialize if needed
     this.game.events.on('office:switch', (_officeId: string, _workingDir: string) => {
       console.log(`[OfficeScene] Office switched to: ${_officeId}`);
+    }, this);
+
+    // DOM-level click on the game panel — guaranteed to fire even when Phaser input is inactive
+    this.game.events.on('game:panel:clicked', () => {
+      debugLog(this, `game:panel:clicked — blurring terminal`);
+      this.terminalOverlay.blurTerminal();
+      if (this.playerInScene) {
+        this.playerMovementEnabled = true;
+        this.player.enableMovement();
+      }
     }, this);
 
     // Click on NPC → open / switch conversation immediately.
@@ -225,10 +264,14 @@ export class OfficeScene extends Phaser.Scene {
         this.startConversation(clickedNPC.config);
       } else if (this.playerInScene) {
         // Background click — give game focus back
-        console.log('[OfficeScene] background click — returning focus to game');
+        debugLog(this, 'background click — returning focus to game');
         this.terminalOverlay.blurTerminal();
         this.playerMovementEnabled = true;
         this.player.enableMovement();
+      } else {
+        // Player not in scene but still blur terminal on background click
+        debugLog(this, 'background click (player not in scene) — blurring terminal');
+        this.terminalOverlay.blurTerminal();
       }
     });
 
@@ -239,6 +282,27 @@ export class OfficeScene extends Phaser.Scene {
       spaceKey.on('down', () => { if (!this.playerInScene) this.triggerEntrance(); });
       enterKey.on('down', () => { if (!this.playerInScene) this.triggerEntrance(); });
     }
+
+    // Listen for debug mode toggle
+    this.game.events.on('debug:toggle', (enabled: boolean) => {
+      console.log(`[OfficeScene] debug:toggle received: ${enabled}`);
+      if (enabled) {
+        // Ensure debugGraphic exists (not created when physics starts with debug:false)
+        if (!this.physics.world.debugGraphic) {
+          console.log('[OfficeScene] Creating debug graphic');
+          this.physics.world.createDebugGraphic();
+        }
+        this.physics.world.drawDebug = true;
+        this.physics.world.debugGraphic!.setVisible(true);
+      } else {
+        this.physics.world.drawDebug = false;
+        if (this.physics.world.debugGraphic) {
+          this.physics.world.debugGraphic.clear();
+          this.physics.world.debugGraphic.setVisible(false);
+        }
+      }
+      console.log(`[OfficeScene] drawDebug now: ${this.physics.world.drawDebug}`);
+    }, this);
 
     // Initialise InputManager state to "game" (the default mode at startup)
     this.inputManager.switchToGame('OfficeScene.create() initial state');
@@ -252,13 +316,41 @@ export class OfficeScene extends Phaser.Scene {
 
   private createOfficeLayout(): void {
     this.walls = this.physics.add.staticGroup();
+    this.furniture = this.physics.add.staticGroup();
     
     const scale = this.tileSize / 32; // Scale factor for 32px sprites
+    const worldH = this.physics.world.bounds.bottom;
     
     // Helper to add scaled wall - create physics sprite directly in group
     const addWall = (x: number, y: number, texture: string) => {
       const sprite = this.walls.create(x, y, texture) as Phaser.Physics.Arcade.Sprite;
       sprite.setScale(scale).refreshBody();
+      return sprite;
+    };
+
+    // Helper to add collidable furniture with y-sorted depth.
+    // Body opts are in base (unscaled) sprite coordinates.
+    // Uses body.reset() for precise world-coordinate positioning of static bodies.
+    const addFurniture = (x: number, y: number, texture: string, opts?: { bodyWidth?: number; bodyHeight?: number; bodyOffsetX?: number; bodyOffsetY?: number; depthSortY?: number }) => {
+      const sprite = this.furniture.create(x, y, texture) as Phaser.Physics.Arcade.Sprite;
+      sprite.setScale(scale);
+      const body = sprite.body as Phaser.Physics.Arcade.StaticBody;
+      if (opts?.bodyWidth != null) {
+        const bw = opts.bodyWidth! * scale;
+        const bh = opts.bodyHeight! * scale;
+        const offX = (opts.bodyOffsetX ?? 0) * scale;
+        const offY = (opts.bodyOffsetY ?? 0) * scale;
+        body.setSize(bw, bh);
+        // Position body directly: sprite top-left + offset
+        const topLeftX = x - sprite.displayWidth * sprite.originX;
+        const topLeftY = y - sprite.displayHeight * sprite.originY;
+        body.reset(topLeftX + offX, topLeftY + offY);
+      } else {
+        body.updateFromGameObject();
+      }
+      // Y-sort depth: use custom sort point or default to sprite bottom
+      const sortY = opts?.depthSortY ?? (y + sprite.displayHeight / 2);
+      sprite.setDepth(ySortDepth(sortY, worldH));
       return sprite;
     };
     
@@ -319,13 +411,27 @@ export class OfficeScene extends Phaser.Scene {
     this.createGrandDoors();
     this.createEntranceRug();
     
-    // Add agent desks (decorative only - no collision)
+    // Add agent desks with collision (tabletop collision body, legs are visual only)
+    // Desk sprite is 32x30 base. Tabletop surface = y4..y21, legs = y22..y29.
+    // Collision body covers the tabletop surface area only.
+    const deskBodyW = 28;   // slightly inset from sprite edges
+    const deskBodyH = 14;   // covers tabletop surface (not lip or legs)
+    const deskBodyOffX = 2; // center horizontally: (32-28)/2
+    const deskBodyOffY = 5; // start at tabletop surface: ~y5 in sprite coords
+    const deskLegsH = 8;    // legs height in base sprite coords
     AGENTS.forEach(agent => {
       const deskX = agent.position.x * this.tileSize + this.tileSize/2;
       const deskY = (agent.position.y + 1) * this.tileSize + this.tileSize/2;
       
-      // Desk - decorative only
-      const desk = addDecor(deskX, deskY, 'desk');
+      // Desk with collision body on tabletop only
+      // Depth sort at tabletop bottom (y=22 in sprite), not sprite bottom
+      const desk = addFurniture(deskX, deskY, 'desk', {
+        bodyWidth: deskBodyW,
+        bodyHeight: deskBodyH,
+        bodyOffsetX: deskBodyOffX,
+        bodyOffsetY: deskBodyOffY,
+        depthSortY: deskY,
+      });
       
       // Track desk for interaction
       this.desks.push({
@@ -335,24 +441,32 @@ export class OfficeScene extends Phaser.Scene {
         y: deskY,
       });
       
-      // Laptop centered on desk surface
-      addDecor(deskX, deskY, 'computer').setDepth(1);
+      // Laptop centered on desk surface (decorative, no collision — desk handles it)
+      const laptopSprite = addDecor(deskX, deskY - deskLegsH * scale / 2, 'computer');
+      laptopSprite.setDepth(ySortDepth(deskY, worldH) + 0.1);
     });
     
-    // Boss desk at center bottom (large desk) - NO collision so player can walk through
+    // Boss desk at top center (3 tiles wide) with collision
     const bossDeskX = this.mapWidth * this.tileSize / 2;
-    const bossDeskY = (this.mapHeight - 6) * this.tileSize + this.tileSize/2;
+    const bossDeskY = 2 * this.tileSize + this.tileSize/2;
     
-    // Create larger boss desk (3 tiles wide) - decorative only, no collision
     for (let i = -1; i <= 1; i++) {
-      addDecor(bossDeskX + i * this.tileSize, bossDeskY, 'desk');
+      addFurniture(bossDeskX + i * this.tileSize, bossDeskY, 'desk', {
+        bodyWidth: deskBodyW,
+        bodyHeight: deskBodyH,
+        bodyOffsetX: deskBodyOffX,
+        bodyOffsetY: deskBodyOffY,
+        depthSortY: bossDeskY,
+      });
     }
     
-    // Boss laptop centered on desk
-    addDecor(bossDeskX, bossDeskY, 'computer').setDepth(1);
+    // Boss laptop centered on desk (decorative)
+    addDecor(bossDeskX, bossDeskY - deskLegsH * scale / 2, 'computer')
+      .setDepth(ySortDepth(bossDeskY, worldH) + 0.1);
     
-    // Boss chair (behind desk, where player spawns)
-    addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair');
+    // Boss chair (behind desk, decorative — keeps player spawn area clear)
+    addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair')
+      .setDepth(ySortDepth(bossDeskY + this.tileSize + 16 * scale, worldH));
     
     // Add some decorations (no collision)
     if (ENABLE_DECORATIONS) {
@@ -409,13 +523,11 @@ export class OfficeScene extends Phaser.Scene {
     
     // (rug moved to entrance area)
     
-    // Ping pong table (left of center)
+    // Ping pong table (left of center) - with collision
     if (ENABLE_PING_PONG) {
       const pingpongX = Math.floor(this.mapWidth / 2 - 3) * this.tileSize + this.tileSize / 2;
       const pingpongY = Math.floor(this.mapHeight / 2) * this.tileSize + this.tileSize / 2;
-      const pingpongSprite = addDecor(pingpongX, pingpongY, 'pingpong');
-      pingpongSprite.setScale(scale);
-      pingpongSprite.setDepth(5);
+      const pingpongSprite = addFurniture(pingpongX, pingpongY, 'pingpong');
       
       // Track ping pong table for interaction
       this.pingPongTable = {
@@ -428,6 +540,19 @@ export class OfficeScene extends Phaser.Scene {
     // Volleyball court (right of center) - removed
     // McDonald's nuggets stand - removed
     // Arcade machine - removed
+
+    // Basketball hoop (top right area) - with collision
+    if (ENABLE_BASKETBALL) {
+      const hoopX = (this.mapWidth - 3) * this.tileSize + this.tileSize / 2;
+      const hoopY = 3 * this.tileSize + this.tileSize / 2;
+      const hoopSprite = addFurniture(hoopX, hoopY, 'basketball_hoop');
+
+      this.basketballHoop = {
+        sprite: hoopSprite,
+        x: hoopX,
+        y: hoopY,
+      };
+    }
   }
 
   private createGrandDoors(): void {
@@ -472,7 +597,7 @@ export class OfficeScene extends Phaser.Scene {
     g.fillStyle(0xdaa520, 1);
     g.fillRect(leftX + 6, doorY, 4 * ts - 12, 3);
 
-    g.setDepth(0);
+    g.setDepth(Depths.BACKGROUND);
   }
 
   private createEntranceRug(): void {
@@ -537,7 +662,7 @@ export class OfficeScene extends Phaser.Scene {
     tassel(rugX + 8, rugY - 7);
     tassel(rugX + rugW - 8, rugY - 7);
 
-    g.setDepth(1);
+    g.setDepth(Depths.FLOOR_DETAIL);
 
     // "ENTER" text — bold white with subtle shadow
     const shadowText = this.add.text(rugX + rugW / 2 + 2, rugY + rugH / 2 + 2, 'ENTER', {
@@ -548,7 +673,7 @@ export class OfficeScene extends Phaser.Scene {
     });
     shadowText.setOrigin(0.5, 0.5);
     shadowText.setAlpha(0.3);
-    shadowText.setDepth(2);
+    shadowText.setDepth(Depths.FLOOR_DETAIL);
 
     const enterText = this.add.text(rugX + rugW / 2, rugY + rugH / 2, 'ENTER', {
       fontFamily: 'monospace',
@@ -557,7 +682,7 @@ export class OfficeScene extends Phaser.Scene {
       fontStyle: 'bold',
     });
     enterText.setOrigin(0.5, 0.5);
-    enterText.setDepth(2);
+    enterText.setDepth(Depths.FLOOR_DETAIL);
   }
 
   private triggerEntrance(): void {
@@ -578,7 +703,9 @@ export class OfficeScene extends Phaser.Scene {
       duration: 1200,
       ease: 'Sine.easeOut',
       onComplete: () => {
+        this.playerMovementEnabled = true;
         this.player.enableMovement();
+        this.inputManager.switchToGame('triggerEntrance complete — player entered');
         this.instructionText.setText(
           '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent / Exit'
         );
@@ -600,24 +727,31 @@ export class OfficeScene extends Phaser.Scene {
       const savedSessionId = await window.copilotBridge.getSessionId('admin');
       
       if (savedSessionId) {
-        console.log(`[AgencyOffice] Resuming admin session: ${savedSessionId}`);
+        console.log(`[CopilotOffice] Resuming admin session: ${savedSessionId}`);
       } else {
-        console.log('[AgencyOffice] Starting new admin session (no saved session found)');
+        console.log('[CopilotOffice] Starting new admin session (no saved session found)');
       }
       
       await window.copilotBridge.terminalStart('admin', adminAgent?.workingDir);
-      console.log('[AgencyOffice] Admin (Alice) session ready');
+      console.log('[CopilotOffice] Admin (Alice) session ready');
     }
   }
 
   update(): void {
-    // Don't update if player hasn't entered, pong game, or terminal overlay is active
-    if (!this.playerInScene || this.pongGame.getIsVisible() || !this.playerMovementEnabled) {
+    // Don't update if player hasn't entered, pong game, basketball game, or terminal overlay is active
+    if (!this.playerInScene || this.pongGame.getIsVisible() || this.basketballGame.getIsVisible() || !this.playerMovementEnabled) {
       return;
     }
 
     // Update player
     this.player.update();
+
+    // Update y-sorted depths for player and NPCs
+    const worldH = this.physics.world.bounds.bottom;
+    this.player.setDepth(ySortDepth(this.player.y, worldH));
+    for (const npc of this.npcs) {
+      npc.setDepth(ySortDepth(npc.y, worldH));
+    }
 
     // Check for nearest NPC or desk
     this.updateNearestInteractable();
@@ -625,13 +759,26 @@ export class OfficeScene extends Phaser.Scene {
     // Check for ping pong table proximity
     this.updatePingPongProximity();
 
+    // Check for basketball hoop proximity
+    this.updateBasketballProximity();
+
     // Check for exit door proximity
     this.updateExitDoorProximity();
 
     // Check for interaction (E key)
-    if (Phaser.Input.Keyboard.JustDown(this.interactKey) && !this.terminalOverlay.getIsVisible()) {
-      if (this.nearPingPong) {
+    if (Phaser.Input.Keyboard.JustDown(this.interactKey)) {
+      if (this.terminalOverlay.getIsVisible()) {
+        // Terminal open but game focused — E switches/refocuses terminal to nearest agent
+        const targetAgent = this.nearestNPC?.config
+          ?? (this.nearestDesk ? AGENTS.find(a => a.id === this.nearestDesk!.agentId) : null)
+          ?? null;
+        if (targetAgent) {
+          this.startConversation(targetAgent);
+        }
+      } else if (this.nearPingPong) {
         this.startPongGame();
+      } else if (this.nearBasketball) {
+        this.startBasketballGame();
       } else if (this.nearestExitDoor) {
         this.triggerExit();
       } else if (this.nearestNPC) {
@@ -672,6 +819,37 @@ export class OfficeScene extends Phaser.Scene {
     this.pingPongPrompt.setVisible(false);
 
     this.pongGame.show(() => {
+      this.player.enableMovement();
+    });
+  }
+
+  private updateBasketballProximity(): void {
+    if (!this.basketballHoop) {
+      this.nearBasketball = false;
+      return;
+    }
+
+    const dist = Phaser.Math.Distance.Between(
+      this.player.x, this.player.y,
+      this.basketballHoop.x, this.basketballHoop.y
+    );
+
+    const interactionDistance = this.tileSize * 2;
+    this.nearBasketball = dist < interactionDistance;
+
+    if (this.nearBasketball && !this.terminalOverlay.getIsVisible()) {
+      this.basketballPrompt.setPosition(this.basketballHoop.x, this.basketballHoop.y - 40);
+      this.basketballPrompt.setVisible(true);
+    } else {
+      this.basketballPrompt.setVisible(false);
+    }
+  }
+
+  private startBasketballGame(): void {
+    this.player.disableMovement();
+    this.basketballPrompt.setVisible(false);
+
+    this.basketballGame.show(() => {
       this.player.enableMovement();
     });
   }
@@ -776,8 +954,20 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
+    this.playerMovementEnabled = false;
     if (this.playerInScene) {
       this.player.disableMovement();
+    }
+
+    // If the agent is slacking(no active session), mark it as starting immediately
+    // so the badge updates before the terminal even preloads.
+    const officeId = officeManager.currentOfficeId;
+    if (officeId) {
+      const status = officeManager.getAgentStatus(officeId, agent.id);
+      if (!status || status.state === 'slacking') {
+        officeManager.setAgentStarting(officeId, agent.id);
+        this.game.events.emit('agent:status:changed', agent.id);
+      }
     }
 
     // Emit to main.ts so it can open the terminal panel
@@ -786,6 +976,7 @@ export class OfficeScene extends Phaser.Scene {
     this.terminalOverlay.show(
       agent,
       () => {
+        this.playerMovementEnabled = true;
         if (this.playerInScene) {
           this.player.enableMovement();
         }

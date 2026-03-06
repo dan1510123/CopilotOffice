@@ -13,6 +13,15 @@
  */
 export type FocusMode = 'game' | 'terminal' | 'none';
 
+/** Called before every page reload to clean up server-side terminal state. */
+function preReloadCleanup(): void {
+  if (typeof window === 'undefined' || !window.copilotBridge) return;
+  try {
+    window.copilotBridge.removeTerminalListeners();
+    window.copilotBridge.removeCopilotListeners();
+  } catch { /* best-effort */ }
+}
+
 export class GlobalInputListener {
   private currentMode: FocusMode = 'none';
   private boundHandler: (e: KeyboardEvent) => void;
@@ -75,11 +84,28 @@ export class GlobalInputListener {
       } | time: ${Date.now()}`
     );
 
-    // Ctrl+R — reload the page regardless of focus mode
+    // Ctrl+Shift+R — hard reload: restart terminal server + reload page
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('[GlobalInput] Ctrl+Shift+R — hard reload (restart terminal server)');
+      preReloadCleanup();
+      if (window.copilotBridge) {
+        window.copilotBridge.requestHardReload().finally(() => {
+          window.location.reload();
+        });
+      } else {
+        window.location.reload();
+      }
+      return;
+    }
+
+    // Ctrl+R — soft reload: keep terminal server alive, only reload UI
     if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
       e.preventDefault();
       e.stopPropagation();
-      console.log('[GlobalInput] Ctrl+R — reloading page');
+      console.log('[GlobalInput] Ctrl+R — soft reload (keeping terminal server)');
+      preReloadCleanup();
       window.location.reload();
     }
   }

@@ -3,7 +3,7 @@
 // main.ts creates one of these and calls spawnServer() + registerIpc().
 
 import { ipcMain, BrowserWindow } from 'electron';
-import { fork, ChildProcess } from 'child_process';
+import { fork, ChildProcess, execSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import type { MainToServer, ServerToMain } from './protocol';
@@ -12,6 +12,10 @@ export class TerminalRelay {
   private server: ChildProcess | null = null;
   private pendingRequests: Map<string, (result: unknown) => void> = new Map();
   private getWindow: () => BrowserWindow | null;
+  /** True while a deliberate shutdown→respawn is in progress (prevents double-spawn). */
+  private shuttingDown = false;
+  /** Requests that arrived while the server was not connected. Flushed on ready. */
+  private queuedRequests: Array<{ msg: MainToServer & { requestId: string }; resolve: (v: unknown) => void }> = [];
 
   constructor(getWindow: () => BrowserWindow | null) {
     this.getWindow = getWindow;
@@ -46,6 +50,13 @@ export class TerminalRelay {
         this.pendingRequests.clear();
         this.server = null;
 
+        // If shutdown() was called deliberately (e.g. hard reload), the caller
+        // already called spawnServer() — don't spawn a second one.
+        if (this.shuttingDown) {
+          console.log('[Relay] Deliberate shutdown — skipping auto-respawn');
+          return;
+        }
+
         const win = this.getWindow();
         if (win && !win.isDestroyed()) {
           console.log('[Relay] Respawning terminal server...');
@@ -57,11 +68,65 @@ export class TerminalRelay {
     });
   }
 
-  shutdown(): void {
-    if (this.server?.connected) {
-      this.send({ type: 'shutdown' });
-    }
+  shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    const oldServer = this.server;
     this.server = null;
+
+    if (!oldServer) {
+      this.pendingRequests.clear();
+      this.queuedRequests = [];
+      return Promise.resolve();
+    }
+
+    // Remove all listeners from old server so its exit handler doesn't
+    // interfere with a newly spawned server.
+    oldServer.removeAllListeners('exit');
+    oldServer.removeAllListeners('message');
+
+    // Ask the server to gracefully kill PTYs and exit
+    if (oldServer.connected) {
+      try { oldServer.send({ type: 'shutdown' } as MainToServer); } catch { /* ignore */ }
+    }
+
+    // Force-kill the server child process as a safety net
+    try { oldServer.kill(); } catch { /* ignore */ }
+
+    // Reject any pending requests
+    this.pendingRequests.forEach((cb) =>
+      cb({ success: false, error: 'Terminal server shut down' })
+    );
+    this.pendingRequests.clear();
+    this.queuedRequests = [];
+
+    // Wait for the old server to actually exit (or timeout after 3s)
+    const oldPid = oldServer.pid;
+    return new Promise<void>((resolve) => {
+      const onExit = () => {
+        clearTimeout(timeout);
+        resolve();
+      };
+      oldServer.once('exit', onExit);
+
+      const timeout = setTimeout(() => {
+        oldServer.removeListener('exit', onExit);
+        // Final safety net: force-kill by PID if still alive
+        if (oldPid) {
+          try {
+            process.kill(oldPid, 0); // throws if already dead
+            console.log(`[Relay] Server PID ${oldPid} still alive after timeout — force killing`);
+            if (process.platform === 'win32') {
+              execSync(`taskkill /T /F /PID ${oldPid}`, { stdio: 'ignore' });
+            } else {
+              process.kill(oldPid, 'SIGKILL');
+            }
+          } catch {
+            // Process already dead — expected
+          }
+        }
+        resolve();
+      }, 3000);
+    });
   }
 
   // ── Internal Helpers ─────────────────────────────────────────
@@ -73,6 +138,14 @@ export class TerminalRelay {
   }
 
   private request(msg: MainToServer & { requestId: string }): Promise<unknown> {
+    // If the server isn't connected (e.g. during a hard-reload restart), queue
+    // the request so it's sent as soon as the new server is ready.
+    if (!this.server?.connected) {
+      console.log(`[Relay] Server not connected — queuing request ${msg.type} (${msg.requestId})`);
+      return new Promise((resolve) => {
+        this.queuedRequests.push({ msg, resolve });
+      });
+    }
     return new Promise((resolve) => {
       this.pendingRequests.set(msg.requestId, resolve);
       this.send(msg);
@@ -91,7 +164,19 @@ export class TerminalRelay {
     // ready + response don't need a live window
     if (msg.type === 'ready') {
       clearTimeout(readyTimeout);
+      this.shuttingDown = false;
       console.log('[Relay] Terminal server ready');
+
+      // Flush any requests that arrived while the server was down
+      if (this.queuedRequests.length > 0) {
+        console.log(`[Relay] Flushing ${this.queuedRequests.length} queued request(s)`);
+        for (const queued of this.queuedRequests) {
+          this.pendingRequests.set(queued.msg.requestId, queued.resolve);
+          this.send(queued.msg);
+        }
+        this.queuedRequests = [];
+      }
+
       onReady();
       return;
     }
@@ -128,8 +213,14 @@ export class TerminalRelay {
       case 'copilot-turn-end':
         win.webContents.send('copilot-turn-end', msg.agentId);
         break;
+      case 'copilot-turn-start':
+        win.webContents.send('copilot-turn-start', msg.agentId);
+        break;
       case 'copilot-user-message':
         win.webContents.send('copilot-user-message', msg.agentId);
+        break;
+      case 'terminal-preload-status':
+        win.webContents.send('terminal-preload-status', msg.agentId, msg.status);
         break;
     }
   }
@@ -173,10 +264,6 @@ export class TerminalRelay {
       this.request({ type: 'pop-out', requestId: this.id(), agentId })
     );
 
-    ipcMain.handle('save-session-id', (_event, agentId: string, sessionId: string) =>
-      this.request({ type: 'save-session-id', requestId: this.id(), agentId, sessionId })
-    );
-
     ipcMain.handle('get-session-id', (_event, agentId: string) =>
       this.request({ type: 'get-session-id', requestId: this.id(), agentId })
     );
@@ -195,6 +282,14 @@ export class TerminalRelay {
 
     ipcMain.handle('terminal-clear-session-history', (_event, agentId: string) =>
       this.request({ type: 'clear-session-history', requestId: this.id(), agentId })
+    );
+
+    ipcMain.handle('list-active-terminals', () =>
+      this.request({ type: 'list-active', requestId: this.id() })
+    );
+
+    ipcMain.handle('query-agent-statuses', () =>
+      this.request({ type: 'query-agent-statuses', requestId: this.id() })
     );
   }
 }
