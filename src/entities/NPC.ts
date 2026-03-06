@@ -1,5 +1,15 @@
 import Phaser from 'phaser';
 import { AgentConfig } from '../config/agents';
+import { AgentStatus } from '../office/officeManager';
+
+// Badge color config per status
+const BADGE_COLORS: Record<string, { fill: number; stroke: number }> = {
+  slacking:     { fill: 0x555555, stroke: 0x666666 },
+  initializing: { fill: 0xffff44, stroke: 0xffff88 },
+  ready:        { fill: 0x44aaff, stroke: 0x66ccff },
+  waiting:      { fill: 0xffb86c, stroke: 0xffcc88 },
+  thinking:     { fill: 0x50fa7b, stroke: 0x66ff99 },
+};
 
 export class NPC extends Phaser.Physics.Arcade.Sprite {
   public config: AgentConfig;
@@ -12,8 +22,10 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   private highlightRing!: Phaser.GameObjects.Graphics;
   private isHighlighted: boolean = false;
   private highlightTween: Phaser.Tweens.Tween | null = null;
+  private badgePulseTween: Phaser.Tweens.Tween | null = null;
   private isNearPlayer: boolean = false;
   private hasActiveSession: boolean = false;
+  private currentBadgeState: string = 'slacking';
   private spriteScale: number = 1;
 
   constructor(scene: Phaser.Scene, config: AgentConfig, tileSize: number, spriteScale: number = 1) {
@@ -122,13 +134,18 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
 
   private updateSessionBadge(scale: number = 1): void {
     this.sessionBadge.clear();
-    if (this.hasActiveSession) {
-      // Draw green circle badge
-      this.sessionBadge.fillStyle(0x00cc44, 1);
-      this.sessionBadge.fillCircle(0, 0, 8 * scale);
-      this.sessionBadge.lineStyle(1, 0x00ff66, 1);
-      this.sessionBadge.strokeCircle(0, 0, 8 * scale);
+    const stateKey = this.currentBadgeState;
+    const colors = BADGE_COLORS[stateKey] || BADGE_COLORS.slacking;
+
+    if (stateKey === 'slacking') {
+      // No badge when slacking (or a dim one)
+      return;
     }
+
+    this.sessionBadge.fillStyle(colors.fill, 1);
+    this.sessionBadge.fillCircle(0, 0, 8 * scale);
+    this.sessionBadge.lineStyle(1, colors.stroke, 1);
+    this.sessionBadge.strokeCircle(0, 0, 8 * scale);
   }
 
   private _drawHighlightRing(color: number, scale: number): void {
@@ -187,13 +204,73 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
 
   setHasActiveSession(hasSession: boolean, messageCount?: number): void {
     this.hasActiveSession = hasSession;
-    this.updateSessionBadge();
+    if (!hasSession) {
+      this.updateBadgeForState('slacking');
+    }
     
     if (hasSession && messageCount !== undefined && messageCount > 0) {
       this.sessionText.setText(messageCount.toString());
       this.sessionText.setVisible(true);
     } else {
       this.sessionText.setVisible(false);
+    }
+  }
+
+  /** Update the NPC badge to reflect the agent's full status */
+  updateAgentStatus(status: AgentStatus | undefined): void {
+    if (!status || status.state === 'slacking') {
+      this.hasActiveSession = false;
+      this.updateBadgeForState('slacking');
+      this.sessionText.setVisible(false);
+      return;
+    }
+
+    this.hasActiveSession = true;
+    const stateKey = status.subState || 'ready';
+    this.updateBadgeForState(stateKey);
+
+    // Show thinking detail as badge text
+    if (stateKey === 'thinking' && status.thinkingDetail) {
+      const shortDetail = status.thinkingDetail.length > 5
+        ? status.thinkingDetail.substring(0, 5)
+        : status.thinkingDetail;
+      this.sessionText.setText(shortDetail);
+      this.sessionText.setVisible(true);
+    } else {
+      // Show status icon in badge
+      const icons: Record<string, string> = {
+        initializing: '⟳',
+        ready: '✓',
+        waiting: '⏳',
+        thinking: '⚡',
+      };
+      this.sessionText.setText(icons[stateKey] || '');
+      this.sessionText.setVisible(stateKey !== 'slacking');
+    }
+  }
+
+  private updateBadgeForState(stateKey: string): void {
+    if (this.currentBadgeState === stateKey) return;
+    this.currentBadgeState = stateKey;
+    this.updateSessionBadge(this.spriteScale);
+
+    // Pulse the badge when thinking
+    if (this.badgePulseTween) {
+      this.badgePulseTween.stop();
+      this.badgePulseTween = null;
+      this.sessionBadge.setScale(1);
+    }
+
+    if (stateKey === 'thinking') {
+      this.badgePulseTween = this.scene.tweens.add({
+        targets: this.sessionBadge,
+        scaleX: { from: 0.85, to: 1.15 },
+        scaleY: { from: 0.85, to: 1.15 },
+        duration: 600,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
     }
   }
 

@@ -262,14 +262,14 @@ statusBar.style.cssText = `
   bottom: 0;
   left: 0;
   right: 0;
-  height: 32px;
+  height: 58px;
   background: #252538;
   border-top: 1px solid #333;
   display: flex;
   align-items: center;
-  padding: 0 12px;
+  padding: 0 22px;
   font-family: monospace;
-  font-size: 12px;
+  font-size: 22px;
   color: #888;
   z-index: 100;
 `;
@@ -305,18 +305,38 @@ function updateTerminalContentNow() {
     const liveStatus = office?.agents.get(agent.id);
     const tools = agentTools.get(agent.id) || [];
 
-    // Determine status label + color
+    // Determine status label + color from new state model
     let statusDot = '#555';
-    let statusLabel = 'Idle';
-    let statusIcon = '○';
-    if (liveStatus?.currentTool) {
-      statusDot = '#50fa7b';
-      statusLabel = liveStatus.currentTool;
-      statusIcon = '▶';
-    } else if (liveStatus?.bubbleType === 'waiting') {
-      statusDot = '#ffb86c';
-      statusLabel = 'Waiting for input';
-      statusIcon = '⏳';
+    let statusLabel = 'Slacking';
+    let statusIcon = '💤';
+
+    if (liveStatus) {
+      if (liveStatus.state === 'active') {
+        switch (liveStatus.subState) {
+          case 'initializing':
+            statusDot = '#ff4';
+            statusLabel = 'Initializing...';
+            statusIcon = '⟳';
+            break;
+          case 'ready':
+            statusDot = '#4af';
+            statusLabel = 'Ready';
+            statusIcon = '✓';
+            break;
+          case 'waiting':
+            statusDot = '#ffb86c';
+            statusLabel = 'Waiting for input';
+            statusIcon = '⏳';
+            break;
+          case 'thinking':
+            statusDot = '#50fa7b';
+            statusLabel = liveStatus.thinkingDetail
+              ? `Thinking: ${liveStatus.thinkingDetail}`
+              : 'Thinking...';
+            statusIcon = '⚡';
+            break;
+        }
+      }
     }
 
     const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
@@ -366,7 +386,7 @@ function updateTerminalContentNow() {
               display: flex; align-items: center; gap: 4px;
             ">
               <span style="font-size: 8px;">●</span>
-              <span>${statusIcon === '○' ? 'Idle' : statusLabel}</span>
+              <span>${statusLabel}</span>
             </div>
             ${tools.length > 0 ? `<div style="color: #667; font-size: 10px;">▸ ${tools[tools.length - 1].status}</div>` : ''}
           </div>
@@ -443,7 +463,7 @@ if (window.copilotBridge) {
     }
     agentTools.get(agentId)!.push({ toolId, name: toolName, status });
 
-    officeManager.setAgentActive(officeId, agentId, toolName, status);
+    officeManager.setAgentThinking(officeId, agentId, `${toolName}`, toolName);
 
     phaserGame?.events.emit('agent:tool:start', agentId, toolName, status);
 
@@ -464,13 +484,15 @@ if (window.copilotBridge) {
       agentTools.set(agentId, remaining);
 
       if (remaining.length === 0) {
-        officeManager.setAgentActive(officeId, agentId, null, null);
+        // No more tools running — go to ready (turn-end will set waiting if appropriate)
+        officeManager.setAgentReady(officeId, agentId);
       } else {
         const last = remaining[remaining.length - 1];
-        officeManager.setAgentActive(officeId, agentId, last.name, last.status);
+        officeManager.setAgentThinking(officeId, agentId, `${last.name}`, last.name);
       }
     }
 
+    phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
   });
@@ -479,6 +501,7 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn end: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (officeId) officeManager.setAgentWaiting(officeId, agentId);
+    phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
   });
@@ -486,14 +509,32 @@ if (window.copilotBridge) {
   window.copilotBridge.onCopilotUserMessage((agentId) => {
     console.log(`[Office] User message: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
-    if (officeId) officeManager.clearAgentBubble(officeId, agentId);
+    // User sent a message — agent is now thinking (processing the message)
+    if (officeId) officeManager.setAgentThinking(officeId, agentId, 'Processing...', null);
+    phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
   });
 
   window.copilotBridge.onTerminalPreloadStatus((agentId, status) => {
     console.log(`[Office] Preload status for ${agentId}: ${status}`);
     agentPreloadStatus.set(agentId, status);
+
+    const officeId = officeManager.currentOfficeId;
+    if (officeId) {
+      if (status === 'preloading') {
+        officeManager.setAgentInitializing(officeId, agentId);
+      } else if (status === 'ready') {
+        // Only set to ready if not already in a more advanced state
+        const current = officeManager.getAgentStatus(officeId, agentId);
+        if (!current || current.state === 'slacking' || current.subState === 'initializing') {
+          officeManager.setAgentReady(officeId, agentId);
+        }
+      }
+    }
+
+    phaserGame?.events.emit('agent:status:changed', agentId);
     updateStatusBar();
+    updateTerminalContent();
   });
 
 }
@@ -503,27 +544,24 @@ if (window.copilotBridge) {
 function updateStatusBarNow() {
   const office = officeManager.currentOffice;
   const agents = office ? Array.from(office.agents.values()) : [];
-  const activeCount = agents.filter(a => a.currentTool !== null).length;
-  const waitingCount = agents.filter(a => a.bubbleType === 'waiting').length;
   const officeName = officeManager.currentOffice?.config.name || 'No Office';
 
-  let preloadInfo = '';
-  agentPreloadStatus.forEach((status, agentId) => {
-    const agent = AGENTS.find(a => a.id === agentId);
-    const name = agent?.name || agentId;
-    const color = status === 'ready' ? '#4f4' : status === 'preloading' ? '#ff4' : '#f44';
-    const label = status === 'ready' ? '✓' : status === 'preloading' ? '⟳' : '✗';
-    preloadInfo += `<span style="color: ${color}; margin-right: 8px;">${name}: ${label}</span>`;
-  });
+  // Count per state
+  const slackingCount = AGENTS.length - agents.filter(a => a.state === 'active').length;
+  const initCount = agents.filter(a => a.subState === 'initializing').length;
+  const readyCount = agents.filter(a => a.subState === 'ready').length;
+  const waitingCount = agents.filter(a => a.subState === 'waiting').length;
+  const thinkingCount = agents.filter(a => a.subState === 'thinking').length;
 
   const html = `
-    <span style="margin-right: 16px; color: #8af;">${officeName}</span>
-    <span style="margin-right: 16px;">Agents: ${agents.length}</span>
-    <span style="margin-right: 16px; color: #6f6;">Active: ${activeCount}</span>
-    <span style="margin-right: 16px; color: #fa4;">Waiting: ${waitingCount}</span>
-    ${preloadInfo ? `<span style="margin-right: 16px;">Preload: ${preloadInfo}</span>` : ''}
+    <span style="margin-right: 29px; color: #8af;">${officeName}</span>
+    <span style="margin-right: 22px; color: #555;">💤 Slacking ${slackingCount}</span>
+    ${initCount > 0 ? `<span style="margin-right: 22px; color: #ff4;">⟳ Initializing ${initCount}</span>` : ''}
+    ${readyCount > 0 ? `<span style="margin-right: 22px; color: #4af;">✓ Ready ${readyCount}</span>` : ''}
+    <span style="margin-right: 22px; color: #50fa7b;">⚡ Thinking ${thinkingCount}</span>
+    <span style="margin-right: 22px; color: #ffb86c;">⏳ Waiting ${waitingCount}</span>
     <span style="flex: 1;"></span>
-    <span style="color: #666;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
+    <span style="color: #666; font-size: 14px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
   `;
 
   if (html !== lastStatusBarHtml) {

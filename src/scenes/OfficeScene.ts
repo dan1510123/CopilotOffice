@@ -5,6 +5,7 @@ import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { AGENTS, AgentConfig } from '../config/agents';
 import { InputManager } from '../input/InputManager';
+import { officeManager } from '../office/officeManager';
 
 interface DeskInfo {
   sprite: Phaser.GameObjects.Sprite;
@@ -175,6 +176,15 @@ export class OfficeScene extends Phaser.Scene {
       }
     }, this);
 
+    // Update NPC badges when agent status changes (tool start/complete/turn end)
+    this.game.events.on('agent:tool:start', () => {
+      this.updateSessionBadges();
+    }, this);
+
+    this.game.events.on('agent:status:changed', () => {
+      this.updateSessionBadges();
+    }, this);
+
     // Listen for office switch to reinitialize if needed
     this.game.events.on('office:switch', (_officeId: string, _workingDir: string) => {
       console.log(`[OfficeScene] Office switched to: ${_officeId}`);
@@ -187,7 +197,6 @@ export class OfficeScene extends Phaser.Scene {
       currentlyOver: Phaser.GameObjects.GameObject[]
     ) => {
       if (this.waitingForEntrance) {
-        this.triggerEntrance();
         return;
       }
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
@@ -305,8 +314,8 @@ export class OfficeScene extends Phaser.Scene {
         y: deskY,
       });
       
-      // Computer on desk
-      addDecor(deskX, deskY - 16 * scale, 'computer').setDepth(1);
+      // Laptop centered on desk surface
+      addDecor(deskX, deskY, 'computer').setDepth(1);
     });
     
     // Boss desk at center bottom (large desk) - NO collision so player can walk through
@@ -318,8 +327,8 @@ export class OfficeScene extends Phaser.Scene {
       addDecor(bossDeskX + i * this.tileSize, bossDeskY, 'desk');
     }
     
-    // Boss computer
-    addDecor(bossDeskX, bossDeskY - 16 * scale, 'computer').setDepth(1);
+    // Boss laptop centered on desk
+    addDecor(bossDeskX, bossDeskY, 'computer').setDepth(1);
     
     // Boss chair (behind desk, where player spawns)
     addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair');
@@ -714,9 +723,15 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private async updateSessionBadges(): Promise<void> {
+    const officeId = officeManager.currentOfficeId;
     for (const npc of this.npcs) {
-      const hasSession = await this.terminalOverlay.hasSession(npc.config.id);
-      npc.setHasActiveSession(hasSession);
+      if (officeId) {
+        const status = officeManager.getAgentStatus(officeId, npc.config.id);
+        npc.updateAgentStatus(status);
+      } else {
+        const hasSession = await this.terminalOverlay.hasSession(npc.config.id);
+        npc.setHasActiveSession(hasSession);
+      }
     }
   }
 }

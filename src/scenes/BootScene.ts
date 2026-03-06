@@ -180,30 +180,71 @@ export class BootScene extends Phaser.Scene {
 
     // ===== FURNITURE SPRITES =====
     
-    // Desk tile (wooden desk)
+    // Desk tile - top-down view (walnut surface with wood grain)
     const deskGraphics = this.make.graphics({ x: 0, y: 0 });
-    deskGraphics.fillStyle(0x5c4033, 1);
-    deskGraphics.fillRect(0, 8, 32, 20);
-    deskGraphics.fillStyle(0x8b6914, 1);
-    deskGraphics.fillRect(2, 10, 28, 16);
-    deskGraphics.fillStyle(0x3d2817, 1);
-    deskGraphics.fillRect(0, 8, 32, 3);
-    // Drawer handle
-    deskGraphics.fillStyle(0xccaa66, 1);
-    deskGraphics.fillRect(14, 20, 4, 2);
+    // Drop shadow (bottom-right gives depth)
+    deskGraphics.fillStyle(0x1e0e04, 1);
+    deskGraphics.fillRect(3, 3, 29, 29);
+    // Desk surface
+    deskGraphics.fillStyle(0x7a4520, 1);
+    deskGraphics.fillRect(1, 1, 28, 28);
+    // Surface highlight (lighter center)
+    deskGraphics.fillStyle(0x8c5228, 1);
+    deskGraphics.fillRect(2, 2, 25, 25);
+    // Wood grain lines (horizontal)
+    deskGraphics.fillStyle(0x5e3312, 1);
+    deskGraphics.fillRect(3, 6,  22, 1);
+    deskGraphics.fillRect(3, 11, 24, 1);
+    deskGraphics.fillRect(3, 16, 20, 1);
+    deskGraphics.fillRect(3, 21, 23, 1);
+    deskGraphics.fillRect(3, 25, 18, 1);
+    // Top-left edge highlight
+    deskGraphics.fillStyle(0xaa6a38, 1);
+    deskGraphics.fillRect(1, 1, 1, 27);
+    deskGraphics.fillRect(1, 1, 27, 1);
+    // Bottom-right inner shadow
+    deskGraphics.fillStyle(0x5a2e0e, 1);
+    deskGraphics.fillRect(26, 2, 1, 26);
+    deskGraphics.fillRect(2, 26, 25, 1);
     deskGraphics.generateTexture('desk', 32, 32);
     deskGraphics.destroy();
 
-    // Floor tile (bright office carpet - daytime)
+    // Floor tile - hardwood panels, 3 staggered rows per tile
     const floorGraphics = this.make.graphics({ x: 0, y: 0 });
-    floorGraphics.fillStyle(0x8899aa, 1);  // Light blue-gray
+    const plankH = 10;
+    const gapH = 1;
+    const plankBase = 0xD4975A;      // light honey/maple
+    const plankGrain = 0xBE8244;     // subtle grain (close to base)
+    const plankHighlight = 0xE0A86A; // top-edge highlight
+    const gapColor = 0xC07840;       // very close to plank, just a hint darker
+    // Fill entire tile as background so sprite seams don't bleed black
+    floorGraphics.fillStyle(plankBase, 1);
     floorGraphics.fillRect(0, 0, 32, 32);
-    floorGraphics.fillStyle(0x95a5b5, 1);  // Slightly lighter tiles
-    floorGraphics.fillRect(0, 0, 16, 16);
-    floorGraphics.fillRect(16, 16, 16, 16);
-    floorGraphics.fillStyle(0x7a8a9a, 1);  // Tile borders
-    floorGraphics.fillRect(15, 0, 2, 32);
-    floorGraphics.fillRect(0, 15, 32, 2);
+    const plankRows = [
+      { y: 0,                    offset: 0  },
+      { y: plankH + gapH,        offset: 16 },
+      { y: (plankH + gapH) * 2,  offset: 8  },
+    ];
+    for (const row of plankRows) {
+      floorGraphics.fillStyle(plankBase, 1);
+      floorGraphics.fillRect(0, row.y, 32, plankH);
+      // Subtle top highlight
+      floorGraphics.fillStyle(plankHighlight, 1);
+      floorGraphics.fillRect(0, row.y, 32, 1);
+      // Grain lines (same positions every row for consistency)
+      floorGraphics.fillStyle(plankGrain, 1);
+      floorGraphics.fillRect(0, row.y + 4, 32, 1);
+      floorGraphics.fillRect(0, row.y + 7, 32, 1);
+      // Vertical end seam (staggered)
+      if (row.offset > 0 && row.offset < 32) {
+        floorGraphics.fillStyle(gapColor, 1);
+        floorGraphics.fillRect(row.offset, row.y, 1, plankH);
+      }
+    }
+    // Horizontal gaps between planks
+    floorGraphics.fillStyle(gapColor, 1);
+    floorGraphics.fillRect(0, plankH, 32, gapH);
+    floorGraphics.fillRect(0, (plankH + gapH) * 2, 32, gapH);
     floorGraphics.generateTexture('floor', 32, 32);
     floorGraphics.destroy();
 
@@ -292,25 +333,38 @@ export class BootScene extends Phaser.Scene {
     chairGraphics.generateTexture('chair', 32, 32);
     chairGraphics.destroy();
 
-    // Computer/monitor
+    // Laptop - top-down view (open, looking straight down)
     const computerGraphics = this.make.graphics({ x: 0, y: 0 });
-    // Monitor frame
-    computerGraphics.fillStyle(0x1a1a1a, 1);
-    computerGraphics.fillRect(6, 2, 20, 16);
-    // Screen
-    computerGraphics.fillStyle(0x1a3a5a, 1);
-    computerGraphics.fillRect(8, 4, 16, 12);
-    // Screen content (code lines)
+    // Outer aluminum body
+    computerGraphics.fillStyle(0x999999, 1);
+    computerGraphics.fillRect(4, 2, 24, 28);
+    // Screen portion (top ~40% — screen face tilted up, visible from above)
+    computerGraphics.fillStyle(0x0d1b2a, 1);
+    computerGraphics.fillRect(5, 3, 22, 11);
+    // Screen content glow
+    computerGraphics.fillStyle(0x1a3a5c, 1);
+    computerGraphics.fillRect(6, 4, 20, 9);
+    // Code lines on screen
     computerGraphics.fillStyle(0x44ff88, 1);
-    computerGraphics.fillRect(10, 6, 8, 1);
-    computerGraphics.fillRect(10, 8, 12, 1);
-    computerGraphics.fillRect(10, 10, 6, 1);
-    computerGraphics.fillRect(10, 12, 10, 1);
-    // Stand
+    computerGraphics.fillRect(8,  5, 9, 1);
+    computerGraphics.fillRect(8,  7, 14, 1);
+    computerGraphics.fillRect(8,  9, 6,  1);
+    computerGraphics.fillRect(8, 11, 11, 1);
+    // Hinge (line between screen and keyboard)
+    computerGraphics.fillStyle(0x555555, 1);
+    computerGraphics.fillRect(5, 14, 22, 2);
+    // Keyboard deck (bottom ~60%)
+    computerGraphics.fillStyle(0x1a1a1a, 1);
+    computerGraphics.fillRect(5, 16, 22, 13);
+    // Key rows (3 rows of key impressions)
+    computerGraphics.fillStyle(0x383838, 1);
+    for (let k = 0; k < 10; k++) computerGraphics.fillRect(5 + k * 2, 17, 1, 2);
+    for (let k = 0; k < 10; k++) computerGraphics.fillRect(5 + k * 2, 21, 1, 2);
+    for (let k = 0; k <  8; k++) computerGraphics.fillRect(6 + k * 2, 25, 1, 2);
+    // Trackpad
     computerGraphics.fillStyle(0x2a2a2a, 1);
-    computerGraphics.fillRect(12, 18, 8, 3);
-    computerGraphics.fillRect(10, 20, 12, 2);
-    computerGraphics.generateTexture('computer', 32, 24);
+    computerGraphics.fillRect(11, 27, 10, 1);
+    computerGraphics.generateTexture('computer', 32, 32);
     computerGraphics.destroy();
 
     // Interaction indicator (speech bubble with !)

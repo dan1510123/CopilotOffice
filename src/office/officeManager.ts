@@ -8,11 +8,15 @@ export interface OfficeConfig {
   createdAt: number;
 }
 
+export type AgentState = 'slacking' | 'active';
+export type ActiveSubState = 'initializing' | 'ready' | 'waiting' | 'thinking';
+
 export interface AgentStatus {
   agentId: string;
-  currentTool: string | null;
-  isWaiting: boolean;
-  bubbleType: 'permission' | 'waiting' | null;
+  state: AgentState;
+  subState: ActiveSubState | null;   // null when slacking
+  thinkingDetail: string | null;     // what agent is doing when thinking
+  currentTool: string | null;        // raw tool name for backward compat
 }
 
 export interface OfficeData {
@@ -207,33 +211,67 @@ export class OfficeManager {
     return this.offices.get(officeId)?.agents.get(agentId);
   }
 
-  setAgentActive(officeId: string, agentId: string, toolName: string | null, status: string | null): void {
+  private getOrCreateStatus(officeId: string, agentId: string): AgentStatus | null {
     const office = this.offices.get(officeId);
-    if (!office) return;
-    const existing = office.agents.get(agentId) ?? { agentId, currentTool: null, isWaiting: false, bubbleType: null };
-    existing.currentTool = toolName;
-    existing.isWaiting = false;
-    existing.bubbleType = null;
-    office.agents.set(agentId, existing);
+    if (!office) return null;
+    let status = office.agents.get(agentId);
+    if (!status) {
+      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null };
+      office.agents.set(agentId, status);
+    }
+    return status;
+  }
+
+  setAgentSlacking(officeId: string, agentId: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.state = 'slacking';
+    status.subState = null;
+    status.thinkingDetail = null;
+    status.currentTool = null;
+  }
+
+  setAgentInitializing(officeId: string, agentId: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.state = 'active';
+    status.subState = 'initializing';
+    status.thinkingDetail = null;
+    status.currentTool = null;
+  }
+
+  setAgentReady(officeId: string, agentId: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.state = 'active';
+    status.subState = 'ready';
+    status.thinkingDetail = null;
+    status.currentTool = null;
   }
 
   setAgentWaiting(officeId: string, agentId: string): void {
-    const office = this.offices.get(officeId);
-    if (!office) return;
-    const existing = office.agents.get(agentId) ?? { agentId, currentTool: null, isWaiting: false, bubbleType: null };
-    existing.currentTool = null;
-    existing.isWaiting = true;
-    existing.bubbleType = 'waiting';
-    office.agents.set(agentId, existing);
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.state = 'active';
+    status.subState = 'waiting';
+    status.thinkingDetail = null;
+    status.currentTool = null;
   }
 
-  clearAgentBubble(officeId: string, agentId: string): void {
-    const office = this.offices.get(officeId);
-    if (!office) return;
-    const existing = office.agents.get(agentId);
-    if (existing) {
-      existing.bubbleType = null;
-      existing.isWaiting = false;
+  setAgentThinking(officeId: string, agentId: string, detail: string | null, toolName: string | null): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.state = 'active';
+    status.subState = 'thinking';
+    status.thinkingDetail = detail;
+    status.currentTool = toolName;
+  }
+
+  clearAgentThinkingDetail(officeId: string, agentId: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    if (status.subState === 'thinking') {
+      status.thinkingDetail = null;
     }
   }
 
