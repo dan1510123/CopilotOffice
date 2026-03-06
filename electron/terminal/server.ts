@@ -332,6 +332,20 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       break;
     }
 
+    case 'reset-all-sessions': {
+      console.log('[TermServer] Resetting all sessions — killing PTYs and generating new GUIDs');
+      killAllPtyProcesses();
+      agentScrollbackBuffers.clear();
+      // Regenerate a fresh GUID for every agent that had a session
+      for (const agentId of agentSessionIds.keys()) {
+        agentSessionIds.set(agentId, crypto.randomUUID());
+      }
+      await saveSessionIds();
+      console.log('[TermServer] All sessions reset, new GUIDs saved');
+      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
     case 'shutdown': {
       console.log('[TermServer] Shutdown requested');
       killAllPtyProcesses();

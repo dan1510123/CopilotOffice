@@ -561,12 +561,31 @@ function updateStatusBarNow() {
     <span style="margin-right: 22px; color: #50fa7b;">⚡ Thinking ${thinkingCount}</span>
     <span style="margin-right: 22px; color: #ffb86c;">⏳ Waiting ${waitingCount}</span>
     <span style="flex: 1;"></span>
+    <button id="reset-sessions-btn" style="
+      background: #3a1a1a;
+      border: 1px solid #c44;
+      color: #f88;
+      font-family: monospace;
+      font-size: 18px;
+      padding: 4px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 24px;
+    ">⟳ Reset All Sessions</button>
     <span style="color: #666; font-size: 14px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
   `;
 
   if (html !== lastStatusBarHtml) {
     lastStatusBarHtml = html;
     statusBar.innerHTML = html;
+    document.getElementById('reset-sessions-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('reset-sessions-btn') as HTMLButtonElement;
+      if (btn) { btn.disabled = true; btn.textContent = '⟳ Resetting...'; }
+      if (window.copilotBridge) {
+        await window.copilotBridge.resetAllSessions();
+      }
+      if (btn) { btn.disabled = false; btn.textContent = '⟳ Reset All Sessions'; }
+    });
   }
 }
 

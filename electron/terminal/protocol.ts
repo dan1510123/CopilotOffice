@@ -73,6 +73,11 @@ export interface MsgShutdown {
   type: 'shutdown';
 }
 
+export interface MsgResetAllSessions {
+  type: 'reset-all-sessions';
+  requestId: string;
+}
+
 export type MainToServer =
   | MsgStart
   | MsgWrite
@@ -84,7 +89,8 @@ export type MainToServer =
   | MsgGetSessionId
   | MsgSaveSessionId
   | MsgPopOut
-  | MsgShutdown;
+  | MsgShutdown
+  | MsgResetAllSessions;
 
 // ── Server → Main ───────────────────────────────────────────────
 

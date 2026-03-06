@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   getSessionId: (agentId: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-session-id', agentId);
   },
+  resetAllSessions: (): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('reset-all-sessions');
+  },
   
   // Terminal event listeners
   onTerminalData: (callback: (agentId: string, data: string) => void) => {
@@ -108,6 +111,7 @@ declare global {
       terminalPopOut: (agentId: string) => Promise<{ success: boolean }>;
       saveSessionId: (agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       getSessionId: (agentId: string) => Promise<string | null>;
+      resetAllSessions: () => Promise<{ success: boolean }>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;

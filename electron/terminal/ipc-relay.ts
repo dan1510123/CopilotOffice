@@ -180,5 +180,9 @@ export class TerminalRelay {
     ipcMain.handle('get-session-id', (_event, agentId: string) =>
       this.request({ type: 'get-session-id', requestId: this.id(), agentId })
     );
+
+    ipcMain.handle('reset-all-sessions', () =>
+      this.request({ type: 'reset-all-sessions', requestId: this.id() })
+    );
   }
 }

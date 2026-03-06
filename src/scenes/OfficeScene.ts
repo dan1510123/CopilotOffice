@@ -133,7 +133,7 @@ export class OfficeScene extends Phaser.Scene {
     this.titleText.setDepth(100);
     
     // Add instructions (initially show entrance prompt)
-    this.instructionText = this.add.text(screenWidth / 2, screenHeight - 20, 
+    this.instructionText = this.add.text(screenWidth / 2, screenHeight - 78, 
       '[Space / Enter] Enter the office', {
       font: `${instructionFontSize}px monospace`,
       color: '#888888',
@@ -196,13 +196,10 @@ export class OfficeScene extends Phaser.Scene {
       _pointer: Phaser.Input.Pointer,
       currentlyOver: Phaser.GameObjects.GameObject[]
     ) => {
-      if (this.waitingForEntrance) {
-        return;
-      }
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
       if (clickedNPC) {
         this.startConversation(clickedNPC.config);
-      } else {
+      } else if (!this.waitingForEntrance) {
         // Background click — give game focus back
         console.log('[OfficeScene] background click — returning focus to game');
         this.terminalOverlay.blurTerminal();
@@ -707,7 +704,9 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
-    this.player.disableMovement();
+    if (!this.waitingForEntrance) {
+      this.player.disableMovement();
+    }
 
     // Emit to main.ts so it can open the terminal panel
     this.game.events.emit('agent:interact', agent.id);
@@ -715,7 +714,9 @@ export class OfficeScene extends Phaser.Scene {
     this.terminalOverlay.show(
       agent,
       () => {
-        this.player.enableMovement();
+        if (!this.waitingForEntrance) {
+          this.player.enableMovement();
+        }
         // Update badges when closing terminal
         this.updateSessionBadges();
       }
