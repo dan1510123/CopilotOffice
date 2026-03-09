@@ -8,6 +8,7 @@ import { AGENTS, AgentConfig } from '../config/agents';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
+import { MeetingPlan } from '../meeting/types';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
@@ -113,6 +114,32 @@ export class OfficeScene extends Phaser.Scene {
 
     // Create terminal overlay (replaces dialog box)
     this.terminalOverlay = new TerminalOverlay(this, this.inputManager);
+
+    // Handle return from MeetingScene
+    this.events.on('wake', (_sys: Phaser.Scenes.Systems, data?: { plan?: MeetingPlan }) => {
+      this.cameras.main.fadeIn(500, 0, 0, 0);
+      
+      // Re-enter the office with entrance animation
+      if (this.playerInScene) {
+        this.player.enableMovement();
+        this.playerMovementEnabled = true;
+      } else {
+        // Player wasn't in scene (first time or had exited) — trigger entrance
+        this.triggerEntrance();
+      }
+      
+      // Update Arthur's NPC badge back to normal
+      const arthurNPC = this.npcs.find(n => n.config.id === 'architect');
+      if (arthurNPC) {
+        arthurNPC.updateAgentStatus(undefined); // Reset to slacking
+      }
+      
+      if (data?.plan) {
+        console.log('[OfficeScene] Received meeting plan:', data.plan.plan);
+        console.log('[OfficeScene] Tasks assigned:', data.plan.tasks.map(t => `${t.agentId}: ${t.title}`).join(', '));
+        // Phase 4 TODO: trigger fleet orchestrator with data.plan
+      }
+    });
 
     // Create pong game overlay
     this.pongGame = new PongGame(this);
@@ -954,6 +981,12 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
+    // Arthur triggers meeting mode instead of normal terminal
+    if (agent.id === 'architect') {
+      this.enterMeeting();
+      return;
+    }
+
     this.playerMovementEnabled = false;
     if (this.playerInScene) {
       this.player.disableMovement();
@@ -984,6 +1017,20 @@ export class OfficeScene extends Phaser.Scene {
         this.updateSessionBadges();
       }
     );
+  }
+
+  private enterMeeting(): void {
+    this.playerMovementEnabled = false;
+    if (this.playerInScene) {
+      this.player.disableMovement();
+    }
+
+    // Fade out camera, then switch to MeetingScene
+    this.cameras.main.fadeOut(500, 0, 0, 0);
+    this.cameras.main.once('camerafadeoutcomplete', () => {
+      this.scene.sleep('OfficeScene');
+      this.scene.launch('MeetingScene');
+    });
   }
 
   private async updateSessionBadges(): Promise<void> {

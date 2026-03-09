@@ -1016,6 +1016,165 @@ export class BootScene extends Phaser.Scene {
     arcadeGraphics.fillRect(10, 52, 28, 4);
     arcadeGraphics.generateTexture('arcade', 48, 56);
     arcadeGraphics.destroy();
+
+    // ===== MEETING ROOM SPRITES =====
+
+    // Meeting table (192x96) — large conference table, 3/4 top-down
+    const mtGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Shadow under table
+    mtGraphics.fillStyle(0x1a1a1a, 0.3);
+    mtGraphics.fillRect(12, 84, 168, 10);
+    // Table legs (dark wood)
+    mtGraphics.fillStyle(0x3a1a08, 1);
+    mtGraphics.fillRect(16, 80, 8, 14);
+    mtGraphics.fillRect(168, 80, 8, 14);
+    mtGraphics.fillRect(56, 80, 8, 14);
+    mtGraphics.fillRect(128, 80, 8, 14);
+    // Front edge/lip (darker shade)
+    mtGraphics.fillStyle(0x4a1e08, 1);
+    mtGraphics.fillRect(6, 76, 180, 4);
+    // Table surface (rich wood)
+    mtGraphics.fillStyle(0x7a4520, 1);
+    mtGraphics.fillRect(4, 8, 184, 68);
+    // Rounded corners approximation
+    mtGraphics.fillStyle(0x7a4520, 1);
+    mtGraphics.fillRect(6, 6, 180, 2);
+    mtGraphics.fillRect(6, 76, 180, 2);
+    // Surface highlight strip
+    mtGraphics.fillStyle(0x8c5228, 1);
+    mtGraphics.fillRect(8, 10, 176, 4);
+    // Wood grain lines
+    mtGraphics.fillStyle(0x5a2e0e, 0.4);
+    mtGraphics.fillRect(10, 22, 172, 1);
+    mtGraphics.fillRect(10, 34, 172, 1);
+    mtGraphics.fillRect(10, 46, 172, 1);
+    mtGraphics.fillRect(10, 58, 172, 1);
+    mtGraphics.fillRect(10, 70, 172, 1);
+    // Center inlay detail
+    mtGraphics.fillStyle(0x8c5228, 0.3);
+    mtGraphics.fillRect(60, 20, 72, 48);
+    mtGraphics.generateTexture('meeting_table', 192, 96);
+    mtGraphics.destroy();
+
+    // Meeting double door (64x96) — wide double doors with glass panels
+    const mdGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Threshold
+    mdGraphics.fillStyle(0x444444, 1);
+    mdGraphics.fillRect(0, 92, 64, 4);
+    // Outer frame (dark wood)
+    mdGraphics.fillStyle(0x2a1a0a, 1);
+    mdGraphics.fillRect(0, 0, 64, 92);
+    // Left door panel
+    mdGraphics.fillStyle(0xc4833c, 1);
+    mdGraphics.fillRect(4, 4, 27, 84);
+    // Right door panel
+    mdGraphics.fillStyle(0xc4833c, 1);
+    mdGraphics.fillRect(33, 4, 27, 84);
+    // Center dividing line
+    mdGraphics.fillStyle(0x2a1a0a, 1);
+    mdGraphics.fillRect(31, 4, 2, 84);
+    // Left upper glass window
+    mdGraphics.fillStyle(0x88ccee, 1);
+    mdGraphics.fillRect(8, 8, 19, 32);
+    // Left glass shine
+    mdGraphics.fillStyle(0xaaddff, 0.6);
+    mdGraphics.fillRect(10, 10, 6, 16);
+    // Right upper glass window
+    mdGraphics.fillStyle(0x88ccee, 1);
+    mdGraphics.fillRect(37, 8, 19, 32);
+    // Right glass shine
+    mdGraphics.fillStyle(0xaaddff, 0.6);
+    mdGraphics.fillRect(39, 10, 6, 16);
+    // Left lower raised panel
+    mdGraphics.fillStyle(0xb8773a, 1);
+    mdGraphics.fillRect(8, 48, 19, 34);
+    mdGraphics.fillStyle(0xd09050, 1);
+    mdGraphics.fillRect(10, 50, 15, 30);
+    // Right lower raised panel
+    mdGraphics.fillStyle(0xb8773a, 1);
+    mdGraphics.fillRect(37, 48, 19, 34);
+    mdGraphics.fillStyle(0xd09050, 1);
+    mdGraphics.fillRect(39, 50, 15, 30);
+    // Left door handle
+    mdGraphics.fillStyle(0xccaa44, 1);
+    mdGraphics.fillRect(24, 44, 3, 6);
+    // Right door handle
+    mdGraphics.fillStyle(0xccaa44, 1);
+    mdGraphics.fillRect(37, 44, 3, 6);
+    mdGraphics.generateTexture('meeting_double_door', 64, 96);
+    mdGraphics.destroy();
+
+    // Meeting whiteboard (128x64) — wall-mounted whiteboard with writing marks
+    const wbGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Outer frame (aluminum gray)
+    wbGraphics.fillStyle(0x999999, 1);
+    wbGraphics.fillRect(0, 0, 128, 64);
+    // White writing surface
+    wbGraphics.fillStyle(0xffffff, 1);
+    wbGraphics.fillRect(3, 3, 122, 52);
+    // Subtle surface shadow
+    wbGraphics.fillStyle(0xf8f8f8, 1);
+    wbGraphics.fillRect(3, 48, 122, 7);
+    // Blue squiggle lines
+    wbGraphics.fillStyle(0x3366cc, 1);
+    wbGraphics.fillRect(10, 12, 40, 2);
+    wbGraphics.fillRect(12, 16, 35, 2);
+    wbGraphics.fillRect(10, 20, 42, 2);
+    // Red dot/mark
+    wbGraphics.fillStyle(0xcc3333, 1);
+    wbGraphics.fillRect(70, 14, 6, 6);
+    // Green line
+    wbGraphics.fillStyle(0x33aa55, 1);
+    wbGraphics.fillRect(60, 30, 50, 2);
+    wbGraphics.fillRect(65, 34, 40, 2);
+    // Blue box diagram
+    wbGraphics.fillStyle(0x3366cc, 1);
+    wbGraphics.fillRect(14, 32, 30, 16);
+    wbGraphics.fillStyle(0xffffff, 1);
+    wbGraphics.fillRect(16, 34, 26, 12);
+    // Marker tray at bottom
+    wbGraphics.fillStyle(0x666666, 1);
+    wbGraphics.fillRect(30, 56, 68, 5);
+    // Marker dots on tray
+    wbGraphics.fillStyle(0x3366cc, 1);
+    wbGraphics.fillRect(42, 57, 8, 3);
+    wbGraphics.fillStyle(0xcc3333, 1);
+    wbGraphics.fillRect(54, 57, 8, 3);
+    wbGraphics.fillStyle(0x33aa55, 1);
+    wbGraphics.fillRect(66, 57, 8, 3);
+    wbGraphics.generateTexture('meeting_whiteboard', 128, 64);
+    wbGraphics.destroy();
+
+    // Meeting chair (24x24) — compact chair for meeting room
+    const mcGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Casters/legs at bottom
+    mcGraphics.fillStyle(0x444444, 1);
+    mcGraphics.fillRect(4, 21, 4, 3);
+    mcGraphics.fillRect(16, 21, 4, 3);
+    // Leg crossbar
+    mcGraphics.fillStyle(0x444444, 1);
+    mcGraphics.fillRect(6, 19, 12, 2);
+    // Seat cushion
+    mcGraphics.fillStyle(0x333333, 1);
+    mcGraphics.fillRect(2, 12, 20, 7);
+    // Seat highlight
+    mcGraphics.fillStyle(0x3a3a3a, 1);
+    mcGraphics.fillRect(4, 13, 16, 3);
+    // Chair back
+    mcGraphics.fillStyle(0x2a2a2a, 1);
+    mcGraphics.fillRect(4, 2, 16, 10);
+    // Chair back rounded top
+    mcGraphics.fillStyle(0x2a2a2a, 1);
+    mcGraphics.fillRect(6, 0, 12, 2);
+    // Back cushion detail
+    mcGraphics.fillStyle(0x353535, 1);
+    mcGraphics.fillRect(6, 4, 12, 6);
+    // Armrest hints
+    mcGraphics.fillStyle(0x3d3d3d, 1);
+    mcGraphics.fillRect(0, 10, 3, 4);
+    mcGraphics.fillRect(21, 10, 3, 4);
+    mcGraphics.generateTexture('meeting_chair', 24, 24);
+    mcGraphics.destroy();
   }
 
   create(): void {

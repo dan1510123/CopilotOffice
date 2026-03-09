@@ -26,6 +26,14 @@ const VALID_TRANSITIONS: Record<EffectiveState, Set<EffectiveState>> = {
   error:    new Set(['slacking', 'starting']),
 };
 
+export interface RecentAction {
+  action: string;      // e.g. "edit", "grep", "ask_user"
+  type: 'started' | 'completed';
+  timestamp: number;   // Date.now()
+}
+
+const MAX_RECENT_ACTIONS = 8;
+
 export interface AgentStatus {
   agentId: string;
   state: AgentState;
@@ -37,6 +45,9 @@ export interface AgentStatus {
   lastEvent: string | null;          // last notable event description
   activityStartTime: number | null;  // Date.now() when entering thinking/waiting
   lastCompletedAction: string | null; // e.g. "edit on src/main.ts"
+  // Activity history
+  recentActions: RecentAction[];     // ring buffer of recent tool actions
+  taskSummary: string | null;        // persistent task context across tools
 }
 
 export interface OfficeData {
@@ -236,7 +247,7 @@ export class OfficeManager {
     if (!office) return null;
     let status = office.agents.get(agentId);
     if (!status) {
-      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null, unreadCount: 0, lastEvent: null, activityStartTime: null, lastCompletedAction: null };
+      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null, unreadCount: 0, lastEvent: null, activityStartTime: null, lastCompletedAction: null, recentActions: [], taskSummary: null };
       office.agents.set(agentId, status);
     }
     return status;
@@ -263,6 +274,8 @@ export class OfficeManager {
     status.thinkingDetail = null;
     status.currentTool = null;
     status.activityStartTime = null;
+    status.recentActions = [];
+    status.taskSummary = null;
   }
 
   setAgentStarting(officeId: string, agentId: string): void {
@@ -350,6 +363,28 @@ export class OfficeManager {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
     status.lastCompletedAction = action;
+  }
+
+  pushRecentAction(officeId: string, agentId: string, action: string, type: 'started' | 'completed'): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    // Ensure recentActions exists (backward compat with pre-existing status objects)
+    if (!status.recentActions) status.recentActions = [];
+    status.recentActions.push({ action, type, timestamp: Date.now() });
+    if (status.recentActions.length > MAX_RECENT_ACTIONS) {
+      status.recentActions.shift();
+    }
+  }
+
+  setTaskSummary(officeId: string, agentId: string, summary: string | null): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    status.taskSummary = summary;
+  }
+
+  getRecentActions(officeId: string, agentId: string): RecentAction[] {
+    const status = this.getAgentStatus(officeId, agentId);
+    return status?.recentActions || [];
   }
 
   // Ensure at least one office exists

@@ -4,6 +4,7 @@ import { AgentStatus } from '../office/officeManager';
 import { Depths, ySortDepth } from '../config/depths';
 import {
   Direction, getStandFrame, registerWalkAnimations,
+  walkAnimKey, directionFromVelocity,
 } from '../sprites/DirectionalSprite';
 
 // Badge color config per status
@@ -292,6 +293,62 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
         ease: 'Sine.easeInOut',
       });
     }
+  }
+
+  /** Tween-based scripted walk to a target position. Returns a Promise that resolves on arrival. */
+  async walkTo(targetX: number, targetY: number, speed: number = 100): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const dx = targetX - this.x;
+      const dy = targetY - this.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < 1) {
+        resolve();
+        return;
+      }
+
+      const duration = (distance / speed) * 1000;
+      const direction = directionFromVelocity(dx, dy) ?? Direction.DOWN;
+
+      // Play walk animation for the movement direction
+      const animKey = walkAnimKey(this.config.sprite, direction);
+      this.play(animKey, true);
+
+      this.scene.tweens.add({
+        targets: this,
+        x: targetX,
+        y: targetY,
+        duration,
+        ease: 'Linear',
+        onUpdate: () => {
+          // Update y-sort depth as NPC moves
+          this.setDepth(ySortDepth(this.y, this.scene.physics.world.bounds.bottom));
+          // Update attached labels/badges positions
+          this.updateAttachedPositions();
+        },
+        onComplete: () => {
+          this.stop(); // Stop walk animation
+          this.setFrame(getStandFrame(direction));
+          this.setDepth(ySortDepth(this.y, this.scene.physics.world.bounds.bottom));
+          this.updateAttachedPositions();
+          resolve();
+        },
+      });
+    });
+  }
+
+  /** Update positions of name label, description, badge, indicator relative to NPC. */
+  private updateAttachedPositions(): void {
+    const x = this.x;
+    const y = this.y;
+    const s = this.spriteScale;
+
+    this.nameLabel.setPosition(x, y - 28 * s);
+    this.descriptionLabel.setPosition(x, y - 28 * s);
+    this.sessionBadge.setPosition(x + 16 * s, y - 24 * s);
+    this.sessionText.setPosition(x + 16 * s, y - 24 * s);
+    this.indicator.setPosition(x, this.indicator.y); // keep y from tween
+    this.highlightGlow.setPosition(x, y);
+    this.highlightRing.setPosition(x, y);
   }
 
   destroy(fromScene?: boolean): void {

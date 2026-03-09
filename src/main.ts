@@ -4,6 +4,7 @@
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
+import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager } from './office/officeManager';
 import { AGENTS } from './config/agents';
 import { ToastNotificationManager } from './ui/ToastNotification';
@@ -343,6 +344,15 @@ function formatElapsed(startTime: number | null): string {
   return `${mins}m ${secs}s`;
 }
 
+function formatRelativeTime(timestamp: number): string {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 5) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const mins = Math.floor(seconds / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.floor(mins / 60)}h ago`;
+}
+
 // Helper to find agent config by id
 function getAgentConfig(agentId: string) {
   return AGENTS.find(a => a.id === agentId);
@@ -452,8 +462,10 @@ function updateTerminalContentNow() {
     const bgColor = isSelected ? '#1e1e3a' : '#13131f';
     const unread = liveStatus?.unreadCount || 0;
     const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
-    const lastAction = liveStatus?.lastCompletedAction || '';
     const toolCount = tools.length;
+    const recentActions = liveStatus?.recentActions || [];
+    const taskSummary = liveStatus?.taskSummary || '';
+    const isActive = liveStatus?.state === 'active' && liveStatus?.subState !== 'ready' && liveStatus?.subState !== 'error';
 
     // Badge HTML (unread count)
     const badgeHtml = unread > 0 ? `
@@ -477,10 +489,52 @@ function updateTerminalContentNow() {
       padding: 1px 6px; border-radius: 8px; margin-left: 6px;
     ">${toolCount} tools</span>` : '';
 
-    // Last completed action row
-    const lastActionHtml = lastAction ? `
-      <div style="font-size: 10px; color: #5a5a7a; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-        ✓ Last: ${lastAction}
+    // ── Tool Pipeline Section ──
+    let toolPipelineHtml = '';
+    if (tools.length > 0) {
+      const toolRows = tools.map((t, i) => {
+        const isLast = i === tools.length - 1;
+        const icon = isLast ? '▸' : '◦';
+        const color = isLast ? '#8af' : '#556';
+        const statusText = isLast ? t.status : '(queued)';
+        return `<div style="font-size: 10px; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">
+          ${icon} <span style="color: #9ab;">${t.name}</span> <span style="color: #556;">— ${statusText}</span>
+        </div>`;
+      }).join('');
+      toolPipelineHtml = `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+          ${toolRows}
+        </div>`;
+    }
+
+    // ── Recent Activity Log ──
+    let activityLogHtml = '';
+    // Show completed actions in reverse chronological order (most recent first)
+    const completedActions = recentActions.filter(a => a.type === 'completed').slice(-5).reverse();
+    if (completedActions.length > 0) {
+      const rows = completedActions.map(a => {
+        const relTime = formatRelativeTime(a.timestamp);
+        return `<div style="display: flex; gap: 8px; font-size: 10px; padding: 1px 0;" data-action-ts="${a.timestamp}">
+          <span style="color: #445; flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
+          <span style="color: #5a5a7a;">✓ ${a.action}</span>
+        </div>`;
+      }).join('');
+      activityLogHtml = `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+          <div style="font-size: 9px; color: #3a3a5a; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
+          ${rows}
+        </div>`;
+    } else if (liveStatus?.state !== 'slacking') {
+      activityLogHtml = `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+          <div style="font-size: 10px; color: #333; font-style: italic;">No recent activity</div>
+        </div>`;
+    }
+
+    // ── Task Summary ──
+    const taskSummaryHtml = taskSummary && isActive ? `
+      <div style="font-size: 10px; color: #667; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        📋 ${taskSummary}
       </div>` : '';
 
     html += `
@@ -493,10 +547,10 @@ function updateTerminalContentNow() {
         cursor: pointer;
         transition: border-color 0.15s;
         display: flex;
-        align-items: stretch;
+        align-items: flex-start;
         gap: 14px;
         position: relative;
-        min-height: 100px;
+        min-height: 200px;
       ">
         ${badgeHtml}
         <div style="
@@ -509,6 +563,8 @@ function updateTerminalContentNow() {
           align-items: center;
           justify-content: center;
           overflow: hidden;
+          align-self: flex-start;
+          margin-top: 4px;
         ">
           <canvas
             id="overview-sprite-${agent.id}"
@@ -516,7 +572,7 @@ function updateTerminalContentNow() {
             style="image-rendering: pixelated; width: 64px; height: 68px; display: block;"
           ></canvas>
         </div>
-        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: space-between; gap: 6px;">
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
           <div>
             <div style="font-weight: bold; color: #dde; font-size: 15px;">${agent.name}</div>
             <div style="color: #778; font-size: 11px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
@@ -534,9 +590,10 @@ function updateTerminalContentNow() {
               ${elapsedHtml}
               ${queueHtml}
             </div>
-            ${tools.length > 0 ? `<div style="color: #667; font-size: 10px; margin-top: 3px;">▸ ${tools[tools.length - 1].status}</div>` : ''}
-            ${lastActionHtml}
+            ${taskSummaryHtml}
           </div>
+          ${toolPipelineHtml}
+          ${activityLogHtml}
         </div>
       </div>
     `;
@@ -611,6 +668,13 @@ if (window.copilotBridge) {
     }
     agentTools.get(agentId)!.push({ toolId, name: toolName, status });
 
+    // Track in recent actions history
+    officeManager.pushRecentAction(officeId, agentId, toolName, 'started');
+    // Use tool status as task summary context
+    if (status) {
+      officeManager.setTaskSummary(officeId, agentId, status);
+    }
+
     // Don't change status while agent is still starting — wait for the preload ready signal
     const current = officeManager.getAgentStatus(officeId, agentId);
     if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
@@ -648,8 +712,9 @@ if (window.copilotBridge) {
       const remaining = tools.filter(t => t.toolId !== toolId);
       agentTools.set(agentId, remaining);
 
-      // Track last completed action
+      // Track last completed action + recent actions history
       officeManager.setLastCompletedAction(officeId, agentId, completedToolName);
+      officeManager.pushRecentAction(officeId, agentId, completedToolName, 'completed');
       notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
 
       // Don't change status while agent is still starting — wait for the preload ready signal
@@ -673,6 +738,8 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn end: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
+      // Clear task summary on turn end
+      officeManager.setTaskSummary(officeId, agentId, null);
       // Don't change status while agent is still starting — wait for the preload ready signal
       const current = officeManager.getAgentStatus(officeId, agentId);
       if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
@@ -689,6 +756,8 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn start: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
+    // Set task summary on turn start
+    officeManager.setTaskSummary(officeId, agentId, 'Processing...');
     // Don't change status while agent is still starting — wait for the preload ready signal
     const current = officeManager.getAgentStatus(officeId, agentId);
     if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
@@ -833,12 +902,26 @@ setInterval(() => {
   if (!office) return;
   for (const agent of AGENTS) {
     const status = office.agents.get(agent.id);
-    if (!status?.activityStartTime) continue;
-    if (status.subState !== 'thinking' && status.subState !== 'waiting' && status.subState !== 'starting') continue;
-    const el = document.querySelector(`[data-elapsed-agent="${agent.id}"]`) as HTMLElement | null;
-    if (el) {
-      el.textContent = `⏱ ${formatElapsed(status.activityStartTime)}`;
+    // Update elapsed time badge
+    if (status?.activityStartTime) {
+      if (status.subState === 'thinking' || status.subState === 'waiting' || status.subState === 'starting') {
+        const el = document.querySelector(`[data-elapsed-agent="${agent.id}"]`) as HTMLElement | null;
+        if (el) {
+          el.textContent = `⏱ ${formatElapsed(status.activityStartTime)}`;
+        }
+      }
     }
+    // Update relative timestamps in recent activity log
+    const actionEls = document.querySelectorAll(`.agent-card[data-agent="${agent.id}"] [data-action-ts]`);
+    actionEls.forEach(el => {
+      const ts = parseInt((el as HTMLElement).dataset.actionTs || '0', 10);
+      if (ts) {
+        const timeSpan = el.querySelector('span:first-child') as HTMLElement | null;
+        if (timeSpan) {
+          timeSpan.textContent = formatRelativeTime(ts);
+        }
+      }
+    });
   }
 }, ELAPSED_TICK_MS);
 
@@ -909,7 +992,7 @@ const phaserGame = new Phaser.Game({
   height: officePanel.clientHeight || window.innerHeight,
   backgroundColor: '#1a1a2e',
   physics: { default: 'arcade', arcade: { debug: false } },
-  scene: [BootScene, OfficeScene],
+  scene: [BootScene, OfficeScene, MeetingScene],
 });
 
 phaserGameRef = phaserGame;
