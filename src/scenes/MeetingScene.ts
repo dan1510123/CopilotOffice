@@ -4,17 +4,24 @@ import { Direction, getStandFrame } from '../sprites/DirectionalSprite';
 import { MeetingPlan } from '../meeting/types';
 import { InputManager } from '../input/InputManager';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
+import { PlanApprovalOverlay } from '../meeting/planApproval';
+import { parsePlanFromOutput } from '../meeting/planParser';
 import { AGENTS } from '../config/agents';
 
 export class MeetingScene extends Phaser.Scene {
   private tileSize: number = 64;
-  private mapWidth: number = 16;
-  private mapHeight: number = 10;
+  private mapWidth: number = 6;
+  private mapHeight: number = 5;
   private playerSprite!: Phaser.GameObjects.Sprite;
   private arthurSprite!: Phaser.GameObjects.Sprite;
   private meetingPlan: MeetingPlan | null = null;
   private inputManager!: InputManager;
   private terminalOverlay!: TerminalOverlay;
+  private planApproval!: PlanApprovalOverlay;
+  private terminalOutputBuffer: string = '';
+  private terminalDataCleanup: (() => void) | null = null;
+  private leaveMeetingCleanup: (() => void) | null = null;
+  private isExiting: boolean = false;
 
   constructor() {
     super({ key: 'MeetingScene' });
@@ -24,8 +31,15 @@ export class MeetingScene extends Phaser.Scene {
     const worldW = this.mapWidth * this.tileSize;
     const worldH = this.mapHeight * this.tileSize;
 
+    this.isExiting = false;
+    this.terminalOutputBuffer = '';
+
     this.physics.world.setBounds(0, 0, worldW, worldH);
     this.cameras.main.setBounds(0, 0, worldW, worldH);
+
+    // Zoom camera 3x for cozy meeting room
+    this.cameras.main.setZoom(3);
+    this.cameras.main.centerOn(worldW / 2, worldH / 2);
 
     // Dark background fill
     this.add.rectangle(worldW / 2, worldH / 2, worldW, worldH, 0x1a1a2e)
@@ -33,46 +47,136 @@ export class MeetingScene extends Phaser.Scene {
 
     this.createMeetingRoom();
 
+    // Center of the room for table/characters
+    const centerX = (this.mapWidth / 2) * this.tileSize;
+
     // Place Arthur above the table (facing down)
-    const arthurX = 8 * this.tileSize;
-    const arthurY = 3.5 * this.tileSize;
-    this.arthurSprite = this.add.sprite(arthurX, arthurY, 'npc_architect', getStandFrame(Direction.DOWN))
+    const arthurY = 1.2 * this.tileSize;
+    this.arthurSprite = this.add.sprite(centerX, arthurY, 'npc_architect', getStandFrame(Direction.DOWN))
       .setDepth(ySortDepth(arthurY, worldH));
 
     // Place Player below the table (facing up toward Arthur)
-    const playerX = 8 * this.tileSize;
-    const playerY = 6.5 * this.tileSize;
-    this.playerSprite = this.add.sprite(playerX, playerY, 'player', getStandFrame(Direction.UP))
+    const playerY = 3.3 * this.tileSize;
+    this.playerSprite = this.add.sprite(centerX, playerY, 'player', getStandFrame(Direction.UP))
       .setDepth(ySortDepth(playerY, worldH));
 
-    // Title text
-    this.add.text(worldW / 2, 20, 'Meeting Room', {
-      fontSize: '24px',
+    // Title text (scaled down for zoom)
+    this.add.text(worldW / 2, 4, 'Meeting Room', {
+      fontSize: '8px',
       fontFamily: 'monospace',
       color: '#ffffff',
     }).setOrigin(0.5, 0).setDepth(Depths.UI_OVERLAY);
 
-    // Subtitle
-    this.add.text(worldW / 2, 50, 'Planning session with Arthur', {
-      fontSize: '14px',
-      fontFamily: 'monospace',
-      color: '#aaaaaa',
-    }).setOrigin(0.5, 0).setDepth(Depths.UI_OVERLAY);
+    // Ctrl+Enter to leave meeting (works even when terminal is focused)
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'Enter' && !this.isExiting) {
+        e.preventDefault();
+        this.exitMeeting();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    this.leaveMeetingCleanup = () => document.removeEventListener('keydown', onKeyDown, true);
+
+    // DOM "Leave Meeting" button (visible above the game panel)
+    this.createLeaveButton();
 
     // Create input manager for meeting scene
     this.inputManager = new InputManager(this);
 
+    // Create plan approval overlay
+    this.planApproval = new PlanApprovalOverlay();
+
     // Create terminal overlay and auto-open Arthur's terminal
     this.terminalOverlay = new TerminalOverlay(this, this.inputManager);
-    
+
     const arthur = AGENTS.find(a => a.id === 'architect');
     if (arthur) {
       this.terminalOverlay.show(arthur, () => {
-        // When terminal is closed in meeting, stay in meeting (don't exit)
-        // User can still use plan approval UI or reopen
         console.log('[MeetingScene] Terminal closed');
       });
     }
+
+    // Listen for terminal output to detect plans
+    this.setupPlanDetection();
+  }
+
+  private leaveButton: HTMLButtonElement | null = null;
+
+  private createLeaveButton(): void {
+    this.leaveButton = document.createElement('button');
+    this.leaveButton.textContent = '🚪 Leave Meeting (Ctrl+Enter)';
+    Object.assign(this.leaveButton.style, {
+      position: 'fixed',
+      bottom: '70px',
+      left: '16px',
+      padding: '8px 16px',
+      background: '#333',
+      color: '#ccc',
+      border: '1px solid #555',
+      borderRadius: '6px',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      cursor: 'pointer',
+      zIndex: '10001',
+    });
+    this.leaveButton.addEventListener('mouseenter', () => {
+      if (this.leaveButton) this.leaveButton.style.background = '#555';
+    });
+    this.leaveButton.addEventListener('mouseleave', () => {
+      if (this.leaveButton) this.leaveButton.style.background = '#333';
+    });
+    this.leaveButton.addEventListener('click', () => {
+      if (!this.isExiting) this.exitMeeting();
+    });
+    document.body.appendChild(this.leaveButton);
+  }
+
+  private setupPlanDetection(): void {
+    if (typeof window === 'undefined' || !window.copilotBridge) return;
+
+    const handler = (_agentId: string, data: string) => {
+      if (_agentId !== 'architect') return;
+      this.terminalOutputBuffer += data;
+
+      // Debounced check for plan in output
+      this.time.delayedCall(500, () => {
+        if (this.isExiting) return;
+        const plan = parsePlanFromOutput(this.terminalOutputBuffer);
+        if (plan && !this.meetingPlan) {
+          this.meetingPlan = plan;
+          console.log('[MeetingScene] Plan detected:', plan.plan);
+          this.showPlanApproval(plan);
+        }
+      });
+    };
+
+    window.copilotBridge.onTerminalData(handler);
+    this.terminalDataCleanup = () => {
+      window.copilotBridge?.removeTerminalListeners?.();
+    };
+  }
+
+  private showPlanApproval(plan: MeetingPlan): void {
+    this.planApproval.show(plan, {
+      onApprove: (approvedPlan) => {
+        console.log('[MeetingScene] Plan approved');
+        this.exitMeeting(approvedPlan);
+      },
+      onRevise: (feedback) => {
+        console.log('[MeetingScene] Revision requested:', feedback);
+        // Send feedback to Arthur's terminal
+        if (window.copilotBridge) {
+          window.copilotBridge.terminalWrite('architect', feedback + '\r');
+        }
+        // Reset plan detection for the revised output
+        this.meetingPlan = null;
+        this.terminalOutputBuffer = '';
+      },
+      onCancel: () => {
+        console.log('[MeetingScene] Plan cancelled');
+        this.meetingPlan = null;
+      },
+    });
   }
 
   private createMeetingRoom(): void {
@@ -96,54 +200,56 @@ export class MeetingScene extends Phaser.Scene {
         .setDepth(Depths.WALLS);
     }
 
-    // Bottom wall (y=mapHeight-1)
+    // Bottom wall
     for (let x = 0; x < this.mapWidth; x++) {
       this.add.sprite(x * ts + halfTile, (this.mapHeight - 1) * ts + halfTile, 'wall')
         .setDisplaySize(ts, ts)
         .setDepth(Depths.WALLS);
     }
 
-    // Left wall (x=0)
+    // Left wall
     for (let y = 0; y < this.mapHeight; y++) {
       this.add.sprite(halfTile, y * ts + halfTile, 'wall')
         .setDisplaySize(ts, ts)
         .setDepth(Depths.WALLS);
     }
 
-    // Right wall (x=mapWidth-1)
+    // Right wall
     for (let y = 0; y < this.mapHeight; y++) {
       this.add.sprite((this.mapWidth - 1) * ts + halfTile, y * ts + halfTile, 'wall')
         .setDisplaySize(ts, ts)
         .setDepth(Depths.WALLS);
     }
 
-    // Double door on left wall, centered vertically (~y=4-5)
+    // Double door on left wall, centered vertically
     const doorX = halfTile;
-    const doorY = 4.5 * ts;
+    const doorY = 2.5 * ts;
     this.add.sprite(doorX, doorY, 'meeting_double_door')
       .setDisplaySize(ts, ts * 1.5)
       .setDepth(Depths.WALLS);
 
-    // Whiteboard on top wall, centered horizontally
+    // Whiteboard on top wall, centered
     const whiteboardX = (this.mapWidth / 2) * ts;
     const whiteboardY = halfTile;
     this.add.sprite(whiteboardX, whiteboardY, 'meeting_whiteboard')
+      .setDisplaySize(ts * 2, ts * 0.8)
       .setDepth(Depths.WALLS);
 
-    // Meeting table at center (tile 8, 5)
-    const tableX = 8 * ts;
-    const tableY = 5 * ts;
-    this.add.sprite(tableX, tableY, 'meeting_table')
+    // Meeting table at center
+    const centerX = (this.mapWidth / 2) * ts;
+    const tableY = 2.25 * ts;
+    this.add.sprite(centerX, tableY, 'meeting_table')
+      .setDisplaySize(ts * 2.5, ts * 1.2)
       .setDepth(ySortDepth(tableY, worldH));
 
     // Chair above table (Arthur's)
-    const chairAboveY = 3.5 * ts - 20;
-    this.add.sprite(tableX, chairAboveY, 'meeting_chair')
+    const chairAboveY = 1.2 * ts - 10;
+    this.add.sprite(centerX, chairAboveY, 'meeting_chair')
       .setDepth(ySortDepth(chairAboveY, worldH));
 
     // Chair below table (Player's)
-    const chairBelowY = 6.5 * ts + 20;
-    this.add.sprite(tableX, chairBelowY, 'meeting_chair')
+    const chairBelowY = 3.3 * ts + 10;
+    this.add.sprite(centerX, chairBelowY, 'meeting_chair')
       .setDepth(ySortDepth(chairBelowY, worldH));
   }
 
@@ -160,38 +266,43 @@ export class MeetingScene extends Phaser.Scene {
   }
 
   exitMeeting(plan?: MeetingPlan): void {
+    if (this.isExiting) return;
+    this.isExiting = true;
+
+    this.planApproval?.hide();
     this.terminalOverlay?.hide();
-    
-    const doorX = this.tileSize * 1.5;
-    const doorY = 4.5 * this.tileSize;
-    
+    this.leaveButton?.remove();
+    this.leaveButton = null;
+
+    const doorX = this.tileSize * 0.8;
+    const doorY = 2.5 * this.tileSize;
+
     // Short pause before walking
-    this.time.delayedCall(500, () => {
+    this.time.delayedCall(300, () => {
       // Player walks to door first
       this.tweens.add({
         targets: this.playerSprite,
         x: doorX,
         y: doorY,
-        duration: 800,
+        duration: 600,
         ease: 'Sine.easeInOut',
         onComplete: () => {
           this.playerSprite.setVisible(false);
         },
       });
-      
+
       // Arthur follows slightly behind
       this.tweens.add({
         targets: this.arthurSprite,
         x: doorX,
         y: doorY,
-        duration: 800,
-        delay: 300,
+        duration: 600,
+        delay: 200,
         ease: 'Sine.easeInOut',
         onComplete: () => {
           this.arthurSprite.setVisible(false);
-          
-          // Fade out after both reach the door
-          this.cameras.main.fadeOut(500, 0, 0, 0);
+
+          this.cameras.main.fadeOut(400, 0, 0, 0);
           this.cameras.main.once('camerafadeoutcomplete', () => {
             this.scene.stop('MeetingScene');
             this.scene.wake('OfficeScene', { plan });
@@ -202,8 +313,17 @@ export class MeetingScene extends Phaser.Scene {
   }
 
   shutdown(): void {
+    this.terminalDataCleanup?.();
+    this.terminalDataCleanup = null;
+    this.leaveMeetingCleanup?.();
+    this.leaveMeetingCleanup = null;
+    this.leaveButton?.remove();
+    this.leaveButton = null;
+    this.planApproval?.hide();
     this.terminalOverlay?.hide();
     this.inputManager?.destroy();
     this.meetingPlan = null;
+    this.terminalOutputBuffer = '';
+    this.isExiting = false;
   }
 }
