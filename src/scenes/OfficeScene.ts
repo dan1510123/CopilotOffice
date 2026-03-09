@@ -360,6 +360,7 @@ export class OfficeScene extends Phaser.Scene {
     // Uses body.reset() for precise world-coordinate positioning of static bodies.
     const addFurniture = (x: number, y: number, texture: string, opts?: { bodyWidth?: number; bodyHeight?: number; bodyOffsetX?: number; bodyOffsetY?: number; depthSortY?: number }) => {
       const sprite = this.furniture.create(x, y, texture) as Phaser.Physics.Arcade.Sprite;
+      sprite.setOrigin(0.5, 0.5);
       sprite.setScale(scale);
       const body = sprite.body as Phaser.Physics.Arcade.StaticBody;
       if (opts?.bodyWidth != null) {
@@ -384,6 +385,7 @@ export class OfficeScene extends Phaser.Scene {
     // Helper to add decorative sprite (no collision)
     const addDecor = (x: number, y: number, texture: string) => {
       const sprite = this.add.sprite(x, y, texture);
+      sprite.setOrigin(0.5, 0.5);
       sprite.setScale(scale);
       return sprite;
     };
