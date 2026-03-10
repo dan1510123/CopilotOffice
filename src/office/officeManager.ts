@@ -9,7 +9,6 @@ export interface OfficeConfig {
   workingDirectory: string;
   createdAt: number;
   layout: OfficeLayout;
-  index: number;
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -92,17 +91,15 @@ export class OfficeManager {
   
   // Create a new office
   createOffice(name: string, workingDirectory: string, layout: OfficeLayout = 'default'): OfficeData {
-    const id = `office-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Auto-assign next index (max existing + 1, or 0 if first office)
-    const existingIndices = Array.from(this.offices.values()).map(o => o.config.index);
+    const existingIndices = Array.from(this.offices.values()).map(o => parseInt(o.config.id.replace('office-', ''), 10));
     const nextIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
+    const id = `office-${nextIndex}`;
     const config: OfficeConfig = {
       id,
       name,
       workingDirectory,
       createdAt: Date.now(),
       layout,
-      index: nextIndex,
     };
     
     const data: OfficeData = {
@@ -129,8 +126,8 @@ export class OfficeManager {
     const office = this.offices.get(officeId);
     if (!office) return false;
 
-    if (office.config.index === 0) {
-      console.warn('[OfficeManager] Cannot delete the primary office (index 0)');
+    if (officeId === 'office-0') {
+      console.warn('[OfficeManager] Cannot delete the primary office (office-0)');
       return false;
     }
     
@@ -209,7 +206,7 @@ export class OfficeManager {
     return office?.config.workingDirectory || '.';
   }
   
-  // Persistence — saves to both localStorage (fast) and copilot-offices.json (durable)
+  // Persistence — saves to both localStorage (fast) and .data/copilot-offices.json (durable)
   private saveToStorage(): void {
     const data = {
       currentOfficeId: this._currentOfficeId,
@@ -240,7 +237,7 @@ export class OfficeManager {
     if (typeof window !== 'undefined' && (window as any).copilotBridge?.loadOffices) {
       (window as any).copilotBridge.loadOffices().then((result: { success: boolean; data: string | null }) => {
         if (result.success && result.data) {
-          console.log('[OfficeManager] Loaded offices from copilot-offices.json');
+          console.log('[OfficeManager] Loaded offices from .data/copilot-offices.json');
           this.loadFromJson(result.data);
           this.onOfficesUpdated?.();
         }
@@ -262,23 +259,31 @@ export class OfficeManager {
           const config = data.offices[i];
           // Backfill layout for offices saved before this field existed
           if (!config.layout) config.layout = 'default';
-          // Backfill index for offices saved before this field existed
-          if (config.index === undefined) config.index = i;
+          // Derive id from array position (replaces legacy UUID-style ids)
+          config.id = `office-${i}`;
+          // Drop legacy index field if present
+          delete config.index;
 
+          const id = config.id;
           // Preserve existing runtime state (agents, tools) if office already loaded
-          const existing = this.offices.get(config.id);
+          const existing = this.offices.get(id);
           const officeData: OfficeData = {
             config,
             agents: existing?.agents ?? new Map(),
             agentTools: existing?.agentTools ?? new Map(),
           };
-          this.offices.set(config.id, officeData);
+          this.offices.set(id, officeData);
         }
       }
       
       // Restore current office
-      if (data.currentOfficeId && this.offices.has(data.currentOfficeId)) {
-        this._currentOfficeId = data.currentOfficeId;
+      let currentId: string | null = null;
+      if (data.currentOfficeId !== undefined && data.currentOfficeId !== null) {
+        currentId = String(data.currentOfficeId);
+      }
+
+      if (currentId && this.offices.has(currentId)) {
+        this._currentOfficeId = currentId;
       } else if (this.offices.size > 0) {
         this._currentOfficeId = this.offices.keys().next().value;
       }

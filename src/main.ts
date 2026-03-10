@@ -380,7 +380,7 @@ function showEditOfficeDialog(officeId: string) {
   const office = officeManager.getOffice(officeId);
   if (!office) return;
 
-  const canDelete = office.config.index !== 0;
+  const canDelete = office.config.id !== 'office-0';
   const deleteOption = canDelete ? '\n- "delete" to remove office' : '';
 
   const action = prompt(
