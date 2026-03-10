@@ -281,9 +281,9 @@ export class OfficeScene extends Phaser.Scene {
     this.instructionText.setDepth(Depths.UI_OVERLAY);
 
     // Allow external UI(e.g. overview panel) to open agent terminal directly
-    // Fleet v-team agents don't open terminals
+    // Fleet v-team agents don't open terminals — except Arthur (read-only view)
     this.game.events.on('open:agent:terminal', (agentId: string) => {
-      if (this.currentLayout === 'fleet-vteam') return;
+      if (this.currentLayout === 'fleet-vteam' && agentId !== 'architect') return;
       const agents = getLayout(this.currentLayout).agents;
       const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
@@ -1690,8 +1690,20 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
-    // Fleet v-team agents don't open terminals
-    if (this.currentLayout === 'fleet-vteam') return;
+    // Fleet v-team: only Arthur can open a terminal (read-only view of meeting conversation)
+    if (this.currentLayout === 'fleet-vteam') {
+      if (agent.id !== 'architect') return;
+      // Open Arthur's terminal in read-only mode (no meeting, no input)
+      this.game.events.emit('agent:interact', agent.id);
+      this.terminalOverlay.show(
+        agent,
+        () => {
+          this.updateSessionBadges();
+        },
+        { readOnly: true }
+      );
+      return;
+    }
 
     // Arthur triggers meeting mode instead of normal terminal
     if (agent.id === 'architect') {

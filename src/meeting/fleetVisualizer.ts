@@ -13,7 +13,7 @@
  *   fleet:complete     — all sub-agents finished
  */
 
-import Phaser = require('phaser');
+import * as Phaser from 'phaser';
 import { FleetTracker, FleetState, SubAgentTracker } from './fleetTracker';
 
 interface FleetNPCMapping {

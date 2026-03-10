@@ -55,8 +55,10 @@ export const fleetDashboard: DashboardRenderer = {
 
       const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
       const isSelected = agent.id === selectedAgentId;
+      const isArthur = agent.id === 'architect';
       const borderColor = isSelected ? '#4a5a7a' : '#252540';
       const bgColor = isSelected ? '#1a1e2e' : '#13131f';
+      const cursor = isArthur ? 'pointer' : 'default';
       const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
       const recentActions = liveStatus?.recentActions || [];
       const taskSummary = liveStatus?.taskSummary || '';
@@ -89,6 +91,12 @@ export const fleetDashboard: DashboardRenderer = {
           📋 ${taskSummary}
         </div>` : '';
 
+      // ── Arthur: "View conversation" indicator ──
+      const arthurHint = isArthur ? `
+        <div style="font-size: 10px; color: #4af; margin-top: 4px; display: flex; align-items: center; gap: 4px;">
+          💬 View meeting conversation (read-only)
+        </div>` : '';
+
       html += `
         <div class="agent-card" data-agent="${agent.id}" style="
           background: ${bgColor};
@@ -96,7 +104,7 @@ export const fleetDashboard: DashboardRenderer = {
           border-radius: 10px;
           padding: 14px 16px;
           margin-bottom: 8px;
-          cursor: default;
+          cursor: ${cursor};
           transition: border-color 0.15s;
           display: flex;
           align-items: flex-start;
@@ -140,6 +148,7 @@ export const fleetDashboard: DashboardRenderer = {
                 ${elapsedHtml}
               </div>
               ${taskSummaryHtml}
+              ${arthurHint}
             </div>
             ${activityLogHtml}
           </div>
