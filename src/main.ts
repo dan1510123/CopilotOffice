@@ -420,12 +420,41 @@ terminalHeader.style.cssText = `
   border-bottom: 2px solid #2a2a4a;
   font-family: 'Cascadia Code', Consolas, monospace;
   flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 `;
 terminalHeader.innerHTML = `
-  <div id="terminal-title" style="font-size: 18px; font-weight: bold; color: #8af; margin-bottom: 4px;">🏢 Office Overview</div>
-  <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
+  <div>
+    <div id="terminal-title" style="font-size: 18px; font-weight: bold; color: #8af; margin-bottom: 4px;">🏢 Office Overview</div>
+    <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
+  </div>
+  <button id="close-office-btn" style="
+    display: none;
+    padding: 6px 14px;
+    background: #cc3344;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-family: 'Cascadia Code', Consolas, monospace;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  ">✕ Close Office</button>
 `;
 terminalPanel.appendChild(terminalHeader);
+
+// Close Office button handler
+document.getElementById('close-office-btn')!.addEventListener('click', () => {
+  const currentId = officeManager.currentOfficeId;
+  const office = officeManager.currentOffice;
+  if (!currentId || !office) return;
+  if (confirm(`Close office "${office.config.name}"? This cannot be undone.`)) {
+    officeManager.deleteOffice(currentId);
+    renderOfficeTabs();
+    updateTerminalContent();
+  }
+});
 
 // Terminal content area
 const terminalContent = document.createElement('div');
@@ -558,6 +587,14 @@ function updateTerminalContent() {
 function updateTerminalContentNow() {
   const agentTools = getCurrentAgentTools();
   const office = officeManager.currentOffice;
+
+  // Show/hide Close Office button (hidden for Main Office at index 0)
+  const closeBtn = document.getElementById('close-office-btn') as HTMLButtonElement | null;
+  if (closeBtn) {
+    const allOffices = officeManager.getAllOffices();
+    const isMainOffice = office && allOffices.length > 0 && allOffices[0].id === office.config.id;
+    closeBtn.style.display = (!office || isMainOffice) ? 'none' : 'inline-block';
+  }
 
   // Update subtitle
   const subtitle = document.getElementById('terminal-subtitle');
