@@ -421,8 +421,7 @@ function showEditOfficeDialog(officeId: string) {
     if (!canDelete) return;
     if (confirm(`Delete office "${office.config.name}"? This cannot be undone.`)) {
       officeManager.deleteOffice(officeId);
-      renderOfficeTabs();
-      updateTerminalContent();
+      switchToOffice('office-0');
     }
   }
 }
@@ -468,8 +467,7 @@ document.getElementById('close-office-btn')!.addEventListener('click', () => {
   if (!currentId || !office) return;
   if (confirm(`Close office "${office.config.name}"? This cannot be undone.`)) {
     officeManager.deleteOffice(currentId);
-    renderOfficeTabs();
-    updateTerminalContent();
+    switchToOffice('office-0');
   }
 });
 

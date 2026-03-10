@@ -157,8 +157,8 @@ export class OfficeManager {
 
     // If we deleted the current office, switch to another
     if (this._currentOfficeId === officeId) {
-      const remaining = this.offices.keys().next().value;
-      this._currentOfficeId = remaining || null;
+      // Always switch to Main Office (office-0) which is protected from deletion
+      this._currentOfficeId = this.offices.has('office-0') ? 'office-0' : (this.offices.keys().next().value || null);
       if (this._currentOfficeId) {
         this.onOfficeChanged?.(this._currentOfficeId);
       }
