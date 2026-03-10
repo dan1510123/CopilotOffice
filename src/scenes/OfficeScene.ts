@@ -88,8 +88,12 @@ export class OfficeScene extends Phaser.Scene {
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
   private fleetSourceOfficeId: string | null = null;
+  private fleetPrompt: string | null = null;
   private pendingLayoutSwitch: OfficeLayout | null = null;
   private cameraDrag: CameraDragController | null = null;
+  private walkInTimers: Phaser.Time.TimerEvent[] = [];
+  private walkInAgents: { npc: NPC; finalX: number; finalY: number; agentId: string }[] = [];
+  private skipButton: HTMLButtonElement | null = null;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -381,6 +385,13 @@ export class OfficeScene extends Phaser.Scene {
         console.log(`[OfficeScene] Blocked office switch — animation in progress`);
         return;
       }
+
+      // Close any open terminal — the active agent may not exist in the new office
+      if (this.terminalOverlay.getIsVisible()) {
+        this.terminalOverlay.hide();
+        this.game.events.emit('terminal:close');
+      }
+
       const office = officeManager.getOffice(officeId);
       if (!office) return;
       const newLayout = office.config.layout ?? 'default';
@@ -400,10 +411,11 @@ export class OfficeScene extends Phaser.Scene {
 
     // ── Fleet visualizer events ───────────────────────────────────────────
 
-    // Receive the source office ID for FleetTracker attach (before office switch)
-    this.game.events.on('fleet:source-office', (sourceOfficeId: string) => {
-      this.fleetSourceOfficeId = sourceOfficeId;
-      console.log(`[OfficeScene] Fleet source office set: ${sourceOfficeId}`);
+    // Receive the source office ID and fleet prompt for FleetTracker attach (before office switch)
+    this.game.events.on('fleet:source-office', (data: { sourceOfficeId: string; prompt?: string }) => {
+      this.fleetSourceOfficeId = data.sourceOfficeId;
+      this.fleetPrompt = data.prompt ?? null;
+      console.log(`[OfficeScene] Fleet source office set: ${data.sourceOfficeId}${data.prompt ? ` (prompt: ${data.prompt.length} chars)` : ''}`);
     }, this);
 
     // Seat assignment: sub-agent count determined, light up assigned agents' badges
@@ -423,6 +435,7 @@ export class OfficeScene extends Phaser.Scene {
         this.time.delayedCall(i * 200, () => {
           npc.walkTo(entranceX, exitY, 120).then(() => {
             npc.setVisible(false);
+            npc.setLabelsVisible(false);
           });
         });
       });
@@ -430,7 +443,10 @@ export class OfficeScene extends Phaser.Scene {
 
     this.game.events.on('fleet:agent:badge', (agentId: string, status: { agentId: string; state: 'slacking' | 'active'; subState: 'starting' | 'ready' | 'waiting' | 'thinking' | 'error' | null; thinkingDetail: string | null; currentTool: string | null }) => {
       const npc = this.npcs.find(n => n.config.id === agentId);
-      if (npc) npc.updateAgentStatus(status);
+      if (npc) {
+        npc.setBadgeVisible(true);
+        npc.updateAgentStatus(status);
+      }
     }, this);
 
     this.game.events.on('fleet:agent:exit', (agentId: string) => {
@@ -440,6 +456,7 @@ export class OfficeScene extends Phaser.Scene {
       const exitY = (this.mapHeight + 1) * this.tileSize;
       npc.walkTo(entranceX, exitY, 120).then(() => {
         npc.setVisible(false);
+        npc.setLabelsVisible(false);
       });
     }, this);
 
@@ -1321,6 +1338,10 @@ export class OfficeScene extends Phaser.Scene {
     this.pendingWalkIns += agentIds.length;
     this.setAnimating(true);
 
+    // Reset skip tracking
+    this.walkInTimers = [];
+    this.walkInAgents = [];
+
     // For fleet layouts, use conga-line paths around the table
     if (this.currentLayout === 'fleet-vteam') {
       // Build paths for each agent and tag with stream
@@ -1369,15 +1390,22 @@ export class OfficeScene extends Phaser.Scene {
       const walkSpeed = 150;
       ordered.forEach((agent, index) => {
         agent.npc.setPosition(entranceX, startY);
+        agent.npc.syncLabelPositions();
         agent.npc.setVisible(true);
         agent.npc.setBadgeVisible(false);
 
-        this.time.delayedCall(staggerMs * index, () => {
+        // Track final seat position (last waypoint) for skip
+        const finalWp = agent.waypoints[agent.waypoints.length - 1];
+        this.walkInAgents.push({ npc: agent.npc, finalX: finalWp.x, finalY: finalWp.y, agentId: agent.agentId });
+
+        const timer = this.time.delayedCall(staggerMs * index, () => {
           agent.npc.walkPath(agent.waypoints, walkSpeed).then(() => {
             this.onAgentSeated(agent.npc, agent.agentId);
           });
         });
+        this.walkInTimers.push(timer);
       });
+      this.showSkipButton();
       return;
     }
 
@@ -1395,20 +1423,29 @@ export class OfficeScene extends Phaser.Scene {
 
       const offsetX = (index - (agentIds.length - 1) / 2) * this.tileSize * 0.8;
       npc.setPosition(entranceX + offsetX, startY);
+      npc.syncLabelPositions();
       npc.setVisible(true);
 
-      this.time.delayedCall(600 * index, () => {
+      // Track final desk position for skip
+      this.walkInAgents.push({ npc, finalX: deskX, finalY: deskY, agentId });
+
+      const timer = this.time.delayedCall(600 * index, () => {
         npc.walkTo(deskX, deskY, 120).then(() => {
           this.onAgentSeated(npc, agentId);
         });
       });
+      this.walkInTimers.push(timer);
     });
+    this.showSkipButton();
   }
 
   /** Common arrival logic: face down, set thinking status, decrement walk-in counter. */
   private onAgentSeated(npc: NPC, agentId: string): void {
     npc.setDirection(Direction.DOWN);
-    npc.setBadgeVisible(true);
+    // In fleet mode, don't show badges on seating — wait for fleet to determine which agents are needed
+    if (this.currentLayout !== 'fleet-vteam') {
+      npc.setBadgeVisible(true);
+    }
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
       officeManager.setAgentThinking(officeId, agentId, 'Working on task');
@@ -1421,11 +1458,107 @@ export class OfficeScene extends Phaser.Scene {
       thinkingDetail: 'Working on task',
       currentTool: null,
     });
+    // Remove from skip-tracking list (already seated)
+    this.walkInAgents = this.walkInAgents.filter(a => a.agentId !== agentId);
     this.pendingWalkIns--;
     if (this.pendingWalkIns <= 0) {
       this.setAnimating(false);
+      this.hideSkipButton();
       this.onAllWalkInsComplete?.();
       this.onAllWalkInsComplete = undefined;
+    }
+  }
+
+  /** Instantly seat all walking agents, cancelling ongoing animations. */
+  private skipWalkInAnimation(): void {
+    if (!this.animating || this.walkInAgents.length === 0) return;
+
+    // Cancel all pending stagger timers
+    for (const timer of this.walkInTimers) {
+      timer.remove(false);
+    }
+    this.walkInTimers = [];
+
+    // Kill all active tweens on walk-in NPCs and teleport to final seats
+    for (const agent of this.walkInAgents) {
+      this.tweens.killTweensOf(agent.npc);
+      agent.npc.stop();
+      agent.npc.setPosition(agent.finalX, agent.finalY);
+      agent.npc.syncLabelPositions();
+      agent.npc.setDepth(ySortDepth(agent.finalY, this.physics.world.bounds.bottom));
+    }
+
+    // Seat all agents that haven't been seated yet
+    const agentsToSeat = [...this.walkInAgents];
+    this.walkInAgents = [];
+    this.pendingWalkIns = 0;
+    this.setAnimating(false);
+    this.hideSkipButton();
+
+    for (const agent of agentsToSeat) {
+      agent.npc.setDirection(Direction.DOWN);
+      agent.npc.setBadgeVisible(true);
+      const officeId = officeManager.currentOfficeId;
+      if (officeId) {
+        officeManager.setAgentThinking(officeId, agent.agentId, 'Working on task');
+        this.game.events.emit('agent:status:changed', agent.agentId);
+      }
+      agent.npc.updateAgentStatus({
+        agentId: agent.agentId,
+        state: 'active',
+        subState: 'thinking',
+        thinkingDetail: 'Working on task',
+        currentTool: null,
+      });
+    }
+
+    this.onAllWalkInsComplete?.();
+    this.onAllWalkInsComplete = undefined;
+  }
+
+  /** Show a DOM skip button over the game panel during walk-in animations. */
+  private showSkipButton(): void {
+    this.hideSkipButton();
+    const gamePanel = document.getElementById('office-panel');
+    if (!gamePanel) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'skip-walkin-btn';
+    btn.textContent = '⏭ Skip';
+    btn.style.cssText = `
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 2px solid #00ff88;
+      color: #00ff88;
+      padding: 10px 22px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 16px;
+      font-weight: bold;
+      z-index: 150;
+      transition: background 0.15s;
+    `;
+    btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(0, 255, 136, 0.2)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = 'rgba(0, 0, 0, 0.7)'; });
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.skipWalkInAnimation();
+    });
+
+    gamePanel.style.position = 'relative';
+    gamePanel.appendChild(btn);
+    this.skipButton = btn;
+  }
+
+  /** Remove the skip button from the DOM. */
+  private hideSkipButton(): void {
+    if (this.skipButton) {
+      this.skipButton.remove();
+      this.skipButton = null;
     }
   }
 
@@ -1436,13 +1569,19 @@ export class OfficeScene extends Phaser.Scene {
   private rebuildLayout(layout: OfficeLayout): void {
     console.log(`[OfficeScene] Rebuilding layout: ${this.currentLayout} → ${layout}`);
 
+    // Clean up any in-progress walk-in animation
+    this.hideSkipButton();
+    this.walkInTimers = [];
+    this.walkInAgents = [];
+
     // Dispose fleet components when leaving fleet layout.
-    // Preserve fleetSourceOfficeId — disposeFleetPipeline clears it, but
-    // initFleetPipeline needs it to attach the EventsWatcher with the
-    // ORIGINAL composite key (e.g. office-0:architect).
+    // Preserve fleetSourceOfficeId and fleetPrompt — disposeFleetPipeline clears them,
+    // but initFleetPipeline needs them to attach the EventsWatcher and send the /fleet command.
     const savedFleetSourceOfficeId = this.fleetSourceOfficeId;
+    const savedFleetPrompt = this.fleetPrompt;
     this.disposeFleetPipeline();
     this.fleetSourceOfficeId = savedFleetSourceOfficeId;
+    this.fleetPrompt = savedFleetPrompt;
 
     this.currentLayout = layout;
 
@@ -1573,6 +1712,21 @@ export class OfficeScene extends Phaser.Scene {
       this.fleetVisualizer.start(this);
 
       console.log(`[OfficeScene] Fleet pipeline initialized (attach office: ${attachOfficeId})`);
+
+      // Send the /fleet command NOW — the terminal viewer is attached and ready.
+      // This was deferred from main.ts to avoid a race with session transfer.
+      if (this.fleetPrompt) {
+        const fleetOfficeId = officeManager.currentOfficeId;
+        if (fleetOfficeId && window.copilotBridge?.terminalWrite) {
+          const fleetCmd = `/fleet ${this.fleetPrompt}\r`;
+          console.log(`[OfficeScene] Sending /fleet to ${fleetOfficeId}:architect (${fleetCmd.length} chars)`);
+          const result = await window.copilotBridge.terminalWrite(fleetOfficeId, 'architect', fleetCmd);
+          console.log(`[OfficeScene] /fleet command result:`, result);
+        } else {
+          console.warn('[OfficeScene] Cannot send /fleet — no officeId or copilotBridge');
+        }
+        this.fleetPrompt = null;
+      }
     } catch (e) {
       console.error('[OfficeScene] Failed to init fleet pipeline:', e);
     }
@@ -1588,6 +1742,7 @@ export class OfficeScene extends Phaser.Scene {
       this.fleetTracker = null;
     }
     this.fleetSourceOfficeId = null;
+    this.fleetPrompt = null;
   }
 
   private createNPCs(): void {

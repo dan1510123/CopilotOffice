@@ -252,6 +252,12 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.sessionText.setVisible(visible);
   }
 
+  /** Toggle visibility of name and description labels. */
+  setLabelsVisible(visible: boolean): void {
+    this.nameLabel.setVisible(visible);
+    this.descriptionLabel.setVisible(visible);
+  }
+
   /** Update the NPC badge to reflect the agent's full status */
   updateAgentStatus(status: AgentStatus | undefined): void {
     if (!status || status.state === 'slacking') {
@@ -352,6 +358,10 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   }
 
   /** Update positions of name label, description, badge, indicator relative to NPC. */
+  public syncLabelPositions(): void {
+    this.updateAttachedPositions();
+  }
+
   private updateAttachedPositions(): void {
     const x = this.x;
     const y = this.y;
