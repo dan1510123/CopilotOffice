@@ -84,13 +84,13 @@ export class TerminalRelay {
     oldServer.removeAllListeners('exit');
     oldServer.removeAllListeners('message');
 
-    // Ask the server to gracefully kill PTYs and exit
+    // Ask the server to gracefully kill PTYs and exit.
+    // Do NOT call oldServer.kill() here — on Windows it's equivalent to
+    // SIGKILL and terminates the server before it can process the shutdown
+    // message.  The 3-second timeout below is the safety net.
     if (oldServer.connected) {
       try { oldServer.send({ type: 'shutdown' } as MainToServer); } catch { /* ignore */ }
     }
-
-    // Force-kill the server child process as a safety net
-    try { oldServer.kill(); } catch { /* ignore */ }
 
     // Reject any pending requests
     this.pendingRequests.forEach((cb) =>

@@ -129,7 +129,7 @@ function createWindow(): void {
   });
 
   mainWindow.on('closed', () => {
-    relay.shutdown();
+    // Cleanup is handled by 'before-quit' — just clear the reference.
     if (watcherProcess) {
       watcherProcess.kill();
       watcherProcess = null;
@@ -206,13 +206,19 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
-  relay.shutdown();
   if (watcherProcess) watcherProcess.kill();
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('will-quit', () => {
-  console.log('[Main] App quitting');
-  relay.shutdown();
+let isShuttingDown = false;
+app.on('before-quit', (event) => {
+  if (isShuttingDown) return;          // already running — let quit proceed
+  isShuttingDown = true;
+  event.preventDefault();              // hold quit until PTYs are cleaned up
+  console.log('[Main] Awaiting relay shutdown before quit…');
+  relay.shutdown().finally(() => {
+    console.log('[Main] Relay shutdown complete — quitting');
+    app.quit();                        // re-trigger quit (isShuttingDown guard skips this handler)
+  });
 });
 
