@@ -780,6 +780,66 @@ export class BootScene extends Phaser.Scene {
       g.destroy();
     }
 
+    // === Closed Surface Book — 2 orientations (flat aluminum slab with Windows logo) ===
+
+    // surfacebook_horizontal: closed laptop lying flat, wider than tall (for up/down desks)
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      // Aluminum body
+      g.fillStyle(0xb8b8b8, 1);
+      g.fillRect(7, 11, 18, 10);
+      // Top edge highlight
+      g.fillStyle(0xd0d0d0, 1);
+      g.fillRect(7, 11, 18, 1);
+      // Left edge highlight
+      g.fillStyle(0xc8c8c8, 1);
+      g.fillRect(7, 11, 1, 10);
+      // Bottom/right shadow
+      g.fillStyle(0x999999, 1);
+      g.fillRect(7, 20, 18, 1);
+      g.fillRect(24, 11, 1, 10);
+      // Windows logo (2×2 panes)
+      g.fillStyle(0x00adef, 1);
+      g.fillRect(14, 14, 1, 1);
+      g.fillStyle(0x7fba00, 1);
+      g.fillRect(16, 14, 1, 1);
+      g.fillStyle(0xf25022, 1);
+      g.fillRect(14, 16, 1, 1);
+      g.fillStyle(0xffb900, 1);
+      g.fillRect(16, 16, 1, 1);
+      g.generateTexture('surfacebook_horizontal', 32, 32);
+      g.destroy();
+    }
+
+    // surfacebook_vertical: closed laptop lying flat, taller than wide (for left/right desks)
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      // Aluminum body
+      g.fillStyle(0xb8b8b8, 1);
+      g.fillRect(11, 7, 10, 18);
+      // Top edge highlight
+      g.fillStyle(0xd0d0d0, 1);
+      g.fillRect(11, 7, 10, 1);
+      // Left edge highlight
+      g.fillStyle(0xc8c8c8, 1);
+      g.fillRect(11, 7, 1, 18);
+      // Bottom/right shadow
+      g.fillStyle(0x999999, 1);
+      g.fillRect(11, 24, 10, 1);
+      g.fillRect(20, 7, 1, 18);
+      // Windows logo (2×2 panes)
+      g.fillStyle(0x00adef, 1);
+      g.fillRect(14, 14, 1, 1);
+      g.fillStyle(0x7fba00, 1);
+      g.fillRect(16, 14, 1, 1);
+      g.fillStyle(0xf25022, 1);
+      g.fillRect(14, 16, 1, 1);
+      g.fillStyle(0xffb900, 1);
+      g.fillRect(16, 16, 1, 1);
+      g.generateTexture('surfacebook_vertical', 32, 32);
+      g.destroy();
+    }
+
     // Interaction indicator (speech bubble with !)
     const indicatorGraphics = this.make.graphics({ x: 0, y: 0 });
     // Bubble

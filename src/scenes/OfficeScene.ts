@@ -21,6 +21,8 @@ interface DeskInfo {
   agentId: string;
   x: number;
   y: number;
+  laptopSprite?: Phaser.GameObjects.Sprite;
+  laptopDirection?: 'up' | 'down' | 'left' | 'right';
 }
 
 interface GameTable {
@@ -502,13 +504,14 @@ export class OfficeScene extends Phaser.Scene {
         bodyOffsetX: deskBodyOffX, bodyOffsetY: deskBodyOffY,
         depthSortY: deskY,
       });
-      this.desks.push({ sprite: desk, agentId: agent.id, x: deskX, y: deskY });
 
-      // Place MacBook on desk, screen facing the agent
+      // Place laptop on desk — starts closed (slacking state)
       const npcY = agent.position.y * this.tileSize + this.tileSize / 2;
-      const macbookDir = npcY < deskY ? 'macbook_up' : 'macbook_down';
-      const macbook = addDecor(deskX, deskY - 2 * scale, macbookDir);
-      macbook.setDepth(ySortDepth(deskY, worldH) + 0.1);
+      const dir: 'up' | 'down' = npcY < deskY ? 'up' : 'down';
+      const laptop = addDecor(deskX, deskY - 2 * scale, 'surfacebook_horizontal');
+      laptop.setDepth(ySortDepth(deskY, worldH) + 0.1);
+
+      this.desks.push({ sprite: desk, agentId: agent.id, x: deskX, y: deskY, laptopSprite: laptop, laptopDirection: dir });
     };
 
     // === COMMUNAL TABLES (open office layout) ===
@@ -538,11 +541,11 @@ export class OfficeScene extends Phaser.Scene {
         }
       }
 
-      // Place MacBook on the desk tile closest to the agent's stool
+      // Place laptop on the desk tile closest to the agent's stool — starts closed
       const macbookDeskX = agent.position.x * this.tileSize + this.tileSize / 2;
       const macbookDeskY = tableStartRow * this.tileSize + this.tileSize / 2;
-      const macbook = addDecor(macbookDeskX, macbookDeskY - 2 * scale, 'macbook_up');
-      macbook.setDepth(ySortDepth(macbookDeskY, worldH) + 0.1);
+      const laptop = addDecor(macbookDeskX, macbookDeskY - 2 * scale, 'surfacebook_horizontal');
+      laptop.setDepth(ySortDepth(macbookDeskY, worldH) + 0.1);
 
       // Agent sits at the above-left stool position (tracked for interaction)
       // Tucked closer to table for 3/4 view
@@ -555,6 +558,8 @@ export class OfficeScene extends Phaser.Scene {
         agentId: agent.id,
         x: agentStoolX,
         y: agentStoolY,
+        laptopSprite: laptop,
+        laptopDirection: 'up',
       });
 
       // Decorative stools: 2 above (tucked closer for 3/4 view) and 2 below
@@ -1181,12 +1186,28 @@ export class OfficeScene extends Phaser.Scene {
   private async updateSessionBadges(): Promise<void> {
     const officeId = officeManager.currentOfficeId;
     for (const npc of this.npcs) {
+      let isActive = false;
       if (officeId) {
         const status = officeManager.getAgentStatus(officeId, npc.config.id);
         npc.updateAgentStatus(status);
+        isActive = !!status && status.state === 'active';
       } else {
         const hasSession = await this.terminalOverlay.hasSession(npc.config.id);
         npc.setHasActiveSession(hasSession);
+        isActive = hasSession;
+      }
+
+      // Swap laptop texture: open when active, closed when slacking
+      const desk = this.desks.find(d => d.agentId === npc.config.id && d.laptopSprite);
+      if (desk?.laptopSprite && desk.laptopDirection) {
+        const dir = desk.laptopDirection;
+        if (isActive) {
+          const openKey = `macbook_${dir}`;
+          desk.laptopSprite.setTexture(openKey);
+        } else {
+          const closedKey = (dir === 'left' || dir === 'right') ? 'surfacebook_vertical' : 'surfacebook_horizontal';
+          desk.laptopSprite.setTexture(closedKey);
+        }
       }
     }
   }
