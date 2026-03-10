@@ -9,6 +9,7 @@ import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 import { MeetingPlan } from '../meeting/types';
+import { Direction } from '../sprites/DirectionalSprite';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
@@ -137,7 +138,12 @@ export class OfficeScene extends Phaser.Scene {
       if (data?.plan) {
         console.log('[OfficeScene] Received meeting plan:', data.plan.plan);
         console.log('[OfficeScene] Tasks assigned:', data.plan.tasks.map(t => `${t.agentId}: ${t.title}`).join(', '));
-        // Phase 4 TODO: trigger fleet orchestrator with data.plan
+        const assignedAgentIds = data.plan.tasks.map(t => t.agentId);
+        this.triggerAgentWalkIn(assignedAgentIds);
+      } else {
+        // Left meeting without a plan — all non-Arthur agents walk in
+        const walkInIds = AGENTS.filter(a => a.id !== 'architect').map(a => a.id);
+        this.triggerAgentWalkIn(walkInIds);
       }
     });
 
@@ -742,6 +748,47 @@ export class OfficeScene extends Phaser.Scene {
           '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent / Exit'
         );
       },
+    });
+  }
+
+  /** Move assigned agent NPCs off-screen, then walk them in from the entrance to their desks. */
+  private triggerAgentWalkIn(agentIds: string[]): void {
+    const entranceX = this.mapWidth * this.tileSize / 2;
+    const startY = (this.mapHeight + 1) * this.tileSize;
+
+    agentIds.forEach((agentId, index) => {
+      const npc = this.npcs.find(n => n.config.id === agentId);
+      if (!npc) return;
+
+      // Desk position from agent config
+      const deskX = npc.config.position.x * this.tileSize + this.tileSize / 2;
+      const deskY = npc.config.position.y * this.tileSize + this.tileSize / 2;
+
+      // Move NPC off-screen at entrance (stagger horizontally so they don't overlap)
+      const offsetX = (index - (agentIds.length - 1) / 2) * this.tileSize * 0.8;
+      npc.setPosition(entranceX + offsetX, startY);
+      npc.setVisible(true);
+
+      // Stagger walk-in by 600ms per agent
+      this.time.delayedCall(600 * index, () => {
+        npc.walkTo(deskX, deskY, 120).then(() => {
+          // Face the player (downward) on arrival
+          npc.setDirection(Direction.DOWN);
+          // Set "thinking" status badge on arrival
+          const officeId = officeManager.currentOfficeId;
+          if (officeId) {
+            officeManager.setAgentThinking(officeId, agentId, 'Working on task');
+            this.game.events.emit('agent:status:changed', agentId);
+          }
+          npc.updateAgentStatus({
+            agentId,
+            state: 'active',
+            subState: 'thinking',
+            thinkingDetail: 'Working on task',
+            currentTool: null,
+          });
+        });
+      });
     });
   }
 
