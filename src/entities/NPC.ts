@@ -26,7 +26,9 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   private sessionText!: Phaser.GameObjects.Text;
   private highlightGlow!: Phaser.GameObjects.Graphics;
   private highlightRing!: Phaser.GameObjects.Graphics;
-  private isHighlighted: boolean = false;
+  private _isHighlighted: boolean = false;
+
+  get isHighlighted(): boolean { return this._isHighlighted; }
   private highlightTween: Phaser.Tweens.Tween | null = null;
   private badgePulseTween: Phaser.Tweens.Tween | null = null;
   private isNearPlayer: boolean = false;
@@ -187,8 +189,8 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   }
 
   setHighlighted(on: boolean): void {
-    if (this.isHighlighted === on) return;
-    this.isHighlighted = on;
+    if (this._isHighlighted === on) return;
+    this._isHighlighted = on;
 
     if (this.highlightTween) {
       this.highlightTween.stop();

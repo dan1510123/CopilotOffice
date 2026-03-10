@@ -158,6 +158,27 @@ export class BootScene extends Phaser.Scene {
       accessoryColor: 0x66ff88,
     });
 
+    // ===== FLEET V-TEAM AGENTS (14 uniform-style workers) =====
+    const fleetColors: number[] = [
+      0x4488cc, 0xcc4444, 0x44aa44, 0xcc8844, 0x8844cc, 0x44ccaa, 0xcc44aa,
+      0x88aa44, 0x4466cc, 0xcc6644, 0x44cc66, 0xaa4488, 0x6688cc, 0xccaa44,
+    ];
+    const fleetHairColors: number[] = [
+      0x224488, 0x882222, 0x226622, 0x886622, 0x442288, 0x228866, 0x882266,
+      0x446622, 0x223388, 0x883322, 0x228833, 0x662244, 0x334488, 0x886622,
+    ];
+    for (let i = 0; i < 14; i++) {
+      generateHeroSpritesheet(this, `npc_fleet_${i + 1}`, {
+        skinColor: 0xffdbac,
+        hairColor: fleetHairColors[i],
+        hairStyle: 'short',
+        bodyColor: fleetColors[i],
+        bodyStyle: 'coat',
+        accessory: 'book',
+        accessoryColor: (fleetColors[i] & 0xfefefe) >> 1 | 0x888888, // lighter tint
+      });
+    }
+
     // ===== FURNITURE SPRITES =====
     
     // Desk tile - Pokemon-style 3/4 perspective (surface + short front legs)
