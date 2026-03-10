@@ -73,10 +73,14 @@ export class FleetTracker {
   }
 
   /**
-   * @param agentId  The parent agent whose sub-agents we want to track
-   *                 (e.g. 'architect' for Arthur's fleet)
+   * @param agentId   The parent agent whose sub-agents we want to track
+   *                  (e.g. 'architect' for Arthur's fleet)
+   * @param officeId  The office containing the agent's terminal
    */
-  constructor(private readonly agentId: string) {}
+  constructor(
+    private readonly agentId: string,
+    private readonly officeId: string,
+  ) {}
 
   // ── Public API ──────────────────────────────────────────────────────────
 
@@ -99,7 +103,7 @@ export class FleetTracker {
 
     // Silent attach: ensures server sends copilot-event for this agent
     // even if the terminal overlay isn't showing it.
-    await bridge.terminalAttach(this.agentId);
+    await bridge.terminalAttach(this.officeId, this.agentId);
 
     bridge.onCopilotEvent((agentId: string, event: CopilotEvent) => {
       if (agentId !== this.agentId) return;

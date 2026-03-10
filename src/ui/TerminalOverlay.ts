@@ -40,6 +40,7 @@ export class TerminalOverlay {
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private getOfficeId: () => string;
   private isReadOnly: boolean = false;
+  private isReplaying: boolean = false;
 
   private static readonly STORAGE_KEY = 'agencyOffice:terminalFullWidth';
 
@@ -55,6 +56,7 @@ export class TerminalOverlay {
   private setupTerminalListeners(): void {
     if (typeof window !== 'undefined' && window.copilotBridge) {
       window.copilotBridge.onTerminalData((agentId: string, data: string) => {
+        if (this.isReplaying) return;
         if (agentId === this.currentAgentId && this.terminal) {
           this.terminal.write(data);
           // Try to capture session ID from copilot output
@@ -169,6 +171,7 @@ export class TerminalOverlay {
       this.createTerminal();
     } else {
       // Reusing existing terminal for a returning session — clear screen but preserve state
+      this.isReplaying = true;
       this.terminal.clear();
     }
 
@@ -183,6 +186,7 @@ export class TerminalOverlay {
           IPC_TIMEOUT, 'terminalExists'
         );
         if (!exists) {
+          this.isReplaying = false;
           await this.startNewSession(agent.id, agent.workingDir);
         } else {
           // Session exists - reattach and replay scrollback to sync xterm with PTY state.
@@ -193,9 +197,11 @@ export class TerminalOverlay {
             IPC_TIMEOUT, 'terminalAttach'
           );
 
+          console.log(`[TerminalOverlay] Scrollback replay for ${agent.id}: ${attachResult?.scrollback?.length ?? 0} bytes`);
           if (attachResult?.scrollback && this.terminal) {
             this.terminal.write(attachResult.scrollback);
           }
+          this.isReplaying = false;
 
           // Notify main.ts to refresh this agent's badge status
           this.scene.game.events.emit('agent:reattached', agent.id);
@@ -214,6 +220,7 @@ export class TerminalOverlay {
           }
         }
       } catch (e) {
+        this.isReplaying = false;
         this.terminal?.writeln(`\r\n\x1b[31m[${e}]\x1b[0m\r\n`);
       }
       
@@ -906,6 +913,10 @@ export class TerminalOverlay {
     }
 
     // Don't kill the terminal - keep session alive in background!
+    // Detach viewer so the server stops sending data to us while hidden.
+    if (this.currentAgentId && window.copilotBridge) {
+      window.copilotBridge.terminalDetach(this.getOfficeId(), this.currentAgentId).catch(() => {});
+    }
 
     if (this.onCloseCallback) {
       this.onCloseCallback();

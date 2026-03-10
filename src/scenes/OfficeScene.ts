@@ -1466,8 +1466,13 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private async initFleetPipeline(): Promise<void> {
+    const officeId = officeManager.currentOfficeId;
+    if (!officeId) {
+      console.error('[OfficeScene] No current officeId for fleet pipeline');
+      return;
+    }
     try {
-      this.fleetTracker = new FleetTracker('architect');
+      this.fleetTracker = new FleetTracker('architect', officeId);
       await this.fleetTracker.startTracking();
 
       this.fleetVisualizer = new FleetVisualizer(
@@ -1477,7 +1482,7 @@ export class OfficeScene extends Phaser.Scene {
       );
       this.fleetVisualizer.start(this);
 
-      console.log('[OfficeScene] Fleet pipeline initialized');
+      console.log(`[OfficeScene] Fleet pipeline initialized for office ${officeId}`);
     } catch (e) {
       console.error('[OfficeScene] Failed to init fleet pipeline:', e);
     }
