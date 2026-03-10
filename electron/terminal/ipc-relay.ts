@@ -6,7 +6,7 @@ import { ipcMain, BrowserWindow } from 'electron';
 import { fork, ChildProcess, execSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import type { MainToServer, ServerToMain } from './protocol';
+import type { MainToServer, ServerToMain, MsgQueryAgentStatuses } from './protocol';
 
 export class TerminalRelay {
   private server: ChildProcess | null = null;
@@ -291,8 +291,8 @@ export class TerminalRelay {
       this.request({ type: 'list-active', requestId: this.id() })
     );
 
-    ipcMain.handle('query-agent-statuses', () =>
-      this.request({ type: 'query-agent-statuses', requestId: this.id() })
+    ipcMain.handle('query-agent-statuses', (_event, officeId?: string) =>
+      this.request({ type: 'query-agent-statuses', requestId: this.id(), officeId } as MsgQueryAgentStatuses)
     );
 
     ipcMain.handle('set-session-meta', (_event, officeId: string, agentId: string, meta: { title?: string; description?: string }) =>

@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { EventsWatcher, CopilotEvent, formatToolStatus } from './events-watcher';
-import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta } from './protocol';
+import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
 
 // ── node-pty ────────────────────────────────────────────────────
 
@@ -688,22 +688,27 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     }
 
     case 'list-active': {
-      const activeAgentIds = Array.from(agentToTerminal.keys()).filter(ck => {
-        const key = agentToTerminal.get(ck);
-        return key && ptyProcesses.has(key);
-      });
+      const activeAgentIds = Array.from(agentToTerminal.keys())
+        .filter(ck => {
+          const key = agentToTerminal.get(ck);
+          return key && ptyProcesses.has(key);
+        })
+        .map(ck => ck.split(':')[1] ?? ck);
       console.log(`[TermServer] Active terminals: ${activeAgentIds.join(', ') || '(none)'}`);
       send({ type: 'response', requestId: msg.requestId, result: activeAgentIds });
       break;
     }
 
     case 'query-agent-statuses': {
+      const { officeId } = msg as MsgQueryAgentStatuses;
       const statuses: Record<string, { alive: boolean; ready: boolean }> = {};
       for (const [ck] of agentToTerminal) {
+        if (officeId && !ck.startsWith(officeId + ':')) continue;
+        const agentId = ck.split(':')[1] ?? ck;
         const key = agentToTerminal.get(ck);
         const alive = !!(key && ptyProcesses.has(key));
         const ready = agentReadyState.get(ck) ?? false;
-        statuses[ck] = { alive, ready };
+        statuses[agentId] = { alive, ready };
       }
       send({ type: 'response', requestId: msg.requestId, result: statuses });
       break;

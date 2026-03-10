@@ -111,6 +111,7 @@ export interface MsgListActive {
 export interface MsgQueryAgentStatuses {
   type: 'query-agent-statuses';
   requestId: string;
+  officeId?: string;
 }
 
 export interface MsgSetSessionMeta {

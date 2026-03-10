@@ -56,8 +56,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   listActiveTerminals: (): Promise<string[]> => {
     return ipcRenderer.invoke('list-active-terminals');
   },
-  queryAgentStatuses: (): Promise<Record<string, { alive: boolean; ready: boolean }>> => {
-    return ipcRenderer.invoke('query-agent-statuses');
+  queryAgentStatuses: (officeId?: string): Promise<Record<string, { alive: boolean; ready: boolean }>> => {
+    return ipcRenderer.invoke('query-agent-statuses', officeId);
   },
   
   // Session metadata
@@ -177,7 +177,7 @@ declare global {
       getSessionHistory: (officeId: string, agentId: string) => Promise<string[]>;
       clearSessionHistory: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       listActiveTerminals: () => Promise<string[]>;
-      queryAgentStatuses: () => Promise<Record<string, { alive: boolean; ready: boolean }>>;
+      queryAgentStatuses: (officeId?: string) => Promise<Record<string, { alive: boolean; ready: boolean }>>;
       setSessionMeta: (officeId: string, agentId: string, meta: { title?: string }) => Promise<{ success: boolean }>;
       getSessionMeta: (officeId: string, agentId: string) => Promise<{ title: string } | null>;
       getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string }>>;

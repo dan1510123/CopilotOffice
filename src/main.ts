@@ -44,7 +44,7 @@ const agentPreloadStatus: Map<string, 'preloading' | 'ready' | 'failed'> = new M
 
 // When true, IPC event handlers block status transitions while agent is in 'starting' state.
 // Server-side filtering already handles historical events, so this is a secondary safety net.
-const ENABLE_STARTING_GUARD = false;
+const ENABLE_STARTING_GUARD = true;
 
 // ── Debounced Updates ────────────────────────────────────────────
 let pendingStatusBarUpdate = false;
@@ -950,12 +950,14 @@ if (window.copilotBridge) {
 // ── Agent Status Sync ─────────────────────────────────────────────
 
 /** Reconcile officeManager state with actual terminal server state. */
+let syncInProgress = false;
 async function syncAgentStatuses(): Promise<void> {
-  if (!window.copilotBridge) return;
+  if (!window.copilotBridge || syncInProgress) return;
+  const officeId = officeManager.currentOfficeId;
+  if (!officeId) return;
+  syncInProgress = true;
   try {
-    const statuses = await window.copilotBridge.queryAgentStatuses();
-    const officeId = officeManager.currentOfficeId;
-    if (!officeId) return;
+    const statuses = await window.copilotBridge.queryAgentStatuses(officeId);
 
     let changed = false;
     const STARTING_TIMEOUT_MS = 60_000; // 1 minute timeout for stuck starting state
@@ -1009,6 +1011,8 @@ async function syncAgentStatuses(): Promise<void> {
     }
   } catch (e) {
     console.warn('[Office] Failed to sync agent statuses:', e);
+  } finally {
+    syncInProgress = false;
   }
 }
 
