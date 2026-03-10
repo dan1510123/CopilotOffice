@@ -270,6 +270,12 @@ function renderOfficeTabs() {
 }
 
 function switchToOffice(officeId: string) {
+  // Block switching while scene animations are in progress
+  if (phaserGame?.registry.get('animating')) {
+    console.log('[Office] Blocked: animation in progress');
+    return;
+  }
+
   selectedAgentId = null;
 
   officeManager.switchOffice(officeId);
