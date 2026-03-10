@@ -394,6 +394,179 @@ export class BootScene extends Phaser.Scene {
     computerGraphics.generateTexture('computer', 32, 32);
     computerGraphics.destroy();
 
+    // === Laptop — 4 directional sprites (3/4 top-down perspective) ===
+    // Each shows an open laptop. The direction name indicates which way the SCREEN faces.
+
+    // macbook_down: screen faces south (toward camera). User sits above/north.
+    // Layout: screen at top, hinge, keyboard+trackpad at bottom.
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      // Aluminum body
+      g.fillStyle(0xb0b0b0, 1);
+      g.fillRect(6, 4, 20, 24);
+      // Screen bezel
+      g.fillStyle(0x222222, 1);
+      g.fillRect(7, 5, 18, 10);
+      // Screen display
+      g.fillStyle(0x0d1b2a, 1);
+      g.fillRect(8, 6, 16, 8);
+      // Screen glow
+      g.fillStyle(0x1a3a5c, 1);
+      g.fillRect(9, 7, 14, 6);
+      // Code lines
+      g.fillStyle(0x44ff88, 1);
+      g.fillRect(10, 8, 8, 1);
+      g.fillRect(10, 10, 11, 1);
+      g.fillRect(10, 12, 5, 1);
+      // Hinge
+      g.fillStyle(0x888888, 1);
+      g.fillRect(7, 15, 18, 1);
+      // Keyboard deck
+      g.fillStyle(0xc0c0c0, 1);
+      g.fillRect(7, 16, 18, 11);
+      // Key rows
+      g.fillStyle(0x999999, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(8 + k * 2, 17, 1, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(8 + k * 2, 19, 1, 1);
+      for (let k = 0; k < 7; k++) g.fillRect(9 + k * 2, 21, 1, 1);
+      // Trackpad
+      g.fillStyle(0xa8a8a8, 1);
+      g.fillRect(12, 23, 8, 3);
+      g.fillStyle(0xb8b8b8, 1);
+      g.fillRect(12, 23, 8, 1);
+      g.generateTexture('macbook_down', 32, 32);
+      g.destroy();
+    }
+
+    // macbook_up: screen faces north (away from camera). User sits below/south.
+    // Layout: keyboard+trackpad at top, hinge, back of screen lid at bottom.
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      // Aluminum body
+      g.fillStyle(0xb0b0b0, 1);
+      g.fillRect(6, 4, 20, 18);
+      // Keyboard deck (top portion)
+      g.fillStyle(0xc0c0c0, 1);
+      g.fillRect(7, 5, 18, 11);
+      // Trackpad (near top since user faces from bottom)
+      g.fillStyle(0xa8a8a8, 1);
+      g.fillRect(12, 6, 8, 3);
+      g.fillStyle(0xb8b8b8, 1);
+      g.fillRect(12, 8, 8, 1);
+      // Key rows (below trackpad)
+      g.fillStyle(0x999999, 1);
+      for (let k = 0; k < 7; k++) g.fillRect(9 + k * 2, 10, 1, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(8 + k * 2, 12, 1, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(8 + k * 2, 14, 1, 1);
+      // Hinge
+      g.fillStyle(0x888888, 1);
+      g.fillRect(7, 16, 18, 1);
+      // Back of screen lid — thin sliver (laptop open at ~110°, not flat)
+      g.fillStyle(0xa0a0a0, 1);
+      g.fillRect(7, 17, 18, 4);
+      // Lid edge highlight
+      g.fillStyle(0xc8c8c8, 1);
+      g.fillRect(7, 17, 18, 1);
+      // Windows logo (tiny 2×2 panes)
+      g.fillStyle(0x00adef, 1); // blue
+      g.fillRect(14, 18, 1, 1);
+      g.fillStyle(0x7fba00, 1); // green
+      g.fillRect(16, 18, 1, 1);
+      g.fillStyle(0xf25022, 1); // red
+      g.fillRect(14, 20, 1, 1);
+      g.fillStyle(0xffb900, 1); // yellow
+      g.fillRect(16, 20, 1, 1);
+      g.generateTexture('macbook_up', 32, 32);
+      g.destroy();
+    }
+
+    // macbook_left: screen faces west (left). User sits to the right.
+    // Layout: screen on left, hinge vertical, keyboard on right. Foreshortened.
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      // Aluminum body (wider than tall due to perspective foreshortening)
+      g.fillStyle(0xb0b0b0, 1);
+      g.fillRect(4, 6, 24, 20);
+      // Screen bezel (left portion)
+      g.fillStyle(0x222222, 1);
+      g.fillRect(5, 7, 10, 18);
+      // Screen display
+      g.fillStyle(0x0d1b2a, 1);
+      g.fillRect(6, 8, 8, 16);
+      // Screen glow
+      g.fillStyle(0x1a3a5c, 1);
+      g.fillRect(7, 9, 6, 14);
+      // Code lines (vertical orientation)
+      g.fillStyle(0x44ff88, 1);
+      g.fillRect(8, 10, 4, 1);
+      g.fillRect(8, 12, 3, 1);
+      g.fillRect(8, 14, 5, 1);
+      g.fillRect(8, 16, 2, 1);
+      g.fillRect(8, 18, 4, 1);
+      g.fillRect(8, 20, 3, 1);
+      // Hinge (vertical)
+      g.fillStyle(0x888888, 1);
+      g.fillRect(15, 7, 1, 18);
+      // Keyboard deck (right portion)
+      g.fillStyle(0xc0c0c0, 1);
+      g.fillRect(16, 7, 11, 18);
+      // Key columns (rotated layout)
+      g.fillStyle(0x999999, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(17, 8 + k * 2, 1, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(19, 8 + k * 2, 1, 1);
+      for (let k = 0; k < 7; k++) g.fillRect(21, 9 + k * 2, 1, 1);
+      // Trackpad (vertical)
+      g.fillStyle(0xa8a8a8, 1);
+      g.fillRect(23, 12, 3, 8);
+      g.fillStyle(0xb8b8b8, 1);
+      g.fillRect(23, 12, 1, 8);
+      g.generateTexture('macbook_left', 32, 32);
+      g.destroy();
+    }
+
+    // macbook_right: screen faces east (right). User sits to the left. Mirror of left.
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      // Aluminum body
+      g.fillStyle(0xb0b0b0, 1);
+      g.fillRect(4, 6, 24, 20);
+      // Keyboard deck (left portion)
+      g.fillStyle(0xc0c0c0, 1);
+      g.fillRect(5, 7, 11, 18);
+      // Key columns
+      g.fillStyle(0x999999, 1);
+      for (let k = 0; k < 7; k++) g.fillRect(10, 9 + k * 2, 1, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(12, 8 + k * 2, 1, 1);
+      for (let k = 0; k < 8; k++) g.fillRect(14, 8 + k * 2, 1, 1);
+      // Trackpad (vertical)
+      g.fillStyle(0xa8a8a8, 1);
+      g.fillRect(6, 12, 3, 8);
+      g.fillStyle(0xb8b8b8, 1);
+      g.fillRect(8, 12, 1, 8);
+      // Hinge (vertical)
+      g.fillStyle(0x888888, 1);
+      g.fillRect(16, 7, 1, 18);
+      // Screen bezel (right portion)
+      g.fillStyle(0x222222, 1);
+      g.fillRect(17, 7, 10, 18);
+      // Screen display
+      g.fillStyle(0x0d1b2a, 1);
+      g.fillRect(18, 8, 8, 16);
+      // Screen glow
+      g.fillStyle(0x1a3a5c, 1);
+      g.fillRect(19, 9, 6, 14);
+      // Code lines
+      g.fillStyle(0x44ff88, 1);
+      g.fillRect(20, 10, 4, 1);
+      g.fillRect(20, 12, 3, 1);
+      g.fillRect(20, 14, 5, 1);
+      g.fillRect(20, 16, 2, 1);
+      g.fillRect(20, 18, 4, 1);
+      g.fillRect(20, 20, 3, 1);
+      g.generateTexture('macbook_right', 32, 32);
+      g.destroy();
+    }
+
     // Interaction indicator (speech bubble with !)
     const indicatorGraphics = this.make.graphics({ x: 0, y: 0 });
     // Bubble

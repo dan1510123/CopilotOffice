@@ -503,6 +503,12 @@ export class OfficeScene extends Phaser.Scene {
         depthSortY: deskY,
       });
       this.desks.push({ sprite: desk, agentId: agent.id, x: deskX, y: deskY });
+
+      // Place MacBook on desk, screen facing the agent
+      const npcY = agent.position.y * this.tileSize + this.tileSize / 2;
+      const macbookDir = npcY < deskY ? 'macbook_up' : 'macbook_down';
+      const macbook = addDecor(deskX, deskY - 2 * scale, macbookDir);
+      macbook.setDepth(ySortDepth(deskY, worldH) + 0.1);
     };
 
     // === COMMUNAL TABLES (open office layout) ===
@@ -529,6 +535,12 @@ export class OfficeScene extends Phaser.Scene {
           });
         }
       }
+
+      // Place MacBook on the desk tile closest to the agent's stool
+      const macbookDeskX = agent.position.x * this.tileSize + this.tileSize / 2;
+      const macbookDeskY = tableStartRow * this.tileSize + this.tileSize / 2;
+      const macbook = addDecor(macbookDeskX, macbookDeskY - 2 * scale, 'macbook_up');
+      macbook.setDepth(ySortDepth(macbookDeskY, worldH) + 0.1);
 
       // Agent sits at the above-left stool position (tracked for interaction)
       // Tucked closer to table for 3/4 view
