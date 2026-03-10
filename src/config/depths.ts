@@ -15,6 +15,7 @@
  * |   55    | NPC_LABELS     | Name labels, description labels      |
  * |   60    | BADGES         | NPC session badges, session text     |
  * |  100    | UI_OVERLAY     | Prompts, title/instruction text      |
+ * |  150    | ZOOM_BAR       | Camera zoom slider bar               |
  * |  200    | MINI_GAMES     | Pong, Basketball game containers     |
  * | 1000    | DIALOG         | Dialog box (deprecated)              |
  */
@@ -34,6 +35,7 @@ export const Depths = {
   NPC_LABELS:    55,
   BADGES:        60,
   UI_OVERLAY:   100,
+  ZOOM_BAR:     150,
   MINI_GAMES:   200,
   DIALOG:      1000,
 } as const;

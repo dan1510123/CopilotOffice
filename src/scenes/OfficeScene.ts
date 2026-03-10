@@ -13,6 +13,8 @@ import { MeetingPlan } from '../meeting/types';
 import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
+import { ZoomBar } from '../ui/ZoomBar';
+import { CameraDragController } from '../ui/CameraDragController';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
@@ -43,6 +45,7 @@ interface ExitDoor {
 const ENABLE_PING_PONG = false;
 const ENABLE_DECORATIONS = false;
 const ENABLE_BASKETBALL = false;
+const ENABLE_ZOOM_BAR = true;
 
 export class OfficeScene extends Phaser.Scene {
   private player!: Player;
@@ -85,6 +88,8 @@ export class OfficeScene extends Phaser.Scene {
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
   private fleetSourceOfficeId: string | null = null;
+  private zoomBar: ZoomBar | null = null;
+  private cameraDrag: CameraDragController | null = null;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -190,9 +195,18 @@ export class OfficeScene extends Phaser.Scene {
           arthurNPC.updateAgentStatus(undefined); // Reset to slacking
         }
 
-        // Left meeting without a plan — all non-Arthur agents walk in
-        const walkInIds = AGENTS.filter(a => a.id !== 'architect').map(a => a.id);
-        this.triggerAgentWalkIn(walkInIds);
+        // Left meeting without a plan — seat non-Arthur agents instantly, Arthur walks in
+        for (const agent of AGENTS) {
+          if (agent.id === 'architect') continue;
+          const npc = this.npcs.find(n => n.config.id === agent.id);
+          if (!npc) continue;
+          const deskX = npc.config.position.x * this.tileSize + this.tileSize / 2;
+          const deskY = npc.config.position.y * this.tileSize + this.tileSize / 2;
+          npc.setPosition(deskX, deskY);
+          npc.setVisible(true);
+          this.onAgentSeated(npc, agent.id);
+        }
+        this.triggerAgentWalkIn(['architect']);
       }
     });
 
@@ -265,10 +279,31 @@ export class OfficeScene extends Phaser.Scene {
     const titleFontSize = Math.max(24, Math.floor(screenHeight / 40));
     const instructionFontSize = Math.max(14, Math.floor(screenHeight / 70));
     
-    // Camera setup - no follow needed since room fits
-    this.cameras.main.setBounds(0, 0, this.mapWidth * this.tileSize, this.mapHeight * this.tileSize);
-    this.cameras.main.centerOn(this.mapWidth * this.tileSize / 2, this.mapHeight * this.tileSize / 2);
-    this.cameras.main.setZoom(0.8); // 20% zoom out for open office overview
+    // Camera setup
+    const worldW = this.mapWidth * this.tileSize;
+    const worldH = this.mapHeight * this.tileSize;
+    const cameraBufTiles = 1;
+    const cameraBuf = cameraBufTiles * this.tileSize;
+    this.cameras.main.setBounds(-cameraBuf, -cameraBuf, worldW + cameraBuf * 2, worldH + cameraBuf * 2);
+    this.cameras.main.centerOn(worldW / 2, worldH / 2);
+    this.cameras.main.setZoom(0.8); // default zoom, may be overridden by saved value
+
+    // Zoom bar + click-to-drag camera pan
+    if (ENABLE_ZOOM_BAR) {
+      this.zoomBar = new ZoomBar(this, {
+        min: 0.5,
+        max: 2.0,
+        defaultValue: 0.8,
+        onChange: (zoom: number) => this.applyZoom(zoom),
+      });
+      this.cameraDrag = new CameraDragController(this, {
+        worldWidth: worldW,
+        worldHeight: worldH,
+        tileSize: this.tileSize,
+        bufferTiles: cameraBufTiles,
+      });
+      // Drag starts disabled; applyZoom will enable it when zoom is high enough
+    }
 
     // Add title with black background (positioned in world space at camera top edge)
     const cam = this.cameras.main;
@@ -397,15 +432,22 @@ export class OfficeScene extends Phaser.Scene {
       if (this.playerInScene) {
         this.playerMovementEnabled = true;
         this.player.enableMovement();
+        this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
       }
     }, this);
 
     // Click on NPC → open / switch conversation immediately.
     // Click on empty canvas → regain keyboard focus so player can move again.
-    this.input.on('pointerdown', (
+    // Uses pointerup so click-to-drag panning can distinguish drags from clicks.
+    this.input.on('pointerup', (
       _pointer: Phaser.Input.Pointer,
       currentlyOver: Phaser.GameObjects.GameObject[]
     ) => {
+      // If the user just finished a drag gesture, skip click handling
+      if (this.cameraDrag?.wasDragging()) return;
+      // Also skip if the zoom bar is being dragged
+      if (this.zoomBar?.isDragging()) return;
+
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
       if (clickedNPC) {
         this.startConversation(clickedNPC.config);
@@ -474,6 +516,8 @@ export class OfficeScene extends Phaser.Scene {
       this.game.events.off('bgm:volume');
       this.game.events.off('bgm:mute');
       this.disposeFleetPipeline();
+      this.zoomBar?.destroy();
+      this.cameraDrag?.destroy();
       this.inputManager.destroy();
     }, this);
   }
@@ -1547,6 +1591,12 @@ export class OfficeScene extends Phaser.Scene {
     // Update player
     this.player.update();
 
+    // If player is moving, snap camera back toward player (when user had panned)
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    if (this.cameraDrag && (body.velocity.x !== 0 || body.velocity.y !== 0)) {
+      this.cameraDrag.onPlayerMove(this.player.x, this.player.y);
+    }
+
     // Update y-sorted depths for player and NPCs
     const worldH = this.physics.world.bounds.bottom;
     this.player.setDepth(ySortDepth(this.player.y, worldH));
@@ -1618,9 +1668,11 @@ export class OfficeScene extends Phaser.Scene {
   private startPongGame(): void {
     this.player.disableMovement();
     this.pingPongPrompt.setVisible(false);
+    this.cameraDrag?.disable();
 
     this.pongGame.show(() => {
       this.player.enableMovement();
+      this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
     });
   }
 
@@ -1649,9 +1701,11 @@ export class OfficeScene extends Phaser.Scene {
   private startBasketballGame(): void {
     this.player.disableMovement();
     this.basketballPrompt.setVisible(false);
+    this.cameraDrag?.disable();
 
     this.basketballGame.show(() => {
       this.player.enableMovement();
+      this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
     });
   }
 
@@ -1756,6 +1810,38 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
+  /** Apply a zoom level and update camera follow / drag state accordingly. */
+  private applyZoom(zoom: number): void {
+    const cam = this.cameras.main;
+    cam.setZoom(zoom);
+
+    const worldW = this.mapWidth * this.tileSize;
+    const worldH = this.mapHeight * this.tileSize;
+
+    // Determine whether the entire office fits within the viewport at this zoom
+    const viewW = cam.width / zoom;
+    const viewH = cam.height / zoom;
+    const fits = viewW >= worldW && viewH >= worldH;
+
+    if (fits) {
+      // Whole office visible — center camera, disable drag
+      cam.stopFollow();
+      cam.centerOn(worldW / 2, worldH / 2);
+      this.cameraDrag?.disable();
+      this.cameraDrag?.resetPan();
+    } else {
+      // Office extends beyond viewport — enable drag, follow player when moving
+      if (this.playerInScene && this.playerMovementEnabled) {
+        this.cameraDrag?.enable();
+      }
+      // If player is in scene, center on them initially
+      if (this.playerInScene) {
+        cam.centerOn(this.player.x, this.player.y);
+        this.cameraDrag?.resetPan();
+      }
+    }
+  }
+
   private startConversation(agent: AgentConfig): void {
     // Fleet v-team: only Arthur can open a terminal (writable so user can type commands)
     if (this.currentLayout === 'fleet-vteam') {
@@ -1780,6 +1866,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.playerInScene) {
       this.player.disableMovement();
     }
+    this.cameraDrag?.disable();
 
     // If the agent is slacking(no active session), mark it as starting immediately
     // so the badge updates before the terminal even preloads.
@@ -1802,6 +1889,7 @@ export class OfficeScene extends Phaser.Scene {
         if (this.playerInScene) {
           this.player.enableMovement();
         }
+        this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
         // Update badges when closing terminal
         this.updateSessionBadges();
       }
