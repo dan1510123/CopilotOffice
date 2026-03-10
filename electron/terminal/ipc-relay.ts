@@ -244,11 +244,10 @@ export class TerminalRelay {
       return { success: true };
     });
 
-    // Fire-and-forget for lowest latency
-    ipcMain.handle('terminal-write', (_event, officeId: string, agentId: string, data: string) => {
-      this.send({ type: 'write', officeId, agentId, data });
-      return { success: true };
-    });
+    // Request/response so the renderer knows if the write actually reached a PTY
+    ipcMain.handle('terminal-write', (_event, officeId: string, agentId: string, data: string) =>
+      this.request({ type: 'write', requestId: this.id(), officeId, agentId, data })
+    );
 
     ipcMain.handle('terminal-resize', (_event, officeId: string, agentId: string, cols: number, rows: number) => {
       this.send({ type: 'resize', officeId, agentId, cols, rows });

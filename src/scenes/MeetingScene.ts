@@ -245,9 +245,14 @@ export class MeetingScene extends Phaser.Scene {
       }
       closeDialog();
       const sourceOfficeId = officeManager.currentOfficeId || 'office-0';
-      // main.ts handles: transfer session → send /fleet → switch office
-      this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId });
-      this.exitMeeting();
+      // Emit with a resolve callback so main.ts can signal when transfer+write completes.
+      // exitMeeting must wait — otherwise scene cleanup (terminal detach) races with the
+      // async handler and can strip activeAgentViewers before the /fleet write lands.
+      new Promise<void>((resolve) => {
+        this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId, resolve });
+      }).then(() => {
+        this.exitMeeting();
+      });
     });
 
     promptInput.focus();

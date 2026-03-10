@@ -18,6 +18,7 @@ export interface MsgStart {
 
 export interface MsgWrite {
   type: 'write';
+  requestId: string;
   officeId: string;
   agentId: string;
   data: string;

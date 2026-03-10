@@ -509,10 +509,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
         proc.process.write(msg.data);
+        send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
         const alias = agentToTerminal.get(ck);
         console.log(`[TermServer] WRITE FAILED — no PTY for ${ck} (alias=${alias ?? 'none'}, key=${key ?? 'none'}, ptyKeys=[${[...ptyProcesses.keys()].join(', ')}])`);
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
       }
       break;
     }
@@ -810,6 +812,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // Share event watcher so copilot events forward under the new key too
         const watcher = agentWatchers.get(fromCk);
         if (watcher) agentWatchers.set(toCk, watcher);
+        // Carry over active viewer registration so PTY output is forwarded under the new key
+        if (activeAgentViewers.has(fromCk)) {
+          activeAgentViewers.add(toCk);
+        }
       }
 
       // Copy session history
