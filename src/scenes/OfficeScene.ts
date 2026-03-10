@@ -10,6 +10,7 @@ import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager, OfficeLayout } from '../office/officeManager';
 import { MeetingPlan } from '../meeting/types';
+import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
 
@@ -81,6 +82,7 @@ export class OfficeScene extends Phaser.Scene {
   private npcCollider?: Phaser.Physics.Arcade.Collider;
   private animating: boolean = false;
   private pendingWalkIns: number = 0;
+  private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
 
   constructor() {
@@ -332,22 +334,26 @@ export class OfficeScene extends Phaser.Scene {
     }, this);
 
     // ── Fleet visualizer events ───────────────────────────────────────────
-    this.game.events.on('fleet:spawn', (data: { count: number; agentIds: string[]; mappings: Map<string, { agentId: string; taskDescription: string }> }) => {
-      if (this.currentLayout !== 'fleet-vteam') {
-        this.rebuildLayout('fleet-vteam');
-      }
-      this.triggerAgentWalkIn(data.agentIds);
-      data.mappings.forEach((info) => {
-        const npc = this.npcs.find(n => n.config.id === info.agentId);
-        if (npc) {
-          npc.updateAgentStatus({
-            agentId: info.agentId,
-            state: 'active',
-            subState: 'starting',
-            thinkingDetail: info.taskDescription,
-            currentTool: null,
+
+    // Seat assignment: sub-agent count determined, light up assigned agents' badges
+    this.game.events.on('fleet:assign', (data: { assignments: Array<{ agentId: string; seatIndex: number; toolCallId: string; taskDescription: string }> }) => {
+      console.log(`[OfficeScene] Fleet assigned ${data.assignments.length} agents`);
+    }, this);
+
+    // Dismiss unassigned agents: walk them out of the room
+    this.game.events.on('fleet:dismiss-unassigned', (data: { agentIds: string[] }) => {
+      console.log(`[OfficeScene] Dismissing ${data.agentIds.length} unassigned agents`);
+      const entranceX = this.mapWidth * this.tileSize / 2;
+      const exitY = (this.mapHeight + 1) * this.tileSize;
+      data.agentIds.forEach((agentId, i) => {
+        const npc = this.npcs.find(n => n.config.id === agentId);
+        if (!npc) return;
+        // Stagger walk-outs slightly so they don't all leave at once
+        this.time.delayedCall(i * 200, () => {
+          npc.walkTo(entranceX, exitY, 120).then(() => {
+            npc.setVisible(false);
           });
-        }
+        });
       });
     }, this);
 
@@ -457,6 +463,7 @@ export class OfficeScene extends Phaser.Scene {
       this.bgMusic?.stop();
       this.game.events.off('bgm:volume');
       this.game.events.off('bgm:mute');
+      this.disposeFleetPipeline();
       this.inputManager.destroy();
     }, this);
   }
@@ -1345,6 +1352,10 @@ export class OfficeScene extends Phaser.Scene {
    */
   private rebuildLayout(layout: OfficeLayout): void {
     console.log(`[OfficeScene] Rebuilding layout: ${this.currentLayout} → ${layout}`);
+
+    // Dispose fleet components when leaving fleet layout
+    this.disposeFleetPipeline();
+
     this.currentLayout = layout;
 
     // Snapshot which NPC was highlighted (for re-application after rebuild)
@@ -1446,9 +1457,41 @@ export class OfficeScene extends Phaser.Scene {
       this.player.disableMovement();
       this.instructionText.setText('[Space / Enter] Enter the office');
       this.triggerAgentWalkIn(this.npcs.map(n => n.config.id));
+
+      // Start fleet tracking pipeline
+      this.initFleetPipeline();
     }
 
     console.log(`[OfficeScene] Layout rebuilt: ${layout}`);
+  }
+
+  private async initFleetPipeline(): Promise<void> {
+    try {
+      this.fleetTracker = new FleetTracker('architect');
+      await this.fleetTracker.startTracking();
+
+      this.fleetVisualizer = new FleetVisualizer(
+        this.fleetTracker,
+        this.game.events,
+        14
+      );
+      this.fleetVisualizer.start(this);
+
+      console.log('[OfficeScene] Fleet pipeline initialized');
+    } catch (e) {
+      console.error('[OfficeScene] Failed to init fleet pipeline:', e);
+    }
+  }
+
+  private disposeFleetPipeline(): void {
+    if (this.fleetVisualizer) {
+      this.fleetVisualizer.dispose();
+      this.fleetVisualizer = null;
+    }
+    if (this.fleetTracker) {
+      this.fleetTracker.dispose();
+      this.fleetTracker = null;
+    }
   }
 
   private createNPCs(): void {

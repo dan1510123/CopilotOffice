@@ -81,6 +81,9 @@ export class MeetingScene extends Phaser.Scene {
     // DOM "Leave Meeting" button (visible above the game panel)
     this.createLeaveButton();
 
+    // DOM "Start Fleet V-Team" button
+    this.createFleetButton();
+
     // Create input manager for meeting scene
     this.inputManager = new InputManager(this);
 
@@ -102,6 +105,8 @@ export class MeetingScene extends Phaser.Scene {
   }
 
   private leaveButton: HTMLButtonElement | null = null;
+  private fleetButton: HTMLButtonElement | null = null;
+  private fleetDialog: HTMLDivElement | null = null;
 
   private createLeaveButton(): void {
     this.leaveButton = document.createElement('button');
@@ -130,6 +135,119 @@ export class MeetingScene extends Phaser.Scene {
       if (!this.isExiting) this.exitMeeting();
     });
     document.body.appendChild(this.leaveButton);
+  }
+
+  private createFleetButton(): void {
+    this.fleetButton = document.createElement('button');
+    this.fleetButton.textContent = '🚀 Start Fleet V-Team';
+    Object.assign(this.fleetButton.style, {
+      position: 'fixed',
+      bottom: '70px',
+      left: '260px',
+      padding: '8px 16px',
+      background: '#1a3a5c',
+      color: '#4fc3f7',
+      border: '1px solid #4488cc',
+      borderRadius: '6px',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      cursor: 'pointer',
+      zIndex: '10001',
+    });
+    this.fleetButton.addEventListener('mouseenter', () => {
+      if (this.fleetButton) this.fleetButton.style.background = '#254a6e';
+    });
+    this.fleetButton.addEventListener('mouseleave', () => {
+      if (this.fleetButton) this.fleetButton.style.background = '#1a3a5c';
+    });
+    this.fleetButton.addEventListener('click', () => {
+      this.showFleetDeployDialog();
+    });
+    document.body.appendChild(this.fleetButton);
+  }
+
+  private showFleetDeployDialog(): void {
+    if (this.fleetDialog) return;
+
+    const overlay = document.createElement('div');
+    this.fleetDialog = overlay;
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      width: '100%',
+      height: '100%',
+      background: 'rgba(0, 0, 0, 0.6)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: '20000',
+    });
+
+    const dialog = document.createElement('div');
+    Object.assign(dialog.style, {
+      background: '#1a1a2a',
+      border: '2px solid #4488cc',
+      borderRadius: '12px',
+      padding: '24px',
+      width: '420px',
+      maxWidth: '90vw',
+      fontFamily: 'monospace',
+      color: '#ccc',
+    });
+
+    dialog.innerHTML = `
+      <h3 style="margin: 0 0 16px 0; color: #4fc3f7; font-size: 16px;">🚀 Deploy Fleet V-Team</h3>
+      <label style="display: block; margin-bottom: 4px; font-size: 12px; color: #888;">Office Name</label>
+      <input id="fleet-office-name" type="text" value="Fleet V-Team"
+        style="width: 100%; padding: 8px; margin-bottom: 12px; background: #252538; color: #ccc;
+               border: 1px solid #555; border-radius: 4px; font-family: monospace; font-size: 13px;
+               box-sizing: border-box;" />
+      <label style="display: block; margin-bottom: 4px; font-size: 12px; color: #888;">Fleet Prompt</label>
+      <textarea id="fleet-prompt" rows="5" placeholder="Describe the mission for the fleet..."
+        style="width: 100%; padding: 8px; margin-bottom: 16px; background: #252538; color: #ccc;
+               border: 1px solid #555; border-radius: 4px; font-family: monospace; font-size: 13px;
+               resize: vertical; box-sizing: border-box;"></textarea>
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button id="fleet-cancel" style="padding: 8px 16px; background: #333; color: #ccc;
+                border: 1px solid #555; border-radius: 6px; font-family: monospace; cursor: pointer;">Cancel</button>
+        <button id="fleet-deploy" style="padding: 8px 20px; background: #1a5c3a; color: #4fc3f7;
+                border: 1px solid #4488cc; border-radius: 6px; font-family: monospace; font-size: 13px;
+                font-weight: bold; cursor: pointer;">🚀 DEPLOY FLEET</button>
+      </div>
+    `;
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const nameInput = dialog.querySelector('#fleet-office-name') as HTMLInputElement;
+    const promptInput = dialog.querySelector('#fleet-prompt') as HTMLTextAreaElement;
+    const cancelBtn = dialog.querySelector('#fleet-cancel') as HTMLButtonElement;
+    const deployBtn = dialog.querySelector('#fleet-deploy') as HTMLButtonElement;
+
+    const closeDialog = () => {
+      overlay.remove();
+      this.fleetDialog = null;
+    };
+
+    cancelBtn.addEventListener('click', closeDialog);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeDialog();
+    });
+
+    deployBtn.addEventListener('click', () => {
+      const officeName = nameInput.value.trim() || 'Fleet V-Team';
+      const prompt = promptInput.value.trim();
+      if (!prompt) {
+        promptInput.style.border = '1px solid #cc4444';
+        promptInput.focus();
+        return;
+      }
+      closeDialog();
+      this.game.events.emit('fleet:deploy-requested', { officeName, prompt });
+    });
+
+    promptInput.focus();
   }
 
   private setupPlanDetection(): void {
@@ -274,6 +392,10 @@ export class MeetingScene extends Phaser.Scene {
     this.terminalOverlay?.hide();
     this.leaveButton?.remove();
     this.leaveButton = null;
+    this.fleetButton?.remove();
+    this.fleetButton = null;
+    this.fleetDialog?.remove();
+    this.fleetDialog = null;
 
     const doorX = this.tileSize * 0.8;
     const doorY = 2.5 * this.tileSize;
@@ -320,6 +442,10 @@ export class MeetingScene extends Phaser.Scene {
     this.leaveMeetingCleanup = null;
     this.leaveButton?.remove();
     this.leaveButton = null;
+    this.fleetButton?.remove();
+    this.fleetButton = null;
+    this.fleetDialog?.remove();
+    this.fleetDialog = null;
     this.planApproval?.hide();
     this.terminalOverlay?.hide();
     this.inputManager?.destroy();

@@ -2,15 +2,16 @@
  * FleetVisualizer — Bridge between FleetTracker (data) and OfficeScene (Phaser visuals).
  *
  * Subscribes to FleetTracker state updates and emits game events that OfficeScene
- * listens to for NPC spawning, badge updates, walk-out animations, and fleet completion.
+ * listens to for NPC seat assignment, badge updates, walk-out animations, and fleet completion.
  *
  * Event contract (all prefixed with `fleet:`):
- *   fleet:spawn        — batch spawn after 2s debounce window
- *   fleet:agent:badge  — per-agent badge update
- *   fleet:agent:exit   — agent completed/failed, walk out
- *   fleet:agent:late-spawn — single agent arriving after initial batch
- *   fleet:status       — aggregate { total, completed, failed, active }
- *   fleet:complete     — all sub-agents finished
+ *   fleet:assign            — batch assignment after 2s debounce (assigned seat mappings)
+ *   fleet:dismiss-unassigned — unassigned agents should walk out
+ *   fleet:agent:badge       — per-agent badge update
+ *   fleet:agent:exit        — agent completed/failed, walk out
+ *   fleet:agent:late-spawn  — single agent arriving after initial batch
+ *   fleet:status            — aggregate { total, completed, failed, active }
+ *   fleet:complete          — all sub-agents finished
  */
 
 import * as Phaser from 'phaser';
@@ -32,9 +33,12 @@ interface AgentStatus {
   currentTool: string | null;
 }
 
+// Seat index reserved for Arthur (orchestrator) — not assignable to sub-agents
+const ARTHUR_SEAT_INDEX = 7;
+
 export class FleetVisualizer {
   private mappings = new Map<string, FleetNPCMapping>();  // toolCallId → mapping
-  private nextSeatIndex = 0;
+  private assignedSeatIndices = new Set<number>();
   private debounceTimer: number | null = null;
   private pendingSpawns: SubAgentTracker[] = [];
   private initialFlushDone = false;
@@ -59,16 +63,12 @@ export class FleetVisualizer {
       this.unsubscribe();
       this.unsubscribe = null;
     }
-    if (this.debounceTimer !== null && this.scene) {
-      this.scene.time.removeEvent(
-        this.scene.time.addEvent({ delay: 0 }) // no-op; clearTimeout below
-      );
-    }
     if (this.debounceTimer !== null) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     this.mappings.clear();
+    this.assignedSeatIndices.clear();
     this.pendingSpawns = [];
     this.scene = null;
   }
@@ -80,7 +80,7 @@ export class FleetVisualizer {
       const mapping = this.mappings.get(toolCallId);
 
       if (!mapping) {
-        // New sub-agent — queue or spawn immediately
+        // New sub-agent — queue for assignment
         if (tracker.state === 'dispatched' || tracker.state === 'running') {
           this.queueSpawn(tracker);
         }
@@ -106,26 +106,38 @@ export class FleetVisualizer {
     }
   }
 
-  // ── Spawning ────────────────────────────────────────────────────────────
+  // ── Seat Assignment ─────────────────────────────────────────────────────
+
+  /** Pick a random unassigned seat index (excluding Arthur's seat). */
+  private pickRandomSeat(): number | null {
+    const available: number[] = [];
+    for (let i = 0; i < this.maxAgents; i++) {
+      if (i !== ARTHUR_SEAT_INDEX && !this.assignedSeatIndices.has(i)) {
+        available.push(i);
+      }
+    }
+    if (available.length === 0) return null;
+    return available[Math.floor(Math.random() * available.length)];
+  }
 
   private queueSpawn(tracker: SubAgentTracker): void {
-    // Guard: don't exceed max agents
-    if (this.nextSeatIndex >= this.maxAgents) return;
+    const seatIndex = this.pickRandomSeat();
+    if (seatIndex === null) return;
 
     // Create mapping immediately to prevent duplicate queuing
-    const agentId = `fleet-${this.nextSeatIndex + 1}`;
+    const agentId = `fleet-${seatIndex + 1}`;
     const mapping: FleetNPCMapping = {
       toolCallId: tracker.toolCallId,
       agentId,
-      seatIndex: this.nextSeatIndex,
+      seatIndex,
       taskDescription: tracker.taskDescription,
       walkOutScheduled: false,
     };
     this.mappings.set(tracker.toolCallId, mapping);
-    this.nextSeatIndex++;
+    this.assignedSeatIndices.add(seatIndex);
 
     if (this.initialFlushDone) {
-      // Late arrival — spawn immediately
+      // Late arrival — assign immediately and update badge
       this.gameEvents.emit('fleet:agent:late-spawn', agentId);
       this.updateNPCBadge(mapping, tracker);
       return;
@@ -148,26 +160,40 @@ export class FleetVisualizer {
 
     if (this.pendingSpawns.length === 0) return;
 
-    // Build agentIds and mappings for the batch
-    const agentIds: string[] = [];
-    const spawnMappings = new Map<string, { agentId: string; taskDescription: string }>();
+    // Build assignment data for the batch
+    const assignments: Array<{ agentId: string; seatIndex: number; toolCallId: string; taskDescription: string }> = [];
 
     this.pendingSpawns.forEach((tracker) => {
       const mapping = this.mappings.get(tracker.toolCallId);
       if (mapping) {
-        agentIds.push(mapping.agentId);
-        spawnMappings.set(tracker.toolCallId, {
+        assignments.push({
           agentId: mapping.agentId,
+          seatIndex: mapping.seatIndex,
+          toolCallId: tracker.toolCallId,
           taskDescription: mapping.taskDescription,
         });
       }
     });
 
-    this.gameEvents.emit('fleet:spawn', {
-      count: agentIds.length,
-      agentIds,
-      mappings: spawnMappings,
+    // Emit assignment event — OfficeScene will light up badges for these agents
+    this.gameEvents.emit('fleet:assign', { assignments });
+
+    // Emit badge updates for each assigned agent
+    this.pendingSpawns.forEach((tracker) => {
+      const mapping = this.mappings.get(tracker.toolCallId);
+      if (mapping) this.updateNPCBadge(mapping, tracker);
     });
+
+    // Emit dismiss event — OfficeScene will walk out unassigned agents
+    const unassignedAgentIds: string[] = [];
+    for (let i = 0; i < this.maxAgents; i++) {
+      if (i !== ARTHUR_SEAT_INDEX && !this.assignedSeatIndices.has(i)) {
+        unassignedAgentIds.push(`fleet-${i + 1}`);
+      }
+    }
+    if (unassignedAgentIds.length > 0) {
+      this.gameEvents.emit('fleet:dismiss-unassigned', { agentIds: unassignedAgentIds });
+    }
 
     this.pendingSpawns = [];
   }

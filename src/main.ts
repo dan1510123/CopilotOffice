@@ -1180,4 +1180,48 @@ phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOffi
   switchToOffice(officeId);
 });
 
-console.log('[CopilotOffice] Started - Phaser 3 renderer with multi-office support');
+// When fleet deploy is requested from the meeting room dialog
+phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string; prompt: string }) => {
+  console.log(`[Fleet] Deploy requested: "${data.officeName}" with prompt: "${data.prompt.slice(0, 80)}..."`);
+
+  // 1. Create a new fleet-vteam office
+  const fleetOffice = officeManager.createOffice(data.officeName, '.', 'fleet-vteam');
+  const officeId = fleetOffice.config.id;
+
+  // 2. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
+  switchToOffice(officeId);
+
+  // 3. Start Arthur's terminal in the fleet office
+  try {
+    const result = await window.copilotBridge?.terminalStart(officeId, 'architect', '.', 120, 30);
+    if (result?.success) {
+      console.log(`[Fleet] Arthur terminal started (pid: ${result.pid})`);
+      // 4. Send the /fleet command with the user's prompt
+      await window.copilotBridge?.terminalWrite(officeId, 'architect', `/fleet ${data.prompt}\r`);
+      console.log('[Fleet] /fleet command sent to Arthur');
+    } else {
+      console.error('[Fleet] Failed to start Arthur terminal:', result?.error);
+    }
+  } catch (e) {
+    console.error('[Fleet] Error starting fleet:', e);
+  }
+});
+
+// Fleet status updates — update right panel dashboard
+phaserGame.events.on('fleet:status', (status: { total: number; completed: number; failed: number; active: number }) => {
+  const subtitle = document.getElementById('terminal-subtitle');
+  if (subtitle && officeManager.currentOffice?.config.layout === 'fleet-vteam') {
+    subtitle.textContent = `Fleet: ${status.active} active · ${status.completed} done · ${status.failed} failed / ${status.total} total`;
+  }
+  updateTerminalContent();
+});
+
+// Fleet complete — show summary in dashboard header
+phaserGame.events.on('fleet:complete', () => {
+  console.log('[Fleet] All sub-agents complete');
+  const subtitle = document.getElementById('terminal-subtitle');
+  if (subtitle) {
+    subtitle.textContent = '✅ Fleet complete!';
+  }
+  updateTerminalContent();
+});
