@@ -94,7 +94,7 @@ export const fleetDashboard: DashboardRenderer = {
       // ── Arthur: "View conversation" indicator ──
       const arthurHint = isArthur ? `
         <div style="font-size: 10px; color: #4af; margin-top: 4px; display: flex; align-items: center; gap: 4px;">
-          💬 View meeting conversation (read-only)
+          💬 Open Arthur's terminal
         </div>` : '';
 
       html += `

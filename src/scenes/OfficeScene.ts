@@ -1744,17 +1744,15 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
-    // Fleet v-team: only Arthur can open a terminal (read-only view of meeting conversation)
+    // Fleet v-team: only Arthur can open a terminal (writable so user can type commands)
     if (this.currentLayout === 'fleet-vteam') {
       if (agent.id !== 'architect') return;
-      // Open Arthur's terminal in read-only mode (no meeting, no input)
       this.game.events.emit('agent:interact', agent.id);
       this.terminalOverlay.show(
         agent,
         () => {
           this.updateSessionBadges();
         },
-        { readOnly: true }
       );
       return;
     }

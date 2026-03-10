@@ -507,7 +507,13 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'write': {
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
-      if (proc) proc.process.write(msg.data);
+      if (proc) {
+        proc.process.write(msg.data);
+      } else {
+        const ck = compositeKey(msg.officeId, msg.agentId);
+        const alias = agentToTerminal.get(ck);
+        console.log(`[TermServer] WRITE FAILED — no PTY for ${ck} (alias=${alias ?? 'none'}, key=${key ?? 'none'}, ptyKeys=[${[...ptyProcesses.keys()].join(', ')}])`);
+      }
       break;
     }
 
