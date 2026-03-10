@@ -41,7 +41,8 @@ const agentScrollbackBytes: Map<string, number> = new Map();
 const SESSION_FILE = path.join(process.cwd(), 'copilot-office-sessions.json');
 let agentSessionIds: Map<string, string> = new Map();
 let agentSessionHistory: Map<string, string[]> = new Map();
-let agentSessionMeta: Map<string, { title: string; description: string }> = new Map();
+let agentSessionMeta: Map<string, { title: string }> = new Map();
+const hasAutoTitled: Set<string> = new Set();
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ async function loadSessionIds(): Promise<void> {
           Object.entries(parsed.history || {}).map(([k, v]) => [k, v as string[]])
         );
         agentSessionMeta = new Map(
-          Object.entries(parsed.metadata || {}).map(([k, v]) => [k, v as { title: string; description: string }])
+          Object.entries(parsed.metadata || {}).map(([k, v]) => [k, v as { title: string }])
         );
       } else {
         // Legacy flat format: { agentId: sessionId }
@@ -269,8 +270,28 @@ async function startTerminalForAgent(
         console.log(`[TermServer] Forwarding turn_start for ${agentId}`);
         send({ type: 'copilot-turn-start', agentId });
       } else if (event.type === 'user.message') {
-        console.log(`[TermServer] Forwarding user_message for ${agentId}`);
+        console.log(`[TermServer] Forwarding user_message for ${agentId}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
         send({ type: 'copilot-user-message', agentId });
+
+        // Auto-set session title from first user message if no title exists
+        if (!hasAutoTitled.has(agentId)) {
+          hasAutoTitled.add(agentId);
+          const existing = agentSessionMeta.get(agentId);
+          if (!existing?.title) {
+            const d = event.data as Record<string, unknown>;
+            const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
+            const raw = String(msgText).trim();
+            if (raw) {
+              const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
+              const meta = existing || { title: '' };
+              meta.title = title;
+              agentSessionMeta.set(agentId, meta);
+              saveSessionIds();
+              console.log(`[TermServer] Auto-titled ${agentId}: "${title}"`);
+              send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
+            }
+          }
+        }
       }
 
       // Only forward the verbose raw copilot-event when someone is viewing
@@ -458,6 +479,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       activeAgentViewers.delete(msg.agentId);
       // Clear session metadata
       agentSessionMeta.delete(msg.agentId);
+      hasAutoTitled.delete(msg.agentId);
       // Archive old session ID and generate new one (but don't start PTY)
       archiveSessionId(msg.agentId);
       const newSessionId = crypto.randomUUID();
@@ -488,6 +510,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       agentScrollbackBuffers.clear();
       agentScrollbackBytes.clear();
       agentSessionMeta.clear();
+      hasAutoTitled.clear();
       // Regenerate a fresh GUID for every agent that had a session
       for (const agentId of agentSessionIds.keys()) {
         agentSessionIds.set(agentId, crypto.randomUUID());
@@ -522,9 +545,8 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'set-session-meta': {
       const { agentId, meta } = msg as MsgSetSessionMeta;
-      const existing = agentSessionMeta.get(agentId) || { title: '', description: '' };
+      const existing = agentSessionMeta.get(agentId) || { title: '' };
       if (meta.title !== undefined) existing.title = meta.title;
-      if (meta.description !== undefined) existing.description = meta.description;
       agentSessionMeta.set(agentId, existing);
       await saveSessionIds();
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });

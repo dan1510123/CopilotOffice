@@ -219,6 +219,9 @@ export class TerminalRelay {
       case 'copilot-user-message':
         win.webContents.send('copilot-user-message', msg.agentId);
         break;
+      case 'session-meta-updated':
+        win.webContents.send('session-meta-updated', msg.agentId, msg.meta);
+        break;
       case 'terminal-preload-status':
         win.webContents.send('terminal-preload-status', msg.agentId, msg.status);
         break;

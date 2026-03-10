@@ -454,7 +454,7 @@ const notificationSettingsPanel = new NotificationSettingsPanel(notificationServ
 
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
-let cachedSessionMeta: Record<string, { title: string; description: string }> = {};
+let cachedSessionMeta: Record<string, { title: string }> = {};
 let sessionMetaDirty = true;
 
 function invalidateSessionMeta() {
@@ -621,10 +621,9 @@ async function updateTerminalContentNow() {
     const meta = cachedSessionMeta[agent.id];
     const hasSession = liveStatus?.state === 'active';
     const metaTitle = meta?.title || '';
-    const metaDesc = meta?.description || '';
     const sessionPanelHtml = hasSession ? `
       <div class="session-meta-panel" data-agent="${agent.id}" style="
-        flex-shrink: 0; width: 180px;
+        flex-shrink: 0; width: 220px;
         border-left: 1px solid #252540;
         padding-left: 14px;
         display: flex; flex-direction: column; gap: 6px;
@@ -634,26 +633,21 @@ async function updateTerminalContentNow() {
         <div style="font-size: 9px; color: #3a3a5a; text-transform: uppercase; letter-spacing: 0.5px;">Session Info</div>
         <div class="session-title-display" data-agent="${agent.id}" style="
           font-weight: bold; color: ${metaTitle ? '#ccd' : '#444'}; font-size: 13px;
-          cursor: text; min-height: 18px;
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to add title'}">${metaTitle || 'No title'}</div>
-        <div class="session-desc-display" data-agent="${agent.id}" style="
-          color: ${metaDesc ? '#778' : '#333'}; font-size: 11px;
-          cursor: text; min-height: 14px;
+          cursor: text; min-height: 18px; line-height: 1.4;
           overflow: hidden; text-overflow: ellipsis;
-          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-        " title="${metaDesc ? metaDesc.replace(/"/g, '&quot;') : 'Click to add description'}">${metaDesc || 'No description'}</div>
+          display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+        " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set title'}">${metaTitle || 'Untitled session'}</div>
         <div style="display: flex; justify-content: flex-end; margin-top: 2px;">
           <button class="session-edit-btn" data-agent="${agent.id}" style="
             background: none; border: 1px solid #333; color: #667;
             font-size: 11px; padding: 2px 8px; border-radius: 4px;
             cursor: pointer; transition: color 0.15s, border-color 0.15s;
-          " title="Edit session title and description">✏️</button>
+          " title="Edit session title">✏️</button>
         </div>
       </div>
     ` : `
       <div style="
-        flex-shrink: 0; width: 180px;
+        flex-shrink: 0; width: 220px;
         border-left: 1px solid #1a1a30;
         padding-left: 14px;
         display: flex; flex-direction: column;
@@ -770,19 +764,14 @@ function setupTerminalClickHandler() {
       const agentId = (metaPanel as HTMLElement).dataset.agent;
       if (!agentId) return;
 
-      // Edit button — open both fields
+      // Edit button — open title
       if (target.closest('.session-edit-btn')) {
-        startSessionMetaEdit(agentId, 'both');
+        startSessionMetaEdit(agentId);
         return;
       }
       // Click on title
       if (target.closest('.session-title-display')) {
-        startSessionMetaEdit(agentId, 'title');
-        return;
-      }
-      // Click on description
-      if (target.closest('.session-desc-display')) {
-        startSessionMetaEdit(agentId, 'description');
+        startSessionMetaEdit(agentId);
         return;
       }
       return;
@@ -803,25 +792,16 @@ function setupTerminalClickHandler() {
   });
 }
 
-function startSessionMetaEdit(agentId: string, field: 'title' | 'description' | 'both') {
+function startSessionMetaEdit(agentId: string) {
   const panel = terminalContent.querySelector(`.session-meta-panel[data-agent="${agentId}"]`);
   if (!panel) return;
 
-  const meta = cachedSessionMeta[agentId] || { title: '', description: '' };
-
+  const meta = cachedSessionMeta[agentId] || { title: '' };
   const titleEl = panel.querySelector('.session-title-display') as HTMLElement | null;
-  const descEl = panel.querySelector('.session-desc-display') as HTMLElement | null;
 
-  if ((field === 'title' || field === 'both') && titleEl) {
-    replaceWithInput(titleEl, meta.title, 'Session title...', 60, async (value) => {
+  if (titleEl) {
+    replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
       await window.copilotBridge.setSessionMeta(agentId, { title: value });
-      invalidateSessionMeta();
-    });
-  }
-
-  if ((field === 'description' || field === 'both') && descEl) {
-    replaceWithInput(descEl, meta.description, 'Session description...', 120, async (value) => {
-      await window.copilotBridge.setSessionMeta(agentId, { description: value });
       invalidateSessionMeta();
     });
   }
@@ -1017,6 +997,12 @@ if (window.copilotBridge) {
       console.log(`[Office] [BLOCKED] User message for ${agentId} blocked by starting guard`);
     }
     phaserGame?.events.emit('agent:status:changed', agentId);
+    updateTerminalContent();
+  });
+
+  window.copilotBridge.onSessionMetaUpdated((agentId, meta) => {
+    console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"`);
+    cachedSessionMeta[agentId] = meta;
     updateTerminalContent();
   });
 

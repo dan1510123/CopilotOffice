@@ -103,7 +103,7 @@ export interface MsgSetSessionMeta {
   type: 'set-session-meta';
   requestId: string;
   agentId: string;
-  meta: { title?: string; description?: string };
+  meta: { title?: string };
 }
 
 export interface MsgGetSessionMeta {
@@ -198,6 +198,12 @@ export interface SrvTerminalPreloadStatus {
   status: 'preloading' | 'ready' | 'failed';
 }
 
+export interface SrvSessionMetaUpdated {
+  type: 'session-meta-updated';
+  agentId: string;
+  meta: { title: string };
+}
+
 export interface SrvResponse {
   type: 'response';
   requestId: string;
@@ -215,4 +221,5 @@ export type ServerToMain =
   | SrvCopilotTurnStart
   | SrvCopilotUserMessage
   | SrvTerminalPreloadStatus
+  | SrvSessionMetaUpdated
   | SrvResponse;

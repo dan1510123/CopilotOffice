@@ -61,13 +61,13 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   
   // Session metadata
-  setSessionMeta: (agentId: string, meta: { title?: string; description?: string }): Promise<{ success: boolean }> => {
+  setSessionMeta: (agentId: string, meta: { title?: string }): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('set-session-meta', agentId, meta);
   },
-  getSessionMeta: (agentId: string): Promise<{ title: string; description: string } | null> => {
+  getSessionMeta: (agentId: string): Promise<{ title: string } | null> => {
     return ipcRenderer.invoke('get-session-meta', agentId);
   },
-  getAllSessionMeta: (): Promise<Record<string, { title: string; description: string }>> => {
+  getAllSessionMeta: (): Promise<Record<string, { title: string }>> => {
     return ipcRenderer.invoke('get-all-session-meta');
   },
   
@@ -101,6 +101,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   onCopilotUserMessage: (callback: (agentId: string) => void) => {
     ipcRenderer.on('copilot-user-message', (_event, agentId) => callback(agentId));
   },
+  onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => {
+    ipcRenderer.on('session-meta-updated', (_event, agentId, meta) => callback(agentId, meta));
+  },
   
   removeTerminalListeners: () => {
     ipcRenderer.removeAllListeners('terminal-data');
@@ -113,6 +116,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.removeAllListeners('copilot-turn-end');
     ipcRenderer.removeAllListeners('copilot-turn-start');
     ipcRenderer.removeAllListeners('copilot-user-message');
+    ipcRenderer.removeAllListeners('session-meta-updated');
   },
   
   // Signal the main process that the next reload should restart the terminal server
@@ -153,9 +157,9 @@ declare global {
       clearSessionHistory: (agentId: string) => Promise<{ success: boolean }>;
       listActiveTerminals: () => Promise<string[]>;
       queryAgentStatuses: () => Promise<Record<string, { alive: boolean; ready: boolean }>>;
-      setSessionMeta: (agentId: string, meta: { title?: string; description?: string }) => Promise<{ success: boolean }>;
-      getSessionMeta: (agentId: string) => Promise<{ title: string; description: string } | null>;
-      getAllSessionMeta: () => Promise<Record<string, { title: string; description: string }>>;
+      setSessionMeta: (agentId: string, meta: { title?: string }) => Promise<{ success: boolean }>;
+      getSessionMeta: (agentId: string) => Promise<{ title: string } | null>;
+      getAllSessionMeta: () => Promise<Record<string, { title: string }>>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;
@@ -165,6 +169,7 @@ declare global {
       onCopilotTurnEnd: (callback: (agentId: string) => void) => void;
       onCopilotTurnStart: (callback: (agentId: string) => void) => void;
       onCopilotUserMessage: (callback: (agentId: string) => void) => void;
+      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => void;
       removeTerminalListeners: () => void;
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
