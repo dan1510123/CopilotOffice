@@ -1,0 +1,19 @@
+{
+  "currentOfficeId": "office-1772743615854-r48oab",
+  "offices": [
+    {
+      "id": "office-1772743615854-r48oab",
+      "name": "Main Office",
+      "workingDirectory": ".",
+      "createdAt": 1772743615854,
+      "layout": "default"
+    },
+    {
+      "id": "office-1773124751613-n6mu3s",
+      "name": "Fleet V-Team #1",
+      "workingDirectory": ".",
+      "createdAt": 1773124751613,
+      "layout": "fleet-vteam"
+    }
+  ]
+}

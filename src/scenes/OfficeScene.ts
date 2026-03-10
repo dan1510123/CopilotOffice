@@ -72,6 +72,8 @@ export class OfficeScene extends Phaser.Scene {
   private exitPrompt!: Phaser.GameObjects.Text;
   private inputManager!: InputManager;
   private bgMusic: Phaser.Sound.BaseSound | null = null;
+  private layoutObjects: Phaser.GameObjects.GameObject[] = [];
+  private currentLayout: string = 'default';
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -93,8 +95,14 @@ export class OfficeScene extends Phaser.Scene {
     const boundsRight = this.mapWidth * this.tileSize;  // Full width (already added 2 to mapWidth)
     this.physics.world.setBounds(this.tileSize, boundsTop, boundsRight - this.tileSize, boundsBottom - boundsTop);
     
-    // Create the office layout
-    this.createOfficeLayout();
+    // Create the office layout based on office type
+    const currentLayout = officeManager.currentOffice?.config.layout ?? 'default';
+    this.currentLayout = currentLayout;
+    if (currentLayout === 'fleet-vteam') {
+      this.createFleetVTeamLayout();
+    } else {
+      this.createOfficeLayout();
+    }
     
     // Create player off-screen below the entrance
     const entranceX = this.mapWidth * this.tileSize / 2;
@@ -144,6 +152,15 @@ export class OfficeScene extends Phaser.Scene {
       if (data?.plan) {
         console.log('[OfficeScene] Received meeting plan:', data.plan.plan);
         console.log('[OfficeScene] Tasks assigned:', data.plan.tasks.map(t => `${t.agentId}: ${t.title}`).join(', '));
+
+        // Create a new Fleet V-Team office and switch to it
+        const currentDir = officeManager.currentOffice?.config.workingDirectory ?? '.';
+        const fleetOffice = officeManager.createOffice('Fleet V-Team #1', currentDir, 'fleet-vteam');
+        console.log(`[OfficeScene] Created Fleet V-Team office: ${fleetOffice.config.id}`);
+
+        // Emit event so main.ts can update tabs and switch
+        this.game.events.emit('fleet:office:created', fleetOffice.config.id);
+
         const assignedAgentIds = data.plan.tasks.map(t => t.agentId);
         this.triggerAgentWalkIn(assignedAgentIds);
       } else {
@@ -279,9 +296,12 @@ export class OfficeScene extends Phaser.Scene {
     // This catches status updates that fired before this listener was registered (e.g. after soft reload).
     this.updateSessionBadges();
 
-    // Listen for office switch to reinitialize if needed
-    this.game.events.on('office:switch', (_officeId: string, _workingDir: string) => {
-      console.log(`[OfficeScene] Office switched to: ${_officeId}`);
+    // Listen for office switch to reinitialize layout if needed
+    this.game.events.on('office:switch', (officeId: string, _workingDir: string) => {
+      console.log(`[OfficeScene] Office switched to: ${officeId}`);
+      const office = officeManager.getOffice(officeId);
+      if (!office) return;
+      this.rebuildLayout(office.config.layout ?? 'default');
     }, this);
 
     // DOM-level click on the game panel — guaranteed to fire even when Phaser input is inactive
@@ -716,6 +736,156 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Fleet V-Team layout: centered 8×2 conference desk with 6 seats.
+   * 4 stools above, 1 on each side. Same shell (floor, windows, doors) as default.
+   */
+  private createFleetVTeamLayout(): void {
+    this.walls = this.physics.add.staticGroup();
+    this.furniture = this.physics.add.staticGroup();
+
+    const scale = this.tileSize / 32;
+    const worldH = this.physics.world.bounds.bottom;
+
+    // Reuse helpers from default layout
+    const addWall = (x: number, y: number, texture: string) => {
+      const sprite = this.walls.create(x, y, texture) as Phaser.Physics.Arcade.Sprite;
+      sprite.setScale(scale).refreshBody();
+      return sprite;
+    };
+
+    const addFurniture = (x: number, y: number, texture: string, opts?: { bodyWidth?: number; bodyHeight?: number; bodyOffsetX?: number; bodyOffsetY?: number; depthSortY?: number }) => {
+      const sprite = this.add.sprite(x, y, texture);
+      sprite.setOrigin(0.5, 0.5);
+      sprite.setScale(scale);
+      this.physics.add.existing(sprite, true);
+      this.furniture.add(sprite);
+      const body = sprite.body as Phaser.Physics.Arcade.StaticBody;
+      if (opts?.bodyWidth != null) {
+        const bw = opts.bodyWidth! * scale;
+        const bh = opts.bodyHeight! * scale;
+        const offX = (opts.bodyOffsetX ?? 0) * scale;
+        const offY = (opts.bodyOffsetY ?? 0) * scale;
+        body.setSize(bw, bh);
+        body.setOffset(offX, offY);
+        body.updateFromGameObject();
+      } else {
+        body.updateFromGameObject();
+      }
+      const sortY = opts?.depthSortY ?? (y + sprite.displayHeight / 2);
+      sprite.setDepth(ySortDepth(sortY, worldH));
+      return sprite;
+    };
+
+    const addDecor = (x: number, y: number, texture: string) => {
+      const sprite = this.add.sprite(x, y, texture);
+      sprite.setOrigin(0.5, 0.5);
+      sprite.setScale(scale);
+      return sprite;
+    };
+
+    // === FLOOR ===
+    for (let y = 0; y < this.mapHeight; y++) {
+      for (let x = 0; x < this.mapWidth; x++) {
+        addDecor(x * this.tileSize + this.tileSize / 2, y * this.tileSize + this.tileSize / 2, 'floor');
+      }
+    }
+
+    // === WINDOWS (same as default) ===
+    for (let x = 1; x < this.mapWidth - 1; x++) {
+      const windowType = (x >= 8 && x <= 12) ? 'window_sun' : 'window';
+      addDecor(x * this.tileSize + this.tileSize / 2, this.tileSize / 2, windowType);
+    }
+    for (let y = 1; y < this.mapHeight - 1; y++) {
+      const windowType = (y % 3 === 0) ? 'window_sun' : 'window';
+      addDecor(this.tileSize / 2, y * this.tileSize + this.tileSize / 2, windowType);
+    }
+    for (let y = 1; y < this.mapHeight - 1; y++) {
+      const windowType = (y % 3 === 1) ? 'window_sun' : 'window';
+      addDecor((this.mapWidth - 1) * this.tileSize + this.tileSize / 2, y * this.tileSize + this.tileSize / 2, windowType);
+    }
+    const corners = [
+      { x: 0, y: 0 }, { x: this.mapWidth - 1, y: 0 },
+      { x: 0, y: this.mapHeight - 1 }, { x: this.mapWidth - 1, y: this.mapHeight - 1 },
+    ];
+    corners.forEach(corner => {
+      addDecor(corner.x * this.tileSize + this.tileSize / 2, corner.y * this.tileSize + this.tileSize / 2, 'window_corner');
+    });
+
+    // === BOTTOM WALL + DOORS (same as default) ===
+    const doorCols = new Set([8, 9, 10, 11]);
+    for (let x = 1; x < this.mapWidth - 1; x++) {
+      if (doorCols.has(x)) continue;
+      const wx = x * this.tileSize + this.tileSize / 2;
+      const wy = (this.mapHeight - 1) * this.tileSize + this.tileSize / 2;
+      addDecor(wx, wy, 'wall');
+    }
+    this.createGrandDoors();
+    this.createEntranceRug();
+
+    // === BIG 8×2 CONFERENCE DESK (centered) ===
+    // Cols 6-13, rows 5-6 → 8 columns × 2 rows
+    const deskBodyW = 28;
+    const deskBodyH = 14;
+    const deskBodyOffX = 2;
+    const deskBodyOffY = 5;
+    const tableStartCol = 6;
+    const tableEndCol = 13; // inclusive
+    const tableStartRow = 5;
+
+    for (let col = tableStartCol; col <= tableEndCol; col++) {
+      for (let row = 0; row < 2; row++) {
+        const dx = col * this.tileSize + this.tileSize / 2;
+        const dy = (tableStartRow + row) * this.tileSize + this.tileSize / 2;
+        const rowKey = row === 0 ? 't' : 'b';
+        const colKey = col === tableStartCol ? 'l' : col === tableEndCol ? 'r' : 'm';
+        addFurniture(dx, dy, `desk-${rowKey}${colKey}`, {
+          bodyWidth: deskBodyW, bodyHeight: deskBodyH,
+          bodyOffsetX: deskBodyOffX, bodyOffsetY: deskBodyOffY,
+          depthSortY: dy,
+        });
+      }
+    }
+
+    // === 4 STOOLS ABOVE the desk (evenly spaced across the 8-col table) ===
+    const stoolTuck = this.tileSize * 0.4;
+    const stoolAboveY = (tableStartRow - 1) * this.tileSize + this.tileSize / 2 + stoolTuck;
+    // Space 4 stools evenly: at cols 7, 9, 11, 13 (within the 6-13 range)
+    const aboveStoolCols = [7, 9, 11, 13];
+    aboveStoolCols.forEach((col, _i) => {
+      const sx = col * this.tileSize + this.tileSize / 2;
+      addDecor(sx, stoolAboveY, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    });
+
+    // === 1 STOOL ON EACH SIDE (at the middle row of the desk) ===
+    const sideStoolY = (tableStartRow + 0.5) * this.tileSize + this.tileSize / 2;
+    const leftStoolX = (tableStartCol - 1) * this.tileSize + this.tileSize / 2;
+    const rightStoolX = (tableEndCol + 1) * this.tileSize + this.tileSize / 2;
+    addDecor(leftStoolX, sideStoolY, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    addDecor(rightStoolX, sideStoolY, 'stool').setDepth(Depths.FLOOR_DETAIL);
+
+    // === LAPTOPS on the desk (one per seat) ===
+    // 4 laptops for above seats + 2 for side seats
+    aboveStoolCols.forEach(col => {
+      const lx = col * this.tileSize + this.tileSize / 2;
+      const ly = tableStartRow * this.tileSize + this.tileSize / 2 - 2 * scale;
+      const laptop = addDecor(lx, ly, 'surfacebook_horizontal');
+      laptop.setDepth(ySortDepth(ly + 2 * scale, worldH) + 0.1);
+    });
+
+    // === WHITEBOARD at top center ===
+    addDecor(this.mapWidth * this.tileSize / 2, 2 * this.tileSize + this.tileSize / 2, 'whiteboard');
+
+    // === FLEET TITLE ===
+    const titleX = this.mapWidth * this.tileSize / 2;
+    const titleY = 1.5 * this.tileSize;
+    this.add.text(titleX, titleY, '🚀 Fleet V-Team', {
+      fontFamily: 'monospace',
+      fontSize: `${Math.round(this.tileSize * 0.4)}px`,
+      color: '#4488ff',
+    }).setOrigin(0.5, 0.5).setDepth(Depths.UI_OVERLAY);
+  }
+
   private createGrandDoors(): void {
     const ts = this.tileSize;
     const doorY = (this.mapHeight - 1) * ts;
@@ -913,6 +1083,84 @@ export class OfficeScene extends Phaser.Scene {
         });
       });
     });
+  }
+
+  /**
+   * Destroy current layout objects and rebuild with a new layout type.
+   * Preserves player, input manager, terminal overlay, and game overlays.
+   */
+  private rebuildLayout(layout: string): void {
+    console.log(`[OfficeScene] Rebuilding layout: ${this.currentLayout} → ${layout}`);
+    this.currentLayout = layout;
+
+    // Snapshot children before destruction
+    const preserveSet = new Set<Phaser.GameObjects.GameObject>();
+    if (this.player) preserveSet.add(this.player);
+    if (this.titleText) preserveSet.add(this.titleText);
+    if (this.instructionText) preserveSet.add(this.instructionText);
+    if (this.pingPongPrompt) preserveSet.add(this.pingPongPrompt);
+    if (this.basketballPrompt) preserveSet.add(this.basketballPrompt);
+    if (this.exitPrompt) preserveSet.add(this.exitPrompt);
+
+    // Destroy NPCs
+    for (const npc of this.npcs) {
+      npc.destroy();
+    }
+    this.npcs = [];
+
+    // Destroy walls and furniture groups
+    if (this.walls) {
+      this.walls.clear(true, true);
+      this.walls.destroy(true);
+    }
+    if (this.furniture) {
+      this.furniture.clear(true, true);
+      this.furniture.destroy(true);
+    }
+
+    // Destroy all non-preserved children (sprites, graphics, etc. from previous layout)
+    const toDestroy = this.children.list.filter(child =>
+      !preserveSet.has(child) &&
+      child.type !== 'Body' // don't destroy physics bodies directly
+    );
+    // Work from a copy since destroy modifies the list
+    [...toDestroy].forEach(child => {
+      if (child && child.scene) {
+        child.destroy();
+      }
+    });
+
+    // Reset tracking arrays
+    this.desks = [];
+    this.exitDoors = [];
+    this.pingPongTable = null;
+    this.basketballHoop = null;
+    this.nearestNPC = null;
+    this.nearestDesk = null;
+    this.nearestExitDoor = null;
+
+    // Rebuild layout
+    if (layout === 'fleet-vteam') {
+      this.createFleetVTeamLayout();
+    } else {
+      this.createOfficeLayout();
+    }
+
+    // Re-create NPCs
+    this.createNPCs();
+
+    // Re-add player collision with new furniture/walls
+    if (this.player) {
+      this.physics.add.collider(this.player, this.walls);
+      this.physics.add.collider(this.player, this.furniture);
+      // Reposition player at entrance
+      const entranceX = this.mapWidth * this.tileSize / 2;
+      const entranceY = (this.mapHeight - 1.5) * this.tileSize;
+      this.player.setPosition(entranceX, entranceY);
+      this.player.setVisible(true);
+    }
+
+    console.log(`[OfficeScene] Layout rebuilt: ${layout}`);
   }
 
   private createNPCs(): void {

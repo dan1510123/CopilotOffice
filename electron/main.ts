@@ -168,6 +168,30 @@ app.whenReady().then(async () => {
     notification.show();
     return { success: true };
   });
+
+  // Office file persistence — save/load office configs to copilot-offices.json
+  const officesFilePath = path.join(process.cwd(), 'copilot-offices.json');
+
+  ipcMain.handle('save-offices', (_event, data: string) => {
+    try {
+      fs.writeFileSync(officesFilePath, data, 'utf8');
+      return { success: true };
+    } catch (e: unknown) {
+      console.warn('[Main] Failed to save offices:', e);
+      return { success: false, error: String(e) };
+    }
+  });
+
+  ipcMain.handle('load-offices', () => {
+    try {
+      if (!fs.existsSync(officesFilePath)) return { success: true, data: null };
+      const data = fs.readFileSync(officesFilePath, 'utf8');
+      return { success: true, data };
+    } catch (e: unknown) {
+      console.warn('[Main] Failed to load offices:', e);
+      return { success: false, error: String(e), data: null };
+    }
+  });
   await relay.spawnServer(__dirname);
   startFileWatcher();
   createWindow();

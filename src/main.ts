@@ -282,17 +282,98 @@ function switchToOffice(officeId: string) {
 }
 
 function showNewOfficeDialog() {
-  const name = prompt('Enter office name:', 'New Office');
-  if (!name) return;
+  // DOM-based dialog — prompt() is blocked in Electron
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.7); z-index: 99999;
+    display: flex; align-items: center; justify-content: center;
+  `;
 
-  const path = prompt('Enter working directory path:', '.');
-  if (!path) return;
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    background: #1e1e2e; border: 2px solid #4488ff; border-radius: 12px;
+    padding: 24px 32px; min-width: 360px; font-family: monospace; color: #eee;
+  `;
+  dialog.innerHTML = `
+    <h3 style="margin: 0 0 16px; color: #4488ff;">+ New Office</h3>
+    <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Office Name</label>
+    <input id="nod-name" type="text" value="New Office" style="
+      width: 100%; padding: 8px; margin-bottom: 12px; background: #2a2a3a; border: 1px solid #555;
+      border-radius: 6px; color: #fff; font-family: monospace; box-sizing: border-box;
+    " />
+    <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Working Directory</label>
+    <input id="nod-path" type="text" value="." style="
+      width: 100%; padding: 8px; margin-bottom: 12px; background: #2a2a3a; border: 1px solid #555;
+      border-radius: 6px; color: #fff; font-family: monospace; box-sizing: border-box;
+    " />
+    <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Layout</label>
+    <div style="display: flex; gap: 8px; margin-bottom: 20px;">
+      <button id="nod-layout-default" style="
+        flex: 1; padding: 10px; background: #4488ff; border: 2px solid #4488ff; border-radius: 6px;
+        color: #fff; cursor: pointer; font-family: monospace; font-size: 13px;
+      ">🏢 Default</button>
+      <button id="nod-layout-fleet" style="
+        flex: 1; padding: 10px; background: #2a2a3a; border: 2px solid #555; border-radius: 6px;
+        color: #ccc; cursor: pointer; font-family: monospace; font-size: 13px;
+      ">🚀 Fleet V-Team</button>
+    </div>
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      <button id="nod-cancel" style="
+        padding: 8px 20px; background: #333; border: 1px solid #555; border-radius: 6px;
+        color: #aaa; cursor: pointer; font-family: monospace;
+      ">Cancel</button>
+      <button id="nod-create" style="
+        padding: 8px 20px; background: #4488ff; border: none; border-radius: 6px;
+        color: #fff; cursor: pointer; font-family: monospace; font-weight: bold;
+      ">Create</button>
+    </div>
+  `;
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
 
-  officeManager.createOffice(name, path);
-  renderOfficeTabs();
-  updateTerminalContent();
+  let selectedLayout: 'default' | 'fleet-vteam' = 'default';
+  const defaultBtn = document.getElementById('nod-layout-default')!;
+  const fleetBtn = document.getElementById('nod-layout-fleet')!;
+  const nameInput = document.getElementById('nod-name') as HTMLInputElement;
 
-  console.log(`[Office] Created new office: ${name} at ${path}`);
+  const selectLayout = (layout: 'default' | 'fleet-vteam') => {
+    selectedLayout = layout;
+    const active = layout === 'default' ? defaultBtn : fleetBtn;
+    const inactive = layout === 'default' ? fleetBtn : defaultBtn;
+    active.style.background = '#4488ff';
+    active.style.borderColor = '#4488ff';
+    active.style.color = '#fff';
+    inactive.style.background = '#2a2a3a';
+    inactive.style.borderColor = '#555';
+    inactive.style.color = '#ccc';
+    if (layout === 'fleet-vteam' && nameInput.value === 'New Office') {
+      nameInput.value = 'Fleet V-Team #1';
+    } else if (layout === 'default' && nameInput.value === 'Fleet V-Team #1') {
+      nameInput.value = 'New Office';
+    }
+  };
+
+  defaultBtn.addEventListener('click', () => selectLayout('default'));
+  fleetBtn.addEventListener('click', () => selectLayout('fleet-vteam'));
+
+  const close = () => overlay.remove();
+  document.getElementById('nod-cancel')!.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  document.getElementById('nod-create')!.addEventListener('click', () => {
+    const name = nameInput.value.trim() || 'New Office';
+    const dir = (document.getElementById('nod-path') as HTMLInputElement).value.trim() || '.';
+    const newOffice = officeManager.createOffice(name, dir, selectedLayout);
+    close();
+    renderOfficeTabs();
+    updateTerminalContent();
+    switchToOffice(newOffice.config.id);
+    console.log(`[Office] Created new office: ${name} at ${dir} (layout: ${selectedLayout})`);
+  });
+
+  nameInput.focus();
+  nameInput.select();
 }
 
 function showEditOfficeDialog(officeId: string) {
@@ -1249,5 +1330,11 @@ phaserGame.events.on('agent:reattached', (agentId: string) => {
 
 // Sync background music UI when music starts
 phaserGame.events.on('bgm:started', onBgmStarted);
+
+// When a Fleet V-Team office is created from a meeting, switch to it
+phaserGame.events.on('fleet:office:created', (officeId: string) => {
+  console.log(`[Office] Fleet V-Team office created: ${officeId}`);
+  switchToOffice(officeId);
+});
 
 console.log('[CopilotOffice] Started - Phaser 3 renderer with multi-office support');

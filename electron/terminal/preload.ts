@@ -70,6 +70,14 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   getAllSessionMeta: (): Promise<Record<string, { title: string }>> => {
     return ipcRenderer.invoke('get-all-session-meta');
   },
+
+  // Office file persistence
+  saveOffices: (data: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('save-offices', data);
+  },
+  loadOffices: (): Promise<{ success: boolean; data: string | null; error?: string }> => {
+    return ipcRenderer.invoke('load-offices');
+  },
   
   // Terminal event listeners
   onTerminalData: (callback: (agentId: string, data: string) => void) => {

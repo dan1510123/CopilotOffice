@@ -1,11 +1,14 @@
 // Office Manager - handles multiple offices with separate sessions
 // Each office has its own working directory and set of agents
 
+export type OfficeLayout = 'default' | 'fleet-vteam';
+
 export interface OfficeConfig {
   id: string;
   name: string;
   workingDirectory: string;
   createdAt: number;
+  layout: OfficeLayout;
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -87,13 +90,14 @@ export class OfficeManager {
   }
   
   // Create a new office
-  createOffice(name: string, workingDirectory: string): OfficeData {
+  createOffice(name: string, workingDirectory: string, layout: OfficeLayout = 'default'): OfficeData {
     const id = `office-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const config: OfficeConfig = {
       id,
       name,
       workingDirectory,
       createdAt: Date.now(),
+      layout,
     };
     
     const data: OfficeData = {
@@ -154,12 +158,13 @@ export class OfficeManager {
   }
   
   // Update office config
-  updateOffice(officeId: string, updates: Partial<Pick<OfficeConfig, 'name' | 'workingDirectory'>>): boolean {
+  updateOffice(officeId: string, updates: Partial<Pick<OfficeConfig, 'name' | 'workingDirectory' | 'layout'>>): boolean {
     const office = this.offices.get(officeId);
     if (!office) return false;
     
     if (updates.name !== undefined) office.config.name = updates.name;
     if (updates.workingDirectory !== undefined) office.config.workingDirectory = updates.workingDirectory;
+    if (updates.layout !== undefined) office.config.layout = updates.layout;
     
     this.saveToStorage();
     this.onOfficesUpdated?.();
@@ -193,34 +198,65 @@ export class OfficeManager {
     return office?.config.workingDirectory || '.';
   }
   
-  // Persistence
+  // Persistence — saves to both localStorage (fast) and copilot-offices.json (durable)
   private saveToStorage(): void {
     const data = {
       currentOfficeId: this._currentOfficeId,
       offices: Array.from(this.offices.values()).map(o => o.config),
     };
     
+    const json = JSON.stringify(data, null, 2);
+
     try {
-      localStorage.setItem('copilot-offices', JSON.stringify(data));
+      localStorage.setItem('copilot-offices', json);
     } catch (e) {
       console.warn('[OfficeManager] Failed to save to localStorage:', e);
+    }
+
+    // Persist to file via copilotBridge (async, fire-and-forget)
+    if (typeof window !== 'undefined' && (window as any).copilotBridge?.saveOffices) {
+      (window as any).copilotBridge.saveOffices(json).catch((e: unknown) => {
+        console.warn('[OfficeManager] Failed to save to file:', e);
+      });
     }
   }
   
   private loadFromStorage(): void {
+    // Load from localStorage first (synchronous, always available)
+    this.loadFromJson(localStorage.getItem('copilot-offices'));
+
+    // Also kick off an async file load — if the file has newer data, it will override
+    if (typeof window !== 'undefined' && (window as any).copilotBridge?.loadOffices) {
+      (window as any).copilotBridge.loadOffices().then((result: { success: boolean; data: string | null }) => {
+        if (result.success && result.data) {
+          console.log('[OfficeManager] Loaded offices from copilot-offices.json');
+          this.loadFromJson(result.data);
+          this.onOfficesUpdated?.();
+        }
+      }).catch((e: unknown) => {
+        console.warn('[OfficeManager] Failed to load from file:', e);
+      });
+    }
+  }
+
+  private loadFromJson(stored: string | null): void {
+    if (!stored) return;
+
     try {
-      const stored = localStorage.getItem('copilot-offices');
-      if (!stored) return;
-      
       const data = JSON.parse(stored);
       
       // Restore offices
       if (Array.isArray(data.offices)) {
         for (const config of data.offices) {
+          // Backfill layout for offices saved before this field existed
+          if (!config.layout) config.layout = 'default';
+
+          // Preserve existing runtime state (agents, tools) if office already loaded
+          const existing = this.offices.get(config.id);
           const officeData: OfficeData = {
             config,
-            agents: new Map(),
-            agentTools: new Map(),
+            agents: existing?.agents ?? new Map(),
+            agentTools: existing?.agentTools ?? new Map(),
           };
           this.offices.set(config.id, officeData);
         }
@@ -233,7 +269,7 @@ export class OfficeManager {
         this._currentOfficeId = this.offices.keys().next().value;
       }
     } catch (e) {
-      console.warn('[OfficeManager] Failed to load from localStorage:', e);
+      console.warn('[OfficeManager] Failed to parse office data:', e);
     }
   }
   

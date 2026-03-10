@@ -261,46 +261,158 @@ Fleet: 7/10 complete  |  12 tools running  |  89 tools completed
 
 ---
 
-## Implementation: What Needs to Change
+## Implementation: Isolated Architecture
 
-### `electron/terminal/server.ts`
+To avoid risk to existing functionality, fleet/sub-agent tracking is built as a **separate, opt-in layer** that sits alongside existing code without modifying it.
 
-Add explicit handlers in the event callback (currently around line 295):
+### New Files Only (No Existing Code Modified)
+
+```
+electron/terminal/
+  ├─ server.ts              ← UNCHANGED
+  ├─ ipc-relay.ts           ← UNCHANGED
+  ├─ preload.ts             ← UNCHANGED (except 1 thin registration block)
+  ├─ protocol.ts            ← UNCHANGED
+  ├─ events-watcher.ts      ← UNCHANGED
+  └─ fleet-events.ts        ← NEW: fleet event processing + IPC
+
+src/meeting/
+  ├─ types.ts               ← UNCHANGED
+  ├─ planParser.ts          ← UNCHANGED
+  ├─ planApproval.ts        ← UNCHANGED
+  └─ fleetTracker.ts        ← NEW: renderer-side fleet state machine
+```
+
+### `electron/terminal/fleet-events.ts` (NEW)
+
+This module registers a **secondary event listener** on the existing server message bus. It doesn't touch `server.ts` internals — it listens to the same IPC channel that already forwards raw `copilot-event` messages.
 
 ```typescript
-else if (event.type === 'subagent.started') {
-  send({ type: 'copilot-subagent-started', agentId, data: event.data });
-} else if (event.type === 'subagent.completed') {
-  send({ type: 'copilot-subagent-completed', agentId, data: event.data });
-} else if (event.type === 'subagent.failed') {
-  send({ type: 'copilot-subagent-failed', agentId, data: event.data });
-} else if (event.type === 'system.notification') {
-  send({ type: 'copilot-system-notification', agentId, data: event.data });
-} else if (event.type === 'session.mode_changed') {
-  send({ type: 'copilot-mode-changed', agentId, data: event.data });
-} else if (event.type === 'session.plan_changed') {
-  send({ type: 'copilot-plan-changed', agentId, data: event.data });
+// fleet-events.ts — Standalone fleet event processor
+// Hooks into existing copilot-event passthrough (no server.ts changes)
+
+import { ipcMain } from 'electron';
+
+interface SubAgentEvent {
+  agentId: string;
+  toolCallId: string;
+  agentName: string;
+  agentDisplayName: string;
+  taskDescription?: string;
+  taskPrompt?: string;
+  error?: string;
+  timestamp: string;
+}
+
+export function registerFleetEvents(mainWindow: BrowserWindow) {
+  // Listen to the EXISTING copilot-event channel that server.ts already emits
+  // Also listen to copilot-tool-start which already fires for all tool calls
+  // No changes to server.ts needed — we're a passive observer
+
+  ipcMain.on('fleet:subscribe', (event, agentId: string) => {
+    // Renderer opts in to fleet tracking for a specific agent
+    // We start forwarding fleet-specific events to a separate channel
+  });
 }
 ```
 
-**Important:** These events should fire regardless of viewer attachment (unlike the generic `copilot-event` passthrough which only fires when `activeAgentViewers.has(agentId)`).
+**Alternative approach (simpler):** Since `onCopilotEvent` already forwards ALL raw events when a viewer is attached, the renderer can do all fleet processing client-side — no Electron changes needed at all for v1.
 
-### `electron/terminal/protocol.ts`
+### `src/meeting/fleetTracker.ts` (NEW)
 
-Add new server→main message types for each new event.
-
-### `electron/terminal/preload.ts`
-
-Expose new listeners:
+Pure renderer-side state machine. Listens to existing `copilotBridge.onCopilotEvent()` and `copilotBridge.onCopilotToolStart()` — both already available.
 
 ```typescript
-onCopilotSubagentStarted(cb: (agentId: string, data: SubagentStartedData) => void)
-onCopilotSubagentCompleted(cb: (agentId: string, data: SubagentCompletedData) => void)
-onCopilotSubagentFailed(cb: (agentId: string, data: SubagentFailedData) => void)
-onCopilotSystemNotification(cb: (agentId: string, data: { content: string }) => void)
-onCopilotModeChanged(cb: (agentId: string, data: { previousMode: string, newMode: string }) => void)
-onCopilotPlanChanged(cb: (agentId: string, data: { operation: string }) => void)
+// fleetTracker.ts — Renderer-side fleet state machine
+// Uses ONLY existing copilotBridge APIs — no new IPC channels needed
+
+export class FleetTracker {
+  private subAgents = new Map<string, SubAgentTracker>();
+  private activeToolCount = 0;
+  private totalToolsCompleted = 0;
+  private listeners: FleetEventListener[] = [];
+
+  constructor(private agentId: string) {}
+
+  /** Call this once to start tracking. Uses existing bridge APIs. */
+  startTracking() {
+    // These APIs already exist and work:
+    window.copilotBridge.onCopilotEvent(this.agentId, (agentId, event) => {
+      this.processEvent(event);
+    });
+  }
+
+  private processEvent(event: CopilotEvent) {
+    switch (event.type) {
+      case 'tool.execution_start':
+        if (event.data.toolName === 'task') {
+          // Sub-agent dispatched — extract description from arguments
+          this.createSubAgent(event.data.toolCallId, event.data.arguments);
+        }
+        this.activeToolCount++;
+        break;
+      case 'tool.execution_complete':
+        this.activeToolCount--;
+        this.totalToolsCompleted++;
+        break;
+      case 'subagent.started':
+        this.updateSubAgent(event.data.toolCallId, 'running');
+        break;
+      case 'subagent.completed':
+        this.updateSubAgent(event.data.toolCallId, 'completed');
+        break;
+      case 'subagent.failed':
+        this.updateSubAgent(event.data.toolCallId, 'failed', event.data.error);
+        break;
+      case 'system.notification':
+        this.handleNotification(event.data.content);
+        break;
+    }
+    this.notifyListeners();
+  }
+
+  /** Subscribe to fleet state changes */
+  onUpdate(cb: FleetEventListener) { ... }
+
+  /** Get current fleet state snapshot */
+  getState(): FleetState { ... }
+
+  /** Clean up listeners */
+  dispose() { ... }
+}
 ```
+
+### Integration Point
+
+The `FleetTracker` is instantiated by `FleetDashboard.ts` (also new) or directly in `main.ts` when a fleet is active. It doesn't modify any existing code paths — it's additive only.
+
+```typescript
+// In main.ts or FleetDashboard.ts (when fleet starts):
+const tracker = new FleetTracker('architect');  // track Arthur's sub-agents
+tracker.startTracking();
+tracker.onUpdate((state) => {
+  updateFleetDashboardUI(state);  // new UI, doesn't touch existing dashboard
+});
+```
+
+### Risk Assessment
+
+| Concern | Mitigation |
+|---------|-----------|
+| Breaking existing terminal flow | FleetTracker is a passive observer — reads events, never writes |
+| Breaking existing event handlers | Uses `onCopilotEvent` which already works; doesn't modify server.ts handlers |
+| Breaking existing IPC | No new IPC channels in v1 — all processing happens renderer-side |
+| Breaking existing UI | FleetDashboard is a new DOM element, toggled on only during fleet mode |
+
+### Caveat: `onCopilotEvent` Requires Viewer Attached
+
+The raw `copilot-event` passthrough in `server.ts` only fires when `activeAgentViewers.has(agentId)`. For fleet tracking to work without the terminal visible, we'd need ONE small change in `server.ts`:
+
+**Option A (minimal server.ts change):** Add fleet events to the "always send" list alongside `copilot-tool-start`, `copilot-turn-end`, etc. These already fire without a viewer.
+
+**Option B (no server.ts change):** Call `terminalAttach(agentId)` silently when fleet starts — this adds the agent to `activeAgentViewers` even without showing the terminal UI. The scrollback data is discarded but events flow.
+
+Option B is preferred for v1 — zero changes to `server.ts`.
 
 ---
 
