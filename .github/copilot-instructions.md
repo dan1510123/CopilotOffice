@@ -101,3 +101,8 @@ npm run dev          # Watch mode with hot reload
 - DOM z-index layers: status bar (100), terminal overlay (10000), sprite card (10001)
 - Phaser depth layers via `Depths.*` constants in `src/config/depths.ts` — use `ySortDepth()` for y-sorted objects
 - Feature flags for optional content (top of `OfficeScene.ts`)
+
+## Known Limitations
+
+### Fleet V-Team: EventsWatcher key mismatch after session transfer
+When Arthur's terminal is transferred from the source office to a fleet office (via `transferSession`), the server's `EventsWatcher` callback closure captures the **original** composite key (`office-0:architect`). The `copilot-event` channel (events.jsonl data) is only forwarded when `activeAgentViewers.has(ck)` — but the FleetTracker attaches with the **new** fleet office key. **Workaround:** FleetTracker attaches using the source officeId instead of the fleet officeId. This means the FleetTracker registers as a viewer on the original key, matching the closure. If this workaround is removed, `copilot-event` data (sub-agent lifecycle events) will silently stop flowing. The `copilot-tool-start`/`copilot-tool-complete` channels are **not** affected (they bypass the viewer check).

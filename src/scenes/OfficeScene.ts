@@ -84,6 +84,7 @@ export class OfficeScene extends Phaser.Scene {
   private pendingWalkIns: number = 0;
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
+  private fleetSourceOfficeId: string | null = null;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -334,6 +335,12 @@ export class OfficeScene extends Phaser.Scene {
     }, this);
 
     // ── Fleet visualizer events ───────────────────────────────────────────
+
+    // Receive the source office ID for FleetTracker attach (before office switch)
+    this.game.events.on('fleet:source-office', (sourceOfficeId: string) => {
+      this.fleetSourceOfficeId = sourceOfficeId;
+      console.log(`[OfficeScene] Fleet source office set: ${sourceOfficeId}`);
+    }, this);
 
     // Seat assignment: sub-agent count determined, light up assigned agents' badges
     this.game.events.on('fleet:assign', (data: { assignments: Array<{ agentId: string; seatIndex: number; toolCallId: string; taskDescription: string }> }) => {
@@ -1466,13 +1473,15 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private async initFleetPipeline(): Promise<void> {
-    const officeId = officeManager.currentOfficeId;
-    if (!officeId) {
-      console.error('[OfficeScene] No current officeId for fleet pipeline');
+    // Use the source office ID (where terminal was started) for event watcher attach.
+    // The server's EventsWatcher checks activeAgentViewers with the ORIGINAL composite key.
+    const attachOfficeId = this.fleetSourceOfficeId || officeManager.currentOfficeId;
+    if (!attachOfficeId) {
+      console.error('[OfficeScene] No officeId for fleet pipeline');
       return;
     }
     try {
-      this.fleetTracker = new FleetTracker('architect', officeId);
+      this.fleetTracker = new FleetTracker('architect', attachOfficeId);
       await this.fleetTracker.startTracking();
 
       this.fleetVisualizer = new FleetVisualizer(
@@ -1482,7 +1491,7 @@ export class OfficeScene extends Phaser.Scene {
       );
       this.fleetVisualizer.start(this);
 
-      console.log(`[OfficeScene] Fleet pipeline initialized for office ${officeId}`);
+      console.log(`[OfficeScene] Fleet pipeline initialized (attach office: ${attachOfficeId})`);
     } catch (e) {
       console.error('[OfficeScene] Failed to init fleet pipeline:', e);
     }
@@ -1497,6 +1506,7 @@ export class OfficeScene extends Phaser.Scene {
       this.fleetTracker.dispose();
       this.fleetTracker = null;
     }
+    this.fleetSourceOfficeId = null;
   }
 
   private createNPCs(): void {

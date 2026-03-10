@@ -1212,7 +1212,10 @@ phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string
     console.error('[Fleet] Error sending /fleet command:', e);
   }
 
-  // 4. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
+  // 4. Tell OfficeScene which office the terminal originated from (for FleetTracker attach)
+  phaserGame?.events.emit('fleet:source-office', data.sourceOfficeId);
+
+  // 5. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
   switchToOffice(officeId);
 });
 
