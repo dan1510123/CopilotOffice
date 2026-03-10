@@ -562,10 +562,9 @@ export class OfficeScene extends Phaser.Scene {
         laptopDirection: 'up',
       });
 
-      // Decorative stools: 2 above (tucked closer for 3/4 view) and 2 below
+      // Decorative stools: 2 above (tucked closer for 3/4 view)
       const stoolTuck = this.tileSize * 0.4; // scoot above-stools closer to table
       const chairAboveY = (tableStartRow - 1) * this.tileSize + this.tileSize / 2 + stoolTuck;
-      const chairBelowY = (tableStartRow + 2) * this.tileSize + this.tileSize / 2;
       for (let i = 0; i < 2; i++) {
         const cx = (table.startCol + i * 2) * this.tileSize + this.tileSize / 2;
         // Skip the agent's stool position (already placed above)
@@ -573,9 +572,31 @@ export class OfficeScene extends Phaser.Scene {
           addDecor(cx, chairAboveY, 'stool')
             .setDepth(Depths.FLOOR_DETAIL);
         }
-        addDecor(cx, chairBelowY, 'stool')
-          .setDepth(Depths.FLOOR_DETAIL);
       }
+
+      // Side stools: left and right of desk, at bottom row (row 5), facing inward
+      // These are tracked agent seats for future agent assignment
+      const sideStoolY = (tableStartRow + 1) * this.tileSize + this.tileSize / 2;
+      const leftStoolX = (table.startCol - 1) * this.tileSize + this.tileSize / 2;
+      const rightStoolX = (table.startCol + 3) * this.tileSize + this.tileSize / 2;
+
+      const leftStool = addDecor(leftStoolX, sideStoolY, 'stool')
+        .setDepth(Depths.FLOOR_DETAIL);
+      this.desks.push({
+        sprite: leftStool,
+        agentId: `unassigned-left-${table.startCol}`,
+        x: leftStoolX,
+        y: sideStoolY,
+      });
+
+      const rightStool = addDecor(rightStoolX, sideStoolY, 'stool')
+        .setDepth(Depths.FLOOR_DETAIL);
+      this.desks.push({
+        sprite: rightStool,
+        agentId: `unassigned-right-${table.startCol}`,
+        x: rightStoolX,
+        y: sideStoolY,
+      });
     });
 
     // === CORNER DESKS (Arthur bottom-left, Alice bottom-right) ===
@@ -737,16 +758,16 @@ export class OfficeScene extends Phaser.Scene {
     g.fillStyle(0xdaa520, 1);
     g.fillRect(leftX + 6, doorY, 4 * ts - 12, 3);
 
-    g.setDepth(Depths.BACKGROUND);
+    g.setDepth(Depths.WALLS);
   }
 
   private createEntranceRug(): void {
     const ts = this.tileSize;
     const rugWidthTiles = 8;
     const rugX = (this.mapWidth / 2 - rugWidthTiles / 2) * ts;
-    const rugY = (this.mapHeight - 2.4) * ts;
+    const rugY = (this.mapHeight - 2.2) * ts;
     const rugW = rugWidthTiles * ts;
-    const rugH = ts * 1.4;
+    const rugH = ts * 1.0;
 
     const g = this.add.graphics();
 
