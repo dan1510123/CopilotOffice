@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { EventsWatcher, CopilotEvent, formatToolStatus } from './events-watcher';
-import type { MainToServer, ServerToMain } from './protocol';
+import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta } from './protocol';
 
 // ── node-pty ────────────────────────────────────────────────────
 
@@ -41,6 +41,7 @@ const agentScrollbackBytes: Map<string, number> = new Map();
 const SESSION_FILE = path.join(process.cwd(), 'copilot-office-sessions.json');
 let agentSessionIds: Map<string, string> = new Map();
 let agentSessionHistory: Map<string, string[]> = new Map();
+let agentSessionMeta: Map<string, { title: string; description: string }> = new Map();
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -78,14 +79,18 @@ async function loadSessionIds(): Promise<void> {
         agentSessionHistory = new Map(
           Object.entries(parsed.history || {}).map(([k, v]) => [k, v as string[]])
         );
+        agentSessionMeta = new Map(
+          Object.entries(parsed.metadata || {}).map(([k, v]) => [k, v as { title: string; description: string }])
+        );
       } else {
         // Legacy flat format: { agentId: sessionId }
         agentSessionIds = new Map(Object.entries(parsed));
         agentSessionHistory = new Map();
+        agentSessionMeta = new Map();
         // Persist migration immediately
         await saveSessionIds();
       }
-      console.log('[TermServer] Loaded saved sessions:', agentSessionIds.size, 'history entries:', agentSessionHistory.size);
+      console.log('[TermServer] Loaded saved sessions:', agentSessionIds.size, 'history entries:', agentSessionHistory.size, 'metadata entries:', agentSessionMeta.size);
     }
   } catch (e) {
     console.error('[TermServer] Failed to load session IDs:', e);
@@ -97,6 +102,7 @@ async function saveSessionIds(): Promise<void> {
     const data = {
       current: Object.fromEntries(agentSessionIds),
       history: Object.fromEntries(agentSessionHistory),
+      metadata: Object.fromEntries(agentSessionMeta),
     };
     await fs.promises.writeFile(SESSION_FILE, JSON.stringify(data, null, 2));
   } catch (e) {
@@ -450,6 +456,8 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       agentScrollbackBuffers.delete(msg.agentId);
       agentScrollbackBytes.delete(msg.agentId);
       activeAgentViewers.delete(msg.agentId);
+      // Clear session metadata
+      agentSessionMeta.delete(msg.agentId);
       // Archive old session ID and generate new one (but don't start PTY)
       archiveSessionId(msg.agentId);
       const newSessionId = crypto.randomUUID();
@@ -479,6 +487,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       killAllPtyProcesses();
       agentScrollbackBuffers.clear();
       agentScrollbackBytes.clear();
+      agentSessionMeta.clear();
       // Regenerate a fresh GUID for every agent that had a session
       for (const agentId of agentSessionIds.keys()) {
         agentSessionIds.set(agentId, crypto.randomUUID());
@@ -508,6 +517,28 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         statuses[agentId] = { alive, ready };
       }
       send({ type: 'response', requestId: msg.requestId, result: statuses });
+      break;
+    }
+
+    case 'set-session-meta': {
+      const { agentId, meta } = msg as MsgSetSessionMeta;
+      const existing = agentSessionMeta.get(agentId) || { title: '', description: '' };
+      if (meta.title !== undefined) existing.title = meta.title;
+      if (meta.description !== undefined) existing.description = meta.description;
+      agentSessionMeta.set(agentId, existing);
+      await saveSessionIds();
+      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
+    case 'get-session-meta': {
+      const meta = agentSessionMeta.get((msg as MsgGetSessionMeta).agentId) || null;
+      send({ type: 'response', requestId: msg.requestId, result: meta });
+      break;
+    }
+
+    case 'get-all-session-meta': {
+      send({ type: 'response', requestId: msg.requestId, result: Object.fromEntries(agentSessionMeta) });
       break;
     }
 

@@ -100,10 +100,20 @@ export class TerminalOverlay {
 
     // Update header with inception indicator for admin
     const inceptionBadge = agent.id === 'admin' ? ' 🎭 INCEPTION MODE' : '';
+    // Fetch session title for header
+    let sessionTitleHtml = '';
+    if (window.copilotBridge?.getSessionMeta) {
+      try {
+        const meta = await window.copilotBridge.getSessionMeta(agent.id);
+        if (meta?.title) {
+          sessionTitleHtml = ` <span style="color: #aab; font-size: 15px;">— ${meta.title.replace(/</g, '&lt;')}</span>`;
+        }
+      } catch (_) { /* ignore */ }
+    }
     if (this.headerElement) {
       this.headerElement.innerHTML = `
         <div style="display: flex; align-items: center; gap: 15px;">
-          <span style="color: #00ff88; font-weight: bold; font-size: 18px;">💬 Talking to ${agent.name}</span>
+          <span style="color: #00ff88; font-weight: bold; font-size: 18px;">💬 Talking to ${agent.name}${sessionTitleHtml}</span>
           <span style="color: #ff88ff; font-size: 16px;">${inceptionBadge}</span>
           <span style="color: #888; font-size: 14px;">${agent.description}</span>
         </div>

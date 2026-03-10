@@ -291,5 +291,17 @@ export class TerminalRelay {
     ipcMain.handle('query-agent-statuses', () =>
       this.request({ type: 'query-agent-statuses', requestId: this.id() })
     );
+
+    ipcMain.handle('set-session-meta', (_event, agentId: string, meta: { title?: string; description?: string }) =>
+      this.request({ type: 'set-session-meta', requestId: this.id(), agentId, meta })
+    );
+
+    ipcMain.handle('get-session-meta', (_event, agentId: string) =>
+      this.request({ type: 'get-session-meta', requestId: this.id(), agentId })
+    );
+
+    ipcMain.handle('get-all-session-meta', () =>
+      this.request({ type: 'get-all-session-meta', requestId: this.id() })
+    );
   }
 }

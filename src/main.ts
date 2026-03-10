@@ -332,6 +332,57 @@ statusBar.style.cssText = `
 `;
 document.body.appendChild(statusBar);
 
+// ── Background Music Volume Control ──────────────────────────────
+const volumeControl = document.createElement('div');
+volumeControl.style.cssText = 'display: flex; align-items: center; gap: 6px; margin-left: auto;';
+
+const speakerBtn = document.createElement('button');
+speakerBtn.textContent = '🔊';
+speakerBtn.title = 'Mute/Unmute';
+speakerBtn.style.cssText = 'background: none; border: none; cursor: pointer; font-size: 18px; padding: 2px 4px; line-height: 1;';
+
+const volumeSlider = document.createElement('input');
+volumeSlider.type = 'range';
+volumeSlider.min = '0';
+volumeSlider.max = '100';
+volumeSlider.value = String(Math.round(parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5') * 100));
+volumeSlider.title = 'Volume';
+volumeSlider.style.cssText = 'width: 90px; cursor: pointer; accent-color: #00ff88;';
+
+let bgmMuted = localStorage.getItem('copilot-office-bgm-muted') !== 'false';
+if (bgmMuted) speakerBtn.textContent = '🔇';
+
+function updateSpeakerIcon(vol: number, muted: boolean): void {
+  if (muted || vol === 0) speakerBtn.textContent = '🔇';
+  else if (vol < 0.4) speakerBtn.textContent = '🔉';
+  else speakerBtn.textContent = '🔊';
+}
+
+volumeSlider.addEventListener('input', () => {
+  const vol = parseInt(volumeSlider.value, 10) / 100;
+  localStorage.setItem('copilot-office-bgm-volume', String(vol));
+  updateSpeakerIcon(vol, bgmMuted);
+  phaserGameRef?.events.emit('bgm:volume', vol);
+});
+
+speakerBtn.addEventListener('click', () => {
+  bgmMuted = !bgmMuted;
+  localStorage.setItem('copilot-office-bgm-muted', String(bgmMuted));
+  updateSpeakerIcon(parseInt(volumeSlider.value, 10) / 100, bgmMuted);
+  phaserGameRef?.events.emit('bgm:mute', bgmMuted);
+});
+
+volumeControl.appendChild(speakerBtn);
+volumeControl.appendChild(volumeSlider);
+statusBar.appendChild(volumeControl);
+
+// Sync slider when music starts (in case OfficeScene restores saved state)
+function onBgmStarted(state: { volume: number; muted: boolean }): void {
+  volumeSlider.value = String(Math.round(state.volume * 100));
+  bgmMuted = state.muted;
+  updateSpeakerIcon(state.volume, state.muted);
+}
+
 // ── Notifications ────────────────────────────────────────────────
 const toastManager = new ToastNotificationManager(document.body);
 
@@ -392,12 +443,30 @@ const notificationSettingsPanel = new NotificationSettingsPanel(notificationServ
 
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
+let cachedSessionMeta: Record<string, { title: string; description: string }> = {};
+let sessionMetaDirty = true;
+
+function invalidateSessionMeta() {
+  sessionMetaDirty = true;
+  updateTerminalContent();
+}
+
+async function refreshSessionMetaCache(): Promise<void> {
+  if (!sessionMetaDirty) return;
+  try {
+    cachedSessionMeta = await window.copilotBridge.getAllSessionMeta();
+  } catch {
+    cachedSessionMeta = {};
+  }
+  sessionMetaDirty = false;
+}
 
 function updateTerminalContent() {
   scheduleTerminalContentUpdate();
 }
 
-function updateTerminalContentNow() {
+async function updateTerminalContentNow() {
+  await refreshSessionMetaCache();
   const agentTools = getCurrentAgentTools();
   const office = officeManager.currentOffice;
 
@@ -537,6 +606,54 @@ function updateTerminalContentNow() {
         📋 ${taskSummary}
       </div>` : '';
 
+    // ── Session Metadata Panel (right side) ──
+    const meta = cachedSessionMeta[agent.id];
+    const hasSession = liveStatus?.state === 'active';
+    const metaTitle = meta?.title || '';
+    const metaDesc = meta?.description || '';
+    const sessionPanelHtml = hasSession ? `
+      <div class="session-meta-panel" data-agent="${agent.id}" style="
+        flex-shrink: 0; width: 180px;
+        border-left: 1px solid #252540;
+        padding-left: 14px;
+        display: flex; flex-direction: column; gap: 6px;
+        align-self: stretch;
+        justify-content: center;
+      ">
+        <div style="font-size: 9px; color: #3a3a5a; text-transform: uppercase; letter-spacing: 0.5px;">Session Info</div>
+        <div class="session-title-display" data-agent="${agent.id}" style="
+          font-weight: bold; color: ${metaTitle ? '#ccd' : '#444'}; font-size: 13px;
+          cursor: text; min-height: 18px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to add title'}">${metaTitle || 'No title'}</div>
+        <div class="session-desc-display" data-agent="${agent.id}" style="
+          color: ${metaDesc ? '#778' : '#333'}; font-size: 11px;
+          cursor: text; min-height: 14px;
+          overflow: hidden; text-overflow: ellipsis;
+          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        " title="${metaDesc ? metaDesc.replace(/"/g, '&quot;') : 'Click to add description'}">${metaDesc || 'No description'}</div>
+        <div style="display: flex; justify-content: flex-end; margin-top: 2px;">
+          <button class="session-edit-btn" data-agent="${agent.id}" style="
+            background: none; border: 1px solid #333; color: #667;
+            font-size: 11px; padding: 2px 8px; border-radius: 4px;
+            cursor: pointer; transition: color 0.15s, border-color 0.15s;
+          " title="Edit session title and description">✏️</button>
+        </div>
+      </div>
+    ` : `
+      <div style="
+        flex-shrink: 0; width: 180px;
+        border-left: 1px solid #1a1a30;
+        padding-left: 14px;
+        display: flex; flex-direction: column;
+        align-self: stretch;
+        justify-content: center;
+        opacity: 0.4;
+      ">
+        <div style="font-size: 11px; color: #444; font-style: italic;">No active session</div>
+      </div>
+    `;
+
     html += `
       <div class="agent-card" data-agent="${agent.id}" style="
         background: ${bgColor};
@@ -595,6 +712,7 @@ function updateTerminalContentNow() {
           ${toolPipelineHtml}
           ${activityLogHtml}
         </div>
+        ${sessionPanelHtml}
       </div>
     `;
   }
@@ -632,7 +750,34 @@ function drawOverviewSprites() {
 
 function setupTerminalClickHandler() {
   terminalContent.addEventListener('click', (e) => {
-    const card = (e.target as HTMLElement).closest('.agent-card');
+    const target = e.target as HTMLElement;
+
+    // Handle session meta panel interactions (prevent card open)
+    const metaPanel = target.closest('.session-meta-panel');
+    if (metaPanel) {
+      e.stopPropagation();
+      const agentId = (metaPanel as HTMLElement).dataset.agent;
+      if (!agentId) return;
+
+      // Edit button — open both fields
+      if (target.closest('.session-edit-btn')) {
+        startSessionMetaEdit(agentId, 'both');
+        return;
+      }
+      // Click on title
+      if (target.closest('.session-title-display')) {
+        startSessionMetaEdit(agentId, 'title');
+        return;
+      }
+      // Click on description
+      if (target.closest('.session-desc-display')) {
+        startSessionMetaEdit(agentId, 'description');
+        return;
+      }
+      return;
+    }
+
+    const card = target.closest('.agent-card');
     if (card) {
       const agentId = (card as HTMLElement).dataset.agent ?? null;
       if (!agentId) return;
@@ -643,6 +788,82 @@ function setupTerminalClickHandler() {
       updateTerminalContent();
       // Open the agent's terminal overlay via OfficeScene
       phaserGame?.events.emit('open:agent:terminal', agentId);
+    }
+  });
+}
+
+function startSessionMetaEdit(agentId: string, field: 'title' | 'description' | 'both') {
+  const panel = terminalContent.querySelector(`.session-meta-panel[data-agent="${agentId}"]`);
+  if (!panel) return;
+
+  const meta = cachedSessionMeta[agentId] || { title: '', description: '' };
+
+  const titleEl = panel.querySelector('.session-title-display') as HTMLElement | null;
+  const descEl = panel.querySelector('.session-desc-display') as HTMLElement | null;
+
+  if ((field === 'title' || field === 'both') && titleEl) {
+    replaceWithInput(titleEl, meta.title, 'Session title...', 60, async (value) => {
+      await window.copilotBridge.setSessionMeta(agentId, { title: value });
+      invalidateSessionMeta();
+    });
+  }
+
+  if ((field === 'description' || field === 'both') && descEl) {
+    replaceWithInput(descEl, meta.description, 'Session description...', 120, async (value) => {
+      await window.copilotBridge.setSessionMeta(agentId, { description: value });
+      invalidateSessionMeta();
+    });
+  }
+}
+
+function replaceWithInput(
+  el: HTMLElement,
+  currentValue: string,
+  placeholder: string,
+  maxLength: number,
+  onSave: (value: string) => Promise<void>
+) {
+  // Don't double-activate
+  if (el.querySelector('input')) return;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentValue;
+  input.placeholder = placeholder;
+  input.maxLength = maxLength;
+  input.style.cssText = `
+    width: 100%; background: #1a1a30; border: 1px solid #4a4a7a;
+    color: #dde; font-size: ${el.style.fontSize || '12px'};
+    font-family: inherit; padding: 2px 4px; border-radius: 3px;
+    outline: none; box-sizing: border-box;
+  `;
+
+  const originalContent = el.innerHTML;
+  el.innerHTML = '';
+  el.appendChild(input);
+  input.focus();
+  input.select();
+
+  let saved = false;
+  const save = async () => {
+    if (saved) return;
+    saved = true;
+    const value = input.value.trim();
+    if (value !== currentValue) {
+      await onSave(value);
+    } else {
+      el.innerHTML = originalContent;
+    }
+  };
+
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      input.blur();
+    } else if (e.key === 'Escape') {
+      saved = true;
+      el.innerHTML = originalContent;
     }
   });
 }
@@ -1033,5 +1254,8 @@ phaserGame.events.on('agent:reattached', (agentId: string) => {
   console.log(`[Office] Agent reattached: ${agentId}`);
   syncAgentStatuses();
 });
+
+// Sync background music UI when music starts
+phaserGame.events.on('bgm:started', onBgmStarted);
 
 console.log('[CopilotOffice] Started - Phaser 3 renderer with multi-office support');

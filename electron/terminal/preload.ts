@@ -60,6 +60,17 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('query-agent-statuses');
   },
   
+  // Session metadata
+  setSessionMeta: (agentId: string, meta: { title?: string; description?: string }): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('set-session-meta', agentId, meta);
+  },
+  getSessionMeta: (agentId: string): Promise<{ title: string; description: string } | null> => {
+    return ipcRenderer.invoke('get-session-meta', agentId);
+  },
+  getAllSessionMeta: (): Promise<Record<string, { title: string; description: string }>> => {
+    return ipcRenderer.invoke('get-all-session-meta');
+  },
+  
   // Terminal event listeners
   onTerminalData: (callback: (agentId: string, data: string) => void) => {
     ipcRenderer.on('terminal-data', (_event, agentId, data) => callback(agentId, data));
@@ -142,6 +153,9 @@ declare global {
       clearSessionHistory: (agentId: string) => Promise<{ success: boolean }>;
       listActiveTerminals: () => Promise<string[]>;
       queryAgentStatuses: () => Promise<Record<string, { alive: boolean; ready: boolean }>>;
+      setSessionMeta: (agentId: string, meta: { title?: string; description?: string }) => Promise<{ success: boolean }>;
+      getSessionMeta: (agentId: string) => Promise<{ title: string; description: string } | null>;
+      getAllSessionMeta: () => Promise<Record<string, { title: string; description: string }>>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;

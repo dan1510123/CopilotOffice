@@ -69,6 +69,7 @@ export class OfficeScene extends Phaser.Scene {
   private nearestExitDoor: ExitDoor | null = null;
   private exitPrompt!: Phaser.GameObjects.Text;
   private inputManager!: InputManager;
+  private bgMusic: Phaser.Sound.BaseSound | null = null;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -115,6 +116,9 @@ export class OfficeScene extends Phaser.Scene {
 
     // Create terminal overlay (replaces dialog box)
     this.terminalOverlay = new TerminalOverlay(this, this.inputManager);
+
+    // Start background music
+    this.startBackgroundMusic();
 
     // Handle return from MeetingScene
     this.events.on('wake', (_sys: Phaser.Scenes.Systems, data?: { plan?: MeetingPlan }) => {
@@ -340,11 +344,46 @@ export class OfficeScene extends Phaser.Scene {
     // Initialise InputManager state to "game" (the default mode at startup)
     this.inputManager.switchToGame('OfficeScene.create() initial state');
 
+    // Listen for volume changes from DOM
+    this.game.events.on('bgm:volume', (volume: number) => {
+      if (this.bgMusic && 'setVolume' in this.bgMusic) {
+        (this.bgMusic as Phaser.Sound.WebAudioSound).setVolume(volume);
+      }
+    });
+
+    this.game.events.on('bgm:mute', (muted: boolean) => {
+      if (this.bgMusic && 'setMute' in this.bgMusic) {
+        (this.bgMusic as Phaser.Sound.WebAudioSound).setMute(muted);
+      }
+    });
+
     // Clean up InputManager when the scene shuts down
     this.events.on('shutdown', () => {
       console.log('[OfficeScene] shutdown — destroying InputManager');
+      this.bgMusic?.stop();
+      this.game.events.off('bgm:volume');
+      this.game.events.off('bgm:mute');
       this.inputManager.destroy();
     }, this);
+  }
+
+  private startBackgroundMusic(): void {
+    try {
+      const savedVolume = parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5');
+      const savedMuted = localStorage.getItem('copilot-office-bgm-muted') !== 'false';
+      this.bgMusic = this.sound.add('bgMusic', {
+        loop: true,
+        volume: savedVolume,
+      });
+      if (savedMuted && 'setMute' in this.bgMusic) {
+        (this.bgMusic as Phaser.Sound.WebAudioSound).setMute(true);
+      }
+      this.bgMusic.play();
+      this.game.events.emit('bgm:started', { volume: savedVolume, muted: savedMuted });
+      console.log('[OfficeScene] Background music started');
+    } catch (e) {
+      console.warn('[OfficeScene] Failed to start background music:', e);
+    }
   }
 
   private createOfficeLayout(): void {

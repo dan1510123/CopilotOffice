@@ -99,6 +99,24 @@ export interface MsgQueryAgentStatuses {
   requestId: string;
 }
 
+export interface MsgSetSessionMeta {
+  type: 'set-session-meta';
+  requestId: string;
+  agentId: string;
+  meta: { title?: string; description?: string };
+}
+
+export interface MsgGetSessionMeta {
+  type: 'get-session-meta';
+  requestId: string;
+  agentId: string;
+}
+
+export interface MsgGetAllSessionMeta {
+  type: 'get-all-session-meta';
+  requestId: string;
+}
+
 export type MainToServer =
   | MsgStart
   | MsgWrite
@@ -115,7 +133,10 @@ export type MainToServer =
   | MsgGetSessionHistory
   | MsgClearSessionHistory
   | MsgListActive
-  | MsgQueryAgentStatuses;
+  | MsgQueryAgentStatuses
+  | MsgSetSessionMeta
+  | MsgGetSessionMeta
+  | MsgGetAllSessionMeta;
 
 // ── Server → Main ───────────────────────────────────────────────
 
