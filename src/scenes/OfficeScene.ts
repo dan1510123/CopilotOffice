@@ -523,12 +523,14 @@ export class OfficeScene extends Phaser.Scene {
     communalTables.forEach(table => {
       const agent = AGENTS.find(a => a.id === table.agentId)!;
 
-      // All 6 desks in the 3×2 grid are plain furniture
+      // All 6 desks in the 3×2 grid use seamless tile variants
       for (let col = 0; col < 3; col++) {
         for (let row = 0; row < 2; row++) {
           const dx = (table.startCol + col) * this.tileSize + this.tileSize / 2;
           const dy = (tableStartRow + row) * this.tileSize + this.tileSize / 2;
-          addFurniture(dx, dy, 'desk', {
+          const rowKey = row === 0 ? 't' : 'b';
+          const colKey = col === 0 ? 'l' : col === 2 ? 'r' : 'm';
+          addFurniture(dx, dy, `desk-${rowKey}${colKey}`, {
             bodyWidth: deskBodyW, bodyHeight: deskBodyH,
             bodyOffsetX: deskBodyOffX, bodyOffsetY: deskBodyOffY,
             depthSortY: dy,
@@ -583,7 +585,8 @@ export class OfficeScene extends Phaser.Scene {
     const bossDeskY = 2 * this.tileSize + this.tileSize/2;
     
     for (let i = -1; i <= 1; i++) {
-      addFurniture(bossDeskX + i * this.tileSize, bossDeskY, 'desk', {
+      const bossPos = i === -1 ? 'l' : i === 1 ? 'r' : 'm';
+      addFurniture(bossDeskX + i * this.tileSize, bossDeskY, `boss-desk-${bossPos}`, {
         bodyWidth: deskBodyW,
         bodyHeight: deskBodyH,
         bodyOffsetX: deskBodyOffX,

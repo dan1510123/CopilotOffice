@@ -218,6 +218,219 @@ export class BootScene extends Phaser.Scene {
     deskGraphics.generateTexture('desk', 32, 30);
     deskGraphics.destroy();
 
+    // === COMMUNAL DESK TILE VARIANTS (3×2 seamless large desk) ===
+    // These tile together so a 3×2 grid looks like one cohesive desk.
+    // Top row: back lip + surface, no front edge or legs
+    // Bottom row: surface + front edge, legs only at outer corners
+    // Left/right edges have a wood border; middle tiles are seamless on sides.
+
+    const DESK_W = 32;
+    const DESK_H = 30;
+    // Color palette (shared with standalone desk)
+    const dkEdge   = 0x4a1e08;  // dark brown — edges, front lip
+    const dkHighE  = 0x5a2e0e;  // edge highlight / shadow
+    const surface  = 0x7a4520;  // base wood surface
+    const surfHi   = 0x8c5228;  // lighter surface highlight
+    const grain    = 0x5e3312;  // wood grain lines
+    const edgeHi   = 0xaa6a38;  // bright edge highlight
+    const legCol   = 0x5a2e0e;  // leg wood
+    const legHi    = 0x6b3a18;  // leg inner highlight
+    const legShad  = 0x3e1a06;  // leg inner shadow
+    const underDesk = 0x111111; // dark space under desk
+
+    type TilePos = 'tl' | 'tm' | 'tr' | 'bl' | 'bm' | 'br';
+    const tileKeys: TilePos[] = ['tl', 'tm', 'tr', 'bl', 'bm', 'br'];
+
+    for (const pos of tileKeys) {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      const isTop = pos[0] === 't';
+      const isBot = pos[0] === 'b';
+      const isLeft = pos[1] === 'l';
+      const isRight = pos[1] === 'r';
+      const isMid = pos[1] === 'm';
+
+      // Horizontal extents: left-edge tiles start at x=1, right-edge at x=0..31
+      const xStart = isLeft ? 1 : 0;
+      const xEnd = isRight ? 31 : 32;
+      const xW = xEnd - xStart;
+
+      // --- TOP ROW: back lip (y=0..3) ---
+      if (isTop) {
+        g.fillStyle(dkEdge, 1);
+        g.fillRect(xStart, 0, xW, 4);
+        g.fillStyle(dkHighE, 1);
+        g.fillRect(xStart, 0, xW, 1);
+      }
+
+      // --- SURFACE (y=4..21 for top row, y=0..21 for bottom row) ---
+      const surfY = isTop ? 4 : 0;
+      const surfH = isTop ? 18 : 22;
+      g.fillStyle(surface, 1);
+      g.fillRect(xStart, surfY, xW, surfH);
+
+      // Surface highlight (inset by 1px only on outer edges)
+      const hiX = isLeft ? 2 : 0;
+      const hiW = xW - (isLeft ? 1 : 0) - (isRight ? 1 : 0);
+      const hiY = isTop ? 5 : 0;
+      const hiH = surfH - (isTop ? 2 : 1);
+      g.fillStyle(surfHi, 1);
+      g.fillRect(hiX, hiY, hiW, hiH);
+
+      // Wood grain lines (continuous across tiles)
+      g.fillStyle(grain, 1);
+      const grainX = isLeft ? 3 : 0;
+      const grainW = xW - (isLeft ? 2 : 0) - (isRight ? 2 : 0);
+      if (isTop) {
+        g.fillRect(grainX, 7,  grainW, 1);
+        g.fillRect(grainX, 11, grainW, 1);
+        g.fillRect(grainX, 15, grainW, 1);
+        g.fillRect(grainX, 19, grainW, 1);
+      } else {
+        // Bottom row surface starts at y=0, offset grain to align with top row
+        g.fillRect(grainX, 3,  grainW, 1);
+        g.fillRect(grainX, 7, grainW, 1);
+        g.fillRect(grainX, 11, grainW, 1);
+        g.fillRect(grainX, 15, grainW, 1);
+        g.fillRect(grainX, 19, grainW, 1);
+      }
+
+      // Left edge highlight (only on left-column tiles)
+      if (isLeft) {
+        g.fillStyle(edgeHi, 1);
+        g.fillRect(1, surfY, 1, surfH);
+      }
+      // Top-of-surface highlight (only on top row)
+      if (isTop) {
+        g.fillStyle(edgeHi, 1);
+        g.fillRect(xStart, 4, xW, 1);
+      }
+      // Right edge shadow (only on right-column tiles)
+      if (isRight) {
+        g.fillStyle(dkHighE, 1);
+        g.fillRect(30, surfY + 1, 1, surfH - 1);
+      }
+
+      // --- BOTTOM ROW: front edge + legs ---
+      if (isBot) {
+        // Front edge of tabletop (2px thick)
+        g.fillStyle(dkEdge, 1);
+        g.fillRect(xStart, 22, xW, 2);
+
+        // Dark space under desk
+        g.fillStyle(underDesk, 1);
+        g.fillRect(xStart, 24, xW, 6);
+
+        // Legs only at outer corners
+        if (isLeft) {
+          g.fillStyle(legCol, 1);
+          g.fillRect(1, 24, 4, 6);
+          g.fillStyle(legHi, 1);
+          g.fillRect(4, 24, 1, 6);
+        }
+        if (isRight) {
+          g.fillStyle(legCol, 1);
+          g.fillRect(27, 24, 4, 6);
+          g.fillStyle(legShad, 1);
+          g.fillRect(27, 24, 1, 6);
+        }
+      } else {
+        // Top row: no front edge — surface continues to bottom seamlessly
+        // Fill remaining y=22..29 with surface continuation for seamless tiling
+        g.fillStyle(surface, 1);
+        g.fillRect(xStart, 22, xW, 8);
+        g.fillStyle(surfHi, 1);
+        g.fillRect(hiX, 22, hiW, 7);
+        // Continue grain
+        g.fillStyle(grain, 1);
+        g.fillRect(grainX, 23, grainW, 1);
+        g.fillRect(grainX, 27, grainW, 1);
+        if (isLeft) {
+          g.fillStyle(edgeHi, 1);
+          g.fillRect(1, 22, 1, 8);
+        }
+        if (isRight) {
+          g.fillStyle(dkHighE, 1);
+          g.fillRect(30, 22, 1, 8);
+        }
+      }
+
+      g.generateTexture(`desk-${pos}`, DESK_W, DESK_H);
+      g.destroy();
+    }
+
+    // === BOSS DESK TILE VARIANTS (3×1 wide desk) ===
+    // Left end has left leg, middle has no legs, right end has right leg
+    const bossPositions = ['l', 'm', 'r'] as const;
+    for (const pos of bossPositions) {
+      const g = this.make.graphics({ x: 0, y: 0 });
+      const isL = pos === 'l';
+      const isR = pos === 'r';
+
+      const xStart = isL ? 1 : 0;
+      const xEnd = isR ? 31 : 32;
+      const xW = xEnd - xStart;
+
+      // Back lip
+      g.fillStyle(dkEdge, 1);
+      g.fillRect(xStart, 0, xW, 4);
+      g.fillStyle(dkHighE, 1);
+      g.fillRect(xStart, 0, xW, 1);
+
+      // Surface
+      g.fillStyle(surface, 1);
+      g.fillRect(xStart, 4, xW, 18);
+      const hiX = isL ? 2 : 0;
+      const hiW = xW - (isL ? 1 : 0) - (isR ? 1 : 0);
+      g.fillStyle(surfHi, 1);
+      g.fillRect(hiX, 5, hiW, 15);
+
+      // Wood grain
+      g.fillStyle(grain, 1);
+      const grainX = isL ? 3 : 0;
+      const grainW = xW - (isL ? 2 : 0) - (isR ? 2 : 0);
+      g.fillRect(grainX, 7,  grainW, 1);
+      g.fillRect(grainX, 11, grainW, 1);
+      g.fillRect(grainX, 15, grainW, 1);
+      g.fillRect(grainX, 19, grainW, 1);
+
+      // Edge highlights
+      if (isL) {
+        g.fillStyle(edgeHi, 1);
+        g.fillRect(1, 4, 1, 17);
+      }
+      g.fillStyle(edgeHi, 1);
+      g.fillRect(xStart, 4, xW, 1);
+      if (isR) {
+        g.fillStyle(dkHighE, 1);
+        g.fillRect(30, 5, 1, 16);
+      }
+
+      // Front edge
+      g.fillStyle(dkEdge, 1);
+      g.fillRect(xStart, 22, xW, 2);
+
+      // Under-desk dark space
+      g.fillStyle(underDesk, 1);
+      g.fillRect(xStart, 24, xW, 6);
+
+      // Legs only at ends
+      if (isL) {
+        g.fillStyle(legCol, 1);
+        g.fillRect(1, 24, 4, 6);
+        g.fillStyle(legHi, 1);
+        g.fillRect(4, 24, 1, 6);
+      }
+      if (isR) {
+        g.fillStyle(legCol, 1);
+        g.fillRect(27, 24, 4, 6);
+        g.fillStyle(legShad, 1);
+        g.fillRect(27, 24, 1, 6);
+      }
+
+      g.generateTexture(`boss-desk-${pos}`, DESK_W, DESK_H);
+      g.destroy();
+    }
+
     // Floor tile - hardwood panels, 3 staggered rows per tile
     const floorGraphics = this.make.graphics({ x: 0, y: 0 });
     const plankH = 10;
