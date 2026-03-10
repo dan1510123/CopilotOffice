@@ -38,7 +38,8 @@ const agentScrollbackBuffers: Map<string, string[]> = new Map();
 const agentScrollbackBytes: Map<string, number> = new Map();
 
 // Session persistence
-const SESSION_FILE = path.join(process.cwd(), 'copilot-office-sessions.json');
+const DATA_DIR = path.join(process.cwd(), '.data');
+const SESSION_FILE = path.join(DATA_DIR, 'copilot-office-sessions.json');
 let agentSessionIds: Map<string, string> = new Map();
 let agentSessionHistory: Map<string, string[]> = new Map();
 let agentSessionMeta: Map<string, { title: string }> = new Map();
@@ -71,6 +72,9 @@ function appendToScrollback(agentId: string, data: string): void {
 
 async function loadSessionIds(): Promise<void> {
   try {
+    // Ensure .data/ directory exists
+    await fs.promises.mkdir(DATA_DIR, { recursive: true });
+
     const raw = await fs.promises.readFile(SESSION_FILE, 'utf8').catch(() => null);
     if (raw) {
       const parsed = JSON.parse(raw);
@@ -100,6 +104,7 @@ async function loadSessionIds(): Promise<void> {
 
 async function saveSessionIds(): Promise<void> {
   try {
+    await fs.promises.mkdir(DATA_DIR, { recursive: true });
     const data = {
       current: Object.fromEntries(agentSessionIds),
       history: Object.fromEntries(agentSessionHistory),

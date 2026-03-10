@@ -126,7 +126,9 @@ CopilotOffice/
 │           ├── spriteCache.ts   # Sprite caching
 │           └── spriteData.ts    # 16×16 pixel sprite definitions
 ├── dist/                        # Build output (gitignored)
-├── copilot-office-sessions.json # Persistent session GUIDs
+├── .data/
+│   ├── copilot-offices.json         # Persistent office configs
+│   └── copilot-office-sessions.json # Persistent session GUIDs
 ├── package.json
 └── tsconfig.json
 ```
@@ -240,7 +242,7 @@ handles the actual compilation (it ignores `tsconfig.json` output settings).
 
 ```
 app.whenReady()
-  ├─ loadSessionIds()           — Read copilot-office-sessions.json
+  ├─ loadSessionIds()           — Read .data/copilot-office-sessions.json
   ├─ require('node-pty')        — Dynamic import (native module)
   ├─ startFileWatcher()         — Spawn esbuild --watch for auto-rebuild
   └─ createWindow()
@@ -866,7 +868,7 @@ through `cli-bridge.ts` but is unused since all agents run `copilot --resume {se
 electron .
   │
   ├─ Electron main process starts
-  │   ├─ loadSessionIds()                    ← Read copilot-office-sessions.json
+  │   ├─ loadSessionIds()                    ← Read .data/copilot-office-sessions.json
   │   ├─ require('node-pty')                 ← Load native PTY module
   │   ├─ startFileWatcher()                  ← Spawn esbuild --watch
   │   └─ createWindow()
@@ -979,7 +981,7 @@ electron .
 
 ### Persistent State (Disk)
 
-**`copilot-office-sessions.json`** (repository root):
+**`.data/copilot-office-sessions.json`** (`.data/` folder):
 ```json
 {
   "generalist": "a1b2c3d4-...",

@@ -9,6 +9,7 @@ export interface OfficeConfig {
   workingDirectory: string;
   createdAt: number;
   layout: OfficeLayout;
+  index: number;
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -92,12 +93,16 @@ export class OfficeManager {
   // Create a new office
   createOffice(name: string, workingDirectory: string, layout: OfficeLayout = 'default'): OfficeData {
     const id = `office-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Auto-assign next index (max existing + 1, or 0 if first office)
+    const existingIndices = Array.from(this.offices.values()).map(o => o.config.index);
+    const nextIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
     const config: OfficeConfig = {
       id,
       name,
       workingDirectory,
       createdAt: Date.now(),
       layout,
+      index: nextIndex,
     };
     
     const data: OfficeData = {
@@ -119,9 +124,15 @@ export class OfficeManager {
     return data;
   }
   
-  // Delete an office
+  // Delete an office (office at index 0 cannot be deleted)
   deleteOffice(officeId: string): boolean {
-    if (!this.offices.has(officeId)) return false;
+    const office = this.offices.get(officeId);
+    if (!office) return false;
+
+    if (office.config.index === 0) {
+      console.warn('[OfficeManager] Cannot delete the primary office (index 0)');
+      return false;
+    }
     
     // Remove all sessions for this office
     for (const [sessionId, oid] of this.sessionToOffice) {
@@ -247,9 +258,12 @@ export class OfficeManager {
       
       // Restore offices
       if (Array.isArray(data.offices)) {
-        for (const config of data.offices) {
+        for (let i = 0; i < data.offices.length; i++) {
+          const config = data.offices[i];
           // Backfill layout for offices saved before this field existed
           if (!config.layout) config.layout = 'default';
+          // Backfill index for offices saved before this field existed
+          if (config.index === undefined) config.index = i;
 
           // Preserve existing runtime state (agents, tools) if office already loaded
           const existing = this.offices.get(config.id);

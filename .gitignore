@@ -34,7 +34,7 @@ yarn-error.log*
 .env.*.local
 
 # Session/temp files
-copilot-office-sessions.json
+.data/
 
 # TypeScript
 *.tsbuildinfo

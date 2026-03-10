@@ -4,7 +4,7 @@ Documents the full lifecycle of agent terminal sessions — how they start, pers
 
 ## Session Storage
 
-**File:** `copilot-office-sessions.json` (repo root)
+**File:** `.data/copilot-office-sessions.json` (`.data/` folder)
 
 ```json
 {
@@ -150,11 +150,11 @@ SHUTDOWN:
   → sends 'shutdown' to server
   → server: killAllPtyProcesses() + process.exit(0)
   → All PTYs die, all watchers stop
-  → copilot-office-sessions.json is NOT modified (current UUIDs preserved)
+  → .data/copilot-office-sessions.json is NOT modified (current UUIDs preserved)
 
 STARTUP:
   New server spawned
-  → loadSessionIds() reads copilot-office-sessions.json
+  → loadSessionIds() reads .data/copilot-office-sessions.json
   → agentSessionIds restored (e.g. generalist → "uuid-from-before-restart")
   → No PTYs running yet
 
@@ -168,7 +168,7 @@ STARTUP:
   → Previous conversation and tool calls resume
 ```
 
-The server reloads the persisted UUID from `copilot-office-sessions.json` and the Copilot CLI finds existing session state at `~/.copilot/session-state/{uuid}/`. This is intentional resume behavior — users who want a fresh session should use Ctrl+Shift+N or the ⏹ Close Session button before restarting.
+The server reloads the persisted UUID from `.data/copilot-office-sessions.json` and the Copilot CLI finds existing session state at `~/.copilot/session-state/{uuid}/`. This is intentional resume behavior — users who want a fresh session should use Ctrl+Shift+N or the ⏹ Close Session button before restarting.
 
 ### 7. Pop Out (External Terminal)
 
@@ -229,7 +229,7 @@ Opens Windows Terminal with the same session UUID. Both the in-game terminal and
 | Concept | Location | Notes |
 |---------|----------|-------|
 | Session UUID storage | `server.ts` → `agentSessionIds` Map | In-memory, synced to JSON file |
-| JSON persistence file | `copilot-office-sessions.json` | Repo root, survives restarts |
+| JSON persistence file | `.data/copilot-office-sessions.json` | `.data/` folder, survives restarts |
 | UUID generation | `crypto.randomUUID()` | Standard v4 UUID |
 | Archive old UUID | `archiveSessionId()` | Pushes to `history[agentId][]` |
 | PTY spawn | `pty.spawn('powershell.exe', [...])` | With tagged env vars |

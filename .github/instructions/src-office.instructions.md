@@ -13,7 +13,8 @@ outward happens exclusively through callbacks.
 
 ## Office Model
 
-Each office is an `OfficeConfig`: `id`, `name`, `workingDirectory`, `createdAt`.
+Each office is an `OfficeConfig`: `id`, `name`, `workingDirectory`, `createdAt`, `index`.
+The `index` field (`number`) determines display order; the office at **index 0 cannot be deleted**.
 `OfficeData` wraps the config with runtime maps for agent statuses and tool stacks.
 CRUD operations: `createOffice`, `getOffice`/`getAllOffices`, `updateOffice`, `deleteOffice`.
 Deleting the current office auto-switches to the next available one.
@@ -43,7 +44,7 @@ Use the dedicated setters (`setAgentSlacking`, `setAgentStarting`, etc.) — nev
 
 ## Persistence
 
-All office configs are serialized to `localStorage` under key `copilot-offices`.
+All office configs are serialized to `.data/copilot-offices.json`.
 Loaded in the constructor (`loadFromStorage`), saved after every mutation (`saveToStorage`).
 Runtime-only data (agent statuses, tool stacks, session mappings) is **not** persisted.
 

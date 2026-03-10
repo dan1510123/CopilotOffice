@@ -25,7 +25,7 @@ Runs as a **forked child process** (not in the main Electron process). Owns all 
 
 - **PTY spawn**: `startTerminalForAgent()` spawns a shell via node-pty, tags the env with `COPILOT_OFFICE_PROCESS`, then runs `copilot --resume <sessionId>`.
 - **Scrollback buffers**: Per-agent raw ANSI buffers capped at 512 KB (`MAX_BUFFER_BYTES`). Oldest chunks are evicted when the limit is exceeded.
-- **Session persistence**: Session IDs, history, and metadata are stored in `copilot-office-sessions.json`. Supports archive (on kill/reset) and migration from legacy flat format.
+- **Session persistence**: Session IDs, history, and metadata are stored in `.data/copilot-office-sessions.json`. Supports archive (on kill/reset) and migration from legacy flat format.
 - **Attach/detach**: `activeAgentViewers` set tracks which agents have a live viewer. PTY data is only forwarded when the agent has an active viewer; scrollback is replayed on attach.
 - **Event watchers**: Each agent gets an `EventsWatcher` instance that monitors Copilot CLI events (tool start/complete, turn start/end, user message). Events are only forwarded after the agent signals ready.
 - **Auto-titling**: First `user.message` event auto-sets session title from message content.

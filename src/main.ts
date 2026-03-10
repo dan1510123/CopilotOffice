@@ -380,8 +380,11 @@ function showEditOfficeDialog(officeId: string) {
   const office = officeManager.getOffice(officeId);
   if (!office) return;
 
+  const canDelete = office.config.index !== 0;
+  const deleteOption = canDelete ? '\n- "delete" to remove office' : '';
+
   const action = prompt(
-    `Office: ${office.config.name}\nPath: ${office.config.workingDirectory}\n\nEnter action:\n- "rename" to change name\n- "path" to change working directory\n- "delete" to remove office`,
+    `Office: ${office.config.name}\nPath: ${office.config.workingDirectory}\n\nEnter action:\n- "rename" to change name\n- "path" to change working directory${deleteOption}`,
     'rename'
   );
 
@@ -398,6 +401,7 @@ function showEditOfficeDialog(officeId: string) {
       renderOfficeTabs();
     }
   } else if (action === 'delete') {
+    if (!canDelete) return;
     if (confirm(`Delete office "${office.config.name}"? This cannot be undone.`)) {
       officeManager.deleteOffice(officeId);
       renderOfficeTabs();

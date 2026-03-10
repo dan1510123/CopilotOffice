@@ -169,11 +169,15 @@ app.whenReady().then(async () => {
     return { success: true };
   });
 
-  // Office file persistence — save/load office configs to copilot-offices.json
-  const officesFilePath = path.join(process.cwd(), 'copilot-offices.json');
+  // Office file persistence — save/load office configs to .data/copilot-offices.json
+  const dataDir = path.join(process.cwd(), '.data');
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  const officesFilePath = path.join(dataDir, 'copilot-offices.json');
 
   ipcMain.handle('save-offices', (_event, data: string) => {
     try {
+      fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(officesFilePath, data, 'utf8');
       return { success: true };
     } catch (e: unknown) {
