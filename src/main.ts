@@ -1202,7 +1202,17 @@ phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string
     }
   }
 
-  // 3. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
+  // 3. Send /fleet command to Arthur's terminal (now accessible via fleet office after transfer)
+  try {
+    const fleetCmd = `/fleet ${data.prompt}\r`;
+    console.log(`[Fleet] Sending /fleet to ${officeId}:architect`);
+    await window.copilotBridge?.terminalWrite(officeId, 'architect', fleetCmd);
+    console.log('[Fleet] /fleet command sent');
+  } catch (e) {
+    console.error('[Fleet] Error sending /fleet command:', e);
+  }
+
+  // 4. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
   switchToOffice(officeId);
 });
 
