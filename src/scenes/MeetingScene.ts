@@ -247,21 +247,21 @@ export class MeetingScene extends Phaser.Scene {
       const sourceOfficeId = officeManager.currentOfficeId || 'office-0';
 
       // 1. Send /fleet command to Arthur's existing terminal first
-      const bridge = (window as any).copilotBridge;
-      if (bridge?.terminalWrite) {
-        bridge.terminalWrite(sourceOfficeId, 'architect', `/fleet ${prompt}\r`).then(() => {
-          console.log('[MeetingScene] /fleet command sent, now deploying');
+      console.log(`[MeetingScene] Sending /fleet to office=${sourceOfficeId}, agent=architect`);
+      if (window.copilotBridge?.terminalWrite) {
+        window.copilotBridge.terminalWrite(sourceOfficeId, 'architect', `/fleet ${prompt}\r`).then((result: any) => {
+          console.log('[MeetingScene] /fleet terminalWrite result:', result);
           // 2. Emit deploy event for main.ts to create office + transfer session
           this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId });
           // 3. Leave the meeting room
           this.exitMeeting();
         }).catch((e: unknown) => {
           console.error('[MeetingScene] Failed to send /fleet command:', e);
-          // Still proceed with deploy even if write fails
           this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId });
           this.exitMeeting();
         });
       } else {
+        console.warn('[MeetingScene] copilotBridge.terminalWrite not available');
         this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId });
         this.exitMeeting();
       }
