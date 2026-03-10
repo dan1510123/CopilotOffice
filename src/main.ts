@@ -1188,19 +1188,11 @@ phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOffi
 phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string; prompt: string; sourceOfficeId: string }) => {
   console.log(`[Fleet] Deploy requested: "${data.officeName}" from office ${data.sourceOfficeId}`);
 
-  // 1. Send /fleet command to Arthur's existing terminal in the source (meeting) office
-  try {
-    await window.copilotBridge?.terminalWrite(data.sourceOfficeId, 'architect', `/fleet ${data.prompt}\r`);
-    console.log('[Fleet] /fleet command sent to Arthur');
-  } catch (e) {
-    console.error('[Fleet] Error sending /fleet command:', e);
-  }
-
-  // 2. Create a new fleet-vteam office
+  // 1. Create a new fleet-vteam office
   const fleetOffice = officeManager.createOffice(data.officeName, '.', 'fleet-vteam');
   const officeId = fleetOffice.config.id;
 
-  // 3. Transfer Arthur's session from the source office to the fleet office
+  // 2. Transfer Arthur's session from the source office to the fleet office
   if (window.copilotBridge?.transferSession) {
     try {
       const result = await window.copilotBridge.transferSession(data.sourceOfficeId, officeId, 'architect');
@@ -1210,7 +1202,7 @@ phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string
     }
   }
 
-  // 4. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
+  // 3. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
   switchToOffice(officeId);
 });
 
