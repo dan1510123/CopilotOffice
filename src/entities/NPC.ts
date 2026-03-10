@@ -246,6 +246,12 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     }
   }
 
+  /** Toggle visibility of the status badge (circle + text). */
+  setBadgeVisible(visible: boolean): void {
+    this.sessionBadge.setVisible(visible);
+    this.sessionText.setVisible(visible);
+  }
+
   /** Update the NPC badge to reflect the agent's full status */
   updateAgentStatus(status: AgentStatus | undefined): void {
     if (!status || status.state === 'slacking') {

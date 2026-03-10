@@ -147,22 +147,8 @@ export class OfficeScene extends Phaser.Scene {
     this.events.on('wake', (_sys: Phaser.Scenes.Systems, data?: { plan?: MeetingPlan }) => {
       this.cameras.main.fadeIn(500, 0, 0, 0);
       
-      // Re-enter the office with entrance animation
-      if (this.playerInScene) {
-        this.player.enableMovement();
-        this.playerMovementEnabled = true;
-      } else {
-        // Player wasn't in scene (first time or had exited) — trigger entrance
-        this.triggerEntrance();
-      }
-      
-      // Update Arthur's NPC badge back to normal
-      const arthurNPC = this.npcs.find(n => n.config.id === 'architect');
-      if (arthurNPC) {
-        arthurNPC.updateAgentStatus(undefined); // Reset to slacking
-      }
-      
       if (data?.plan) {
+        // Fleet plan received — agents walk in first, player enters via Space/Enter after
         console.log('[OfficeScene] Received meeting plan:', data.plan.plan);
         console.log('[OfficeScene] Tasks assigned:', data.plan.tasks.map(t => `${t.agentId}: ${t.title}`).join(', '));
 
@@ -177,9 +163,27 @@ export class OfficeScene extends Phaser.Scene {
         // Emit event so main.ts can update tabs, transfer Arthur's session, and switch
         this.game.events.emit('fleet:office:created', fleetOffice.config.id, sourceOfficeId);
 
+        // Hide player — they enter via Space/Enter after agents are seated
+        this.player.setVisible(false);
+        this.playerInScene = false;
+
         const assignedAgentIds = data.plan.tasks.map(t => t.agentId);
         this.triggerAgentWalkIn(assignedAgentIds);
       } else {
+        // No plan — re-enter normally
+        if (this.playerInScene) {
+          this.player.enableMovement();
+          this.playerMovementEnabled = true;
+        } else {
+          this.triggerEntrance();
+        }
+        
+        // Update Arthur's NPC badge back to normal
+        const arthurNPC = this.npcs.find(n => n.config.id === 'architect');
+        if (arthurNPC) {
+          arthurNPC.updateAgentStatus(undefined); // Reset to slacking
+        }
+
         // Left meeting without a plan — all non-Arthur agents walk in
         const walkInIds = AGENTS.filter(a => a.id !== 'architect').map(a => a.id);
         this.triggerAgentWalkIn(walkInIds);
@@ -1132,11 +1136,6 @@ export class OfficeScene extends Phaser.Scene {
         }
       },
     });
-
-    // Fleet layout: walk all agents to their seats when player enters
-    if (this.currentLayout === 'fleet-vteam') {
-      this.triggerAgentWalkIn(this.npcs.map(n => n.config.id));
-    }
   }
 
   /**
@@ -1439,8 +1438,13 @@ export class OfficeScene extends Phaser.Scene {
       if (npc) npc.setHighlighted(true);
     }
 
-    // Trigger walk-in animation for fleet layouts
+    // Trigger walk-in animation for fleet layouts (player enters via Space/Enter after)
     if (layout === 'fleet-vteam') {
+      this.player.setVisible(false);
+      this.playerInScene = false;
+      this.playerMovementEnabled = false;
+      this.player.disableMovement();
+      this.instructionText.setText('[Space / Enter] Enter the office');
       this.triggerAgentWalkIn(this.npcs.map(n => n.config.id));
     }
 
