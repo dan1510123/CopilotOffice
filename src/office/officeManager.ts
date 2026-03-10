@@ -116,6 +116,14 @@ export class OfficeManager {
     }
     
     this.saveToStorage();
+
+    // Create per-office session file eagerly
+    if (typeof window !== 'undefined' && (window as any).copilotBridge?.createOfficeSession) {
+      (window as any).copilotBridge.createOfficeSession(id).catch((e: unknown) => {
+        console.warn('[OfficeManager] Failed to create session file:', e);
+      });
+    }
+
     this.onOfficesUpdated?.();
     
     return data;
@@ -140,6 +148,13 @@ export class OfficeManager {
     
     this.offices.delete(officeId);
     
+    // Delete per-office session file
+    if (typeof window !== 'undefined' && (window as any).copilotBridge?.deleteOfficeSession) {
+      (window as any).copilotBridge.deleteOfficeSession(officeId).catch((e: unknown) => {
+        console.warn('[OfficeManager] Failed to delete session file:', e);
+      });
+    }
+
     // If we deleted the current office, switch to another
     if (this._currentOfficeId === officeId) {
       const remaining = this.offices.keys().next().value;

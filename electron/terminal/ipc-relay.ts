@@ -231,60 +231,60 @@ export class TerminalRelay {
   // ── IPC Handler Registration ──────────────────────────────────
 
   registerIpc(): void {
-    ipcMain.handle('terminal-start', (_event, agentId: string, workingDir?: string, cols?: number, rows?: number) =>
-      this.request({ type: 'start', requestId: this.id(), agentId, workingDir, cols, rows })
+    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number) =>
+      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows })
     );
 
-    ipcMain.handle('terminal-attach', (_event, agentId: string) =>
-      this.request({ type: 'attach', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'attach', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('terminal-detach', (_event, agentId: string) => {
-      this.send({ type: 'detach', agentId });
+    ipcMain.handle('terminal-detach', (_event, officeId: string, agentId: string) => {
+      this.send({ type: 'detach', officeId, agentId });
       return { success: true };
     });
 
     // Fire-and-forget for lowest latency
-    ipcMain.handle('terminal-write', (_event, agentId: string, data: string) => {
-      this.send({ type: 'write', agentId, data });
+    ipcMain.handle('terminal-write', (_event, officeId: string, agentId: string, data: string) => {
+      this.send({ type: 'write', officeId, agentId, data });
       return { success: true };
     });
 
-    ipcMain.handle('terminal-resize', (_event, agentId: string, cols: number, rows: number) => {
-      this.send({ type: 'resize', agentId, cols, rows });
+    ipcMain.handle('terminal-resize', (_event, officeId: string, agentId: string, cols: number, rows: number) => {
+      this.send({ type: 'resize', officeId, agentId, cols, rows });
       return { success: true };
     });
 
-    ipcMain.handle('terminal-kill', (_event, agentId: string) =>
-      this.request({ type: 'kill', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-kill', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'kill', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('terminal-exists', (_event, agentId: string) =>
-      this.request({ type: 'exists', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-exists', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'exists', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('terminal-pop-out', (_event, agentId: string) =>
-      this.request({ type: 'pop-out', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-pop-out', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'pop-out', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('get-session-id', (_event, agentId: string) =>
-      this.request({ type: 'get-session-id', requestId: this.id(), agentId })
+    ipcMain.handle('get-session-id', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'get-session-id', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('reset-all-sessions', () =>
-      this.request({ type: 'reset-all-sessions', requestId: this.id() })
+    ipcMain.handle('reset-all-sessions', (_event, officeId: string) =>
+      this.request({ type: 'reset-all-sessions', requestId: this.id(), officeId })
     );
 
-    ipcMain.handle('terminal-reset-session', (_event, agentId: string) =>
-      this.request({ type: 'reset-session', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-reset-session', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'reset-session', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('terminal-get-session-history', (_event, agentId: string) =>
-      this.request({ type: 'get-session-history', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-get-session-history', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'get-session-history', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('terminal-clear-session-history', (_event, agentId: string) =>
-      this.request({ type: 'clear-session-history', requestId: this.id(), agentId })
+    ipcMain.handle('terminal-clear-session-history', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'clear-session-history', requestId: this.id(), officeId, agentId })
     );
 
     ipcMain.handle('list-active-terminals', () =>
@@ -295,16 +295,24 @@ export class TerminalRelay {
       this.request({ type: 'query-agent-statuses', requestId: this.id() })
     );
 
-    ipcMain.handle('set-session-meta', (_event, agentId: string, meta: { title?: string; description?: string }) =>
-      this.request({ type: 'set-session-meta', requestId: this.id(), agentId, meta })
+    ipcMain.handle('set-session-meta', (_event, officeId: string, agentId: string, meta: { title?: string; description?: string }) =>
+      this.request({ type: 'set-session-meta', requestId: this.id(), officeId, agentId, meta })
     );
 
-    ipcMain.handle('get-session-meta', (_event, agentId: string) =>
-      this.request({ type: 'get-session-meta', requestId: this.id(), agentId })
+    ipcMain.handle('get-session-meta', (_event, officeId: string, agentId: string) =>
+      this.request({ type: 'get-session-meta', requestId: this.id(), officeId, agentId })
     );
 
-    ipcMain.handle('get-all-session-meta', () =>
-      this.request({ type: 'get-all-session-meta', requestId: this.id() })
+    ipcMain.handle('get-all-session-meta', (_event, officeId: string) =>
+      this.request({ type: 'get-all-session-meta', requestId: this.id(), officeId })
+    );
+
+    ipcMain.handle('create-office-session', (_event, officeId: string) =>
+      this.request({ type: 'create-office-session', requestId: this.id(), officeId })
+    );
+
+    ipcMain.handle('delete-office-session', (_event, officeId: string) =>
+      this.request({ type: 'delete-office-session', requestId: this.id(), officeId })
     );
   }
 }

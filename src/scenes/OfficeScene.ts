@@ -4,7 +4,7 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
-import { AGENTS, AgentConfig } from '../config/agents';
+import { AGENTS, FLEET_AGENTS, AgentConfig } from '../config/agents';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
@@ -74,6 +74,9 @@ export class OfficeScene extends Phaser.Scene {
   private bgMusic: Phaser.Sound.BaseSound | null = null;
   private layoutObjects: Phaser.GameObjects.GameObject[] = [];
   private currentLayout: string = 'default';
+  private wallCollider?: Phaser.Physics.Arcade.Collider;
+  private furnitureCollider?: Phaser.Physics.Arcade.Collider;
+  private npcCollider?: Phaser.Physics.Arcade.Collider;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -125,7 +128,7 @@ export class OfficeScene extends Phaser.Scene {
     console.log('[OfficeScene] InputManager created');
 
     // Create terminal overlay (replaces dialog box)
-    this.terminalOverlay = new TerminalOverlay(this, this.inputManager);
+    this.terminalOverlay = new TerminalOverlay(this, this.inputManager, () => officeManager.currentOfficeId || 'office-0');
 
     // Start background music
     this.startBackgroundMusic();
@@ -224,13 +227,13 @@ export class OfficeScene extends Phaser.Scene {
     }
     
     // Add collision between player and walls
-    this.physics.add.collider(this.player, this.walls);
+    this.wallCollider = this.physics.add.collider(this.player, this.walls);
 
     // Add collision between player and furniture (desks, chairs, game tables)
-    this.physics.add.collider(this.player, this.furniture);
+    this.furnitureCollider = this.physics.add.collider(this.player, this.furniture);
 
     // Add collision between player and NPCs (with bump feedback)
-    this.physics.add.collider(this.player, this.npcs, (_player, npcObj) => {
+    this.npcCollider = this.physics.add.collider(this.player, this.npcs, (_player, npcObj) => {
       const npc = npcObj as NPC;
       npc.bump();
     });
@@ -266,7 +269,8 @@ export class OfficeScene extends Phaser.Scene {
 
     // Allow external UI(e.g. overview panel) to open agent terminal directly
     this.game.events.on('open:agent:terminal', (agentId: string) => {
-      const agent = AGENTS.find(a => a.id === agentId);
+      const agents = this.currentLayout === 'fleet-vteam' ? FLEET_AGENTS : AGENTS;
+      const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
     }, this);
 
@@ -737,8 +741,8 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   /**
-   * Fleet V-Team layout: centered 8×2 conference desk with 6 seats.
-   * 4 stools above, 1 on each side. Same shell (floor, windows, doors) as default.
+   * Fleet V-Team layout: centered 9×3 conference desk with 14 seats.
+   * 5 stools above, 5 below, 2 on each side. Same shell (floor, windows, doors) as default.
    */
   private createFleetVTeamLayout(): void {
     this.walls = this.physics.add.staticGroup();
@@ -823,23 +827,26 @@ export class OfficeScene extends Phaser.Scene {
     this.createGrandDoors();
     this.createEntranceRug();
 
-    // === BIG 8×2 CONFERENCE DESK (centered) ===
-    // Cols 6-13, rows 5-6 → 8 columns × 2 rows
+    // === BIG 9×3 CONFERENCE DESK (centered) ===
+    // Cols 6-14, rows 5-7 → 9 columns × 3 rows
     const deskBodyW = 28;
     const deskBodyH = 14;
     const deskBodyOffX = 2;
     const deskBodyOffY = 5;
     const tableStartCol = 6;
-    const tableEndCol = 13; // inclusive
+    const tableEndCol = 14; // inclusive
     const tableStartRow = 5;
+    const tableRows = 3;
 
     for (let col = tableStartCol; col <= tableEndCol; col++) {
-      for (let row = 0; row < 2; row++) {
+      for (let row = 0; row < tableRows; row++) {
         const dx = col * this.tileSize + this.tileSize / 2;
         const dy = (tableStartRow + row) * this.tileSize + this.tileSize / 2;
-        const rowKey = row === 0 ? 't' : 'b';
+        const rowKey = row === 0 ? 't' : row === tableRows - 1 ? 'b' : 'm';
         const colKey = col === tableStartCol ? 'l' : col === tableEndCol ? 'r' : 'm';
-        addFurniture(dx, dy, `desk-${rowKey}${colKey}`, {
+        // Middle row uses 'b' variant top half and 't' variant bottom half — just use 'tm' for middle rows
+        const textureRow = row === 0 ? 't' : 'b';
+        addFurniture(dx, dy, `desk-${textureRow}${colKey}`, {
           bodyWidth: deskBodyW, bodyHeight: deskBodyH,
           bodyOffsetX: deskBodyOffX, bodyOffsetY: deskBodyOffY,
           depthSortY: dy,
@@ -847,28 +854,44 @@ export class OfficeScene extends Phaser.Scene {
       }
     }
 
-    // === 4 STOOLS ABOVE the desk (evenly spaced across the 8-col table) ===
+    // === 5 STOOLS ABOVE the desk ===
     const stoolTuck = this.tileSize * 0.4;
     const stoolAboveY = (tableStartRow - 1) * this.tileSize + this.tileSize / 2 + stoolTuck;
-    // Space 4 stools evenly: at cols 7, 9, 11, 13 (within the 6-13 range)
-    const aboveStoolCols = [7, 9, 11, 13];
-    aboveStoolCols.forEach((col, _i) => {
+    const aboveStoolCols = [7, 9, 10, 11, 13];
+    aboveStoolCols.forEach(col => {
       const sx = col * this.tileSize + this.tileSize / 2;
       addDecor(sx, stoolAboveY, 'stool').setDepth(Depths.FLOOR_DETAIL);
     });
 
-    // === 1 STOOL ON EACH SIDE (at the middle row of the desk) ===
-    const sideStoolY = (tableStartRow + 0.5) * this.tileSize + this.tileSize / 2;
+    // === 5 STOOLS BELOW the desk ===
+    const tableEndRow = tableStartRow + tableRows - 1;
+    const stoolBelowY = (tableEndRow + 1) * this.tileSize + this.tileSize / 2 - stoolTuck;
+    const belowStoolCols = [7, 9, 10, 11, 13];
+    belowStoolCols.forEach(col => {
+      const sx = col * this.tileSize + this.tileSize / 2;
+      addDecor(sx, stoolBelowY, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    });
+
+    // === 2 STOOLS ON EACH SIDE ===
+    const sideStoolY1 = (tableStartRow + 0.5) * this.tileSize + this.tileSize / 2;
+    const sideStoolY2 = (tableStartRow + 1.5) * this.tileSize + this.tileSize / 2;
     const leftStoolX = (tableStartCol - 1) * this.tileSize + this.tileSize / 2;
     const rightStoolX = (tableEndCol + 1) * this.tileSize + this.tileSize / 2;
-    addDecor(leftStoolX, sideStoolY, 'stool').setDepth(Depths.FLOOR_DETAIL);
-    addDecor(rightStoolX, sideStoolY, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    addDecor(leftStoolX, sideStoolY1, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    addDecor(leftStoolX, sideStoolY2, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    addDecor(rightStoolX, sideStoolY1, 'stool').setDepth(Depths.FLOOR_DETAIL);
+    addDecor(rightStoolX, sideStoolY2, 'stool').setDepth(Depths.FLOOR_DETAIL);
 
-    // === LAPTOPS on the desk (one per seat) ===
-    // 4 laptops for above seats + 2 for side seats
+    // === LAPTOPS on the desk (one per above seat + side seats) ===
     aboveStoolCols.forEach(col => {
       const lx = col * this.tileSize + this.tileSize / 2;
       const ly = tableStartRow * this.tileSize + this.tileSize / 2 - 2 * scale;
+      const laptop = addDecor(lx, ly, 'surfacebook_horizontal');
+      laptop.setDepth(ySortDepth(ly + 2 * scale, worldH) + 0.1);
+    });
+    belowStoolCols.forEach(col => {
+      const lx = col * this.tileSize + this.tileSize / 2;
+      const ly = (tableEndRow) * this.tileSize + this.tileSize / 2 + 2 * scale;
       const laptop = addDecor(lx, ly, 'surfacebook_horizontal');
       laptop.setDepth(ySortDepth(ly + 2 * scale, worldH) + 0.1);
     });
@@ -1042,6 +1065,11 @@ export class OfficeScene extends Phaser.Scene {
         );
       },
     });
+
+    // Fleet layout: walk all agents to their seats when player enters
+    if (this.currentLayout === 'fleet-vteam') {
+      this.triggerAgentWalkIn(this.npcs.map(n => n.config.id));
+    }
   }
 
   /** Move assigned agent NPCs off-screen, then walk them in from the entrance to their desks. */
@@ -1093,7 +1121,10 @@ export class OfficeScene extends Phaser.Scene {
     console.log(`[OfficeScene] Rebuilding layout: ${this.currentLayout} → ${layout}`);
     this.currentLayout = layout;
 
-    // Snapshot children before destruction
+    // Snapshot which NPC was highlighted (for re-application after rebuild)
+    const highlightedAgentId = this.npcs.find(n => n.isHighlighted)?.config.id ?? null;
+
+    // Snapshot children before destruction — preserve player, UI text, and game prompts
     const preserveSet = new Set<Phaser.GameObjects.GameObject>();
     if (this.player) preserveSet.add(this.player);
     if (this.titleText) preserveSet.add(this.titleText);
@@ -1101,6 +1132,14 @@ export class OfficeScene extends Phaser.Scene {
     if (this.pingPongPrompt) preserveSet.add(this.pingPongPrompt);
     if (this.basketballPrompt) preserveSet.add(this.basketballPrompt);
     if (this.exitPrompt) preserveSet.add(this.exitPrompt);
+
+    // Destroy old physics colliders (prevent accumulation)
+    this.wallCollider?.destroy();
+    this.furnitureCollider?.destroy();
+    this.npcCollider?.destroy();
+    this.wallCollider = undefined;
+    this.furnitureCollider = undefined;
+    this.npcCollider = undefined;
 
     // Destroy NPCs
     for (const npc of this.npcs) {
@@ -1139,7 +1178,7 @@ export class OfficeScene extends Phaser.Scene {
     this.nearestDesk = null;
     this.nearestExitDoor = null;
 
-    // Rebuild layout
+    // Rebuild layout (each method creates titleText + instructionText)
     if (layout === 'fleet-vteam') {
       this.createFleetVTeamLayout();
     } else {
@@ -1149,10 +1188,14 @@ export class OfficeScene extends Phaser.Scene {
     // Re-create NPCs
     this.createNPCs();
 
-    // Re-add player collision with new furniture/walls
+    // Re-add player collision with new furniture/walls/NPCs
     if (this.player) {
-      this.physics.add.collider(this.player, this.walls);
-      this.physics.add.collider(this.player, this.furniture);
+      this.wallCollider = this.physics.add.collider(this.player, this.walls);
+      this.furnitureCollider = this.physics.add.collider(this.player, this.furniture);
+      this.npcCollider = this.physics.add.collider(this.player, this.npcs, (_player, npcObj) => {
+        const npc = npcObj as NPC;
+        npc.bump();
+      });
       // Reposition player at entrance
       const entranceX = this.mapWidth * this.tileSize / 2;
       const entranceY = (this.mapHeight - 1.5) * this.tileSize;
@@ -1160,11 +1203,26 @@ export class OfficeScene extends Phaser.Scene {
       this.player.setVisible(true);
     }
 
+    // Sync NPC badges with current office's agent statuses
+    this.updateSessionBadges();
+
+    // Re-apply NPC highlight if a terminal was open
+    if (highlightedAgentId) {
+      const npc = this.npcs.find(n => n.config.id === highlightedAgentId);
+      if (npc) npc.setHighlighted(true);
+    }
+
+    // Trigger walk-in animation for fleet layouts
+    if (layout === 'fleet-vteam') {
+      this.triggerAgentWalkIn(this.npcs.map(n => n.config.id));
+    }
+
     console.log(`[OfficeScene] Layout rebuilt: ${layout}`);
   }
 
   private createNPCs(): void {
-    AGENTS.forEach(agentConfig => {
+    const agents = this.currentLayout === 'fleet-vteam' ? FLEET_AGENTS : AGENTS;
+    agents.forEach(agentConfig => {
       const npc = new NPC(this, agentConfig, this.tileSize, this.spriteScale);
       this.npcs.push(npc);
     });
@@ -1174,7 +1232,8 @@ export class OfficeScene extends Phaser.Scene {
     // Pre-start admin session specifically (Alice can edit game code)
     if (typeof window !== 'undefined' && window.copilotBridge) {
       const adminAgent = AGENTS.find(a => a.id === 'admin');
-      const savedSessionId = await window.copilotBridge.getSessionId('admin');
+      const oid = officeManager.currentOfficeId || 'office-0';
+      const savedSessionId = await window.copilotBridge.getSessionId(oid, 'admin');
       
       if (savedSessionId) {
         console.log(`[CopilotOffice] Resuming admin session: ${savedSessionId}`);
@@ -1182,7 +1241,7 @@ export class OfficeScene extends Phaser.Scene {
         console.log('[CopilotOffice] Starting new admin session (no saved session found)');
       }
       
-      await window.copilotBridge.terminalStart('admin', adminAgent?.workingDir);
+      await window.copilotBridge.terminalStart(oid, 'admin', adminAgent?.workingDir);
       console.log('[CopilotOffice] Admin (Alice) session ready');
     }
   }

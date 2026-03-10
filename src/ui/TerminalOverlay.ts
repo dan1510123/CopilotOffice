@@ -38,12 +38,14 @@ export class TerminalOverlay {
   private resizeHandler: (() => void) | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
+  private getOfficeId: () => string;
 
   private static readonly STORAGE_KEY = 'agencyOffice:terminalFullWidth';
 
-  constructor(scene: Phaser.Scene, inputManager: InputManager) {
+  constructor(scene: Phaser.Scene, inputManager: InputManager, getOfficeId: () => string) {
     this.scene = scene;
     this.inputManager = inputManager;
+    this.getOfficeId = getOfficeId;
     // Load persisted fullscreen preference
     this.isFullWidth = localStorage.getItem(TerminalOverlay.STORAGE_KEY) === 'true';
     this.setupTerminalListeners();
@@ -104,7 +106,7 @@ export class TerminalOverlay {
     let sessionTitleHtml = '';
     if (window.copilotBridge?.getSessionMeta) {
       try {
-        const meta = await window.copilotBridge.getSessionMeta(agent.id);
+        const meta = await window.copilotBridge.getSessionMeta(this.getOfficeId(), agent.id);
         if (meta?.title) {
           sessionTitleHtml = ` <span style="color: #aab; font-size: 15px;">— ${meta.title.replace(/</g, '&lt;')}</span>`;
         }
@@ -169,7 +171,7 @@ export class TerminalOverlay {
     if (window.copilotBridge) {
       try {
         const exists = await withTimeout(
-          window.copilotBridge.terminalExists(agent.id),
+          window.copilotBridge.terminalExists(this.getOfficeId(), agent.id),
           IPC_TIMEOUT, 'terminalExists'
         );
         if (!exists) {
@@ -179,7 +181,7 @@ export class TerminalOverlay {
           // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
           // at the same position as the live PTY.
           const attachResult = await withTimeout(
-            window.copilotBridge.terminalAttach(agent.id),
+            window.copilotBridge.terminalAttach(this.getOfficeId(), agent.id),
             IPC_TIMEOUT, 'terminalAttach'
           );
 
@@ -195,7 +197,7 @@ export class TerminalOverlay {
 
           // Try to get saved session ID
           const savedId = await withTimeout(
-            window.copilotBridge.getSessionId(agent.id),
+            window.copilotBridge.getSessionId(this.getOfficeId(), agent.id),
             IPC_TIMEOUT, 'getSessionId'
           );
           if (savedId) {
@@ -269,7 +271,7 @@ export class TerminalOverlay {
     const dims = this.fitAddon?.proposeDimensions();
 
     const result = await withTimeout(
-      window.copilotBridge.terminalStart(agentId, workingDir, dims?.cols, dims?.rows),
+      window.copilotBridge.terminalStart(this.getOfficeId(), agentId, workingDir, dims?.cols, dims?.rows),
       IPC_TIMEOUT, 'terminalStart'
     );
     if (!result.success) {
@@ -290,7 +292,7 @@ export class TerminalOverlay {
       }
       // Send the /session command with carriage return to submit
       setTimeout(() => {
-        window.copilotBridge.terminalWrite(agentId, '/session\r');
+        window.copilotBridge.terminalWrite(this.getOfficeId(), agentId, '/session\r');
       }, 200);
     }
   }
@@ -517,7 +519,7 @@ export class TerminalOverlay {
     
     // Reset session (clears meta/title, generates new session ID, kills PTY)
     await withTimeout(
-      window.copilotBridge.resetSession(this.currentAgentId),
+      window.copilotBridge.resetSession(this.getOfficeId(), this.currentAgentId),
       IPC_TIMEOUT, 'resetSession'
     ).catch(() => { /* ignore */ });
 
@@ -529,7 +531,7 @@ export class TerminalOverlay {
 
     try {
       const result = await withTimeout(
-        window.copilotBridge.resetSession(this.currentAgentId),
+        window.copilotBridge.resetSession(this.getOfficeId(), this.currentAgentId),
         IPC_TIMEOUT, 'resetSession'
       );
       if (result.success && result.sessionId) {
@@ -555,7 +557,7 @@ export class TerminalOverlay {
     let history: string[] = [];
     try {
       history = await withTimeout(
-        window.copilotBridge.getSessionHistory(this.currentAgentId),
+        window.copilotBridge.getSessionHistory(this.getOfficeId(), this.currentAgentId),
         IPC_TIMEOUT, 'getSessionHistory'
       );
     } catch { /* ignore */ }
@@ -632,7 +634,7 @@ export class TerminalOverlay {
     if (!this.currentAgentId) return;
     try {
       await withTimeout(
-        window.copilotBridge.clearSessionHistory(this.currentAgentId),
+        window.copilotBridge.clearSessionHistory(this.getOfficeId(), this.currentAgentId),
         IPC_TIMEOUT, 'clearSessionHistory'
       );
     } catch { /* ignore */ }
@@ -707,7 +709,7 @@ export class TerminalOverlay {
     // Handle terminal input
     this.terminal.onData((data: string) => {
       if (this.currentAgentId && window.copilotBridge) {
-        window.copilotBridge.terminalWrite(this.currentAgentId, data);
+        window.copilotBridge.terminalWrite(this.getOfficeId(), this.currentAgentId, data);
       }
     });
 
@@ -780,7 +782,7 @@ export class TerminalOverlay {
       this.fitAddon?.fit();
       const dims = this.fitAddon?.proposeDimensions();
       if (dims && window.copilotBridge && this.currentAgentId) {
-        window.copilotBridge.terminalResize(this.currentAgentId, dims.cols, dims.rows);
+        window.copilotBridge.terminalResize(this.getOfficeId(), this.currentAgentId, dims.cols, dims.rows);
       }
     };
 
@@ -911,7 +913,7 @@ export class TerminalOverlay {
   async hasSession(agentId: string): Promise<boolean> {
     if (window.copilotBridge) {
       return withTimeout(
-        window.copilotBridge.terminalExists(agentId),
+        window.copilotBridge.terminalExists(this.getOfficeId(), agentId),
         IPC_TIMEOUT, 'terminalExists'
       ).catch(() => false);
     }

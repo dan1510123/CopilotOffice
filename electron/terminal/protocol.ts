@@ -8,6 +8,7 @@ import { CopilotEvent } from './events-watcher';
 export interface MsgStart {
   type: 'start';
   requestId: string;
+  officeId: string;
   agentId: string;
   workingDir?: string;
   cols?: number;
@@ -16,12 +17,14 @@ export interface MsgStart {
 
 export interface MsgWrite {
   type: 'write';
+  officeId: string;
   agentId: string;
   data: string;
 }
 
 export interface MsgResize {
   type: 'resize';
+  officeId: string;
   agentId: string;
   cols: number;
   rows: number;
@@ -30,35 +33,41 @@ export interface MsgResize {
 export interface MsgKill {
   type: 'kill';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgAttach {
   type: 'attach';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgDetach {
   type: 'detach';
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgExists {
   type: 'exists';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgGetSessionId {
   type: 'get-session-id';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgPopOut {
   type: 'pop-out';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
@@ -69,23 +78,27 @@ export interface MsgShutdown {
 export interface MsgResetAllSessions {
   type: 'reset-all-sessions';
   requestId: string;
+  officeId: string;
 }
 
 export interface MsgResetSession {
   type: 'reset-session';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgGetSessionHistory {
   type: 'get-session-history';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgClearSessionHistory {
   type: 'clear-session-history';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
@@ -102,6 +115,7 @@ export interface MsgQueryAgentStatuses {
 export interface MsgSetSessionMeta {
   type: 'set-session-meta';
   requestId: string;
+  officeId: string;
   agentId: string;
   meta: { title?: string };
 }
@@ -109,12 +123,26 @@ export interface MsgSetSessionMeta {
 export interface MsgGetSessionMeta {
   type: 'get-session-meta';
   requestId: string;
+  officeId: string;
   agentId: string;
 }
 
 export interface MsgGetAllSessionMeta {
   type: 'get-all-session-meta';
   requestId: string;
+  officeId: string;
+}
+
+export interface MsgCreateOfficeSession {
+  type: 'create-office-session';
+  requestId: string;
+  officeId: string;
+}
+
+export interface MsgDeleteOfficeSession {
+  type: 'delete-office-session';
+  requestId: string;
+  officeId: string;
 }
 
 export type MainToServer =
@@ -136,7 +164,9 @@ export type MainToServer =
   | MsgQueryAgentStatuses
   | MsgSetSessionMeta
   | MsgGetSessionMeta
-  | MsgGetAllSessionMeta;
+  | MsgGetAllSessionMeta
+  | MsgCreateOfficeSession
+  | MsgDeleteOfficeSession;
 
 // ── Server → Main ───────────────────────────────────────────────
 

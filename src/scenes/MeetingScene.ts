@@ -6,6 +6,7 @@ import { InputManager } from '../input/InputManager';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PlanApprovalOverlay } from '../meeting/planApproval';
 import { parsePlanFromOutput } from '../meeting/planParser';
+import { officeManager } from '../office/officeManager';
 import { AGENTS } from '../config/agents';
 
 export class MeetingScene extends Phaser.Scene {
@@ -87,7 +88,7 @@ export class MeetingScene extends Phaser.Scene {
     this.planApproval = new PlanApprovalOverlay();
 
     // Create terminal overlay and auto-open Arthur's terminal
-    this.terminalOverlay = new TerminalOverlay(this, this.inputManager);
+    this.terminalOverlay = new TerminalOverlay(this, this.inputManager, () => officeManager.currentOfficeId || 'office-0');
 
     const arthur = AGENTS.find(a => a.id === 'architect');
     if (arthur) {
@@ -166,7 +167,7 @@ export class MeetingScene extends Phaser.Scene {
         console.log('[MeetingScene] Revision requested:', feedback);
         // Send feedback to Arthur's terminal
         if (window.copilotBridge) {
-          window.copilotBridge.terminalWrite('architect', feedback + '\r');
+          window.copilotBridge.terminalWrite(officeManager.currentOfficeId || 'office-0', 'architect', feedback + '\r');
         }
         // Reset plan detection for the revised output
         this.meetingPlan = null;

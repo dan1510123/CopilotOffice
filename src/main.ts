@@ -6,7 +6,7 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager } from './office/officeManager';
-import { AGENTS } from './config/agents';
+import { AGENTS, FLEET_AGENTS } from './config/agents';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
 import { NotificationSettingsPanel } from './ui/NotificationSettingsPanel';
@@ -14,6 +14,12 @@ import { NotificationSettingsPanel } from './ui/NotificationSettingsPanel';
 // ── State ────────────────────────────────────────────────────
 
 officeManager.ensureDefaultOffice();
+
+/** Return the agent list for the current office layout */
+function getCurrentAgents() {
+  const layout = officeManager.currentOffice?.config.layout ?? 'default';
+  return layout === 'fleet-vteam' ? FLEET_AGENTS : AGENTS;
+}
 
 function getCurrentAgentTools(): Map<string, { toolId: string; name: string; status: string }[]> {
   return officeManager.currentOffice?.agentTools || new Map();
@@ -532,7 +538,7 @@ function formatRelativeTime(timestamp: number): string {
 
 // Helper to find agent config by id
 function getAgentConfig(agentId: string) {
-  return AGENTS.find(a => a.id === agentId);
+  return getCurrentAgents().find(a => a.id === agentId) || AGENTS.find(a => a.id === agentId);
 }
 
 const notificationService = new NotificationService(
@@ -574,7 +580,7 @@ let cachedSessionMeta: Record<string, { title: string }> = {};
 // Fetch session meta from backend (fire-and-forget, updates cache + UI)
 function fetchSessionMeta() {
   if (!window.copilotBridge?.getAllSessionMeta) return;
-  window.copilotBridge.getAllSessionMeta().then(meta => {
+  window.copilotBridge.getAllSessionMeta(officeManager.currentOfficeId || 'office-0').then(meta => {
     cachedSessionMeta = meta || {};
     updateTerminalContent();
   }).catch(() => {});
@@ -604,9 +610,9 @@ function updateTerminalContentNow() {
       : 'No office selected';
   }
 
-  // Build cards from the static AGENTS config (always visible, not just when active)
+  // Build cards from the agent config for the current layout
   let html = '';
-  for (const agent of AGENTS) {
+  for (const agent of getCurrentAgents()) {
     const liveStatus = office?.agents.get(agent.id);
     const tools = agentTools.get(agent.id) || [];
 
@@ -851,7 +857,7 @@ function updateStatusBar() {
 function drawOverviewSprites() {
   setTimeout(() => {
     if (!phaserGameRef) return;
-    for (const agent of AGENTS) {
+    for (const agent of getCurrentAgents()) {
       const canvas = document.getElementById(`overview-sprite-${agent.id}`) as HTMLCanvasElement | null;
       if (!canvas) continue;
       const ctx = canvas.getContext('2d');
@@ -916,7 +922,7 @@ function startSessionMetaEdit(agentId: string) {
 
   if (titleEl) {
     replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
-      await window.copilotBridge.setSessionMeta(agentId, { title: value });
+      await window.copilotBridge.setSessionMeta(officeManager.currentOfficeId || 'office-0', agentId, { title: value });
       cachedSessionMeta[agentId] = { title: value };
       updateTerminalContent();
     });
@@ -1170,7 +1176,7 @@ async function syncAgentStatuses(): Promise<void> {
     const STARTING_TIMEOUT_MS = 60_000; // 1 minute timeout for stuck starting state
     const now = Date.now();
 
-    for (const agent of AGENTS) {
+    for (const agent of getCurrentAgents()) {
       const serverStatus = statuses[agent.id];
       const current = officeManager.getAgentStatus(officeId, agent.id);
 
@@ -1210,7 +1216,7 @@ async function syncAgentStatuses(): Promise<void> {
     }
 
     if (changed) {
-      for (const agent of AGENTS) {
+      for (const agent of getCurrentAgents()) {
         phaserGame?.events.emit('agent:status:changed', agent.id);
       }
       updateTerminalContent();
@@ -1234,7 +1240,7 @@ const ELAPSED_TICK_MS = 1000;
 setInterval(() => {
   const office = officeManager.currentOffice;
   if (!office) return;
-  for (const agent of AGENTS) {
+  for (const agent of getCurrentAgents()) {
     const status = office.agents.get(agent.id);
     // Update elapsed time badge
     if (status?.activityStartTime) {
@@ -1267,7 +1273,7 @@ function updateStatusBarNow() {
   const officeName = officeManager.currentOffice?.config.name || 'No Office';
 
   // Count per state
-  const slackingCount = AGENTS.length - agents.filter(a => a.state === 'active').length;
+  const slackingCount = getCurrentAgents().length - agents.filter(a => a.state === 'active').length;
   const startingCount = agents.filter(a => a.subState === 'starting').length;
   const readyCount = agents.filter(a => a.subState === 'ready').length;
   const waitingCount = agents.filter(a => a.subState === 'waiting').length;
@@ -1304,7 +1310,7 @@ function updateStatusBarNow() {
       const btn = document.getElementById('reset-sessions-btn') as HTMLButtonElement;
       if (btn) { btn.disabled = true; btn.textContent = '⟳ Resetting...'; }
       if (window.copilotBridge) {
-        await window.copilotBridge.resetAllSessions();
+        await window.copilotBridge.resetAllSessions(officeManager.currentOfficeId || 'office-0');
       }
       if (btn) { btn.disabled = false; btn.textContent = '⟳ Reset All Sessions'; }
     });

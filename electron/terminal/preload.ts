@@ -12,46 +12,46 @@ export interface CopilotEvent {
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
-  terminalStart: (agentId: string, workingDir?: string, cols?: number, rows?: number): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
-    return ipcRenderer.invoke('terminal-start', agentId, workingDir, cols, rows);
+  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
+    return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows);
   },
-  terminalWrite: (agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
-    return ipcRenderer.invoke('terminal-write', agentId, data);
+  terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('terminal-write', officeId, agentId, data);
   },
-  terminalResize: (agentId: string, cols: number, rows: number): Promise<{ success: boolean; error?: string }> => {
-    return ipcRenderer.invoke('terminal-resize', agentId, cols, rows);
+  terminalResize: (officeId: string, agentId: string, cols: number, rows: number): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('terminal-resize', officeId, agentId, cols, rows);
   },
-  terminalKill: (agentId: string): Promise<{ success: boolean; error?: string }> => {
-    return ipcRenderer.invoke('terminal-kill', agentId);
+  terminalKill: (officeId: string, agentId: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('terminal-kill', officeId, agentId);
   },
-  terminalExists: (agentId: string): Promise<boolean> => {
-    return ipcRenderer.invoke('terminal-exists', agentId);
+  terminalExists: (officeId: string, agentId: string): Promise<boolean> => {
+    return ipcRenderer.invoke('terminal-exists', officeId, agentId);
   },
-  terminalAttach: (agentId: string): Promise<{ success: boolean; scrollback?: string }> => {
-    return ipcRenderer.invoke('terminal-attach', agentId);
+  terminalAttach: (officeId: string, agentId: string): Promise<{ success: boolean; scrollback?: string }> => {
+    return ipcRenderer.invoke('terminal-attach', officeId, agentId);
   },
-  terminalDetach: (agentId: string): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('terminal-detach', agentId);
+  terminalDetach: (officeId: string, agentId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('terminal-detach', officeId, agentId);
   },
-  terminalPopOut: (agentId: string): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('terminal-pop-out', agentId);
+  terminalPopOut: (officeId: string, agentId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('terminal-pop-out', officeId, agentId);
   },
   
   // Session persistence (server is the single source of truth for session IDs)
-  getSessionId: (agentId: string): Promise<string | null> => {
-    return ipcRenderer.invoke('get-session-id', agentId);
+  getSessionId: (officeId: string, agentId: string): Promise<string | null> => {
+    return ipcRenderer.invoke('get-session-id', officeId, agentId);
   },
-  resetAllSessions: (): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('reset-all-sessions');
+  resetAllSessions: (officeId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('reset-all-sessions', officeId);
   },
-  resetSession: (agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
-    return ipcRenderer.invoke('terminal-reset-session', agentId);
+  resetSession: (officeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
+    return ipcRenderer.invoke('terminal-reset-session', officeId, agentId);
   },
-  getSessionHistory: (agentId: string): Promise<string[]> => {
-    return ipcRenderer.invoke('terminal-get-session-history', agentId);
+  getSessionHistory: (officeId: string, agentId: string): Promise<string[]> => {
+    return ipcRenderer.invoke('terminal-get-session-history', officeId, agentId);
   },
-  clearSessionHistory: (agentId: string): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('terminal-clear-session-history', agentId);
+  clearSessionHistory: (officeId: string, agentId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('terminal-clear-session-history', officeId, agentId);
   },
   listActiveTerminals: (): Promise<string[]> => {
     return ipcRenderer.invoke('list-active-terminals');
@@ -61,14 +61,22 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   
   // Session metadata
-  setSessionMeta: (agentId: string, meta: { title?: string }): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('set-session-meta', agentId, meta);
+  setSessionMeta: (officeId: string, agentId: string, meta: { title?: string }): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('set-session-meta', officeId, agentId, meta);
   },
-  getSessionMeta: (agentId: string): Promise<{ title: string } | null> => {
-    return ipcRenderer.invoke('get-session-meta', agentId);
+  getSessionMeta: (officeId: string, agentId: string): Promise<{ title: string } | null> => {
+    return ipcRenderer.invoke('get-session-meta', officeId, agentId);
   },
-  getAllSessionMeta: (): Promise<Record<string, { title: string }>> => {
-    return ipcRenderer.invoke('get-all-session-meta');
+  getAllSessionMeta: (officeId: string): Promise<Record<string, { title: string }>> => {
+    return ipcRenderer.invoke('get-all-session-meta', officeId);
+  },
+
+  // Office session file management
+  createOfficeSession: (officeId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('create-office-session', officeId);
+  },
+  deleteOfficeSession: (officeId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('delete-office-session', officeId);
   },
 
   // Office file persistence
@@ -150,24 +158,26 @@ declare global {
   
   interface Window {
     copilotBridge: {
-      terminalStart: (agentId: string, workingDir?: string, cols?: number, rows?: number) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
-      terminalWrite: (agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
-      terminalResize: (agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
-      terminalKill: (agentId: string) => Promise<{ success: boolean; error?: string }>;
-      terminalExists: (agentId: string) => Promise<boolean>;
-      terminalAttach: (agentId: string) => Promise<{ success: boolean; scrollback?: string }>;
-      terminalDetach: (agentId: string) => Promise<{ success: boolean }>;
-      terminalPopOut: (agentId: string) => Promise<{ success: boolean }>;
-      getSessionId: (agentId: string) => Promise<string | null>;
-      resetAllSessions: () => Promise<{ success: boolean }>;
-      resetSession: (agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
-      getSessionHistory: (agentId: string) => Promise<string[]>;
-      clearSessionHistory: (agentId: string) => Promise<{ success: boolean }>;
+      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
+      terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
+      terminalResize: (officeId: string, agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
+      terminalKill: (officeId: string, agentId: string) => Promise<{ success: boolean; error?: string }>;
+      terminalExists: (officeId: string, agentId: string) => Promise<boolean>;
+      terminalAttach: (officeId: string, agentId: string) => Promise<{ success: boolean; scrollback?: string }>;
+      terminalDetach: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
+      terminalPopOut: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
+      getSessionId: (officeId: string, agentId: string) => Promise<string | null>;
+      resetAllSessions: (officeId: string) => Promise<{ success: boolean }>;
+      resetSession: (officeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
+      getSessionHistory: (officeId: string, agentId: string) => Promise<string[]>;
+      clearSessionHistory: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       listActiveTerminals: () => Promise<string[]>;
       queryAgentStatuses: () => Promise<Record<string, { alive: boolean; ready: boolean }>>;
-      setSessionMeta: (agentId: string, meta: { title?: string }) => Promise<{ success: boolean }>;
-      getSessionMeta: (agentId: string) => Promise<{ title: string } | null>;
-      getAllSessionMeta: () => Promise<Record<string, { title: string }>>;
+      setSessionMeta: (officeId: string, agentId: string, meta: { title?: string }) => Promise<{ success: boolean }>;
+      getSessionMeta: (officeId: string, agentId: string) => Promise<{ title: string } | null>;
+      getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string }>>;
+      createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
+      deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;
@@ -182,6 +192,8 @@ declare global {
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
       showNativeNotification: (title: string, body: string) => Promise<{ success: boolean }>;
+      saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
+      loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;
     };
   }
 }

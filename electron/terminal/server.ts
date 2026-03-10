@@ -37,13 +37,38 @@ const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB
 const agentScrollbackBuffers: Map<string, string[]> = new Map();
 const agentScrollbackBytes: Map<string, number> = new Map();
 
-// Session persistence
+// Session persistence — per-office session files: .data/{officeId}.sessions.json
 const DATA_DIR = path.join(process.cwd(), '.data');
-const SESSION_FILE = path.join(DATA_DIR, 'copilot-office-sessions.json');
-let agentSessionIds: Map<string, string> = new Map();
-let agentSessionHistory: Map<string, string[]> = new Map();
-let agentSessionMeta: Map<string, { title: string }> = new Map();
-const hasAutoTitled: Set<string> = new Set();
+const OLD_SESSION_FILE = path.join(DATA_DIR, 'copilot-office-sessions.json');
+const OFFICES_FILE = path.join(DATA_DIR, 'copilot-offices.json');
+
+// Per-office session state
+interface OfficeSessionData {
+  sessionIds: Map<string, string>;          // agentId → current sessionId
+  sessionHistory: Map<string, string[]>;    // agentId → past sessionIds
+  sessionMeta: Map<string, { title: string }>; // agentId → metadata
+}
+
+const officeSessions: Map<string, OfficeSessionData> = new Map();
+const hasAutoTitled: Set<string> = new Set(); // keyed by `${officeId}:${agentId}`
+
+function getSessionFile(officeId: string): string {
+  return path.join(DATA_DIR, `${officeId}.sessions.json`);
+}
+
+function getOfficeSession(officeId: string): OfficeSessionData {
+  let data = officeSessions.get(officeId);
+  if (!data) {
+    data = { sessionIds: new Map(), sessionHistory: new Map(), sessionMeta: new Map() };
+    officeSessions.set(officeId, data);
+  }
+  return data;
+}
+
+// Composite key for PTY/runtime maps: `${officeId}:${agentId}`
+function compositeKey(officeId: string, agentId: string): string {
+  return `${officeId}:${agentId}`;
+}
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -70,67 +95,152 @@ function appendToScrollback(agentId: string, data: string): void {
   }
 }
 
-async function loadSessionIds(): Promise<void> {
+async function loadOfficeSessionFile(officeId: string): Promise<void> {
   try {
-    // Ensure .data/ directory exists
     await fs.promises.mkdir(DATA_DIR, { recursive: true });
-
-    const raw = await fs.promises.readFile(SESSION_FILE, 'utf8').catch(() => null);
+    const filePath = getSessionFile(officeId);
+    const raw = await fs.promises.readFile(filePath, 'utf8').catch(() => null);
+    const data = getOfficeSession(officeId);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // Migrate: old flat format → new { current, history } format
       if (parsed.current && typeof parsed.current === 'object') {
-        agentSessionIds = new Map(Object.entries(parsed.current));
-        agentSessionHistory = new Map(
+        data.sessionIds = new Map(Object.entries(parsed.current));
+        data.sessionHistory = new Map(
           Object.entries(parsed.history || {}).map(([k, v]) => [k, v as string[]])
         );
-        agentSessionMeta = new Map(
+        data.sessionMeta = new Map(
           Object.entries(parsed.metadata || {}).map(([k, v]) => [k, v as { title: string }])
         );
       } else {
         // Legacy flat format: { agentId: sessionId }
-        agentSessionIds = new Map(Object.entries(parsed));
-        agentSessionHistory = new Map();
-        agentSessionMeta = new Map();
-        // Persist migration immediately
-        await saveSessionIds();
+        data.sessionIds = new Map(Object.entries(parsed));
+        data.sessionHistory = new Map();
+        data.sessionMeta = new Map();
+        await saveOfficeSessionFile(officeId);
       }
-      console.log('[TermServer] Loaded saved sessions:', agentSessionIds.size, 'history entries:', agentSessionHistory.size, 'metadata entries:', agentSessionMeta.size);
+      console.log(`[TermServer] Loaded sessions for ${officeId}: ${data.sessionIds.size} current, ${data.sessionHistory.size} history`);
     }
   } catch (e) {
-    console.error('[TermServer] Failed to load session IDs:', e);
+    console.error(`[TermServer] Failed to load sessions for ${officeId}:`, e);
   }
 }
 
-async function saveSessionIds(): Promise<void> {
+async function saveOfficeSessionFile(officeId: string): Promise<void> {
   try {
     await fs.promises.mkdir(DATA_DIR, { recursive: true });
-    const data = {
-      current: Object.fromEntries(agentSessionIds),
-      history: Object.fromEntries(agentSessionHistory),
-      metadata: Object.fromEntries(agentSessionMeta),
+    const data = getOfficeSession(officeId);
+    const json = {
+      current: Object.fromEntries(data.sessionIds),
+      history: Object.fromEntries(data.sessionHistory),
+      metadata: Object.fromEntries(data.sessionMeta),
     };
-    await fs.promises.writeFile(SESSION_FILE, JSON.stringify(data, null, 2));
+    await fs.promises.writeFile(getSessionFile(officeId), JSON.stringify(json, null, 2));
   } catch (e) {
-    console.error('[TermServer] Failed to save session IDs:', e);
+    console.error(`[TermServer] Failed to save sessions for ${officeId}:`, e);
   }
 }
 
-function archiveSessionId(agentId: string): void {
-  const oldId = agentSessionIds.get(agentId);
+async function createEmptySessionFile(officeId: string): Promise<void> {
+  await fs.promises.mkdir(DATA_DIR, { recursive: true });
+  const filePath = getSessionFile(officeId);
+  try {
+    await fs.promises.access(filePath, fs.constants.F_OK);
+    // File already exists — load it instead of overwriting
+    await loadOfficeSessionFile(officeId);
+  } catch {
+    // File doesn't exist — create empty
+    const empty = { current: {}, history: {}, metadata: {} };
+    await fs.promises.writeFile(filePath, JSON.stringify(empty, null, 2));
+    getOfficeSession(officeId); // ensure in-memory entry
+    console.log(`[TermServer] Created empty session file for ${officeId}: ${filePath}`);
+  }
+}
+
+function archiveSessionId(officeId: string, agentId: string): void {
+  const data = getOfficeSession(officeId);
+  const oldId = data.sessionIds.get(agentId);
   if (oldId) {
-    const history = agentSessionHistory.get(agentId) || [];
+    const history = data.sessionHistory.get(agentId) || [];
     if (!history.includes(oldId)) {
       history.push(oldId);
-      agentSessionHistory.set(agentId, history);
+      data.sessionHistory.set(agentId, history);
     }
   }
 }
 
-function getTerminalKey(agentId: string): string | null {
-  const assignedKey = agentToTerminal.get(agentId);
+/** Migrate the old global session file to per-office files. */
+async function migrateGlobalSessionFile(): Promise<void> {
+  try {
+    const migratedMarker = OLD_SESSION_FILE + '.migrated';
+    // Skip if already migrated
+    try {
+      await fs.promises.access(migratedMarker, fs.constants.F_OK);
+      return;
+    } catch { /* not migrated yet */ }
+
+    // Check if old global file exists
+    let oldRaw: string | null = null;
+    try {
+      oldRaw = await fs.promises.readFile(OLD_SESSION_FILE, 'utf8');
+    } catch {
+      return; // no old file to migrate
+    }
+
+    // Load offices list to find the first office
+    let firstOfficeId = 'office-0';
+    try {
+      const officesRaw = await fs.promises.readFile(OFFICES_FILE, 'utf8');
+      const officesData = JSON.parse(officesRaw);
+      if (Array.isArray(officesData.offices) && officesData.offices.length > 0) {
+        // Use the first office in the array (index 0)
+        firstOfficeId = officesData.offices[0].id || 'office-0';
+      }
+    } catch { /* use default */ }
+
+    // Copy old sessions to first office's file
+    const firstOfficeFile = getSessionFile(firstOfficeId);
+    try {
+      await fs.promises.access(firstOfficeFile, fs.constants.F_OK);
+      // First office file already exists — don't overwrite
+    } catch {
+      await fs.promises.writeFile(firstOfficeFile, oldRaw);
+      console.log(`[TermServer] Migrated global sessions to ${firstOfficeFile}`);
+    }
+
+    // Rename old file as backup
+    await fs.promises.rename(OLD_SESSION_FILE, migratedMarker);
+    console.log(`[TermServer] Renamed old session file to ${migratedMarker}`);
+  } catch (e) {
+    console.error('[TermServer] Migration error:', e);
+  }
+}
+
+/** Load all per-office session files from .data/ directory. */
+async function loadAllOfficeSessions(): Promise<void> {
+  await fs.promises.mkdir(DATA_DIR, { recursive: true });
+
+  // Run migration first
+  await migrateGlobalSessionFile();
+
+  // Discover all *.sessions.json files
+  try {
+    const files = await fs.promises.readdir(DATA_DIR);
+    for (const file of files) {
+      const match = file.match(/^(.+)\.sessions\.json$/);
+      if (match) {
+        await loadOfficeSessionFile(match[1]);
+      }
+    }
+  } catch (e) {
+    console.error('[TermServer] Failed to scan session files:', e);
+  }
+}
+
+function getTerminalKey(officeId: string, agentId: string): string | null {
+  const ck = compositeKey(officeId, agentId);
+  const assignedKey = agentToTerminal.get(ck);
   if (assignedKey && ptyProcesses.has(assignedKey)) return assignedKey;
-  if (ptyProcesses.has(agentId)) return agentId;
+  if (ptyProcesses.has(ck)) return ck;
   return null;
 }
 
@@ -163,6 +273,7 @@ function killPtyProcess(proc: PtyProcess): void {
 // ── PTY Lifecycle ───────────────────────────────────────────────
 
 async function startTerminalForAgent(
+  officeId: string,
   agentId: string,
   workingDir?: string,
   cols?: number,
@@ -172,23 +283,26 @@ async function startTerminalForAgent(
     return { success: false, error: 'node-pty not available' };
   }
 
-  const existingTerminalKey = agentToTerminal.get(agentId);
+  const ck = compositeKey(officeId, agentId);
+
+  const existingTerminalKey = agentToTerminal.get(ck);
   if (existingTerminalKey && ptyProcesses.has(existingTerminalKey)) {
     const existing = ptyProcesses.get(existingTerminalKey)!;
     return { success: true, pid: existing.pid, sessionId: existing.sessionId, reused: true };
   }
 
-  let sessionId = agentSessionIds.get(agentId);
+  const officeData = getOfficeSession(officeId);
+  let sessionId = officeData.sessionIds.get(agentId);
   if (!sessionId) {
     sessionId = crypto.randomUUID();
-    agentSessionIds.set(agentId, sessionId);
-    await saveSessionIds();
-    console.log(`[TermServer] New session GUID for ${agentId}: ${sessionId}`);
+    officeData.sessionIds.set(agentId, sessionId);
+    await saveOfficeSessionFile(officeId);
+    console.log(`[TermServer] New session GUID for ${ck}: ${sessionId}`);
   } else {
-    console.log(`[TermServer] Reusing session GUID for ${agentId}: ${sessionId}`);
+    console.log(`[TermServer] Reusing session GUID for ${ck}: ${sessionId}`);
   }
 
-  const terminalKey = agentId;
+  const terminalKey = ck;
   const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
   let cwd = process.cwd();
   if (workingDir) {
@@ -222,9 +336,7 @@ async function startTerminalForAgent(
       workingDir,
     });
 
-    agentToTerminal.set(agentId, terminalKey);
-    agentSessionIds.set(agentId, sessionId);
-    await saveSessionIds();
+    agentToTerminal.set(ck, terminalKey);
 
     // Signal that the PTY is spawned and copilot CLI is starting
     send({ type: 'terminal-preload-status', agentId, status: 'preloading' });
@@ -233,17 +345,17 @@ async function startTerminalForAgent(
     // the renderer and render 'starting' before the watcher processes historical
     // events and potentially fires signalReady() (which sends 'ready').
     const watcher = new EventsWatcher(sessionId);
-    agentWatchers.set(agentId, watcher);
+    agentWatchers.set(ck, watcher);
 
     let hasSignalledReady = false;
     let skippedEventCount = 0;
-    agentReadyState.set(agentId, false);
+    agentReadyState.set(ck, false);
 
     const signalReady = () => {
       if (hasSignalledReady) return;
       hasSignalledReady = true;
-      agentReadyState.set(agentId, true);
-      console.log(`[TermServer] Agent ${agentId} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
+      agentReadyState.set(ck, true);
+      console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
       send({ type: 'terminal-preload-status', agentId, status: 'ready' });
     };
 
@@ -262,26 +374,26 @@ async function startTerminalForAgent(
 
       if (event.type === 'tool.execution_start') {
         const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
-        console.log(`[TermServer] Forwarding tool_start for ${agentId}: ${d.toolName}`);
+        console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName}`);
         send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
       } else if (event.type === 'tool.execution_complete') {
         const d = event.data as { toolCallId: string; success: boolean };
-        console.log(`[TermServer] Forwarding tool_complete for ${agentId}: ${d.toolCallId}`);
+        console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
         send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
       } else if (event.type === 'assistant.turn_end') {
-        console.log(`[TermServer] Forwarding turn_end for ${agentId}`);
+        console.log(`[TermServer] Forwarding turn_end for ${ck}`);
         send({ type: 'copilot-turn-end', agentId });
       } else if (event.type === 'assistant.turn_start') {
-        console.log(`[TermServer] Forwarding turn_start for ${agentId}`);
+        console.log(`[TermServer] Forwarding turn_start for ${ck}`);
         send({ type: 'copilot-turn-start', agentId });
       } else if (event.type === 'user.message') {
-        console.log(`[TermServer] Forwarding user_message for ${agentId}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
+        console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
         send({ type: 'copilot-user-message', agentId });
 
         // Auto-set session title from first user message if no title exists
-        if (!hasAutoTitled.has(agentId)) {
-          hasAutoTitled.add(agentId);
-          const existing = agentSessionMeta.get(agentId);
+        if (!hasAutoTitled.has(ck)) {
+          hasAutoTitled.add(ck);
+          const existing = officeData.sessionMeta.get(agentId);
           if (!existing?.title) {
             const d = event.data as Record<string, unknown>;
             const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
@@ -290,9 +402,9 @@ async function startTerminalForAgent(
               const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
               const meta = existing || { title: '' };
               meta.title = title;
-              agentSessionMeta.set(agentId, meta);
-              saveSessionIds();
-              console.log(`[TermServer] Auto-titled ${agentId}: "${title}"`);
+              officeData.sessionMeta.set(agentId, meta);
+              saveOfficeSessionFile(officeId);
+              console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
               send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
             }
           }
@@ -300,7 +412,7 @@ async function startTerminalForAgent(
       }
 
       // Only forward the verbose raw copilot-event when someone is viewing
-      if (activeAgentViewers.has(agentId)) {
+      if (activeAgentViewers.has(ck)) {
         send({ type: 'copilot-event', agentId, event });
       }
     };
@@ -317,20 +429,20 @@ async function startTerminalForAgent(
 
     const flushData = () => {
       flushTimer = null;
-      if (pendingData && activeAgentViewers.has(agentId)) {
+      if (pendingData && activeAgentViewers.has(ck)) {
         send({ type: 'terminal-data', agentId, data: pendingData });
       }
       pendingData = '';
     };
 
     proc.onData((data: string) => {
-      appendToScrollback(agentId, data);
+      appendToScrollback(ck, data);
       // Primary ready signal: "Environment loaded" in PTY output
       if (!hasSignalledReady && data.includes('Environment loaded')) {
-        console.log(`[TermServer] Primary ready signal for ${agentId}: "Environment loaded" detected`);
+        console.log(`[TermServer] Primary ready signal for ${ck}: "Environment loaded" detected`);
         signalReady();
       }
-      if (!activeAgentViewers.has(agentId)) return;
+      if (!activeAgentViewers.has(ck)) return;
       pendingData += data;
       if (pendingData.length >= MAX_PENDING_BYTES) {
         if (flushTimer) clearTimeout(flushTimer);
@@ -343,17 +455,17 @@ async function startTerminalForAgent(
     proc.onExit(({ exitCode }: { exitCode: number }) => {
       send({ type: 'terminal-exit', agentId, exitCode });
       ptyProcesses.delete(terminalKey);
-      activeAgentViewers.delete(agentId);
-      agentScrollbackBuffers.delete(agentId);
-      agentScrollbackBytes.delete(agentId);
-      agentReadyState.delete(agentId);
-      const w = agentWatchers.get(agentId);
-      if (w) { w.stop(); agentWatchers.delete(agentId); }
+      activeAgentViewers.delete(ck);
+      agentScrollbackBuffers.delete(ck);
+      agentScrollbackBytes.delete(ck);
+      agentReadyState.delete(ck);
+      const w = agentWatchers.get(ck);
+      if (w) { w.stop(); agentWatchers.delete(ck); }
     });
 
     // Start copilot CLI
     setTimeout(() => {
-      console.log(`[TermServer] Starting copilot --resume for ${agentId}: ${sessionId}`);
+      console.log(`[TermServer] Starting copilot --resume for ${ck}: ${sessionId}`);
       proc.write(`copilot --resume ${sessionId}\r`);
     }, 500);
 
@@ -368,42 +480,45 @@ async function startTerminalForAgent(
 async function handleMessage(msg: MainToServer): Promise<void> {
   switch (msg.type) {
     case 'start': {
-      activeAgentViewers.add(msg.agentId);
-      const result = await startTerminalForAgent(msg.agentId, msg.workingDir, msg.cols, msg.rows);
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      activeAgentViewers.add(ck);
+      const result = await startTerminalForAgent(msg.officeId, msg.agentId, msg.workingDir, msg.cols, msg.rows);
       send({ type: 'response', requestId: msg.requestId, result });
       break;
     }
 
     case 'write': {
-      const key = getTerminalKey(msg.agentId);
+      const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) proc.process.write(msg.data);
       break;
     }
 
     case 'resize': {
-      const key = getTerminalKey(msg.agentId);
+      const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) proc.process.resize(msg.cols, msg.rows);
       break;
     }
 
     case 'kill': {
-      const key = getTerminalKey(msg.agentId);
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
         try {
           killPtyProcess(proc);
           ptyProcesses.delete(key!);
-          agentToTerminal.delete(msg.agentId);
+          agentToTerminal.delete(ck);
           // Archive old session ID and clear it so next start generates a fresh one
-          archiveSessionId(msg.agentId);
-          agentSessionIds.delete(msg.agentId);
-          await saveSessionIds();
+          archiveSessionId(msg.officeId, msg.agentId);
+          const officeData = getOfficeSession(msg.officeId);
+          officeData.sessionIds.delete(msg.agentId);
+          await saveOfficeSessionFile(msg.officeId);
           // Stop event watcher
-          const w = agentWatchers.get(msg.agentId);
-          if (w) { w.stop(); agentWatchers.delete(msg.agentId); }
-          agentReadyState.delete(msg.agentId);
+          const w = agentWatchers.get(ck);
+          if (w) { w.stop(); agentWatchers.delete(ck); }
+          agentReadyState.delete(ck);
           send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         } catch (error) {
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
@@ -415,37 +530,42 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     }
 
     case 'attach': {
-      console.log(`[TermServer] Attaching viewer for ${msg.agentId}`);
-      activeAgentViewers.add(msg.agentId);
-      const chunks = agentScrollbackBuffers.get(msg.agentId) || [];
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      console.log(`[TermServer] Attaching viewer for ${ck}`);
+      activeAgentViewers.add(ck);
+      const chunks = agentScrollbackBuffers.get(ck) || [];
       const rawScrollback = chunks.join('');
       send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback: rawScrollback } });
       break;
     }
 
     case 'detach': {
-      console.log(`[TermServer] Detaching viewer for ${msg.agentId}`);
-      activeAgentViewers.delete(msg.agentId);
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      console.log(`[TermServer] Detaching viewer for ${ck}`);
+      activeAgentViewers.delete(ck);
       break;
     }
 
     case 'exists': {
-      send({ type: 'response', requestId: msg.requestId, result: getTerminalKey(msg.agentId) !== null });
+      send({ type: 'response', requestId: msg.requestId, result: getTerminalKey(msg.officeId, msg.agentId) !== null });
       break;
     }
 
     case 'get-session-id': {
-      send({ type: 'response', requestId: msg.requestId, result: agentSessionIds.get(msg.agentId) || null });
+      const officeData = getOfficeSession(msg.officeId);
+      send({ type: 'response', requestId: msg.requestId, result: officeData.sessionIds.get(msg.agentId) || null });
       break;
     }
 
     case 'pop-out': {
-      const sid = agentSessionIds.get(msg.agentId);
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      const officeData = getOfficeSession(msg.officeId);
+      const sid = officeData.sessionIds.get(msg.agentId);
       if (!sid) {
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'No session found for agent' } });
         break;
       }
-      const termKey = agentToTerminal.get(msg.agentId);
+      const termKey = agentToTerminal.get(ck);
       const ptyProc = termKey ? ptyProcesses.get(termKey) : null;
       let cwd = process.cwd();
       if (ptyProc?.workingDir) {
@@ -465,75 +585,94 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     }
 
     case 'reset-session': {
-      console.log(`[TermServer] Resetting session for ${msg.agentId}`);
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      console.log(`[TermServer] Resetting session for ${ck}`);
       // Kill PTY if alive
-      const resetKey = getTerminalKey(msg.agentId);
+      const resetKey = getTerminalKey(msg.officeId, msg.agentId);
       const resetProc = resetKey ? ptyProcesses.get(resetKey) : null;
       if (resetProc) {
         killPtyProcess(resetProc);
         ptyProcesses.delete(resetKey!);
-        agentToTerminal.delete(msg.agentId);
+        agentToTerminal.delete(ck);
       }
       // Stop event watcher
-      const resetWatcher = agentWatchers.get(msg.agentId);
-      if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(msg.agentId); }
-      agentReadyState.delete(msg.agentId);
+      const resetWatcher = agentWatchers.get(ck);
+      if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(ck); }
+      agentReadyState.delete(ck);
       // Clear scrollback
-      agentScrollbackBuffers.delete(msg.agentId);
-      agentScrollbackBytes.delete(msg.agentId);
-      activeAgentViewers.delete(msg.agentId);
+      agentScrollbackBuffers.delete(ck);
+      agentScrollbackBytes.delete(ck);
+      activeAgentViewers.delete(ck);
       // Clear session metadata
-      agentSessionMeta.delete(msg.agentId);
-      hasAutoTitled.delete(msg.agentId);
+      const officeDataReset = getOfficeSession(msg.officeId);
+      officeDataReset.sessionMeta.delete(msg.agentId);
+      hasAutoTitled.delete(ck);
       send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: '' } });
       // Archive old session ID and generate new one (but don't start PTY)
-      archiveSessionId(msg.agentId);
+      archiveSessionId(msg.officeId, msg.agentId);
       const newSessionId = crypto.randomUUID();
-      agentSessionIds.set(msg.agentId, newSessionId);
-      await saveSessionIds();
-      console.log(`[TermServer] Reset session for ${msg.agentId}: new GUID ${newSessionId}`);
+      officeDataReset.sessionIds.set(msg.agentId, newSessionId);
+      await saveOfficeSessionFile(msg.officeId);
+      console.log(`[TermServer] Reset session for ${ck}: new GUID ${newSessionId}`);
       send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: newSessionId } });
       break;
     }
 
     case 'get-session-history': {
-      const history = agentSessionHistory.get(msg.agentId) || [];
+      const officeData = getOfficeSession(msg.officeId);
+      const history = officeData.sessionHistory.get(msg.agentId) || [];
       send({ type: 'response', requestId: msg.requestId, result: history });
       break;
     }
 
     case 'clear-session-history': {
-      agentSessionHistory.delete(msg.agentId);
-      await saveSessionIds();
-      console.log(`[TermServer] Cleared session history for ${msg.agentId}`);
+      const officeData = getOfficeSession(msg.officeId);
+      officeData.sessionHistory.delete(msg.agentId);
+      await saveOfficeSessionFile(msg.officeId);
+      console.log(`[TermServer] Cleared session history for ${compositeKey(msg.officeId, msg.agentId)}`);
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
     }
 
     case 'reset-all-sessions': {
-      console.log('[TermServer] Resetting all sessions — killing PTYs and generating new GUIDs');
-      killAllPtyProcesses();
-      agentScrollbackBuffers.clear();
-      agentScrollbackBytes.clear();
-      agentSessionMeta.clear();
-      hasAutoTitled.clear();
-      // Notify renderer that all titles are cleared
-      for (const agentId of agentSessionIds.keys()) {
+      const officeId = msg.officeId;
+      console.log(`[TermServer] Resetting all sessions for ${officeId}`);
+      const officeData = getOfficeSession(officeId);
+      // Kill PTYs for this office
+      for (const agentId of officeData.sessionIds.keys()) {
+        const ck = compositeKey(officeId, agentId);
+        const key = agentToTerminal.get(ck);
+        if (key) {
+          const proc = ptyProcesses.get(key);
+          if (proc) {
+            killPtyProcess(proc);
+            ptyProcesses.delete(key);
+          }
+          agentToTerminal.delete(ck);
+        }
+        const w = agentWatchers.get(ck);
+        if (w) { w.stop(); agentWatchers.delete(ck); }
+        agentScrollbackBuffers.delete(ck);
+        agentScrollbackBytes.delete(ck);
+        agentReadyState.delete(ck);
+        activeAgentViewers.delete(ck);
+        hasAutoTitled.delete(ck);
         send({ type: 'session-meta-updated', agentId, meta: { title: '' } });
       }
-      // Regenerate a fresh GUID for every agent that had a session
-      for (const agentId of agentSessionIds.keys()) {
-        agentSessionIds.set(agentId, crypto.randomUUID());
+      officeData.sessionMeta.clear();
+      // Regenerate fresh GUIDs
+      for (const agentId of officeData.sessionIds.keys()) {
+        officeData.sessionIds.set(agentId, crypto.randomUUID());
       }
-      await saveSessionIds();
-      console.log('[TermServer] All sessions reset, new GUIDs saved');
+      await saveOfficeSessionFile(officeId);
+      console.log(`[TermServer] All sessions reset for ${officeId}`);
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
     }
 
     case 'list-active': {
-      const activeAgentIds = Array.from(agentToTerminal.keys()).filter(id => {
-        const key = agentToTerminal.get(id);
+      const activeAgentIds = Array.from(agentToTerminal.keys()).filter(ck => {
+        const key = agentToTerminal.get(ck);
         return key && ptyProcesses.has(key);
       });
       console.log(`[TermServer] Active terminals: ${activeAgentIds.join(', ') || '(none)'}`);
@@ -543,34 +682,55 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'query-agent-statuses': {
       const statuses: Record<string, { alive: boolean; ready: boolean }> = {};
-      for (const [agentId] of agentToTerminal) {
-        const key = agentToTerminal.get(agentId);
+      for (const [ck] of agentToTerminal) {
+        const key = agentToTerminal.get(ck);
         const alive = !!(key && ptyProcesses.has(key));
-        const ready = agentReadyState.get(agentId) ?? false;
-        statuses[agentId] = { alive, ready };
+        const ready = agentReadyState.get(ck) ?? false;
+        statuses[ck] = { alive, ready };
       }
       send({ type: 'response', requestId: msg.requestId, result: statuses });
       break;
     }
 
     case 'set-session-meta': {
-      const { agentId, meta } = msg as MsgSetSessionMeta;
-      const existing = agentSessionMeta.get(agentId) || { title: '' };
+      const { officeId, agentId, meta } = msg as MsgSetSessionMeta;
+      const officeData = getOfficeSession(officeId);
+      const existing = officeData.sessionMeta.get(agentId) || { title: '' };
       if (meta.title !== undefined) existing.title = meta.title;
-      agentSessionMeta.set(agentId, existing);
-      await saveSessionIds();
+      officeData.sessionMeta.set(agentId, existing);
+      await saveOfficeSessionFile(officeId);
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
     }
 
     case 'get-session-meta': {
-      const meta = agentSessionMeta.get((msg as MsgGetSessionMeta).agentId) || null;
+      const gmMsg = msg as MsgGetSessionMeta;
+      const officeData = getOfficeSession(gmMsg.officeId);
+      const meta = officeData.sessionMeta.get(gmMsg.agentId) || null;
       send({ type: 'response', requestId: msg.requestId, result: meta });
       break;
     }
 
     case 'get-all-session-meta': {
-      send({ type: 'response', requestId: msg.requestId, result: Object.fromEntries(agentSessionMeta) });
+      const officeData = getOfficeSession(msg.officeId);
+      send({ type: 'response', requestId: msg.requestId, result: Object.fromEntries(officeData.sessionMeta) });
+      break;
+    }
+
+    case 'create-office-session': {
+      await createEmptySessionFile(msg.officeId);
+      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
+    case 'delete-office-session': {
+      const filePath = getSessionFile(msg.officeId);
+      try {
+        await fs.promises.unlink(filePath);
+        officeSessions.delete(msg.officeId);
+        console.log(`[TermServer] Deleted session file for ${msg.officeId}`);
+      } catch { /* file may not exist */ }
+      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       break;
     }
 
@@ -595,7 +755,7 @@ async function main(): Promise<void> {
     console.error('[TermServer] Failed to load node-pty:', e);
   }
 
-  await loadSessionIds();
+  await loadAllOfficeSessions();
 
   // Listen for messages from parent
   process.on('message', (msg: MainToServer) => {
