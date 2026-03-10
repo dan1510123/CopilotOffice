@@ -556,6 +556,16 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const ck = compositeKey(msg.officeId, msg.agentId);
       console.log(`[TermServer] Attaching viewer for ${ck}`);
       activeAgentViewers.add(ck);
+
+      // If this is a transferred session, the PTY data callback closure captured the
+      // ORIGINAL composite key. We must also mark that key as having an active viewer,
+      // otherwise terminal output and copilot-event forwarding are silently dropped.
+      const termKey = agentToTerminal.get(ck);
+      if (termKey && termKey !== ck) {
+        activeAgentViewers.add(termKey);
+        console.log(`[TermServer] Also marking original key ${termKey} as active viewer (transferred session)`);
+      }
+
       const chunks = agentScrollbackBuffers.get(ck) || [];
       const rawScrollback = chunks.join('');
       send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback: rawScrollback } });
@@ -566,6 +576,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const ck = compositeKey(msg.officeId, msg.agentId);
       console.log(`[TermServer] Detaching viewer for ${ck}`);
       activeAgentViewers.delete(ck);
+      // Also remove original key if this was a transferred session
+      const termKey = agentToTerminal.get(ck);
+      if (termKey && termKey !== ck) {
+        activeAgentViewers.delete(termKey);
+      }
       break;
     }
 
