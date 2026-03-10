@@ -10,6 +10,7 @@ import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager, OfficeLayout } from '../office/officeManager';
 import { MeetingPlan } from '../meeting/types';
+import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
@@ -80,6 +81,7 @@ export class OfficeScene extends Phaser.Scene {
   private npcCollider?: Phaser.Physics.Arcade.Collider;
   private animating: boolean = false;
   private pendingWalkIns: number = 0;
+  private fleetVisualizer: FleetVisualizer | null = null;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -164,13 +166,16 @@ export class OfficeScene extends Phaser.Scene {
         console.log('[OfficeScene] Received meeting plan:', data.plan.plan);
         console.log('[OfficeScene] Tasks assigned:', data.plan.tasks.map(t => `${t.agentId}: ${t.title}`).join(', '));
 
+        // Remember the source office so Arthur's session can be transferred
+        const sourceOfficeId = officeManager.currentOfficeId || 'office-0';
+
         // Create a new Fleet V-Team office and switch to it
         const currentDir = officeManager.currentOffice?.config.workingDirectory ?? '.';
         const fleetOffice = officeManager.createOffice('Fleet V-Team #1', currentDir, 'fleet-vteam');
         console.log(`[OfficeScene] Created Fleet V-Team office: ${fleetOffice.config.id}`);
 
-        // Emit event so main.ts can update tabs and switch
-        this.game.events.emit('fleet:office:created', fleetOffice.config.id);
+        // Emit event so main.ts can update tabs, transfer Arthur's session, and switch
+        this.game.events.emit('fleet:office:created', fleetOffice.config.id, sourceOfficeId);
 
         const assignedAgentIds = data.plan.tasks.map(t => t.agentId);
         this.triggerAgentWalkIn(assignedAgentIds);
@@ -320,6 +325,49 @@ export class OfficeScene extends Phaser.Scene {
       const office = officeManager.getOffice(officeId);
       if (!office) return;
       this.rebuildLayout(office.config.layout ?? 'default');
+    }, this);
+
+    // ── Fleet visualizer events ───────────────────────────────────────────
+    this.game.events.on('fleet:spawn', (data: { count: number; agentIds: string[]; mappings: Map<string, { agentId: string; taskDescription: string }> }) => {
+      if (this.currentLayout !== 'fleet-vteam') {
+        this.rebuildLayout('fleet-vteam');
+      }
+      this.triggerAgentWalkIn(data.agentIds);
+      data.mappings.forEach((info) => {
+        const npc = this.npcs.find(n => n.config.id === info.agentId);
+        if (npc) {
+          npc.updateAgentStatus({
+            agentId: info.agentId,
+            state: 'active',
+            subState: 'starting',
+            thinkingDetail: info.taskDescription,
+            currentTool: null,
+          });
+        }
+      });
+    }, this);
+
+    this.game.events.on('fleet:agent:badge', (agentId: string, status: { agentId: string; state: 'slacking' | 'active'; subState: 'starting' | 'ready' | 'waiting' | 'thinking' | 'error' | null; thinkingDetail: string | null; currentTool: string | null }) => {
+      const npc = this.npcs.find(n => n.config.id === agentId);
+      if (npc) npc.updateAgentStatus(status);
+    }, this);
+
+    this.game.events.on('fleet:agent:exit', (agentId: string) => {
+      const npc = this.npcs.find(n => n.config.id === agentId);
+      if (!npc) return;
+      const entranceX = this.mapWidth * this.tileSize / 2;
+      const exitY = (this.mapHeight + 1) * this.tileSize;
+      npc.walkTo(entranceX, exitY, 120).then(() => {
+        npc.setVisible(false);
+      });
+    }, this);
+
+    this.game.events.on('fleet:agent:late-spawn', (agentId: string) => {
+      this.triggerAgentWalkIn([agentId]);
+    }, this);
+
+    this.game.events.on('fleet:complete', () => {
+      console.log('[OfficeScene] Fleet complete!');
     }, this);
 
     // DOM-level click on the game panel — guaranteed to fire even when Phaser input is inactive
@@ -1091,7 +1139,96 @@ export class OfficeScene extends Phaser.Scene {
     }
   }
 
-  /** Move assigned agent NPCs off-screen, then walk them in from the entrance to their desks. */
+  /**
+   * Build a conga-line waypoint path from the entrance to a seat around the fleet table.
+   * Agents take the shortest route: left stream (counter-clockwise) or right stream (clockwise).
+   *
+   * Fleet table: cols 6–14, rows 5–7.
+   * Perimeter rectangle: col 4 / col 16, row 3 / row 9.
+   * Entrance: (centerCol, mapHeight+1) → first waypoint at (centerCol, row 9).
+   */
+  private buildCongaPath(
+    seatGridX: number, seatGridY: number, tileSize: number,
+  ): { waypoints: { x: number; y: number }[]; stream: 'left' | 'right' } {
+    const toPixel = (col: number, row: number) => ({
+      x: col * tileSize + tileSize / 2,
+      y: row * tileSize + tileSize / 2,
+    });
+
+    // Perimeter corners (grid coords)
+    const perimTop = 3;
+    const perimBottom = 9;
+    const perimLeft = 4;
+    const perimRight = 16;
+    const tableCenterCol = 10;
+
+    // Determine which side of the table the seat is on
+    const isBottomSeat = seatGridY === 8;
+    const isTopSeat = seatGridY === 4;
+    const isLeftSeat = seatGridX === 5;
+    const isRightSeat = seatGridX === 15;
+
+    // Pick stream: left or right based on seat column
+    const stream: 'left' | 'right' = seatGridX <= tableCenterCol ? 'left' : 'right';
+
+    const waypoints: { x: number; y: number }[] = [];
+
+    // Starting waypoint: entrance at bottom center
+    const entranceCol = this.mapWidth / 2;
+    waypoints.push(toPixel(entranceCol, perimBottom));
+
+    if (stream === 'right') {
+      // RIGHT stream: entrance → right along row 9 → up col 16 → left along row 3
+      if (isBottomSeat) {
+        // Peel off along bottom path
+        waypoints.push(toPixel(seatGridX, perimBottom));
+      } else if (isRightSeat) {
+        // Walk to bottom-right corner, then up to peel-off row
+        waypoints.push(toPixel(perimRight, perimBottom));
+        waypoints.push(toPixel(perimRight, seatGridY));
+      } else if (isTopSeat) {
+        // Walk to bottom-right, up to top-right, then left to peel-off col
+        waypoints.push(toPixel(perimRight, perimBottom));
+        waypoints.push(toPixel(perimRight, perimTop));
+        waypoints.push(toPixel(seatGridX, perimTop));
+      }
+    } else {
+      // LEFT stream: entrance → left along row 9 → up col 4 → right along row 3
+      if (isBottomSeat) {
+        // Peel off along bottom path
+        waypoints.push(toPixel(seatGridX, perimBottom));
+      } else if (isLeftSeat) {
+        // Walk to bottom-left corner, then up to peel-off row
+        waypoints.push(toPixel(perimLeft, perimBottom));
+        waypoints.push(toPixel(perimLeft, seatGridY));
+      } else if (isTopSeat) {
+        // Walk to bottom-left, up to top-left, then right to peel-off col
+        waypoints.push(toPixel(perimLeft, perimBottom));
+        waypoints.push(toPixel(perimLeft, perimTop));
+        waypoints.push(toPixel(seatGridX, perimTop));
+      }
+    }
+
+    // Final waypoint: the seat itself
+    waypoints.push(toPixel(seatGridX, seatGridY));
+
+    return { waypoints, stream };
+  }
+
+  /**
+   * Compute the perimeter distance for a conga path (sum of waypoint-to-waypoint distances).
+   * Used to sort agents so that the farthest agent in each stream goes first.
+   */
+  private congaPathDistance(waypoints: { x: number; y: number }[]): number {
+    let dist = 0;
+    for (let i = 1; i < waypoints.length; i++) {
+      const dx = waypoints[i].x - waypoints[i - 1].x;
+      const dy = waypoints[i].y - waypoints[i - 1].y;
+      dist += Math.sqrt(dx * dx + dy * dy);
+    }
+    return dist;
+  }
+
   private triggerAgentWalkIn(agentIds: string[]): void {
     const entranceX = this.mapWidth * this.tileSize / 2;
     const startY = (this.mapHeight + 1) * this.tileSize;
@@ -1099,6 +1236,66 @@ export class OfficeScene extends Phaser.Scene {
     this.pendingWalkIns += agentIds.length;
     this.setAnimating(true);
 
+    // For fleet layouts, use conga-line paths around the table
+    if (this.currentLayout === 'fleet-vteam') {
+      // Build paths for each agent and tag with stream
+      const agentPaths: {
+        agentId: string;
+        npc: NPC;
+        waypoints: { x: number; y: number }[];
+        stream: 'left' | 'right';
+        distance: number;
+      }[] = [];
+
+      for (const agentId of agentIds) {
+        const npc = this.npcs.find(n => n.config.id === agentId);
+        if (!npc) {
+          this.pendingWalkIns--;
+          if (this.pendingWalkIns <= 0) this.setAnimating(false);
+          continue;
+        }
+        const { waypoints, stream } = this.buildCongaPath(
+          npc.config.position.x, npc.config.position.y, this.tileSize,
+        );
+        agentPaths.push({
+          agentId, npc, waypoints, stream,
+          distance: this.congaPathDistance(waypoints),
+        });
+      }
+
+      // Sort each stream: farthest peel-off first (so they don't block closer agents)
+      const leftStream = agentPaths
+        .filter(a => a.stream === 'left')
+        .sort((a, b) => b.distance - a.distance);
+      const rightStream = agentPaths
+        .filter(a => a.stream === 'right')
+        .sort((a, b) => b.distance - a.distance);
+
+      // Interleave left/right for balanced visual
+      const ordered: typeof agentPaths = [];
+      const maxLen = Math.max(leftStream.length, rightStream.length);
+      for (let i = 0; i < maxLen; i++) {
+        if (i < leftStream.length) ordered.push(leftStream[i]);
+        if (i < rightStream.length) ordered.push(rightStream[i]);
+      }
+
+      // Stagger and walk
+      const staggerMs = 400;
+      const walkSpeed = 150;
+      ordered.forEach((agent, index) => {
+        agent.npc.setPosition(entranceX, startY);
+        agent.npc.setVisible(true);
+
+        this.time.delayedCall(staggerMs * index, () => {
+          agent.npc.walkPath(agent.waypoints, walkSpeed).then(() => {
+            this.onAgentSeated(agent.npc, agent.agentId);
+          });
+        });
+      });
+      return;
+    }
+
+    // Default (non-fleet) walk-in: straight-line to desk
     agentIds.forEach((agentId, index) => {
       const npc = this.npcs.find(n => n.config.id === agentId);
       if (!npc) {
@@ -1107,39 +1304,38 @@ export class OfficeScene extends Phaser.Scene {
         return;
       }
 
-      // Desk position from agent config
       const deskX = npc.config.position.x * this.tileSize + this.tileSize / 2;
       const deskY = npc.config.position.y * this.tileSize + this.tileSize / 2;
 
-      // Move NPC off-screen at entrance (stagger horizontally so they don't overlap)
       const offsetX = (index - (agentIds.length - 1) / 2) * this.tileSize * 0.8;
       npc.setPosition(entranceX + offsetX, startY);
       npc.setVisible(true);
 
-      // Stagger walk-in by 600ms per agent
       this.time.delayedCall(600 * index, () => {
         npc.walkTo(deskX, deskY, 120).then(() => {
-          // Face the player (downward) on arrival
-          npc.setDirection(Direction.DOWN);
-          // Set "thinking" status badge on arrival
-          const officeId = officeManager.currentOfficeId;
-          if (officeId) {
-            officeManager.setAgentThinking(officeId, agentId, 'Working on task');
-            this.game.events.emit('agent:status:changed', agentId);
-          }
-          npc.updateAgentStatus({
-            agentId,
-            state: 'active',
-            subState: 'thinking',
-            thinkingDetail: 'Working on task',
-            currentTool: null,
-          });
-
-          this.pendingWalkIns--;
-          if (this.pendingWalkIns <= 0) this.setAnimating(false);
+          this.onAgentSeated(npc, agentId);
         });
       });
     });
+  }
+
+  /** Common arrival logic: face down, set thinking status, decrement walk-in counter. */
+  private onAgentSeated(npc: NPC, agentId: string): void {
+    npc.setDirection(Direction.DOWN);
+    const officeId = officeManager.currentOfficeId;
+    if (officeId) {
+      officeManager.setAgentThinking(officeId, agentId, 'Working on task');
+      this.game.events.emit('agent:status:changed', agentId);
+    }
+    npc.updateAgentStatus({
+      agentId,
+      state: 'active',
+      subState: 'thinking',
+      thinkingDetail: 'Working on task',
+      currentTool: null,
+    });
+    this.pendingWalkIns--;
+    if (this.pendingWalkIns <= 0) this.setAnimating(false);
   }
 
   /**

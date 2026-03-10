@@ -1163,9 +1163,20 @@ phaserGame.events.on('agent:reattached', (agentId: string) => {
 // Sync background music UI when music starts
 phaserGame.events.on('bgm:started', onBgmStarted);
 
-// When a Fleet V-Team office is created from a meeting, switch to it
-phaserGame.events.on('fleet:office:created', (officeId: string) => {
-  console.log(`[Office] Fleet V-Team office created: ${officeId}`);
+// When a Fleet V-Team office is created from a meeting, transfer Arthur's session and switch
+phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOfficeId?: string) => {
+  console.log(`[Office] Fleet V-Team office created: ${officeId} (source: ${sourceOfficeId ?? 'none'})`);
+
+  // Transfer Arthur's meeting session to the fleet office so it's accessible there
+  if (sourceOfficeId && window.copilotBridge?.transferSession) {
+    try {
+      const result = await window.copilotBridge.transferSession(sourceOfficeId, officeId, 'architect');
+      console.log(`[Office] Arthur session transfer: ${result.success ? 'OK' : result.error ?? 'failed'}`);
+    } catch (e) {
+      console.warn('[Office] Failed to transfer Arthur session:', e);
+    }
+  }
+
   switchToOffice(officeId);
 });
 

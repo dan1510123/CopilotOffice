@@ -79,6 +79,11 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('delete-office-session', officeId);
   },
 
+  // Transfer a session (ID, metadata, PTY alias) from one office to another
+  transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
+    return ipcRenderer.invoke('transfer-session', fromOfficeId, toOfficeId, agentId);
+  },
+
   // Office file persistence
   saveOffices: (data: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('save-offices', data);
@@ -178,6 +183,7 @@ declare global {
       getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string }>>;
       createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
+      transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;

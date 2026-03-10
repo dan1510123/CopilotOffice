@@ -146,6 +146,14 @@ export interface MsgDeleteOfficeSession {
   officeId: string;
 }
 
+export interface MsgTransferSession {
+  type: 'transfer-session';
+  requestId: string;
+  fromOfficeId: string;
+  toOfficeId: string;
+  agentId: string;
+}
+
 export type MainToServer =
   | MsgStart
   | MsgWrite
@@ -167,7 +175,8 @@ export type MainToServer =
   | MsgGetSessionMeta
   | MsgGetAllSessionMeta
   | MsgCreateOfficeSession
-  | MsgDeleteOfficeSession;
+  | MsgDeleteOfficeSession
+  | MsgTransferSession;
 
 // ── Server → Main ───────────────────────────────────────────────
 

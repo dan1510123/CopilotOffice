@@ -2,14 +2,20 @@ import { CardClickHandler } from '../types';
 
 /**
  * Click handler for the fleet v-team layout.
- * Clicking an agent card does nothing — fleet agents don't open terminals.
+ * Most fleet agents are read-only — clicking does nothing.
+ * Arthur (the Architect) is the exception: clicking his card opens a read-only terminal view.
  */
 export const fleetClickHandler: CardClickHandler = {
-  handleCardClick(_agentId, _context) {
-    // No-op: fleet agents do not open terminals
+  handleCardClick(agentId, context) {
+    if (agentId === 'architect') {
+      context.setSelectedAgent(agentId);
+      context.emitOpenTerminal(agentId);
+      return;
+    }
+    // No-op for other fleet agents
   },
 
   handleMetaPanelClick(_target, _agentId, _context) {
-    // No-op: fleet agents have no session metadata
+    // No-op: fleet agents have no session metadata panel
   },
 };

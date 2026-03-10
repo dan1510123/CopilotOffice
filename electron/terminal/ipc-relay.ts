@@ -314,5 +314,9 @@ export class TerminalRelay {
     ipcMain.handle('delete-office-session', (_event, officeId: string) =>
       this.request({ type: 'delete-office-session', requestId: this.id(), officeId })
     );
+
+    ipcMain.handle('transfer-session', (_event, fromOfficeId: string, toOfficeId: string, agentId: string) =>
+      this.request({ type: 'transfer-session', requestId: this.id(), fromOfficeId, toOfficeId, agentId })
+    );
   }
 }

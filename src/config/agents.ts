@@ -57,9 +57,28 @@ const FLEET_SEAT_POSITIONS: { x: number; y: number }[] = [
   { x: 15, y: 5.5 }, { x: 15, y: 6.5 },
 ];
 
-// Generate fleet agent configs deterministically from the name pool
+// Bottom-middle seat index (0-based) — reserved for Arthur the Architect
+const ARTHUR_FLEET_SEAT_INDEX = 7; // {x: 10, y: 8}
+
+// Generate fleet agent configs deterministically from the name pool.
+// The bottom-middle seat is reserved for Arthur (the Architect) so his
+// meeting session can carry over to the fleet office.
 export const FLEET_AGENTS: AgentConfig[] = FLEET_SEAT_POSITIONS.map((pos, i) => {
-  const name = FLEET_NAMES[i];
+  if (i === ARTHUR_FLEET_SEAT_INDEX) {
+    return {
+      id: 'architect',
+      name: 'Arthur',
+      skill: 'general',
+      sprite: 'npc_architect',
+      color: 0x1a1a2e,
+      position: pos,
+      greeting: "⚡ I am Arthur, The Architect. I designed this fleet's plan and I'm overseeing execution.",
+      description: 'The Architect',
+    };
+  }
+  // Adjust name index to skip the Arthur slot
+  const nameIndex = i < ARTHUR_FLEET_SEAT_INDEX ? i : i - 1;
+  const name = FLEET_NAMES[nameIndex];
   return {
     id: `fleet-${i + 1}`,
     name,

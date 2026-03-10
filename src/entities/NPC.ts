@@ -338,6 +338,13 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     });
   }
 
+  /** Walk through a series of waypoints sequentially. Each segment uses walkTo(). */
+  async walkPath(waypoints: { x: number; y: number }[], speed: number = 100): Promise<void> {
+    for (const wp of waypoints) {
+      await this.walkTo(wp.x, wp.y, speed);
+    }
+  }
+
   /** Update positions of name label, description, badge, indicator relative to NPC. */
   private updateAttachedPositions(): void {
     const x = this.x;

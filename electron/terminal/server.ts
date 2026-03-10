@@ -751,6 +751,44 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       break;
     }
 
+    case 'transfer-session': {
+      // Copy session ID, metadata, and scrollback from one office to another for a given agent.
+      // Also registers a PTY alias so the same terminal process is accessible under the new office key.
+      const fromData = getOfficeSession(msg.fromOfficeId);
+      const toData = getOfficeSession(msg.toOfficeId);
+      const sid = fromData.sessionIds.get(msg.agentId);
+      if (!sid) {
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'No session to transfer' } });
+        break;
+      }
+
+      // Copy session ID and metadata
+      toData.sessionIds.set(msg.agentId, sid);
+      const meta = fromData.sessionMeta.get(msg.agentId);
+      if (meta) toData.sessionMeta.set(msg.agentId, { ...meta });
+
+      // Register PTY alias: map the new composite key to the existing terminal key
+      const fromCk = compositeKey(msg.fromOfficeId, msg.agentId);
+      const toCk = compositeKey(msg.toOfficeId, msg.agentId);
+      const existingTermKey = agentToTerminal.get(fromCk);
+      if (existingTermKey && ptyProcesses.has(existingTermKey)) {
+        agentToTerminal.set(toCk, existingTermKey);
+        // Copy scrollback buffer so attach works from the new office
+        const scrollback = agentScrollbackBuffers.get(fromCk);
+        if (scrollback) agentScrollbackBuffers.set(toCk, [...scrollback]);
+        const bytes = agentScrollbackBytes.get(fromCk);
+        if (bytes !== undefined) agentScrollbackBytes.set(toCk, bytes);
+        // Copy ready state
+        const ready = agentReadyState.get(fromCk);
+        if (ready !== undefined) agentReadyState.set(toCk, ready);
+      }
+
+      await saveOfficeSessionFile(msg.toOfficeId);
+      console.log(`[TermServer] Transferred session for ${msg.agentId}: ${msg.fromOfficeId} → ${msg.toOfficeId} (sid=${sid})`);
+      send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: sid } });
+      break;
+    }
+
     case 'shutdown': {
       console.log('[TermServer] Shutdown requested');
       killAllPtyProcesses();
