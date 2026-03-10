@@ -1185,30 +1185,33 @@ phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOffi
 });
 
 // When fleet deploy is requested from the meeting room dialog
-phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string; prompt: string }) => {
-  console.log(`[Fleet] Deploy requested: "${data.officeName}" with prompt: "${data.prompt.slice(0, 80)}..."`);
+phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string; prompt: string; sourceOfficeId: string }) => {
+  console.log(`[Fleet] Deploy requested: "${data.officeName}" from office ${data.sourceOfficeId}`);
 
-  // 1. Create a new fleet-vteam office
+  // 1. Send /fleet command to Arthur's existing terminal in the source (meeting) office
+  try {
+    await window.copilotBridge?.terminalWrite(data.sourceOfficeId, 'architect', `/fleet ${data.prompt}\r`);
+    console.log('[Fleet] /fleet command sent to Arthur');
+  } catch (e) {
+    console.error('[Fleet] Error sending /fleet command:', e);
+  }
+
+  // 2. Create a new fleet-vteam office
   const fleetOffice = officeManager.createOffice(data.officeName, '.', 'fleet-vteam');
   const officeId = fleetOffice.config.id;
 
-  // 2. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
-  switchToOffice(officeId);
-
-  // 3. Start Arthur's terminal in the fleet office
-  try {
-    const result = await window.copilotBridge?.terminalStart(officeId, 'architect', '.', 120, 30);
-    if (result?.success) {
-      console.log(`[Fleet] Arthur terminal started (pid: ${result.pid})`);
-      // 4. Send the /fleet command with the user's prompt
-      await window.copilotBridge?.terminalWrite(officeId, 'architect', `/fleet ${data.prompt}\r`);
-      console.log('[Fleet] /fleet command sent to Arthur');
-    } else {
-      console.error('[Fleet] Failed to start Arthur terminal:', result?.error);
+  // 3. Transfer Arthur's session from the source office to the fleet office
+  if (window.copilotBridge?.transferSession) {
+    try {
+      const result = await window.copilotBridge.transferSession(data.sourceOfficeId, officeId, 'architect');
+      console.log(`[Fleet] Arthur session transfer: ${result.success ? 'OK' : 'failed'}`);
+    } catch (e) {
+      console.warn('[Fleet] Failed to transfer Arthur session:', e);
     }
-  } catch (e) {
-    console.error('[Fleet] Error starting fleet:', e);
   }
+
+  // 4. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
+  switchToOffice(officeId);
 });
 
 // Fleet status updates — update right panel dashboard

@@ -244,7 +244,11 @@ export class MeetingScene extends Phaser.Scene {
         return;
       }
       closeDialog();
-      this.game.events.emit('fleet:deploy-requested', { officeName, prompt });
+      // Emit deploy event with the source office ID so main.ts can write to existing terminal
+      const sourceOfficeId = officeManager.currentOfficeId || 'office-0';
+      this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId });
+      // Leave the meeting room
+      this.exitMeeting();
     });
 
     promptInput.focus();
