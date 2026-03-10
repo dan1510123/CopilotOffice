@@ -585,9 +585,9 @@ export class OfficeScene extends Phaser.Scene {
       placeAgentDesk(agent, deskX, deskY);
     });
     
-    // Boss desk at top center (3 tiles wide) with collision
+    // Boss desk at top center (3 tiles wide) with collision — shifted up half a tile
     const bossDeskX = this.mapWidth * this.tileSize / 2;
-    const bossDeskY = 2 * this.tileSize + this.tileSize/2;
+    const bossDeskY = 2 * this.tileSize;
     
     for (let i = -1; i <= 1; i++) {
       const bossPos = i === -1 ? 'l' : i === 1 ? 'r' : 'm';
@@ -599,6 +599,10 @@ export class OfficeScene extends Phaser.Scene {
         depthSortY: bossDeskY,
       });
     }
+
+    // Desktop PC on boss desk (centered)
+    const bossPC = addDecor(bossDeskX, bossDeskY - 2 * scale, 'desktop_pc');
+    bossPC.setDepth(ySortDepth(bossDeskY, worldH) + 0.1);
     
     // Boss chair (behind desk, decorative — keeps player spawn area clear)
     addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair')

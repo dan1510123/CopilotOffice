@@ -219,13 +219,12 @@ export class BootScene extends Phaser.Scene {
     deskGraphics.destroy();
 
     // === COMMUNAL DESK TILE VARIANTS (3×2 seamless large desk) ===
-    // These tile together so a 3×2 grid looks like one cohesive desk.
-    // Top row: back lip + surface, no front edge or legs
-    // Bottom row: surface + front edge, legs only at outer corners
-    // Left/right edges have a wood border; middle tiles are seamless on sides.
+    // 32×32px tiles that fill entire tile with no gap between rows.
+    // Top row: back lip + surface extending to bottom edge
+    // Bottom row: surface from top edge + front edge + legs at outer corners
 
     const DESK_W = 32;
-    const DESK_H = 30;
+    const DESK_H = 32;
     // Color palette (shared with standalone desk)
     const dkEdge   = 0x4a1e08;  // dark brown — edges, front lip
     const dkHighE  = 0x5a2e0e;  // edge highlight / shadow
@@ -247,110 +246,108 @@ export class BootScene extends Phaser.Scene {
       const isBot = pos[0] === 'b';
       const isLeft = pos[1] === 'l';
       const isRight = pos[1] === 'r';
-      const isMid = pos[1] === 'm';
 
-      // Horizontal extents: left-edge tiles start at x=1, right-edge at x=0..31
+      // Horizontal extents: left-edge tiles start at x=1, right-edge ends at x=31
       const xStart = isLeft ? 1 : 0;
       const xEnd = isRight ? 31 : 32;
       const xW = xEnd - xStart;
 
-      // --- TOP ROW: back lip (y=0..3) ---
       if (isTop) {
+        // === TOP ROW TILE (32×32): back lip at top, surface fills rest ===
+
+        // Back lip (y=0..3)
         g.fillStyle(dkEdge, 1);
         g.fillRect(xStart, 0, xW, 4);
         g.fillStyle(dkHighE, 1);
         g.fillRect(xStart, 0, xW, 1);
-      }
 
-      // --- SURFACE (y=4..21 for top row, y=0..21 for bottom row) ---
-      const surfY = isTop ? 4 : 0;
-      const surfH = isTop ? 18 : 22;
-      g.fillStyle(surface, 1);
-      g.fillRect(xStart, surfY, xW, surfH);
+        // Surface fills y=4..31 (28px — extends to bottom edge for seamless join)
+        g.fillStyle(surface, 1);
+        g.fillRect(xStart, 4, xW, 28);
 
-      // Surface highlight (inset by 1px only on outer edges)
-      const hiX = isLeft ? 2 : 0;
-      const hiW = xW - (isLeft ? 1 : 0) - (isRight ? 1 : 0);
-      const hiY = isTop ? 5 : 0;
-      const hiH = surfH - (isTop ? 2 : 1);
-      g.fillStyle(surfHi, 1);
-      g.fillRect(hiX, hiY, hiW, hiH);
+        // Surface highlight
+        const hiX = isLeft ? 2 : 0;
+        const hiW = xW - (isLeft ? 1 : 0) - (isRight ? 1 : 0);
+        g.fillStyle(surfHi, 1);
+        g.fillRect(hiX, 5, hiW, 26);
 
-      // Wood grain lines (continuous across tiles)
-      g.fillStyle(grain, 1);
-      const grainX = isLeft ? 3 : 0;
-      const grainW = xW - (isLeft ? 2 : 0) - (isRight ? 2 : 0);
-      if (isTop) {
+        // Wood grain lines (spread across full height)
+        g.fillStyle(grain, 1);
+        const grainX = isLeft ? 3 : 0;
+        const grainW = xW - (isLeft ? 2 : 0) - (isRight ? 2 : 0);
         g.fillRect(grainX, 7,  grainW, 1);
-        g.fillRect(grainX, 11, grainW, 1);
-        g.fillRect(grainX, 15, grainW, 1);
-        g.fillRect(grainX, 19, grainW, 1);
-      } else {
-        // Bottom row surface starts at y=0, offset grain to align with top row
-        g.fillRect(grainX, 3,  grainW, 1);
-        g.fillRect(grainX, 7, grainW, 1);
-        g.fillRect(grainX, 11, grainW, 1);
-        g.fillRect(grainX, 15, grainW, 1);
-        g.fillRect(grainX, 19, grainW, 1);
-      }
+        g.fillRect(grainX, 12, grainW, 1);
+        g.fillRect(grainX, 17, grainW, 1);
+        g.fillRect(grainX, 22, grainW, 1);
+        g.fillRect(grainX, 27, grainW, 1);
 
-      // Left edge highlight (only on left-column tiles)
-      if (isLeft) {
-        g.fillStyle(edgeHi, 1);
-        g.fillRect(1, surfY, 1, surfH);
-      }
-      // Top-of-surface highlight (only on top row)
-      if (isTop) {
+        // Left edge highlight
+        if (isLeft) {
+          g.fillStyle(edgeHi, 1);
+          g.fillRect(1, 4, 1, 28);
+        }
+        // Top-of-surface highlight
         g.fillStyle(edgeHi, 1);
         g.fillRect(xStart, 4, xW, 1);
-      }
-      // Right edge shadow (only on right-column tiles)
-      if (isRight) {
-        g.fillStyle(dkHighE, 1);
-        g.fillRect(30, surfY + 1, 1, surfH - 1);
-      }
+        // Right edge shadow
+        if (isRight) {
+          g.fillStyle(dkHighE, 1);
+          g.fillRect(30, 5, 1, 27);
+        }
 
-      // --- BOTTOM ROW: front edge + legs ---
-      if (isBot) {
+      } else {
+        // === BOTTOM ROW TILE (32×32): surface at top, front edge + legs at bottom ===
+
+        // Surface fills y=0..21 (22px — continues from top row seamlessly)
+        g.fillStyle(surface, 1);
+        g.fillRect(xStart, 0, xW, 22);
+
+        // Surface highlight
+        const hiX = isLeft ? 2 : 0;
+        const hiW = xW - (isLeft ? 1 : 0) - (isRight ? 1 : 0);
+        g.fillStyle(surfHi, 1);
+        g.fillRect(hiX, 0, hiW, 21);
+
+        // Wood grain lines
+        g.fillStyle(grain, 1);
+        const grainX = isLeft ? 3 : 0;
+        const grainW = xW - (isLeft ? 2 : 0) - (isRight ? 2 : 0);
+        g.fillRect(grainX, 3,  grainW, 1);
+        g.fillRect(grainX, 8,  grainW, 1);
+        g.fillRect(grainX, 13, grainW, 1);
+        g.fillRect(grainX, 18, grainW, 1);
+
+        // Left edge highlight
+        if (isLeft) {
+          g.fillStyle(edgeHi, 1);
+          g.fillRect(1, 0, 1, 22);
+        }
+        // Right edge shadow
+        if (isRight) {
+          g.fillStyle(dkHighE, 1);
+          g.fillRect(30, 0, 1, 22);
+        }
+
         // Front edge of tabletop (2px thick)
         g.fillStyle(dkEdge, 1);
         g.fillRect(xStart, 22, xW, 2);
 
-        // Dark space under desk
+        // Dark space under desk (y=24..31, 8px)
         g.fillStyle(underDesk, 1);
-        g.fillRect(xStart, 24, xW, 6);
+        g.fillRect(xStart, 24, xW, 8);
 
         // Legs only at outer corners
         if (isLeft) {
           g.fillStyle(legCol, 1);
-          g.fillRect(1, 24, 4, 6);
+          g.fillRect(1, 24, 4, 8);
           g.fillStyle(legHi, 1);
-          g.fillRect(4, 24, 1, 6);
+          g.fillRect(4, 24, 1, 8);
         }
         if (isRight) {
           g.fillStyle(legCol, 1);
-          g.fillRect(27, 24, 4, 6);
+          g.fillRect(27, 24, 4, 8);
           g.fillStyle(legShad, 1);
-          g.fillRect(27, 24, 1, 6);
-        }
-      } else {
-        // Top row: no front edge — surface continues to bottom seamlessly
-        // Fill remaining y=22..29 with surface continuation for seamless tiling
-        g.fillStyle(surface, 1);
-        g.fillRect(xStart, 22, xW, 8);
-        g.fillStyle(surfHi, 1);
-        g.fillRect(hiX, 22, hiW, 7);
-        // Continue grain
-        g.fillStyle(grain, 1);
-        g.fillRect(grainX, 23, grainW, 1);
-        g.fillRect(grainX, 27, grainW, 1);
-        if (isLeft) {
-          g.fillStyle(edgeHi, 1);
-          g.fillRect(1, 22, 1, 8);
-        }
-        if (isRight) {
-          g.fillStyle(dkHighE, 1);
-          g.fillRect(30, 22, 1, 8);
+          g.fillRect(27, 24, 1, 8);
         }
       }
 
@@ -606,6 +603,64 @@ export class BootScene extends Phaser.Scene {
     computerGraphics.fillRect(11, 27, 10, 1);
     computerGraphics.generateTexture('computer', 32, 32);
     computerGraphics.destroy();
+
+    // Desktop PC — 3/4 top-down view: monitor facing south + keyboard in front
+    // For the boss desk at the top of the office (player sits below/south)
+    {
+      const g = this.make.graphics({ x: 0, y: 0 });
+
+      // Monitor stand base (small rectangle on desk surface)
+      g.fillStyle(0x333333, 1);
+      g.fillRect(12, 14, 8, 2);
+
+      // Monitor stand neck
+      g.fillStyle(0x444444, 1);
+      g.fillRect(14, 10, 4, 4);
+
+      // Monitor body (back panel visible from above, slightly tilted)
+      g.fillStyle(0x2a2a2a, 1);
+      g.fillRect(4, 1, 24, 10);
+      // Monitor bezel top edge (silver)
+      g.fillStyle(0x888888, 1);
+      g.fillRect(4, 1, 24, 1);
+      g.fillRect(4, 1, 1, 10);
+      g.fillRect(27, 1, 1, 10);
+
+      // Screen (visible portion — we see it from above at an angle)
+      g.fillStyle(0x0d1b2a, 1);
+      g.fillRect(5, 2, 22, 8);
+      // Screen glow
+      g.fillStyle(0x1a3a5c, 1);
+      g.fillRect(6, 3, 20, 6);
+      // Code lines on screen
+      g.fillStyle(0x44ff88, 1);
+      g.fillRect(8,  3, 10, 1);
+      g.fillRect(8,  5, 14, 1);
+      g.fillRect(8,  7, 7,  1);
+
+      // Keyboard (in front of monitor, closer to player)
+      g.fillStyle(0x1a1a1a, 1);
+      g.fillRect(7, 18, 18, 8);
+      // Keyboard border highlight
+      g.fillStyle(0x333333, 1);
+      g.fillRect(7, 18, 18, 1);
+      // Key rows
+      g.fillStyle(0x383838, 1);
+      for (let k = 0; k < 7; k++) g.fillRect(8 + k * 2, 20, 1, 2);
+      for (let k = 0; k < 7; k++) g.fillRect(8 + k * 2, 23, 1, 2);
+
+      // Mouse (right side of keyboard)
+      g.fillStyle(0x2a2a2a, 1);
+      g.fillRect(27, 21, 4, 6);
+      g.fillStyle(0x383838, 1);
+      g.fillRect(27, 21, 4, 1);
+      // Mouse scroll wheel
+      g.fillStyle(0x555555, 1);
+      g.fillRect(28, 23, 2, 1);
+
+      g.generateTexture('desktop_pc', 32, 32);
+      g.destroy();
+    }
 
     // === Laptop — 4 directional sprites (3/4 top-down perspective) ===
     // Each shows an open laptop. The direction name indicates which way the SCREEN faces.
