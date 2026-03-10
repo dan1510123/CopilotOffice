@@ -781,7 +781,14 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // Copy ready state
         const ready = agentReadyState.get(fromCk);
         if (ready !== undefined) agentReadyState.set(toCk, ready);
+        // Share event watcher so copilot events forward under the new key too
+        const watcher = agentWatchers.get(fromCk);
+        if (watcher) agentWatchers.set(toCk, watcher);
       }
+
+      // Copy session history
+      const history = fromData.sessionHistory.get(msg.agentId);
+      if (history) toData.sessionHistory.set(msg.agentId, [...history]);
 
       await saveOfficeSessionFile(msg.toOfficeId);
       console.log(`[TermServer] Transferred session for ${msg.agentId}: ${msg.fromOfficeId} → ${msg.toOfficeId} (sid=${sid})`);

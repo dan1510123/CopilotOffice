@@ -1285,6 +1285,7 @@ export class OfficeScene extends Phaser.Scene {
       ordered.forEach((agent, index) => {
         agent.npc.setPosition(entranceX, startY);
         agent.npc.setVisible(true);
+        agent.npc.setBadgeVisible(false);
 
         this.time.delayedCall(staggerMs * index, () => {
           agent.npc.walkPath(agent.waypoints, walkSpeed).then(() => {
@@ -1322,6 +1323,7 @@ export class OfficeScene extends Phaser.Scene {
   /** Common arrival logic: face down, set thinking status, decrement walk-in counter. */
   private onAgentSeated(npc: NPC, agentId: string): void {
     npc.setDirection(Direction.DOWN);
+    npc.setBadgeVisible(true);
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
       officeManager.setAgentThinking(officeId, agentId, 'Working on task');

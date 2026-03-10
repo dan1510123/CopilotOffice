@@ -39,6 +39,7 @@ export class TerminalOverlay {
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private getOfficeId: () => string;
+  private isReadOnly: boolean = false;
 
   private static readonly STORAGE_KEY = 'agencyOffice:terminalFullWidth';
 
@@ -88,9 +89,10 @@ export class TerminalOverlay {
     }
   }
 
-  async show(agent: AgentConfig, onClose: () => void): Promise<void> {
+  async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean }): Promise<void> {
     this.currentAgentId = agent.id;
     this.onCloseCallback = onClose;
+    this.isReadOnly = options?.readOnly ?? false;
 
     // Store current agent for workingDir access
     this.currentAgent = agent;
@@ -113,14 +115,20 @@ export class TerminalOverlay {
       } catch (_) { /* ignore */ }
     }
     if (this.headerElement) {
+      const readOnlyBadge = this.isReadOnly ? ' <span style="color: #ffb86c; font-size: 12px; background: #332200; padding: 2px 8px; border-radius: 4px;">🔒 READ-ONLY</span>' : '';
+      const shortcutsText = this.isReadOnly
+        ? '[F10] Close  [Ctrl+F] Fullscreen'
+        : '[F10] Close  [Ctrl+Shift+N] New Session  [Ctrl+F] Fullscreen';
+      const headerLabel = this.isReadOnly ? `📜 Meeting with ${agent.name}` : `💬 Talking to ${agent.name}`;
       this.headerElement.innerHTML = `
         <div style="display: flex; align-items: center; gap: 15px;">
-          <span style="color: #00ff88; font-weight: bold; font-size: 18px;">💬 Talking to ${agent.name}${sessionTitleHtml}</span>
+          <span style="color: #00ff88; font-weight: bold; font-size: 18px;">${headerLabel}${sessionTitleHtml}</span>
+          ${readOnlyBadge}
           <span style="color: #ff88ff; font-size: 16px;">${inceptionBadge}</span>
           <span style="color: #888; font-size: 14px;">${agent.description}</span>
         </div>
         <div style="display: flex; align-items: center; gap: 15px;">
-          <span style="color: #666; font-size: 14px;">[F10] Close  [Ctrl+Shift+N] New Session  [Ctrl+F] Fullscreen</span>
+          <span style="color: #666; font-size: 14px;">${shortcutsText}</span>
           <button id="close-terminal-btn" style="background: #ff4444; border: none; color: white; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 16px;">✕ CLOSE</button>
         </div>
       `;
@@ -511,7 +519,7 @@ export class TerminalOverlay {
   }
 
   private async handleNewSession(): Promise<void> {
-    if (!this.currentAgentId || !this.currentAgent) return;
+    if (!this.currentAgentId || !this.currentAgent || this.isReadOnly) return;
     
     // Clear terminal
     this.terminal?.clear();
@@ -527,7 +535,7 @@ export class TerminalOverlay {
   }
 
   private async handleCloseSession(): Promise<void> {
-    if (!this.currentAgentId) return;
+    if (!this.currentAgentId || this.isReadOnly) return;
 
     try {
       const result = await withTimeout(
@@ -631,7 +639,7 @@ export class TerminalOverlay {
   }
 
   private async handleClearHistory(): Promise<void> {
-    if (!this.currentAgentId) return;
+    if (!this.currentAgentId || this.isReadOnly) return;
     try {
       await withTimeout(
         window.copilotBridge.clearSessionHistory(this.getOfficeId(), this.currentAgentId),
@@ -706,8 +714,9 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAddon.fit();
 
-    // Handle terminal input
+    // Handle terminal input (blocked in read-only mode)
     this.terminal.onData((data: string) => {
+      if (this.isReadOnly) return;
       if (this.currentAgentId && window.copilotBridge) {
         window.copilotBridge.terminalWrite(this.getOfficeId(), this.currentAgentId, data);
       }
@@ -874,6 +883,7 @@ export class TerminalOverlay {
       this.spriteCardElement.style.display = 'none';
     }
     this.isVisible = false;
+    this.isReadOnly = false;
     this.closeHistoryPopover();
 
     // Always restore half-width so the game is visible
