@@ -88,6 +88,7 @@ export class OfficeScene extends Phaser.Scene {
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
   private fleetSourceOfficeId: string | null = null;
+  private pendingLayoutSwitch: OfficeLayout | null = null;
   private cameraDrag: CameraDragController | null = null;
 
   constructor() {
@@ -156,6 +157,16 @@ export class OfficeScene extends Phaser.Scene {
 
       // MeetingScene may have nuked terminal IPC listeners — re-register them
       this.terminalOverlay.reattachListeners();
+
+      // Process deferred layout switch (e.g. fleet office created while in meeting room).
+      // rebuildLayout handles everything: fleet walk-ins, pipeline init, player visibility.
+      if (this.pendingLayoutSwitch !== null) {
+        const layout = this.pendingLayoutSwitch;
+        this.pendingLayoutSwitch = null;
+        console.log(`[OfficeScene] Processing deferred layout switch on wake: ${layout}`);
+        this.rebuildLayout(layout);
+        return;
+      }
       
       if (data?.plan) {
         // Fleet plan received — agents walk in first, player enters via Space/Enter after
@@ -370,10 +381,21 @@ export class OfficeScene extends Phaser.Scene {
         console.log(`[OfficeScene] Blocked office switch — animation in progress`);
         return;
       }
-      console.log(`[OfficeScene] Office switched to: ${officeId}`);
       const office = officeManager.getOffice(officeId);
       if (!office) return;
-      this.rebuildLayout(office.config.layout ?? 'default');
+      const newLayout = office.config.layout ?? 'default';
+
+      // If the scene is sleeping (e.g. MeetingScene is active), defer the rebuild.
+      // Tweens and timers don't execute on sleeping scenes, so rebuildLayout would
+      // leave fleet walk-ins frozen. The wake handler will process it instead.
+      if (this.scene.isSleeping('OfficeScene')) {
+        console.log(`[OfficeScene] Scene sleeping — deferring layout switch to: ${newLayout} (office: ${officeId})`);
+        this.pendingLayoutSwitch = newLayout;
+        return;
+      }
+
+      console.log(`[OfficeScene] Office switched to: ${officeId} (layout: ${newLayout})`);
+      this.rebuildLayout(newLayout);
     }, this);
 
     // ── Fleet visualizer events ───────────────────────────────────────────
