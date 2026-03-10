@@ -85,6 +85,7 @@ export class OfficeScene extends Phaser.Scene {
   private npcCollider?: Phaser.Physics.Arcade.Collider;
   private animating: boolean = false;
   private pendingWalkIns: number = 0;
+  private onAllWalkInsComplete?: () => void;
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
   private fleetSourceOfficeId: string | null = null;
@@ -195,7 +196,9 @@ export class OfficeScene extends Phaser.Scene {
           arthurNPC.updateAgentStatus(undefined); // Reset to slacking
         }
 
-        // Left meeting without a plan — seat non-Arthur agents instantly, Arthur walks in
+        // Left meeting without a plan — seat non-Arthur agents instantly, Arthur walks in.
+        // Hide all badges until Arthur is seated.
+        const seatedNpcs: NPC[] = [];
         for (const agent of AGENTS) {
           if (agent.id === 'architect') continue;
           const npc = this.npcs.find(n => n.config.id === agent.id);
@@ -205,8 +208,13 @@ export class OfficeScene extends Phaser.Scene {
           npc.setPosition(deskX, deskY);
           npc.setVisible(true);
           this.onAgentSeated(npc, agent.id);
+          npc.setBadgeVisible(false);
+          seatedNpcs.push(npc);
         }
-        this.triggerAgentWalkIn(['architect']);
+        const showAllBadges = () => {
+          seatedNpcs.forEach(n => n.setBadgeVisible(true));
+        };
+        this.triggerAgentWalkIn(['architect'], showAllBadges);
       }
     });
 
@@ -294,6 +302,7 @@ export class OfficeScene extends Phaser.Scene {
         min: 0.5,
         max: 2.0,
         defaultValue: 0.8,
+        worldBottomY: worldH,
         onChange: (zoom: number) => this.applyZoom(zoom),
       });
       this.cameraDrag = new CameraDragController(this, {
@@ -301,6 +310,7 @@ export class OfficeScene extends Phaser.Scene {
         worldHeight: worldH,
         tileSize: this.tileSize,
         bufferTiles: cameraBufTiles,
+        excludeObjects: () => this.zoomBar?.getInteractiveObjects() ?? [],
       });
       // Drag starts disabled; applyZoom will enable it when zoom is high enough
     }
@@ -1289,7 +1299,8 @@ export class OfficeScene extends Phaser.Scene {
     return dist;
   }
 
-  private triggerAgentWalkIn(agentIds: string[]): void {
+  private triggerAgentWalkIn(agentIds: string[], onAllSeated?: () => void): void {
+    this.onAllWalkInsComplete = onAllSeated;
     const entranceX = this.mapWidth * this.tileSize / 2;
     const startY = (this.mapHeight + 1) * this.tileSize;
 
@@ -1397,7 +1408,11 @@ export class OfficeScene extends Phaser.Scene {
       currentTool: null,
     });
     this.pendingWalkIns--;
-    if (this.pendingWalkIns <= 0) this.setAnimating(false);
+    if (this.pendingWalkIns <= 0) {
+      this.setAnimating(false);
+      this.onAllWalkInsComplete?.();
+      this.onAllWalkInsComplete = undefined;
+    }
   }
 
   /**
@@ -1840,6 +1855,9 @@ export class OfficeScene extends Phaser.Scene {
         this.cameraDrag?.resetPan();
       }
     }
+
+    // Keep zoom bar positioned below office
+    this.zoomBar?.updatePosition();
   }
 
   private startConversation(agent: AgentConfig): void {

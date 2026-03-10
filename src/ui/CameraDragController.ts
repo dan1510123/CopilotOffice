@@ -6,6 +6,8 @@ export interface CameraDragConfig {
   tileSize: number;
   /** Extra tiles of padding beyond room edges where camera can pan. Default 1. */
   bufferTiles?: number;
+  /** Game objects that should NOT trigger camera drag (e.g. zoom bar elements). */
+  excludeObjects?: () => Phaser.GameObjects.GameObject[];
 }
 
 /**
@@ -41,9 +43,11 @@ export class CameraDragController {
   private onPointerDown: ((p: Phaser.Input.Pointer) => void) | null = null;
   private onPointerMove: ((p: Phaser.Input.Pointer) => void) | null = null;
   private onPointerUp: ((p: Phaser.Input.Pointer) => void) | null = null;
+  private excludeObjects: (() => Phaser.GameObjects.GameObject[]) | null = null;
 
   constructor(scene: Phaser.Scene, config: CameraDragConfig) {
     this.scene = scene;
+    this.excludeObjects = config.excludeObjects ?? null;
 
     const buffer = (config.bufferTiles ?? 1) * config.tileSize;
     this.bufferPx = buffer;
@@ -58,8 +62,13 @@ export class CameraDragController {
   private wirePointerEvents(): void {
     this.onPointerDown = (pointer: Phaser.Input.Pointer) => {
       if (!this.enabled) return;
-      // Only respond to left-button (button 0) or touch
       if (pointer.button !== 0) return;
+      // Don't start drag if pointer is over an excluded object (e.g. zoom bar)
+      if (this.excludeObjects) {
+        const excluded = this.excludeObjects();
+        const overObjects = this.scene.input.hitTestPointer(pointer);
+        if (overObjects.some(obj => excluded.includes(obj))) return;
+      }
       this.pointerDown = true;
       this.didDrag = false;
       this.dragStartX = pointer.x;

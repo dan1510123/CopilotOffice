@@ -7,12 +7,14 @@ export interface ZoomBarConfig {
   min: number;
   max: number;
   defaultValue: number;
+  /** World-space Y of the office floor bottom. Bar renders just below this. */
+  worldBottomY: number;
   onChange: (zoom: number) => void;
 }
 
 /**
- * Phaser-rendered zoom slider bar, fixed to the bottom-center of the camera viewport.
- * Supports handle drag, click-to-jump, and scroll wheel.
+ * Phaser-rendered zoom slider bar positioned just below the office floor.
+ * Supports handle drag, click-to-jump, scroll wheel, and +/- buttons.
  * Persists zoom level to localStorage.
  */
 export class ZoomBar {
@@ -23,6 +25,8 @@ export class ZoomBar {
   private handle!: Phaser.GameObjects.Arc;
   private label!: Phaser.GameObjects.Text;
   private bgPill!: Phaser.GameObjects.Rectangle;
+  private minusBtn!: Phaser.GameObjects.Text;
+  private plusBtn!: Phaser.GameObjects.Text;
 
   private config: ZoomBarConfig;
   private value: number;
@@ -33,7 +37,8 @@ export class ZoomBar {
   private readonly trackWidth = 140;
   private readonly trackHeight = 6;
   private readonly handleRadius = 7;
-  private readonly bottomMargin = 24;
+  private readonly offsetBelowOffice = 16;
+  private readonly btnSpacing = 22;
   private saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(scene: Phaser.Scene, config: ZoomBarConfig) {
@@ -41,7 +46,6 @@ export class ZoomBar {
     this.config = config;
     this.value = this.loadSavedZoom() ?? config.defaultValue;
     this.create();
-    // Notify initial zoom value
     this.config.onChange(this.value);
   }
 
@@ -67,92 +71,110 @@ export class ZoomBar {
   }
 
   private create(): void {
-    const cam = this.scene.cameras.main;
-    const cx = cam.width / 2;
-    const cy = cam.height - this.bottomMargin;
+    const cy = this.config.worldBottomY + this.offsetBelowOffice;
 
-    // Container is fixed to viewport
     this.container = this.scene.add.container(0, 0);
     this.container.setDepth(Depths.ZOOM_BAR);
-    this.container.setScrollFactor(0);
 
-    // Semi-transparent background pill
-    const pillWidth = this.trackWidth + 80;
+    const totalWidth = this.trackWidth + this.btnSpacing * 2 + 60;
     const pillHeight = 28;
-    this.bgPill = this.scene.add.rectangle(cx, cy, pillWidth, pillHeight, 0x000000, 0.45);
+
+    // Semi-transparent background pill (position updated in updatePosition)
+    this.bgPill = this.scene.add.rectangle(0, cy, totalWidth, pillHeight, 0x000000, 0.45);
     this.bgPill.setStrokeStyle(1, 0x444466, 0.4);
     this.container.add(this.bgPill);
 
+    // Minus button
+    this.minusBtn = this.scene.add.text(0, cy, '\u2212', {
+      font: 'bold 16px monospace',
+      color: '#aaaacc',
+      backgroundColor: '#222233',
+      padding: { x: 4, y: 1 },
+    });
+    this.minusBtn.setOrigin(0.5, 0.5);
+    this.container.add(this.minusBtn);
+
     // Track
-    const trackLeft = cx - this.trackWidth / 2;
-    this.track = this.scene.add.rectangle(cx, cy, this.trackWidth, this.trackHeight, 0x333344);
+    this.track = this.scene.add.rectangle(0, cy, this.trackWidth, this.trackHeight, 0x333344);
     this.track.setStrokeStyle(1, 0x555566);
     this.container.add(this.track);
 
     // Fill (left portion of the track)
-    this.fill = this.scene.add.rectangle(trackLeft, cy, 0, this.trackHeight - 2, 0x4488cc, 0.6);
+    this.fill = this.scene.add.rectangle(0, cy, 0, this.trackHeight - 2, 0x4488cc, 0.6);
     this.fill.setOrigin(0, 0.5);
     this.container.add(this.fill);
 
     // Handle (circle)
-    const handleX = this.valueToX(this.value, cx);
-    this.handle = this.scene.add.circle(handleX, cy, this.handleRadius, 0xffffff);
+    this.handle = this.scene.add.circle(0, cy, this.handleRadius, 0xffffff);
     this.handle.setStrokeStyle(2, 0x88aadd, 0.8);
     this.container.add(this.handle);
 
+    // Plus button
+    this.plusBtn = this.scene.add.text(0, cy, '+', {
+      font: 'bold 16px monospace',
+      color: '#aaaacc',
+      backgroundColor: '#222233',
+      padding: { x: 4, y: 1 },
+    });
+    this.plusBtn.setOrigin(0.5, 0.5);
+    this.container.add(this.plusBtn);
+
     // Percentage label
-    this.label = this.scene.add.text(cx + this.trackWidth / 2 + 14, cy, this.formatLabel(), {
+    this.label = this.scene.add.text(0, cy, this.formatLabel(), {
       font: '11px monospace',
       color: '#aaaacc',
     });
     this.label.setOrigin(0, 0.5);
     this.container.add(this.label);
 
-    // Update fill to match initial value
-    this.updateVisuals(cx);
+    // Position everything correctly
+    this.updatePosition();
+    this.updateVisuals();
 
     // --- Interactions ---
 
-    // Make handle interactive (drag)
     this.handle.setInteractive({ draggable: true, useHandCursor: true });
     this.scene.input.setDraggable(this.handle);
 
-    this.handle.on('dragstart', () => {
-      this.dragging = true;
-    });
-
+    this.handle.on('dragstart', () => { this.dragging = true; });
     this.handle.on('drag', (_pointer: Phaser.Input.Pointer, dragX: number) => {
-      this.setValueFromX(dragX, cam.width / 2);
+      this.setValueFromX(dragX);
     });
+    this.handle.on('dragend', () => { this.dragging = false; });
 
-    this.handle.on('dragend', () => {
-      this.dragging = false;
-    });
-
-    // Make track interactive (click-to-jump)
+    // Click-to-jump on track
     this.track.setInteractive({ useHandCursor: true });
     this.track.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      // pointer.x is in camera coords since scrollFactor=0
-      this.setValueFromX(pointer.x, cam.width / 2);
+      const wp = this.scene.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      this.setValueFromX(wp.x);
     });
 
-    // Also make background pill clickable for easier targeting
+    // Background pill click within track range
     this.bgPill.setInteractive({ useHandCursor: true });
     this.bgPill.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      // Only respond if click is within horizontal track range
-      const trackLeft2 = cam.width / 2 - this.trackWidth / 2;
-      const trackRight2 = cam.width / 2 + this.trackWidth / 2;
-      if (pointer.x >= trackLeft2 && pointer.x <= trackRight2) {
-        this.setValueFromX(pointer.x, cam.width / 2);
+      const wp = this.scene.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const cxNow = this.track.x;
+      const tLeft = cxNow - this.trackWidth / 2;
+      const tRight = cxNow + this.trackWidth / 2;
+      if (wp.x >= tLeft && wp.x <= tRight) {
+        this.setValueFromX(wp.x);
       }
     });
 
-    // Scroll wheel over the bar area
+    // +/- buttons (10% increments)
+    this.minusBtn.setInteractive({ useHandCursor: true });
+    this.minusBtn.on('pointerdown', () => { this.setValue(this.value - 0.1); });
+
+    this.plusBtn.setInteractive({ useHandCursor: true });
+    this.plusBtn.on('pointerdown', () => { this.setValue(this.value + 0.1); });
+
+    // Scroll wheel near the bar
     this.scene.input.on('wheel', (_pointer: Phaser.Input.Pointer, _gos: unknown[], _dx: number, dy: number) => {
-      // Only respond if pointer is near the bar
       const ptr = this.scene.input.activePointer;
-      if (Math.abs(ptr.y - cy) < 30 &&
-          Math.abs(ptr.x - cx) < (this.trackWidth / 2 + 40)) {
+      const wp = this.scene.cameras.main.getWorldPoint(ptr.x, ptr.y);
+      const barY = this.config.worldBottomY + this.offsetBelowOffice;
+      const barX = this.track.x;
+      if (Math.abs(wp.y - barY) < 30 && Math.abs(wp.x - barX) < (this.trackWidth / 2 + 50)) {
         const step = 0.05;
         const delta = dy > 0 ? -step : step;
         this.setValue(Phaser.Math.Clamp(this.value + delta, this.config.min, this.config.max));
@@ -160,36 +182,53 @@ export class ZoomBar {
     });
   }
 
-  private valueToX(val: number, centerX: number): number {
-    const t = (val - this.config.min) / (this.config.max - this.config.min);
-    return centerX - this.trackWidth / 2 + t * this.trackWidth;
+  /** Reposition the bar centered below the office. Call after zoom/scroll changes. */
+  updatePosition(): void {
+    const cam = this.scene.cameras.main;
+    const cx = cam.scrollX + (cam.width / cam.zoom) / 2;
+    const cy = this.config.worldBottomY + this.offsetBelowOffice;
+
+    this.bgPill.setPosition(cx, cy);
+    this.track.setPosition(cx, cy);
+    this.minusBtn.setPosition(cx - this.trackWidth / 2 - this.btnSpacing, cy);
+    this.plusBtn.setPosition(cx + this.trackWidth / 2 + this.btnSpacing, cy);
+    this.label.setPosition(cx + this.trackWidth / 2 + this.btnSpacing + 22, cy);
+
+    this.updateVisuals();
   }
 
-  private xToValue(x: number, centerX: number): number {
-    const trackLeft = centerX - this.trackWidth / 2;
+  private valueToX(val: number): number {
+    const cx = this.track.x;
+    const t = (val - this.config.min) / (this.config.max - this.config.min);
+    return cx - this.trackWidth / 2 + t * this.trackWidth;
+  }
+
+  private xToValue(x: number): number {
+    const cx = this.track.x;
+    const trackLeft = cx - this.trackWidth / 2;
     const t = Phaser.Math.Clamp((x - trackLeft) / this.trackWidth, 0, 1);
     return this.config.min + t * (this.config.max - this.config.min);
   }
 
-  private setValueFromX(x: number, centerX: number): void {
-    this.setValue(this.xToValue(x, centerX));
+  private setValueFromX(x: number): void {
+    this.setValue(this.xToValue(x));
   }
 
   private setValue(newValue: number): void {
     const clamped = Phaser.Math.Clamp(newValue, this.config.min, this.config.max);
-    // Snap to nice increments (round to 0.05)
-    this.value = Math.round(clamped * 20) / 20;
-    this.updateVisuals(this.scene.cameras.main.width / 2);
+    this.value = Math.round(clamped * 10) / 10;
+    this.updateVisuals();
     this.config.onChange(this.value);
     this.saveZoom();
   }
 
-  private updateVisuals(centerX: number): void {
-    const handleX = this.valueToX(this.value, centerX);
+  private updateVisuals(): void {
+    const handleX = this.valueToX(this.value);
     this.handle.setX(handleX);
+    this.handle.setY(this.track.y);
 
-    const trackLeft = centerX - this.trackWidth / 2;
-    this.fill.setX(trackLeft);
+    const trackLeft = this.track.x - this.trackWidth / 2;
+    this.fill.setPosition(trackLeft, this.track.y);
     this.fill.width = handleX - trackLeft;
 
     this.label.setText(this.formatLabel());
@@ -205,6 +244,11 @@ export class ZoomBar {
 
   isDragging(): boolean {
     return this.dragging;
+  }
+
+  /** Returns all interactive game objects owned by this bar (for hit-test exclusion). */
+  getInteractiveObjects(): Phaser.GameObjects.GameObject[] {
+    return [this.handle, this.track, this.bgPill, this.minusBtn, this.plusBtn];
   }
 
   show(): void {
@@ -228,6 +272,8 @@ export class ZoomBar {
     this.handle.off('dragend');
     this.track.off('pointerdown');
     this.bgPill.off('pointerdown');
+    this.minusBtn.off('pointerdown');
+    this.plusBtn.off('pointerdown');
     this.container.destroy(true);
   }
 }
