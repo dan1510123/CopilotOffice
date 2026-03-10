@@ -616,7 +616,7 @@ function updateTerminalContentNow() {
     const metaTitle = meta?.title || '';
     const sessionPanelHtml = hasSession ? `
       <div class="session-meta-panel" data-agent="${agent.id}" style="
-        flex-shrink: 0; width: 220px;
+        flex: 2; min-width: 0;
         border-left: 1px solid #252540;
         padding-left: 14px;
         display: flex; flex-direction: column; gap: 6px;
@@ -640,7 +640,7 @@ function updateTerminalContentNow() {
       </div>
     ` : `
       <div style="
-        flex-shrink: 0; width: 220px;
+        flex: 2; min-width: 0;
         border-left: 1px solid #1a1a30;
         padding-left: 14px;
         display: flex; flex-direction: column;
@@ -687,7 +687,7 @@ function updateTerminalContentNow() {
             style="image-rendering: pixelated; width: 64px; height: 68px; display: block;"
           ></canvas>
         </div>
-        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+        <div style="flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
           <div>
             <div style="font-weight: bold; color: #dde; font-size: 15px;">${agent.name}</div>
             <div style="color: #778; font-size: 11px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
