@@ -1261,26 +1261,15 @@ phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string
     console.warn('[Fleet] copilotBridge.transferSession not available');
   }
 
-  // 3. Brief settling delay so the PTY alias and viewer state are fully propagated
-  await new Promise(r => setTimeout(r, 200));
-
-  // 4. Send /fleet command to Arthur's terminal (now accessible via fleet office after transfer)
-  try {
-    const fleetCmd = `/fleet ${data.prompt}\r`;
-    console.log(`[Fleet] Sending /fleet to ${officeId}:architect (${fleetCmd.length} chars)`);
-    const writeResult = await window.copilotBridge?.terminalWrite(officeId, 'architect', fleetCmd);
-    console.log(`[Fleet] /fleet command sent, result:`, writeResult);
-  } catch (e) {
-    console.error('[Fleet] Error sending /fleet command:', e);
-  }
-
-  // 5. Signal MeetingScene that transfer+write is done (so it can safely exitMeeting)
+  // 3. Signal MeetingScene that transfer is done (so it can safely exitMeeting)
   data.resolve?.();
 
-  // 6. Tell OfficeScene which office the terminal originated from (for FleetTracker attach)
-  phaserGame?.events.emit('fleet:source-office', data.sourceOfficeId);
+  // 4. Tell OfficeScene the source office and fleet prompt.
+  //    The /fleet command will be sent from OfficeScene.initFleetPipeline() AFTER
+  //    the terminal viewer is attached — avoids the race with session transfer.
+  phaserGame?.events.emit('fleet:source-office', { sourceOfficeId: data.sourceOfficeId, prompt: data.prompt });
 
-  // 7. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
+  // 5. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
   switchToOffice(officeId);
 });
 
