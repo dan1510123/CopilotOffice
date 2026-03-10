@@ -21,8 +21,8 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
     scene.physics.add.existing(this);
     
     this.setCollideWorldBounds(true);
-    this.setSize(16, 18);
-    this.setOffset(8, 8); // center 16x18 body in 32x34 frame: (32-16)/2=8, (34-18)/2=8
+    this.setSize(16, 13);
+    this.setOffset(8, 13); // top of hitbox lowered 15% (~5px) for better desk overlap
 
     // Register walk animations for the player spritesheet
     registerWalkAnimations(scene.anims, 'player');
@@ -43,8 +43,8 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
   setScale(x: number, y?: number): this {
     super.setScale(x, y);
     // Scale hitbox: size in world pixels, offset in FRAME coords (Phaser applies scale)
-    this.setSize(16, 18);
-    this.setOffset(8, 8);
+    this.setSize(16, 13);
+    this.setOffset(8, 13);
     return this;
   }
 

@@ -220,28 +220,30 @@ export class OfficeScene extends Phaser.Scene {
     const titleFontSize = Math.max(24, Math.floor(screenHeight / 40));
     const instructionFontSize = Math.max(14, Math.floor(screenHeight / 70));
     
-    // Add title
-    this.titleText = this.add.text(screenWidth / 2, 10, '🏢 COPILOT OFFICE', {
+    // Camera setup - no follow needed since room fits
+    this.cameras.main.setBounds(0, 0, this.mapWidth * this.tileSize, this.mapHeight * this.tileSize);
+    this.cameras.main.centerOn(this.mapWidth * this.tileSize / 2, this.mapHeight * this.tileSize / 2);
+    this.cameras.main.setZoom(0.8); // 20% zoom out for open office overview
+
+    // Add title with black background (positioned in world space at camera top edge)
+    const cam = this.cameras.main;
+    this.titleText = this.add.text(this.mapWidth * this.tileSize / 2, cam.worldView.y + 4, '🏢 COPILOT OFFICE', {
       font: `bold ${titleFontSize}px monospace`,
       color: '#ffffff',
+      backgroundColor: '#000000',
+      padding: { x: 12, y: 6 },
     });
     this.titleText.setOrigin(0.5, 0);
-    this.titleText.setScrollFactor(0);
     this.titleText.setDepth(Depths.UI_OVERLAY);
     
-    // Add instructions (initially show entrance prompt)
-    this.instructionText = this.add.text(screenWidth / 2, screenHeight - 78, 
+    // Add instructions (positioned in world space at camera bottom edge)
+    this.instructionText = this.add.text(this.mapWidth * this.tileSize / 2, cam.worldView.bottom - 78, 
       '[Space / Enter] Enter the office', {
       font: `${instructionFontSize}px monospace`,
       color: '#888888',
     });
     this.instructionText.setOrigin(0.5, 1);
-    this.instructionText.setScrollFactor(0);
     this.instructionText.setDepth(Depths.UI_OVERLAY);
-
-    // Camera setup - no follow needed since room fits
-    this.cameras.main.setBounds(0, 0, this.mapWidth * this.tileSize, this.mapHeight * this.tileSize);
-    this.cameras.main.centerOn(this.mapWidth * this.tileSize / 2, this.mapHeight * this.tileSize / 2);
 
     // Allow external UI(e.g. overview panel) to open agent terminal directly
     this.game.events.on('open:agent:terminal', (agentId: string) => {
@@ -486,39 +488,82 @@ export class OfficeScene extends Phaser.Scene {
     this.createGrandDoors();
     this.createEntranceRug();
     
-    // Add agent desks with collision (tabletop collision body, legs are visual only)
-    // Desk sprite is 32x30 base. Tabletop surface = y4..y21, legs = y22..y29.
-    // Collision body covers the tabletop surface area only.
+    // Desk collision body constants (sprite is 32x30 base)
     const deskBodyW = 28;   // slightly inset from sprite edges
     const deskBodyH = 14;   // covers tabletop surface (not lip or legs)
     const deskBodyOffX = 2; // center horizontally: (32-28)/2
     const deskBodyOffY = 5; // start at tabletop surface: ~y5 in sprite coords
     const deskLegsH = 8;    // legs height in base sprite coords
-    AGENTS.forEach(agent => {
-      const deskX = agent.position.x * this.tileSize + this.tileSize/2;
-      const deskY = (agent.position.y + 1) * this.tileSize + this.tileSize/2;
-      
-      // Desk with collision body on tabletop only
-      // Depth sort at tabletop bottom (y=22 in sprite), not sprite bottom
+
+    // Helper: place a single agent desk with laptop and track it for interaction
+    const placeAgentDesk = (agent: typeof AGENTS[number], deskX: number, deskY: number) => {
       const desk = addFurniture(deskX, deskY, 'desk', {
-        bodyWidth: deskBodyW,
-        bodyHeight: deskBodyH,
-        bodyOffsetX: deskBodyOffX,
-        bodyOffsetY: deskBodyOffY,
+        bodyWidth: deskBodyW, bodyHeight: deskBodyH,
+        bodyOffsetX: deskBodyOffX, bodyOffsetY: deskBodyOffY,
         depthSortY: deskY,
       });
-      
-      // Track desk for interaction
+      this.desks.push({ sprite: desk, agentId: agent.id, x: deskX, y: deskY });
+    };
+
+    // === COMMUNAL TABLES (open office layout) ===
+    // Two 3×2 desk formations with a 3-tile walkway between them
+    // Left table: cols 4-6, rows 4-5  |  Right table: cols 13-15, rows 4-5
+    const communalTables = [
+      { startCol: 4, agentId: 'generalist' },   // Gene at left table
+      { startCol: 13, agentId: 'debugger' },     // Dan at right table
+    ];
+    const tableStartRow = 4;
+
+    communalTables.forEach(table => {
+      const agent = AGENTS.find(a => a.id === table.agentId)!;
+
+      // All 6 desks in the 3×2 grid are plain furniture
+      for (let col = 0; col < 3; col++) {
+        for (let row = 0; row < 2; row++) {
+          const dx = (table.startCol + col) * this.tileSize + this.tileSize / 2;
+          const dy = (tableStartRow + row) * this.tileSize + this.tileSize / 2;
+          addFurniture(dx, dy, 'desk', {
+            bodyWidth: deskBodyW, bodyHeight: deskBodyH,
+            bodyOffsetX: deskBodyOffX, bodyOffsetY: deskBodyOffY,
+            depthSortY: dy,
+          });
+        }
+      }
+
+      // Agent sits at the above-left stool position (tracked for interaction)
+      // Tucked closer to table for 3/4 view
+      const agentStoolX = agent.position.x * this.tileSize + this.tileSize / 2;
+      const agentStoolY = agent.position.y * this.tileSize + this.tileSize / 2 + this.tileSize * 0.4;
+      // Track a virtual desk at the stool so interaction detection works
       this.desks.push({
-        sprite: desk,
+        sprite: addDecor(agentStoolX, agentStoolY, 'stool')
+          .setDepth(Depths.FLOOR_DETAIL),
         agentId: agent.id,
-        x: deskX,
-        y: deskY,
+        x: agentStoolX,
+        y: agentStoolY,
       });
-      
-      // Laptop centered on desk surface (decorative, no collision — desk handles it)
-      const laptopSprite = addDecor(deskX, deskY - deskLegsH * scale / 2, 'computer');
-      laptopSprite.setDepth(ySortDepth(deskY, worldH) + 0.1);
+
+      // Decorative stools: 2 above (tucked closer for 3/4 view) and 2 below
+      const stoolTuck = this.tileSize * 0.4; // scoot above-stools closer to table
+      const chairAboveY = (tableStartRow - 1) * this.tileSize + this.tileSize / 2 + stoolTuck;
+      const chairBelowY = (tableStartRow + 2) * this.tileSize + this.tileSize / 2;
+      for (let i = 0; i < 2; i++) {
+        const cx = (table.startCol + i * 2) * this.tileSize + this.tileSize / 2;
+        // Skip the agent's stool position (already placed above)
+        if (cx !== agentStoolX || chairAboveY !== agentStoolY) {
+          addDecor(cx, chairAboveY, 'stool')
+            .setDepth(Depths.FLOOR_DETAIL);
+        }
+        addDecor(cx, chairBelowY, 'stool')
+          .setDepth(Depths.FLOOR_DETAIL);
+      }
+    });
+
+    // === CORNER DESKS (Arthur bottom-left, Alice bottom-right) ===
+    AGENTS.filter(a => a.id === 'architect' || a.id === 'admin').forEach(agent => {
+      const deskX = agent.position.x * this.tileSize + this.tileSize / 2;
+      const deskY = (agent.position.y + 1) * this.tileSize + this.tileSize / 2;
+      placeAgentDesk(agent, deskX, deskY);
     });
     
     // Boss desk at top center (3 tiles wide) with collision
@@ -534,10 +579,6 @@ export class OfficeScene extends Phaser.Scene {
         depthSortY: bossDeskY,
       });
     }
-    
-    // Boss laptop centered on desk (decorative)
-    addDecor(bossDeskX, bossDeskY - deskLegsH * scale / 2, 'computer')
-      .setDepth(ySortDepth(bossDeskY, worldH) + 0.1);
     
     // Boss chair (behind desk, decorative — keeps player spawn area clear)
     addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair')

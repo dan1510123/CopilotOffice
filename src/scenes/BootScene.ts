@@ -342,6 +342,24 @@ export class BootScene extends Phaser.Scene {
     chairGraphics.generateTexture('chair', 32, 32);
     chairGraphics.destroy();
 
+    // Stool (rounded rectangular seat — communal table seating)
+    const stoolGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Shadow
+    stoolGraphics.fillStyle(0x1a1a1a, 0.4);
+    stoolGraphics.fillRoundedRect(7, 20, 18, 6, 3);
+    // Seat cushion
+    stoolGraphics.fillStyle(0x3a5a8a, 1);
+    stoolGraphics.fillRoundedRect(6, 10, 20, 12, 4);
+    // Seat highlight
+    stoolGraphics.fillStyle(0x4a7aba, 1);
+    stoolGraphics.fillRoundedRect(8, 11, 16, 6, 3);
+    // Legs
+    stoolGraphics.fillStyle(0x555555, 1);
+    stoolGraphics.fillRect(9, 22, 3, 8);
+    stoolGraphics.fillRect(20, 22, 3, 8);
+    stoolGraphics.generateTexture('stool', 32, 32);
+    stoolGraphics.destroy();
+
     // Laptop - top-down view (open, looking straight down)
     const computerGraphics = this.make.graphics({ x: 0, y: 0 });
     // Outer aluminum body
