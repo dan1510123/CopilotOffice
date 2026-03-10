@@ -363,8 +363,8 @@ export class OfficeScene extends Phaser.Scene {
 
     // Helper to add collidable furniture with y-sorted depth.
     // Body opts are in base (unscaled) sprite coordinates.
-    // Uses body.reset() for precise world-coordinate positioning of static bodies.
-    // Creates sprite via this.add.sprite() (not staticGroup.create()) so setOrigin works correctly.
+    // Uses setOffset + updateFromGameObject for body positioning (NOT body.reset,
+    // which calls gameObject.setPosition and moves the sprite).
     const addFurniture = (x: number, y: number, texture: string, opts?: { bodyWidth?: number; bodyHeight?: number; bodyOffsetX?: number; bodyOffsetY?: number; depthSortY?: number }) => {
       const sprite = this.add.sprite(x, y, texture);
       sprite.setOrigin(0.5, 0.5);
@@ -378,10 +378,8 @@ export class OfficeScene extends Phaser.Scene {
         const offX = (opts.bodyOffsetX ?? 0) * scale;
         const offY = (opts.bodyOffsetY ?? 0) * scale;
         body.setSize(bw, bh);
-        // Position body directly: sprite top-left + offset
-        const topLeftX = x - sprite.displayWidth * sprite.originX;
-        const topLeftY = y - sprite.displayHeight * sprite.originY;
-        body.reset(topLeftX + offX, topLeftY + offY);
+        body.setOffset(offX, offY);
+        body.updateFromGameObject();
       } else {
         body.updateFromGameObject();
       }
