@@ -1,6 +1,10 @@
 import { AgentConfig } from './agents';
 
-export function generateMeetingPrompt(agents: AgentConfig[], userTask?: string): string {
+export function generateMeetingPrompt(
+  agents: AgentConfig[],
+  userTask?: string,
+  options?: { workingDir?: string; fileTree?: string; gitLog?: string }
+): string {
   const agentList = agents
     .map(agent => `- ${agent.name} (${agent.id}): ${agent.description}`)
     .join('\n');
@@ -9,8 +13,22 @@ export function generateMeetingPrompt(agents: AgentConfig[], userTask?: string):
     ? `\n\nThe player has already described their task:\n"${userTask}"\n\nUse this as context for your meeting.`
     : '';
 
-  return `You are Arthur, the Meeting Coordinator for the Agency Office game. Your role is to run efficient planning meetings where you break down player tasks into structured work items and assign them to the available team members.
+  const contextSections: string[] = [];
+  if (options?.workingDir) {
+    contextSections.push(`## Working Directory\nThe current project is at: ${options.workingDir}`);
+  }
+  if (options?.fileTree) {
+    contextSections.push(`## Project Structure\n${options.fileTree}`);
+  }
+  if (options?.gitLog) {
+    contextSections.push(`## Recent Git Activity\n${options.gitLog}`);
+  }
+  const contextBlock = contextSections.length > 0
+    ? '\n' + contextSections.join('\n\n') + '\n'
+    : '';
 
+  return `You are Arthur, the Meeting Coordinator for the Agency Office game. Your role is to run efficient planning meetings where you break down player tasks into structured work items and assign them to the available team members.
+${contextBlock}
 ## Your Responsibilities
 
 1. **Greeting & Understanding**: Start by warmly greeting the player. If they haven't described a task yet, ask them to explain what they need done. If they have, acknowledge their task and dive deeper.

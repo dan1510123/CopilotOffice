@@ -77,9 +77,16 @@ export class OfficeScene extends Phaser.Scene {
   private wallCollider?: Phaser.Physics.Arcade.Collider;
   private furnitureCollider?: Phaser.Physics.Arcade.Collider;
   private npcCollider?: Phaser.Physics.Arcade.Collider;
+  private animating: boolean = false;
+  private pendingWalkIns: number = 0;
 
   constructor() {
     super({ key: 'OfficeScene' });
+  }
+
+  private setAnimating(value: boolean): void {
+    this.animating = value;
+    this.game.registry.set('animating', value);
   }
 
   create(): void {
@@ -302,6 +309,10 @@ export class OfficeScene extends Phaser.Scene {
 
     // Listen for office switch to reinitialize layout if needed
     this.game.events.on('office:switch', (officeId: string, _workingDir: string) => {
+      if (this.animating) {
+        console.log(`[OfficeScene] Blocked office switch — animation in progress`);
+        return;
+      }
       console.log(`[OfficeScene] Office switched to: ${officeId}`);
       const office = officeManager.getOffice(officeId);
       if (!office) return;
@@ -1042,6 +1053,7 @@ export class OfficeScene extends Phaser.Scene {
   private triggerEntrance(): void {
     if (this.playerInScene) return;
     this.playerInScene = true;
+    this.setAnimating(true);
 
     // Make player visible at the entrance (just below bottom wall)
     const entranceX = this.mapWidth * this.tileSize / 2;
@@ -1063,6 +1075,10 @@ export class OfficeScene extends Phaser.Scene {
         this.instructionText.setText(
           '[WASD/Arrows] Move  |  [Shift] Sprint  |  [E] Talk to agent / Exit'
         );
+        // Only clear animating if no walk-ins are pending
+        if (this.pendingWalkIns <= 0) {
+          this.setAnimating(false);
+        }
       },
     });
 
@@ -1077,9 +1093,16 @@ export class OfficeScene extends Phaser.Scene {
     const entranceX = this.mapWidth * this.tileSize / 2;
     const startY = (this.mapHeight + 1) * this.tileSize;
 
+    this.pendingWalkIns += agentIds.length;
+    this.setAnimating(true);
+
     agentIds.forEach((agentId, index) => {
       const npc = this.npcs.find(n => n.config.id === agentId);
-      if (!npc) return;
+      if (!npc) {
+        this.pendingWalkIns--;
+        if (this.pendingWalkIns <= 0) this.setAnimating(false);
+        return;
+      }
 
       // Desk position from agent config
       const deskX = npc.config.position.x * this.tileSize + this.tileSize / 2;
@@ -1108,6 +1131,9 @@ export class OfficeScene extends Phaser.Scene {
             thinkingDetail: 'Working on task',
             currentTool: null,
           });
+
+          this.pendingWalkIns--;
+          if (this.pendingWalkIns <= 0) this.setAnimating(false);
         });
       });
     });
@@ -1391,6 +1417,7 @@ export class OfficeScene extends Phaser.Scene {
     this.playerInScene = false;
     this.player.disableMovement();
     this.exitPrompt.setVisible(false);
+    this.setAnimating(true);
 
     const exitX = this.player.x;
     const exitY = (this.mapHeight + 2) * this.tileSize;
@@ -1403,6 +1430,7 @@ export class OfficeScene extends Phaser.Scene {
       onComplete: () => {
         this.player.setVisible(false);
         this.instructionText.setText('[Space / Enter] Enter the office');
+        this.setAnimating(false);
       },
     });
   }

@@ -272,12 +272,16 @@ function killPtyProcess(proc: PtyProcess): void {
 
 // ── PTY Lifecycle ───────────────────────────────────────────────
 
+/** Stores pre-seeded prompts to send once the agent signals ready. */
+const pendingPreseededPrompts = new Map<string, string>();
+
 async function startTerminalForAgent(
   officeId: string,
   agentId: string,
   workingDir?: string,
   cols?: number,
-  rows?: number
+  rows?: number,
+  preseededPrompt?: string
 ): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
   if (!pty) {
     return { success: false, error: 'node-pty not available' };
@@ -351,12 +355,25 @@ async function startTerminalForAgent(
     let skippedEventCount = 0;
     agentReadyState.set(ck, false);
 
+    // Store pre-seeded prompt before signalReady is defined so it's available on first ready
+    if (preseededPrompt) {
+      pendingPreseededPrompts.set(ck, preseededPrompt);
+    }
+
     const signalReady = () => {
       if (hasSignalledReady) return;
       hasSignalledReady = true;
       agentReadyState.set(ck, true);
       console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
       send({ type: 'terminal-preload-status', agentId, status: 'ready' });
+
+      // Write pre-seeded prompt to PTY once CLI is ready
+      const prompt = pendingPreseededPrompts.get(ck);
+      if (prompt) {
+        pendingPreseededPrompts.delete(ck);
+        console.log(`[TermServer] Writing pre-seeded prompt for ${ck}`);
+        proc.write(prompt + '\r');
+      }
     };
 
     const watcherCallback = (event: CopilotEvent) => {
@@ -482,7 +499,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       activeAgentViewers.add(ck);
-      const result = await startTerminalForAgent(msg.officeId, msg.agentId, msg.workingDir, msg.cols, msg.rows);
+      const result = await startTerminalForAgent(msg.officeId, msg.agentId, msg.workingDir, msg.cols, msg.rows, msg.preseededPrompt);
       send({ type: 'response', requestId: msg.requestId, result });
       break;
     }

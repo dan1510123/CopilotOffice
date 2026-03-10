@@ -12,8 +12,8 @@ export interface CopilotEvent {
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
-  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
-    return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows);
+  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
+    return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt);
   },
   terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-write', officeId, agentId, data);
@@ -158,7 +158,7 @@ declare global {
   
   interface Window {
     copilotBridge: {
-      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
+      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalResize: (officeId: string, agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
       terminalKill: (officeId: string, agentId: string) => Promise<{ success: boolean; error?: string }>;

@@ -13,6 +13,7 @@ export interface MsgStart {
   workingDir?: string;
   cols?: number;
   rows?: number;
+  preseededPrompt?: string;
 }
 
 export interface MsgWrite {
