@@ -13,7 +13,6 @@ import { MeetingPlan } from '../meeting/types';
 import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
-import { ZoomBar } from '../ui/ZoomBar';
 import { CameraDragController } from '../ui/CameraDragController';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
@@ -89,7 +88,6 @@ export class OfficeScene extends Phaser.Scene {
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
   private fleetSourceOfficeId: string | null = null;
-  private zoomBar: ZoomBar | null = null;
   private cameraDrag: CameraDragController | null = null;
 
   constructor() {
@@ -296,23 +294,19 @@ export class OfficeScene extends Phaser.Scene {
     this.cameras.main.centerOn(worldW / 2, worldH / 2);
     this.cameras.main.setZoom(0.8); // default zoom, may be overridden by saved value
 
-    // Zoom bar + click-to-drag camera pan
+    // Zoom control + click-to-drag camera pan
     if (ENABLE_ZOOM_BAR) {
-      this.zoomBar = new ZoomBar(this, {
-        min: 0.5,
-        max: 2.0,
-        defaultValue: 0.8,
-        worldBottomY: worldH,
-        onChange: (zoom: number) => this.applyZoom(zoom),
-      });
       this.cameraDrag = new CameraDragController(this, {
         worldWidth: worldW,
         worldHeight: worldH,
         tileSize: this.tileSize,
         bufferTiles: cameraBufTiles,
-        excludeObjects: () => this.zoomBar?.getInteractiveObjects() ?? [],
       });
-      // Drag starts disabled; applyZoom will enable it when zoom is high enough
+      // Listen for zoom changes from DOM zoom bar
+      this.game.events.on('zoom:change', (zoom: number) => this.applyZoom(zoom), this);
+      // Apply saved zoom level from localStorage
+      const savedZoom = parseFloat(localStorage.getItem('agencyOffice:zoomLevel') ?? '0.8');
+      this.applyZoom(isNaN(savedZoom) ? 0.8 : Math.max(0.5, Math.min(2.0, savedZoom)));
     }
 
     // Add title with black background (positioned in world space at camera top edge)
@@ -442,7 +436,7 @@ export class OfficeScene extends Phaser.Scene {
       if (this.playerInScene) {
         this.playerMovementEnabled = true;
         this.player.enableMovement();
-        this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
+        this.applyZoom(this.cameras.main.zoom);
       }
     }, this);
 
@@ -455,8 +449,6 @@ export class OfficeScene extends Phaser.Scene {
     ) => {
       // If the user just finished a drag gesture, skip click handling
       if (this.cameraDrag?.wasDragging()) return;
-      // Also skip if the zoom bar is being dragged
-      if (this.zoomBar?.isDragging()) return;
 
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
       if (clickedNPC) {
@@ -526,7 +518,7 @@ export class OfficeScene extends Phaser.Scene {
       this.game.events.off('bgm:volume');
       this.game.events.off('bgm:mute');
       this.disposeFleetPipeline();
-      this.zoomBar?.destroy();
+      this.game.events.off('zoom:change');
       this.cameraDrag?.destroy();
       this.inputManager.destroy();
     }, this);
@@ -1687,7 +1679,7 @@ export class OfficeScene extends Phaser.Scene {
 
     this.pongGame.show(() => {
       this.player.enableMovement();
-      this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
+      this.applyZoom(this.cameras.main.zoom);
     });
   }
 
@@ -1720,7 +1712,7 @@ export class OfficeScene extends Phaser.Scene {
 
     this.basketballGame.show(() => {
       this.player.enableMovement();
-      this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
+      this.applyZoom(this.cameras.main.zoom);
     });
   }
 
@@ -1855,9 +1847,6 @@ export class OfficeScene extends Phaser.Scene {
         this.cameraDrag?.resetPan();
       }
     }
-
-    // Keep zoom bar positioned below office
-    this.zoomBar?.updatePosition();
   }
 
   private startConversation(agent: AgentConfig): void {
@@ -1907,7 +1896,7 @@ export class OfficeScene extends Phaser.Scene {
         if (this.playerInScene) {
           this.player.enableMovement();
         }
-        this.applyZoom(this.zoomBar?.getValue() ?? this.cameras.main.zoom);
+        this.applyZoom(this.cameras.main.zoom);
         // Update badges when closing terminal
         this.updateSessionBadges();
       }

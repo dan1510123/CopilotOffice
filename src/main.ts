@@ -33,6 +33,8 @@ function getCurrentAgentTools(): Map<string, { toolId: string; name: string; sta
 let selectedAgentId: string | null = null;
 let phaserGameRef: Phaser.Game | undefined;
 let debugMode = false;
+let currentZoom = parseFloat(localStorage.getItem('agencyOffice:zoomLevel') ?? '0.8');
+currentZoom = (isNaN(currentZoom) || currentZoom < 0.5 || currentZoom > 2.0) ? 0.8 : currentZoom;
 
 /** Log only when debug mode is active */
 function debugLog(...args: unknown[]): void {
@@ -165,6 +167,45 @@ function renderOfficeTabs() {
       color: #4a4;
     ">+ New Office</div>
     <div style="flex: 1;"></div>
+    <div id="zoom-bar" style="
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      background: #252538;
+      border: 2px solid #444;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 14px;
+      margin-right: 8px;
+      user-select: none;
+    ">
+      <button id="zoom-minus-btn" style="
+        background: #333;
+        border: 1px solid #555;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        font-family: monospace;
+        padding: 2px 8px;
+        color: #aac;
+      ">\u2212</button>
+      <input id="zoom-slider" type="range" min="50" max="200"
+        value="${Math.round(currentZoom * 100)}"
+        title="Zoom"
+        style="width: 80px; cursor: pointer; accent-color: #4488cc;" />
+      <button id="zoom-plus-btn" style="
+        background: #333;
+        border: 1px solid #555;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        font-family: monospace;
+        padding: 2px 8px;
+        color: #aac;
+      ">+</button>
+      <span id="zoom-label" style="color: #888; font-size: 11px; min-width: 32px; text-align: center;">${Math.round(currentZoom * 100)}%</span>
+    </div>
     <div id="debug-toggle-btn" style="
       padding: 8px 16px;
       background: ${debugMode ? '#3a2a1a' : '#252538'};
@@ -252,6 +293,23 @@ function renderOfficeTabs() {
     phaserGame?.events.emit('game:panel:clicked');
     console.log(`[Debug] Debug mode ${debugMode ? 'ON' : 'OFF'}`);
   });
+
+  // Zoom bar controls
+  const zoomSlider = document.getElementById('zoom-slider') as HTMLInputElement | null;
+  const zoomLabel = document.getElementById('zoom-label');
+  const setZoom = (val: number) => {
+    currentZoom = Math.round(Math.max(0.5, Math.min(2.0, val)) * 10) / 10;
+    if (zoomSlider) zoomSlider.value = String(Math.round(currentZoom * 100));
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(currentZoom * 100)}%`;
+    try { localStorage.setItem('agencyOffice:zoomLevel', currentZoom.toFixed(2)); } catch { /* ignore */ }
+    phaserGameRef?.events.emit('zoom:change', currentZoom);
+  };
+
+  zoomSlider?.addEventListener('input', (e) => {
+    setZoom(parseInt((e.target as HTMLInputElement).value, 10) / 100);
+  });
+  document.getElementById('zoom-minus-btn')?.addEventListener('click', () => { setZoom(currentZoom - 0.1); });
+  document.getElementById('zoom-plus-btn')?.addEventListener('click', () => { setZoom(currentZoom + 0.1); });
 
   document.getElementById('notif-settings-btn')?.addEventListener('click', () => {
     notificationSettingsPanel.toggle();
