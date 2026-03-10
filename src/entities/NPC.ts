@@ -287,14 +287,15 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   private updateBadgeForState(stateKey: string): void {
     if (this.currentBadgeState === stateKey) return;
     this.currentBadgeState = stateKey;
-    this.updateSessionBadge(this.spriteScale);
 
-    // Pulse the badge when thinking
+    // Stop existing pulse tween and reset scale BEFORE redrawing
     if (this.badgePulseTween) {
       this.badgePulseTween.stop();
       this.badgePulseTween = null;
-      this.sessionBadge.setScale(1);
     }
+    this.sessionBadge.setScale(1);
+
+    this.updateSessionBadge(this.spriteScale);
 
     if (stateKey === 'thinking' || stateKey === 'starting') {
       this.badgePulseTween = this.scene.tweens.add({
