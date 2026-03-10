@@ -1,0 +1,244 @@
+import { DashboardRenderer, DashboardRenderContext } from '../types';
+
+/**
+ * Dashboard renderer for the default (main) office layout.
+ * Renders full agent cards with status, tools, activity, and session metadata.
+ */
+export const defaultDashboard: DashboardRenderer = {
+  renderCards(ctx: DashboardRenderContext): string {
+    const { agents, office, selectedAgentId, cachedSessionMeta, agentTools, formatElapsed, formatRelativeTime } = ctx;
+    let html = '';
+
+    for (const agent of agents) {
+      const liveStatus = office?.agents.get(agent.id);
+      const tools = agentTools.get(agent.id) || [];
+
+      // Determine status label + color from state model
+      let statusDot = '#555';
+      let statusLabel = 'Slacking';
+      let statusIcon = '💤';
+
+      if (liveStatus) {
+        if (liveStatus.state === 'active') {
+          switch (liveStatus.subState) {
+            case 'starting':
+              statusDot = '#ff9944';
+              statusLabel = 'Starting...';
+              statusIcon = '🚀';
+              break;
+            case 'ready':
+              statusDot = '#4af';
+              statusLabel = 'Ready';
+              statusIcon = '✓';
+              break;
+            case 'waiting':
+              statusDot = '#ffb86c';
+              statusLabel = 'Waiting for input';
+              statusIcon = '⏳';
+              break;
+            case 'thinking':
+              statusDot = '#50fa7b';
+              statusLabel = liveStatus.thinkingDetail
+                ? `Thinking: ${liveStatus.thinkingDetail}`
+                : 'Thinking...';
+              statusIcon = '⚡';
+              break;
+            case 'error':
+              statusDot = '#f44';
+              statusLabel = liveStatus.thinkingDetail
+                ? `Error: ${liveStatus.thinkingDetail}`
+                : 'Error';
+              statusIcon = '❌';
+              break;
+          }
+        }
+      }
+
+      const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
+      const isSelected = agent.id === selectedAgentId;
+      const borderColor = isSelected ? '#6677ff' : '#252540';
+      const bgColor = isSelected ? '#1e1e3a' : '#13131f';
+      const unread = liveStatus?.unreadCount || 0;
+      const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
+      const toolCount = tools.length;
+      const recentActions = liveStatus?.recentActions || [];
+      const taskSummary = liveStatus?.taskSummary || '';
+      const isActive = liveStatus?.state === 'active' && liveStatus?.subState !== 'ready' && liveStatus?.subState !== 'error';
+
+      // Badge HTML (unread count)
+      const badgeHtml = unread > 0 ? `
+        <div style="
+          position: absolute; top: -4px; right: -4px;
+          background: #e55; color: #fff;
+          font-size: 10px; font-weight: bold;
+          min-width: 18px; height: 18px;
+          border-radius: 9px;
+          display: flex; align-items: center; justify-content: center;
+          padding: 0 4px;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+        ">${unread}</div>` : '';
+
+      // Elapsed time display
+      const elapsedHtml = elapsed ? `<span data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: 10px; margin-left: 8px;">⏱ ${elapsed}</span>` : '';
+
+      // Tool queue badge
+      const queueHtml = toolCount > 1 ? `<span style="
+        background: #334; color: #aac; font-size: 9px;
+        padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+      ">${toolCount} tools</span>` : '';
+
+      // ── Tool Pipeline Section ──
+      let toolPipelineHtml = '';
+      if (tools.length > 0) {
+        const toolRows = tools.map((t, i) => {
+          const isLast = i === tools.length - 1;
+          const icon = isLast ? '▸' : '◦';
+          const color = isLast ? '#8af' : '#556';
+          const statusText = isLast ? t.status : '(queued)';
+          return `<div style="font-size: 10px; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">
+            ${icon} <span style="color: #9ab;">${t.name}</span> <span style="color: #556;">— ${statusText}</span>
+          </div>`;
+        }).join('');
+        toolPipelineHtml = `
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+            ${toolRows}
+          </div>`;
+      }
+
+      // ── Recent Activity Log ──
+      let activityLogHtml = '';
+      const completedActions = recentActions.filter(a => a.type === 'completed').slice(-5).reverse();
+      if (completedActions.length > 0) {
+        const rows = completedActions.map(a => {
+          const relTime = formatRelativeTime(a.timestamp);
+          return `<div style="display: flex; gap: 8px; font-size: 10px; padding: 1px 0;" data-action-ts="${a.timestamp}">
+            <span style="color: #445; flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
+            <span style="color: #5a5a7a;">✓ ${a.action}</span>
+          </div>`;
+        }).join('');
+        activityLogHtml = `
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+            <div style="font-size: 9px; color: #3a3a5a; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
+            ${rows}
+          </div>`;
+      } else if (liveStatus?.state !== 'slacking') {
+        activityLogHtml = `
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+            <div style="font-size: 10px; color: #333; font-style: italic;">No recent activity</div>
+          </div>`;
+      }
+
+      // ── Task Summary ──
+      const taskSummaryHtml = taskSummary && isActive ? `
+        <div style="font-size: 10px; color: #667; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          📋 ${taskSummary}
+        </div>` : '';
+
+      // ── Session Metadata Panel (right side) ──
+      const meta = cachedSessionMeta[agent.id];
+      const hasSession = liveStatus?.state === 'active';
+      const metaTitle = meta?.title || '';
+      const sessionPanelHtml = hasSession ? `
+        <div class="session-meta-panel" data-agent="${agent.id}" style="
+          flex: 2; min-width: 0;
+          border-left: 1px solid #252540;
+          padding-left: 14px;
+          display: flex; flex-direction: column; gap: 6px;
+          align-self: stretch;
+          justify-content: center;
+        ">
+          <div style="font-size: 9px; color: #3a3a5a; text-transform: uppercase; letter-spacing: 0.5px;">Session Info</div>
+          <div class="session-title-display" data-agent="${agent.id}" style="
+            font-weight: bold; color: ${metaTitle ? '#ccd' : '#444'}; font-size: 13px;
+            cursor: text; min-height: 18px; line-height: 1.4;
+            overflow: hidden; text-overflow: ellipsis;
+            display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+          " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set title'}">${metaTitle || 'Untitled session'}</div>
+          <div style="display: flex; justify-content: flex-end; margin-top: 2px;">
+            <button class="session-edit-btn" data-agent="${agent.id}" style="
+              background: none; border: 1px solid #333; color: #667;
+              font-size: 11px; padding: 2px 8px; border-radius: 4px;
+              cursor: pointer; transition: color 0.15s, border-color 0.15s;
+            " title="Edit session title">✏️</button>
+          </div>
+        </div>
+      ` : `
+        <div style="
+          flex: 2; min-width: 0;
+          border-left: 1px solid #1a1a30;
+          padding-left: 14px;
+          display: flex; flex-direction: column;
+          align-self: stretch;
+          justify-content: center;
+          opacity: 0.4;
+        ">
+          <div style="font-size: 11px; color: #444; font-style: italic;">No active session</div>
+        </div>
+      `;
+
+      html += `
+        <div class="agent-card" data-agent="${agent.id}" style="
+          background: ${bgColor};
+          border: 1.5px solid ${borderColor};
+          border-radius: 10px;
+          padding: 20px 18px;
+          margin-bottom: 10px;
+          cursor: pointer;
+          transition: border-color 0.15s;
+          display: flex;
+          align-items: flex-start;
+          gap: 14px;
+          position: relative;
+          min-height: 200px;
+        ">
+          ${badgeHtml}
+          <div style="
+            flex-shrink: 0;
+            width: 72px;
+            background: ${colorHex}22;
+            border: 1px solid ${colorHex}44;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            align-self: flex-start;
+            margin-top: 4px;
+          ">
+            <canvas
+              id="overview-sprite-${agent.id}"
+              width="32" height="34"
+              style="image-rendering: pixelated; width: 64px; height: 68px; display: block;"
+            ></canvas>
+          </div>
+          <div style="flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+            <div>
+              <div style="font-weight: bold; color: #dde; font-size: 15px;">${agent.name}</div>
+              <div style="color: #778; font-size: 11px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
+            </div>
+            <div>
+              <div style="display: flex; align-items: center; flex-wrap: wrap; margin-top: 4px;">
+                <div style="
+                  font-size: 11px;
+                  color: ${statusDot};
+                  display: flex; align-items: center; gap: 4px;
+                ">
+                  <span style="font-size: 8px;">●</span>
+                  <span>${statusIcon} ${statusLabel}</span>
+                </div>
+                ${elapsedHtml}
+                ${queueHtml}
+              </div>
+              ${taskSummaryHtml}
+            </div>
+            ${toolPipelineHtml}
+            ${activityLogHtml}
+          </div>
+          ${sessionPanelHtml}
+        </div>
+      `;
+    }
+
+    return html;
+  },
+};

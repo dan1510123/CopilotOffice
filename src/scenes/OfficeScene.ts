@@ -4,7 +4,8 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
-import { AGENTS, FLEET_AGENTS, AgentConfig } from '../config/agents';
+import { AGENTS, AgentConfig } from '../config/agents';
+import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
@@ -275,8 +276,11 @@ export class OfficeScene extends Phaser.Scene {
     this.instructionText.setDepth(Depths.UI_OVERLAY);
 
     // Allow external UI(e.g. overview panel) to open agent terminal directly
+    // Fleet v-team agents don't open terminals
     this.game.events.on('open:agent:terminal', (agentId: string) => {
-      const agents = this.currentLayout === 'fleet-vteam' ? FLEET_AGENTS : AGENTS;
+      if (this.currentLayout === 'fleet-vteam') return;
+      const layout = this.currentLayout as import('../office/officeManager').OfficeLayout;
+      const agents = getLayout(layout).agents;
       const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
     }, this);
@@ -1247,7 +1251,8 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private createNPCs(): void {
-    const agents = this.currentLayout === 'fleet-vteam' ? FLEET_AGENTS : AGENTS;
+    const layout = this.currentLayout as import('../office/officeManager').OfficeLayout;
+    const agents = getLayout(layout).agents;
     agents.forEach(agentConfig => {
       const npc = new NPC(this, agentConfig, this.tileSize, this.spriteScale);
       this.npcs.push(npc);
@@ -1491,6 +1496,9 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private startConversation(agent: AgentConfig): void {
+    // Fleet v-team agents don't open terminals
+    if (this.currentLayout === 'fleet-vteam') return;
+
     // Arthur triggers meeting mode instead of normal terminal
     if (agent.id === 'architect') {
       this.enterMeeting();
