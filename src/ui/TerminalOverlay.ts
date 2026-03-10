@@ -41,13 +41,16 @@ export class TerminalOverlay {
   private getOfficeId: () => string;
   private isReadOnly: boolean = false;
   private isReplaying: boolean = false;
+  private readonly instanceId: string;
 
+  private static nextInstanceId = 0;
   private static readonly STORAGE_KEY = 'agencyOffice:terminalFullWidth';
 
   constructor(scene: Phaser.Scene, inputManager: InputManager, getOfficeId: () => string) {
     this.scene = scene;
     this.inputManager = inputManager;
     this.getOfficeId = getOfficeId;
+    this.instanceId = String(TerminalOverlay.nextInstanceId++);
     // Load persisted fullscreen preference
     this.isFullWidth = localStorage.getItem(TerminalOverlay.STORAGE_KEY) === 'true';
     this.setupTerminalListeners();
@@ -72,6 +75,17 @@ export class TerminalOverlay {
     }
   }
 
+  /**
+   * Re-register IPC listeners that may have been removed by another scene's
+   * cleanup (e.g. MeetingScene calling removeTerminalListeners()).
+   * Safe to call multiple times — additive listeners are fine because they
+   * all guard on `this.currentAgentId`.
+   */
+  reattachListeners(): void {
+    this.setupTerminalListeners();
+    console.log('[TerminalOverlay] Re-attached terminal IPC listeners');
+  }
+
   private parseSessionId(_data: string): void {
     // No-op: Session IDs are now exclusively managed by the terminal server.
     // Previously this parsed UUIDs from CLI output and overwrote the server's
@@ -82,8 +96,8 @@ export class TerminalOverlay {
   }
 
   private updateSessionDisplay(): void {
-    // Re-get element in case DOM changed
-    const el = document.getElementById('session-id-display') as HTMLSpanElement;
+    // Query within our own SpriteCard to avoid collisions with other TerminalOverlay instances
+    const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLSpanElement;
     if (el && this.sessionId) {
       el.textContent = this.sessionId;
       el.title = `Click to copy. Resume with: copilot --resume ${this.sessionId}`;
@@ -157,7 +171,7 @@ export class TerminalOverlay {
     
     // Update agent display in footer
     const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
-    const agentNameDisplay = document.getElementById('agent-name-display');
+    const agentNameDisplay = this.spriteCardElement?.querySelector('.agent-name-display') as HTMLElement | null;
     if (agentNameDisplay) {
       agentNameDisplay.textContent = agent.name;
       agentNameDisplay.style.color = colorHex;
@@ -238,7 +252,7 @@ export class TerminalOverlay {
 
     // Highlight the matching NPC in the game and glow the profile canvas
     this.scene.game.events.emit('npc:highlight', agent.id);
-    const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+    const spriteCanvas = this.spriteCardElement?.querySelector('.agent-sprite-canvas') as HTMLCanvasElement | null;
     if (spriteCanvas) {
       const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
       spriteCanvas.style.boxShadow = `0 0 18px 6px ${colorHex}99, 0 0 6px 2px ${colorHex}`;
@@ -254,7 +268,7 @@ export class TerminalOverlay {
   private drawAgentSprite(agent: AgentConfig): void {
     // Get sprite texture from Phaser and draw to canvas
     setTimeout(() => {
-      const canvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement;
+      const canvas = this.spriteCardElement?.querySelector('.agent-sprite-canvas') as HTMLCanvasElement;
       if (!canvas) return;
       
       const ctx = canvas.getContext('2d');
@@ -276,7 +290,7 @@ export class TerminalOverlay {
     this.sessionId = null;
     this.updateSessionDisplay();
     
-    const el = document.getElementById('session-id-display');
+    const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
     if (el) {
       el.textContent = 'starting...';
     }
@@ -301,7 +315,7 @@ export class TerminalOverlay {
   private fetchSessionId(agentId: string): void {
     // Send /session command to get session ID from copilot
     if (window.copilotBridge && !this.sessionId) {
-      const el = document.getElementById('session-id-display');
+      const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
       if (el) {
         el.textContent = 'fetching...';
       }
@@ -387,7 +401,7 @@ export class TerminalOverlay {
     this.createSpriteCard();
 
     // Get reference to session ID element
-    this.sessionIdElement = document.getElementById('session-id-display') as HTMLSpanElement;
+    this.sessionIdElement = this.spriteCardElement?.querySelector('.session-id-display') as HTMLSpanElement;
     if (this.sessionIdElement) {
       this.sessionIdElement.onclick = () => this.copySessionId();
     }
@@ -419,17 +433,17 @@ export class TerminalOverlay {
 
     // Left side: Agent sprite and name
     const agentDisplay = document.createElement('div');
-    agentDisplay.id = 'agent-display';
+    agentDisplay.className = 'agent-display';
     agentDisplay.style.cssText = `
       display: flex;
       align-items: center;
       gap: 20px;
     `;
     agentDisplay.innerHTML = `
-      <canvas id="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 160px; height: 170px; border-radius: 8px;"></canvas>
+      <canvas class="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 160px; height: 170px; border-radius: 8px;"></canvas>
       <div style="display: flex; flex-direction: column; gap: 5px;">
-        <span id="agent-name-display" style="font-weight: bold; font-size: 28px;"></span>
-        <span style="color: #666; font-size: 12px;">Session ID: <span id="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
+        <span class="agent-name-display" style="font-weight: bold; font-size: 28px;"></span>
+        <span style="color: #666; font-size: 12px;">Session ID: <span class="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
       </div>
     `;
     this.spriteCardElement.appendChild(agentDisplay);
@@ -835,7 +849,7 @@ export class TerminalOverlay {
     if (this.currentAgent) {
       this.scene.game.events.emit('npc:highlight', this.currentAgent.id);
       // Restore sprite canvas glow
-      const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+      const spriteCanvas = this.spriteCardElement?.querySelector('.agent-sprite-canvas') as HTMLCanvasElement | null;
       if (spriteCanvas) {
         const colorHex = '#' + this.currentAgent.color.toString(16).padStart(6, '0');
         spriteCanvas.style.boxShadow = `0 0 18px 6px ${colorHex}99, 0 0 6px 2px ${colorHex}`;
@@ -857,7 +871,7 @@ export class TerminalOverlay {
     this.scene.game.events.emit('npc:clear-highlight');
 
     // Clear sprite canvas glow
-    const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+    const spriteCanvas = this.spriteCardElement?.querySelector('.agent-sprite-canvas') as HTMLCanvasElement | null;
     if (spriteCanvas) {
       spriteCanvas.style.boxShadow = '';
       spriteCanvas.style.border = '';
@@ -906,7 +920,7 @@ export class TerminalOverlay {
     this.setTerminalFocusVisual(true);
 
     // Clear profile canvas glow (NPC highlight already cleared by blurTerminal)
-    const spriteCanvas = document.getElementById('agent-sprite-canvas') as HTMLCanvasElement | null;
+    const spriteCanvas = this.spriteCardElement?.querySelector('.agent-sprite-canvas') as HTMLCanvasElement | null;
     if (spriteCanvas) {
       spriteCanvas.style.boxShadow = '';
       spriteCanvas.style.border = '';

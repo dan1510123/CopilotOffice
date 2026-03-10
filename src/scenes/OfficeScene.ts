@@ -149,6 +149,9 @@ export class OfficeScene extends Phaser.Scene {
     // Handle return from MeetingScene
     this.events.on('wake', (_sys: Phaser.Scenes.Systems, data?: { plan?: MeetingPlan }) => {
       this.cameras.main.fadeIn(500, 0, 0, 0);
+
+      // MeetingScene may have nuked terminal IPC listeners — re-register them
+      this.terminalOverlay.reattachListeners();
       
       if (data?.plan) {
         // Fleet plan received — agents walk in first, player enters via Space/Enter after

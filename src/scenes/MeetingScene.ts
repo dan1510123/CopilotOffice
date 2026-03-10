@@ -257,6 +257,7 @@ export class MeetingScene extends Phaser.Scene {
     if (typeof window === 'undefined' || !window.copilotBridge) return;
 
     const handler = (_agentId: string, data: string) => {
+      if (this.isExiting) return;
       if (_agentId !== 'architect') return;
       this.terminalOutputBuffer += data;
 
@@ -273,8 +274,11 @@ export class MeetingScene extends Phaser.Scene {
     };
 
     window.copilotBridge.onTerminalData(handler);
+    // Clean up by nulling the reference — do NOT call removeTerminalListeners()
+    // as that nukes ALL terminal-data listeners including OfficeScene's TerminalOverlay.
     this.terminalDataCleanup = () => {
-      window.copilotBridge?.removeTerminalListeners?.();
+      // Handler self-guards via isExiting flag; no IPC listener removal needed.
+      this.terminalOutputBuffer = '';
     };
   }
 
