@@ -149,10 +149,12 @@ export class TerminalOverlay {
         </div>
       `;
       
-      // Add close button handler
+      // Add close button handler (stopPropagation prevents container's mousedown
+      // from calling focusTerminal(), which steals focus and blocks the click)
       const closeBtn = document.getElementById('close-terminal-btn');
       if (closeBtn) {
-        closeBtn.onclick = () => this.hide();
+        closeBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+        closeBtn.addEventListener('click', () => this.hide());
       }
     }
 
