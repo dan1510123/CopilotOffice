@@ -47,10 +47,10 @@ const FLEET_COLORS: number[] = [
 
 // Seat positions around the 9×3 conference table (cols 6–14, rows 5–7)
 const FLEET_SEAT_POSITIONS: { x: number; y: number }[] = [
-  // Top 5 (row 4, above table)
-  { x: 7, y: 4 }, { x: 9, y: 4 }, { x: 10, y: 4 }, { x: 11, y: 4 }, { x: 13, y: 4 },
-  // Bottom 5 (row 8, below table)
-  { x: 7, y: 8 }, { x: 9, y: 8 }, { x: 10, y: 8 }, { x: 11, y: 8 }, { x: 13, y: 8 },
+  // Top 5 (row 4, above table — evenly spaced across cols 6–14)
+  { x: 6, y: 4 }, { x: 8, y: 4 }, { x: 10, y: 4 }, { x: 12, y: 4 }, { x: 14, y: 4 },
+  // Bottom 5 (row 8, below table — evenly spaced across cols 6–14)
+  { x: 6, y: 8 }, { x: 8, y: 8 }, { x: 10, y: 8 }, { x: 12, y: 8 }, { x: 14, y: 8 },
   // Left 2 (col 5)
   { x: 5, y: 5.5 }, { x: 5, y: 6.5 },
   // Right 2 (col 15)

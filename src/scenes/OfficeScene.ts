@@ -872,7 +872,7 @@ export class OfficeScene extends Phaser.Scene {
     // === 5 STOOLS ABOVE the desk ===
     const stoolTuck = this.tileSize * 0.4;
     const stoolAboveY = (tableStartRow - 1) * this.tileSize + this.tileSize / 2 + stoolTuck;
-    const aboveStoolCols = [7, 9, 10, 11, 13];
+    const aboveStoolCols = [6, 8, 10, 12, 14];
     aboveStoolCols.forEach(col => {
       const sx = col * this.tileSize + this.tileSize / 2;
       addDecor(sx, stoolAboveY, 'stool').setDepth(Depths.FLOOR_DETAIL);
@@ -881,7 +881,7 @@ export class OfficeScene extends Phaser.Scene {
     // === 5 STOOLS BELOW the desk ===
     const tableEndRow = tableStartRow + tableRows - 1;
     const stoolBelowY = (tableEndRow + 1) * this.tileSize + this.tileSize / 2 - stoolTuck;
-    const belowStoolCols = [7, 9, 10, 11, 13];
+    const belowStoolCols = [6, 8, 10, 12, 14];
     belowStoolCols.forEach(col => {
       const sx = col * this.tileSize + this.tileSize / 2;
       addDecor(sx, stoolBelowY, 'stool').setDepth(Depths.FLOOR_DETAIL);
