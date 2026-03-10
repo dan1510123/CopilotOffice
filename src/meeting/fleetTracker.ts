@@ -103,9 +103,11 @@ export class FleetTracker {
 
     // Silent attach: ensures server sends copilot-event for this agent
     // even if the terminal overlay isn't showing it.
-    await bridge.terminalAttach(this.officeId, this.agentId);
+    const attachResult = await bridge.terminalAttach(this.officeId, this.agentId);
+    console.log(`[FleetTracker] terminalAttach result:`, attachResult);
 
     bridge.onCopilotEvent((agentId: string, event: CopilotEvent) => {
+      console.log(`[FleetTracker] onCopilotEvent: agent=${agentId}, type=${event.type}`);
       if (agentId !== this.agentId) return;
       this.processEvent(event);
     });
@@ -113,11 +115,13 @@ export class FleetTracker {
     // Also listen to the already-explicit tool events (these fire without viewer)
     bridge.onCopilotToolStart((agentId: string, toolName: string, toolId: string, _status: string) => {
       if (agentId !== this.agentId) return;
+      console.log(`[FleetTracker] toolStart: ${toolName} (${toolId})`);
       this.handleToolStart(toolName, toolId);
     });
 
     bridge.onCopilotToolComplete((agentId: string, toolId: string, _success: boolean) => {
       if (agentId !== this.agentId) return;
+      console.log(`[FleetTracker] toolComplete: ${toolId}`);
       this.handleToolComplete(toolId);
     });
 
