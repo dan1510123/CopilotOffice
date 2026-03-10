@@ -35,7 +35,7 @@ export class BootScene extends Phaser.Scene {
     });
 
     // Load background music
-    this.load.audio('bgMusic', 'assets/audio/dan1.m4a');
+    this.load.audio('bgMusic', '../assets/audio/dan1.m4a');
 
     // Generate placeholder sprites programmatically
     this.generatePlaceholderSprites();

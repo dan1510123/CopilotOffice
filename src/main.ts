@@ -179,6 +179,34 @@ function renderOfficeTabs() {
       user-select: none;
       transition: all 0.2s;
     ">🔔</div>
+    <div id="bgm-control" style="
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: #252538;
+      border: 2px solid #444;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 14px;
+    ">
+      <span style="color: #666; font-size: 12px;">BGM</span>
+      <button id="bgm-mute-btn" style="
+        background: #333;
+        border: 1px solid #555;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 11px;
+        font-family: monospace;
+        padding: 3px 6px;
+        color: ${bgmMuted ? '#ff6666' : '#00ff88'};
+        min-width: 50px;
+      ">${bgmMuted ? 'MUTED' : 'ON'}</button>
+      <input id="bgm-slider" type="range" min="0" max="100"
+        value="${Math.round(parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5') * 100)}"
+        title="Volume"
+        style="width: 70px; cursor: pointer; accent-color: #00ff88;" />
+    </div>
   `;
 
   tabsBar.innerHTML = html;
@@ -216,6 +244,22 @@ function renderOfficeTabs() {
 
   document.getElementById('notif-settings-btn')?.addEventListener('click', () => {
     notificationSettingsPanel.toggle();
+  });
+
+  // BGM controls in top bar
+  document.getElementById('bgm-mute-btn')?.addEventListener('click', () => {
+    bgmMuted = !bgmMuted;
+    localStorage.setItem('copilot-office-bgm-muted', String(bgmMuted));
+    const vol = parseInt((document.getElementById('bgm-slider') as HTMLInputElement)?.value ?? '50', 10) / 100;
+    updateSpeakerIcon(vol, bgmMuted);
+    phaserGameRef?.events.emit('bgm:mute', bgmMuted);
+  });
+
+  document.getElementById('bgm-slider')?.addEventListener('input', (e) => {
+    const vol = parseInt((e.target as HTMLInputElement).value, 10) / 100;
+    localStorage.setItem('copilot-office-bgm-volume', String(vol));
+    updateSpeakerIcon(vol, bgmMuted);
+    phaserGameRef?.events.emit('bgm:volume', vol);
   });
 }
 
@@ -332,53 +376,20 @@ statusBar.style.cssText = `
 `;
 document.body.appendChild(statusBar);
 
-// ── Background Music Volume Control ──────────────────────────────
-const volumeControl = document.createElement('div');
-volumeControl.style.cssText = 'display: flex; align-items: center; gap: 6px; margin-left: auto;';
-
-const speakerBtn = document.createElement('button');
-speakerBtn.textContent = '🔊';
-speakerBtn.title = 'Mute/Unmute';
-speakerBtn.style.cssText = 'background: none; border: none; cursor: pointer; font-size: 18px; padding: 2px 4px; line-height: 1;';
-
-const volumeSlider = document.createElement('input');
-volumeSlider.type = 'range';
-volumeSlider.min = '0';
-volumeSlider.max = '100';
-volumeSlider.value = String(Math.round(parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5') * 100));
-volumeSlider.title = 'Volume';
-volumeSlider.style.cssText = 'width: 90px; cursor: pointer; accent-color: #00ff88;';
-
+// ── Background Music State ───────────────────────────────────────
 let bgmMuted = localStorage.getItem('copilot-office-bgm-muted') !== 'false';
-if (bgmMuted) speakerBtn.textContent = '🔇';
 
 function updateSpeakerIcon(vol: number, muted: boolean): void {
-  if (muted || vol === 0) speakerBtn.textContent = '🔇';
-  else if (vol < 0.4) speakerBtn.textContent = '🔉';
-  else speakerBtn.textContent = '🔊';
+  const btn = document.getElementById('bgm-mute-btn');
+  if (!btn) return;
+  if (muted || vol === 0) { btn.textContent = 'MUTED'; btn.style.color = '#ff6666'; }
+  else { btn.textContent = 'ON'; btn.style.color = '#00ff88'; }
 }
-
-volumeSlider.addEventListener('input', () => {
-  const vol = parseInt(volumeSlider.value, 10) / 100;
-  localStorage.setItem('copilot-office-bgm-volume', String(vol));
-  updateSpeakerIcon(vol, bgmMuted);
-  phaserGameRef?.events.emit('bgm:volume', vol);
-});
-
-speakerBtn.addEventListener('click', () => {
-  bgmMuted = !bgmMuted;
-  localStorage.setItem('copilot-office-bgm-muted', String(bgmMuted));
-  updateSpeakerIcon(parseInt(volumeSlider.value, 10) / 100, bgmMuted);
-  phaserGameRef?.events.emit('bgm:mute', bgmMuted);
-});
-
-volumeControl.appendChild(speakerBtn);
-volumeControl.appendChild(volumeSlider);
-statusBar.appendChild(volumeControl);
 
 // Sync slider when music starts (in case OfficeScene restores saved state)
 function onBgmStarted(state: { volume: number; muted: boolean }): void {
-  volumeSlider.value = String(Math.round(state.volume * 100));
+  const slider = document.getElementById('bgm-slider') as HTMLInputElement | null;
+  if (slider) slider.value = String(Math.round(state.volume * 100));
   bgmMuted = state.muted;
   updateSpeakerIcon(state.volume, state.muted);
 }
