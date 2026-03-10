@@ -1414,8 +1414,13 @@ export class OfficeScene extends Phaser.Scene {
   private rebuildLayout(layout: OfficeLayout): void {
     console.log(`[OfficeScene] Rebuilding layout: ${this.currentLayout} → ${layout}`);
 
-    // Dispose fleet components when leaving fleet layout
+    // Dispose fleet components when leaving fleet layout.
+    // Preserve fleetSourceOfficeId — disposeFleetPipeline clears it, but
+    // initFleetPipeline needs it to attach the EventsWatcher with the
+    // ORIGINAL composite key (e.g. office-0:architect).
+    const savedFleetSourceOfficeId = this.fleetSourceOfficeId;
     this.disposeFleetPipeline();
+    this.fleetSourceOfficeId = savedFleetSourceOfficeId;
 
     this.currentLayout = layout;
 

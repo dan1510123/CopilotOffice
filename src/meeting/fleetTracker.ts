@@ -159,7 +159,7 @@ export class FleetTracker {
     this.tracking = false;
     this.listeners = [];
     // Detach silent viewer if we attached one
-    this.bridge?.terminalDetach(this.agentId);
+    this.bridge?.terminalDetach(this.officeId, this.agentId);
     console.log(`[FleetTracker] Disposed tracker for "${this.agentId}"`);
   }
 

@@ -809,9 +809,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // Copy ready state
         const ready = agentReadyState.get(fromCk);
         if (ready !== undefined) agentReadyState.set(toCk, ready);
-        // Share event watcher so copilot events forward under the new key too
-        const watcher = agentWatchers.get(fromCk);
-        if (watcher) agentWatchers.set(toCk, watcher);
+        // Do NOT share the EventsWatcher — it's bound to the original composite key's
+        // closure. Sharing causes the destination's kill/reset to stop() the source's
+        // watcher via the shared object reference. The destination creates its own watcher
+        // when startTerminalForAgent is called for a new session.
         // Carry over active viewer registration so PTY output is forwarded under the new key
         if (activeAgentViewers.has(fromCk)) {
           activeAgentViewers.add(toCk);
