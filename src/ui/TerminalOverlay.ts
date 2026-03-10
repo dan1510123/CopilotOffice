@@ -39,6 +39,7 @@ export class TerminalOverlay {
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private getOfficeId: () => string;
+  private attachedOfficeId: string | null = null;
   private isReadOnly: boolean = false;
   private isReplaying: boolean = false;
   private readonly instanceId: string;
@@ -109,6 +110,10 @@ export class TerminalOverlay {
     this.currentAgentId = agent.id;
     this.onCloseCallback = onClose;
     this.isReadOnly = options?.readOnly ?? false;
+
+    // Snapshot the office ID at attach time so hide() detaches from the correct
+    // office even if switchToOffice() changes currentOfficeId before hide() runs.
+    this.attachedOfficeId = this.getOfficeId();
 
     // Store current agent for workingDir access
     this.currentAgent = agent;
@@ -930,8 +935,12 @@ export class TerminalOverlay {
 
     // Don't kill the terminal - keep session alive in background!
     // Detach viewer so the server stops sending data to us while hidden.
+    // Use attachedOfficeId (captured in show()) so that if switchToOffice() changed
+    // currentOfficeId between show() and hide(), we still detach from the correct office.
     if (this.currentAgentId && window.copilotBridge) {
-      window.copilotBridge.terminalDetach(this.getOfficeId(), this.currentAgentId).catch(() => {});
+      const officeId = this.attachedOfficeId ?? this.getOfficeId();
+      window.copilotBridge.terminalDetach(officeId, this.currentAgentId).catch(() => {});
+      this.attachedOfficeId = null;
     }
 
     if (this.onCloseCallback) {

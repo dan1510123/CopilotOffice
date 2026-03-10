@@ -23,6 +23,7 @@ export class MeetingScene extends Phaser.Scene {
   private terminalDataCleanup: (() => void) | null = null;
   private leaveMeetingCleanup: (() => void) | null = null;
   private isExiting: boolean = false;
+  private isDeploying: boolean = false;
 
   constructor() {
     super({ key: 'MeetingScene' });
@@ -70,7 +71,7 @@ export class MeetingScene extends Phaser.Scene {
 
     // Ctrl+Enter to leave meeting (works even when terminal is focused)
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === 'Enter' && !this.isExiting) {
+      if (e.ctrlKey && e.key === 'Enter' && !this.isExiting && !this.isDeploying) {
         e.preventDefault();
         this.exitMeeting();
       }
@@ -132,7 +133,7 @@ export class MeetingScene extends Phaser.Scene {
       if (this.leaveButton) this.leaveButton.style.background = '#333';
     });
     this.leaveButton.addEventListener('click', () => {
-      if (!this.isExiting) this.exitMeeting();
+      if (!this.isExiting && !this.isDeploying) this.exitMeeting();
     });
     document.body.appendChild(this.leaveButton);
   }
@@ -244,6 +245,13 @@ export class MeetingScene extends Phaser.Scene {
         return;
       }
       closeDialog();
+
+      // Prevent Ctrl+Enter / Leave button from firing exitMeeting during the
+      // async transfer+write, and remove the buttons to block click handlers.
+      this.isDeploying = true;
+      this.leaveButton?.remove();
+      this.fleetButton?.remove();
+
       const sourceOfficeId = officeManager.currentOfficeId || 'office-0';
       // Emit with a resolve callback so main.ts can signal when transfer+write completes.
       // exitMeeting must wait — otherwise scene cleanup (terminal detach) races with the
@@ -251,7 +259,10 @@ export class MeetingScene extends Phaser.Scene {
       new Promise<void>((resolve) => {
         this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId, resolve });
       }).then(() => {
+        this.isDeploying = false;
         this.exitMeeting();
+      }).catch(() => {
+        this.isDeploying = false;
       });
     });
 
@@ -464,5 +475,6 @@ export class MeetingScene extends Phaser.Scene {
     this.meetingPlan = null;
     this.terminalOutputBuffer = '';
     this.isExiting = false;
+    this.isDeploying = false;
   }
 }
