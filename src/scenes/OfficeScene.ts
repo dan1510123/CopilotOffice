@@ -8,7 +8,7 @@ import { AGENTS, AgentConfig } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
-import { officeManager } from '../office/officeManager';
+import { officeManager, OfficeLayout } from '../office/officeManager';
 import { MeetingPlan } from '../meeting/types';
 import { Direction } from '../sprites/DirectionalSprite';
 
@@ -74,7 +74,7 @@ export class OfficeScene extends Phaser.Scene {
   private inputManager!: InputManager;
   private bgMusic: Phaser.Sound.BaseSound | null = null;
   private layoutObjects: Phaser.GameObjects.GameObject[] = [];
-  private currentLayout: string = 'default';
+  private currentLayout: OfficeLayout = 'default';
   private wallCollider?: Phaser.Physics.Arcade.Collider;
   private furnitureCollider?: Phaser.Physics.Arcade.Collider;
   private npcCollider?: Phaser.Physics.Arcade.Collider;
@@ -279,8 +279,7 @@ export class OfficeScene extends Phaser.Scene {
     // Fleet v-team agents don't open terminals
     this.game.events.on('open:agent:terminal', (agentId: string) => {
       if (this.currentLayout === 'fleet-vteam') return;
-      const layout = this.currentLayout as import('../office/officeManager').OfficeLayout;
-      const agents = getLayout(layout).agents;
+      const agents = getLayout(this.currentLayout).agents;
       const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
     }, this);
@@ -1147,7 +1146,7 @@ export class OfficeScene extends Phaser.Scene {
    * Destroy current layout objects and rebuild with a new layout type.
    * Preserves player, input manager, terminal overlay, and game overlays.
    */
-  private rebuildLayout(layout: string): void {
+  private rebuildLayout(layout: OfficeLayout): void {
     console.log(`[OfficeScene] Rebuilding layout: ${this.currentLayout} → ${layout}`);
     this.currentLayout = layout;
 
@@ -1251,8 +1250,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private createNPCs(): void {
-    const layout = this.currentLayout as import('../office/officeManager').OfficeLayout;
-    const agents = getLayout(layout).agents;
+    const agents = getLayout(this.currentLayout).agents;
     agents.forEach(agentConfig => {
       const npc = new NPC(this, agentConfig, this.tileSize, this.spriteScale);
       this.npcs.push(npc);
