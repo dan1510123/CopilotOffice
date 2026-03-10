@@ -516,6 +516,15 @@ export class TerminalOverlay {
     this.fullscreenBtn.title = 'Toggle fullscreen (Ctrl+F)';
     buttonGrid.appendChild(this.fullscreenBtn);
 
+    const refreshFocusBtn = document.createElement('button');
+    refreshFocusBtn.textContent = '🎯 Refresh Focus';
+    refreshFocusBtn.style.cssText = btnStyle + 'color: #88ffaa;';
+    refreshFocusBtn.onmouseover = () => { refreshFocusBtn.style.background = '#2a4a3a'; };
+    refreshFocusBtn.onmouseout = () => { refreshFocusBtn.style.background = '#2a3a4a'; };
+    refreshFocusBtn.onclick = () => this.focusTerminal();
+    refreshFocusBtn.title = 'Re-focus terminal input when typing stops working';
+    buttonGrid.appendChild(refreshFocusBtn);
+
     this.spriteCardElement.appendChild(buttonGrid);
 
     // Mount to #game-container so it spans full width, between mainContent and status bar

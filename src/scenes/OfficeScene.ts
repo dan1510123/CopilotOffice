@@ -426,14 +426,13 @@ export class OfficeScene extends Phaser.Scene {
     // Dismiss unassigned agents: walk them out of the room
     this.game.events.on('fleet:dismiss-unassigned', (data: { agentIds: string[] }) => {
       console.log(`[OfficeScene] Dismissing ${data.agentIds.length} unassigned agents`);
-      const entranceX = this.mapWidth * this.tileSize / 2;
-      const exitY = (this.mapHeight + 1) * this.tileSize;
       data.agentIds.forEach((agentId, i) => {
         const npc = this.npcs.find(n => n.config.id === agentId);
         if (!npc) return;
+        const exitPath = this.buildCongaExitPath(npc);
         // Stagger walk-outs slightly so they don't all leave at once
         this.time.delayedCall(i * 200, () => {
-          npc.walkTo(entranceX, exitY, 120).then(() => {
+          npc.walkPath(exitPath, 150).then(() => {
             npc.setVisible(false);
             npc.setLabelsVisible(false);
           });
@@ -452,9 +451,8 @@ export class OfficeScene extends Phaser.Scene {
     this.game.events.on('fleet:agent:exit', (agentId: string) => {
       const npc = this.npcs.find(n => n.config.id === agentId);
       if (!npc) return;
-      const entranceX = this.mapWidth * this.tileSize / 2;
-      const exitY = (this.mapHeight + 1) * this.tileSize;
-      npc.walkTo(entranceX, exitY, 120).then(() => {
+      const exitPath = this.buildCongaExitPath(npc);
+      npc.walkPath(exitPath, 150).then(() => {
         npc.setVisible(false);
         npc.setLabelsVisible(false);
       });
@@ -1328,6 +1326,20 @@ export class OfficeScene extends Phaser.Scene {
       dist += Math.sqrt(dx * dx + dy * dy);
     }
     return dist;
+  }
+
+  /** Build a reverse conga path from an NPC's seat back to the off-screen exit. */
+  private buildCongaExitPath(npc: NPC): { x: number; y: number }[] {
+    const { waypoints } = this.buildCongaPath(
+      npc.config.position.x, npc.config.position.y, this.tileSize,
+    );
+    // Reverse the walk-in path and skip the first point (seat — agent is already there)
+    const reversed = [...waypoints].reverse().slice(1);
+    // Append off-screen exit point
+    const entranceX = this.mapWidth * this.tileSize / 2;
+    const exitY = (this.mapHeight + 1) * this.tileSize;
+    reversed.push({ x: entranceX, y: exitY });
+    return reversed;
   }
 
   private triggerAgentWalkIn(agentIds: string[], onAllSeated?: () => void): void {
