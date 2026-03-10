@@ -515,11 +515,12 @@ export class TerminalOverlay {
     this.terminal?.clear();
     this.terminal?.writeln('\x1b[33m[Starting new session...]\x1b[0m\r\n');
     
-    // Kill existing and start new
+    // Reset session (clears meta/title, generates new session ID, kills PTY)
     await withTimeout(
-      window.copilotBridge.terminalKill(this.currentAgentId),
-      IPC_TIMEOUT, 'terminalKill'
-    ).catch(() => { /* may already be dead */ });
+      window.copilotBridge.resetSession(this.currentAgentId),
+      IPC_TIMEOUT, 'resetSession'
+    ).catch(() => { /* ignore */ });
+
     await this.startNewSession(this.currentAgentId, this.currentAgent.workingDir);
   }
 

@@ -480,6 +480,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // Clear session metadata
       agentSessionMeta.delete(msg.agentId);
       hasAutoTitled.delete(msg.agentId);
+      send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: '' } });
       // Archive old session ID and generate new one (but don't start PTY)
       archiveSessionId(msg.agentId);
       const newSessionId = crypto.randomUUID();
@@ -511,6 +512,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       agentScrollbackBytes.clear();
       agentSessionMeta.clear();
       hasAutoTitled.clear();
+      // Notify renderer that all titles are cleared
+      for (const agentId of agentSessionIds.keys()) {
+        send({ type: 'session-meta-updated', agentId, meta: { title: '' } });
+      }
       // Regenerate a fresh GUID for every agent that had a session
       for (const agentId of agentSessionIds.keys()) {
         agentSessionIds.set(agentId, crypto.randomUUID());

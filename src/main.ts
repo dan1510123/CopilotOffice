@@ -276,6 +276,7 @@ function switchToOffice(officeId: string) {
 
   // Re-sync agent statuses for the new office
   syncAgentStatuses();
+  fetchSessionMeta();
 
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
 }
@@ -455,29 +456,21 @@ const notificationSettingsPanel = new NotificationSettingsPanel(notificationServ
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
 let cachedSessionMeta: Record<string, { title: string }> = {};
-let sessionMetaDirty = true;
 
-function invalidateSessionMeta() {
-  sessionMetaDirty = true;
-  updateTerminalContent();
-}
-
-async function refreshSessionMetaCache(): Promise<void> {
-  if (!sessionMetaDirty) return;
-  try {
-    cachedSessionMeta = await window.copilotBridge.getAllSessionMeta();
-  } catch {
-    cachedSessionMeta = {};
-  }
-  sessionMetaDirty = false;
+// Fetch session meta from backend (fire-and-forget, updates cache + UI)
+function fetchSessionMeta() {
+  if (!window.copilotBridge?.getAllSessionMeta) return;
+  window.copilotBridge.getAllSessionMeta().then(meta => {
+    cachedSessionMeta = meta || {};
+    updateTerminalContent();
+  }).catch(() => {});
 }
 
 function updateTerminalContent() {
   scheduleTerminalContentUpdate();
 }
 
-async function updateTerminalContentNow() {
-  await refreshSessionMetaCache();
+function updateTerminalContentNow() {
   const agentTools = getCurrentAgentTools();
   const office = officeManager.currentOffice;
 
@@ -802,7 +795,8 @@ function startSessionMetaEdit(agentId: string) {
   if (titleEl) {
     replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
       await window.copilotBridge.setSessionMeta(agentId, { title: value });
-      invalidateSessionMeta();
+      cachedSessionMeta[agentId] = { title: value };
+      updateTerminalContent();
     });
   }
 }
@@ -1200,6 +1194,7 @@ updateStatusBar();
 setupTerminalClickHandler();
 
 updateTerminalContent();
+fetchSessionMeta();
 
 // ── Phaser Game ────────────────────────────────────────────────────
 
