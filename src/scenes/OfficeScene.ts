@@ -1496,6 +1496,7 @@ export class OfficeScene extends Phaser.Scene {
   private setupEmptySeatInteractivity(): void {
     if (this.currentLayout !== 'default') return;
 
+    let count = 0;
     for (const desk of this.desks) {
       if (!desk.agentId.startsWith('unassigned-')) continue;
       const reserveConfig = RESERVE_AGENTS[desk.agentId];
@@ -1508,25 +1509,45 @@ export class OfficeScene extends Phaser.Scene {
       stool.on('pointerover', () => { stool.setTint(0x88ff88); });
       stool.on('pointerout', () => { stool.clearTint(); });
 
-      // Click to spawn
-      stool.on('pointerup', () => { this.spawnReserveAgent(desk.agentId); });
+      // Capture deskId before it changes
+      const deskId = desk.agentId;
+      stool.on('pointerup', () => { this.spawnReserveAgent(deskId); });
+      count++;
     }
+    console.log(`[OfficeScene] Setup ${count} empty seat(s) for reserve agent hiring`);
   }
 
   /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance. */
   private spawnReserveAgent(deskId: string): void {
     // Guards
-    if (!this.playerInScene || this.animating) return;
+    if (!this.playerInScene) {
+      console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: player not in scene`);
+      return;
+    }
+    if (this.animating) {
+      console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: animating`);
+      return;
+    }
     const reserveConfig = RESERVE_AGENTS[deskId];
-    if (!reserveConfig) return;
-    if (AGENTS.find(a => a.id === reserveConfig.id)) return; // already spawned
+    if (!reserveConfig) {
+      console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: no reserve config`);
+      return;
+    }
+    if (AGENTS.find(a => a.id === reserveConfig.id)) {
+      console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: ${reserveConfig.id} already spawned`);
+      return;
+    }
+
+    console.log(`[OfficeScene] Spawning reserve agent: ${reserveConfig.name} (${reserveConfig.id}) at seat ${deskId}`);
 
     // Push to AGENTS so all existing lookups (dashboard, getAgentConfig, getLayout) find it
     AGENTS.push(reserveConfig);
 
-    // Create NPC
+    // Create NPC — hide sprite AND labels until walk-in repositions them
     const npc = new NPC(this, reserveConfig, this.tileSize, this.spriteScale);
-    npc.setVisible(false); // hidden until walk-in starts
+    npc.setVisible(false);
+    npc.setLabelsVisible(false);
+    npc.setBadgeVisible(false);
     this.npcs.push(npc);
 
     // Add physics collider for the new NPC
@@ -1541,8 +1562,11 @@ export class OfficeScene extends Phaser.Scene {
       desk.sprite.clearTint();
     }
 
-    // Walk in from entrance
+    // Walk in from entrance — triggerAgentWalkIn calls setVisible(true) + syncLabelPositions
     this.triggerAgentWalkIn([reserveConfig.id]);
+
+    // Restore label visibility now that NPC is repositioned at entrance
+    npc.setLabelsVisible(true);
 
     // Start terminal in background immediately
     const officeId = officeManager.currentOfficeId;
