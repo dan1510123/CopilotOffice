@@ -1766,20 +1766,25 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private async preStartAgentSessions(): Promise<void> {
-    // Pre-start admin session specifically (Alice can edit game code)
     if (typeof window !== 'undefined' && window.copilotBridge) {
-      const adminAgent = AGENTS.find(a => a.id === 'admin');
       const oid = officeManager.currentOfficeId || 'office-0';
-      const savedSessionId = await window.copilotBridge.getSessionId(oid, 'admin');
-      
-      if (savedSessionId) {
-        console.log(`[CopilotOffice] Resuming admin session: ${savedSessionId}`);
-      } else {
-        console.log('[CopilotOffice] Starting new admin session (no saved session found)');
-      }
-      
-      await window.copilotBridge.terminalStart(oid, 'admin', adminAgent?.workingDir);
-      console.log('[CopilotOffice] Admin (Alice) session ready');
+
+      const startAgent = async (agentId: string, label: string) => {
+        const agent = AGENTS.find(a => a.id === agentId);
+        const savedSessionId = await window.copilotBridge.getSessionId(oid, agentId);
+        if (savedSessionId) {
+          console.log(`[CopilotOffice] Resuming ${label} session: ${savedSessionId}`);
+        } else {
+          console.log(`[CopilotOffice] Starting new ${label} session (no saved session found)`);
+        }
+        await window.copilotBridge.terminalStart(oid, agentId, agent?.workingDir);
+        console.log(`[CopilotOffice] ${label} session ready`);
+      };
+
+      await Promise.all([
+        startAgent('admin', 'Admin (Alice)'),
+        startAgent('architect', 'Architect (Arthur)'),
+      ]);
     }
   }
 
