@@ -1540,10 +1540,6 @@ export class OfficeScene extends Phaser.Scene {
   /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance. */
   private spawnReserveAgent(deskId: string): void {
     // Guards
-    if (!this.playerInScene) {
-      console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: player not in scene`);
-      return;
-    }
     if (this.animating) {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: animating`);
       return;
