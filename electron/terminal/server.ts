@@ -32,6 +32,9 @@ const agentWatchers: Map<string, EventsWatcher> = new Map();
 // Track per-agent ready state so it can be queried by the renderer
 const agentReadyState: Map<string, boolean> = new Map();
 
+// Track per-agent turn activity (between turn_start and turn_end)
+const agentInTurn: Map<string, boolean> = new Map();
+
 // Per-agent raw scrollback buffer (preserves ANSI escape sequences)
 const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB
 const agentScrollbackBuffers: Map<string, string[]> = new Map();
@@ -68,6 +71,19 @@ function getOfficeSession(officeId: string): OfficeSessionData {
 // Composite key for PTY/runtime maps: `${officeId}:${agentId}`
 function compositeKey(officeId: string, agentId: string): string {
   return `${officeId}:${agentId}`;
+}
+
+/**
+ * Check if a composite key has an active viewer, including alias keys.
+ * For transferred sessions, the closure captures the original key but the viewer
+ * may only have the alias (fleet office) key registered. This checks both.
+ */
+function hasActiveViewer(ck: string): boolean {
+  if (activeAgentViewers.has(ck)) return true;
+  for (const [alias, termKey] of agentToTerminal) {
+    if (termKey === ck && activeAgentViewers.has(alias)) return true;
+  }
+  return false;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -376,35 +392,46 @@ async function startTerminalForAgent(
       }
     };
 
-    const watcherCallback = (event: CopilotEvent) => {
-      // Primary ready signal: first turn_end means copilot CLI has finished loading
+    const watcherCallback = (event: CopilotEvent, isHistorical: boolean) => {
+      // Ready detection works on ALL events (historical + new) so both
+      // detection paths (first turn_end and "Environment loaded") remain functional.
       if (!hasSignalledReady && (event.type === 'assistant.turn_end' || event.type === 'user.message')) {
         signalReady();
       }
 
-      // Tool events are ALWAYS forwarded regardless of ready state — the renderer
-      // can decide what to do with them. This ensures tool activity is never silently lost.
-      if (event.type === 'tool.execution_start') {
-        const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
-        console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName} (ready=${hasSignalledReady})`);
-        send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
-      } else if (event.type === 'tool.execution_complete') {
-        const d = event.data as { toolCallId: string; success: boolean };
-        console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId} (ready=${hasSignalledReady})`);
-        send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
+      // Historical events (from a resumed session's existing events.jsonl) are
+      // used for ready detection above but never forwarded to the renderer.
+      // Forwarding them caused two bugs: (1) tool events before ready triggered
+      // invalid starting→thinking transitions, and (2) turn/user events after
+      // ready left the agent stuck in thinking with no matching turn_end.
+      if (isHistorical) {
+        skippedEventCount++;
+        return;
       }
 
-      // Non-tool events are only forwarded after the agent is ready — during startup,
-      // old events from resumed sessions would interfere with custom startup detection.
+      // New events before ready are also skipped — the CLI is still loading.
       if (!hasSignalledReady) {
         skippedEventCount++;
         return;
       }
 
+      // Forward tool events
+      if (event.type === 'tool.execution_start') {
+        const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
+        console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName}`);
+        send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
+      } else if (event.type === 'tool.execution_complete') {
+        const d = event.data as { toolCallId: string; success: boolean };
+        console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
+        send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
+      }
+
       if (event.type === 'assistant.turn_end') {
+        agentInTurn.set(ck, false);
         console.log(`[TermServer] Forwarding turn_end for ${ck}`);
         send({ type: 'copilot-turn-end', agentId });
       } else if (event.type === 'assistant.turn_start') {
+        agentInTurn.set(ck, true);
         console.log(`[TermServer] Forwarding turn_start for ${ck}`);
         send({ type: 'copilot-turn-start', agentId });
       } else if (event.type === 'user.message') {
@@ -441,11 +468,12 @@ async function startTerminalForAgent(
         console.log(`[TermServer] Subagent FAILED for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'}, error: ${d.error ?? 'unknown'})`);
       }
 
-      // Only forward the verbose raw copilot-event when someone is viewing
-      if (activeAgentViewers.has(ck)) {
+      // Only forward the verbose raw copilot-event when someone is viewing.
+      // For transferred sessions, also check if any alias key has an active viewer.
+      if (hasActiveViewer(ck)) {
         send({ type: 'copilot-event', agentId, event });
-      } else if (event.type.startsWith('subagent.') || event.type === 'system.notification') {
-        console.warn(`[TermServer] Dropped ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
+      } else {
+        console.warn(`[TermServer] Dropped copilot-event ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
       }
     };
 
@@ -461,7 +489,7 @@ async function startTerminalForAgent(
 
     const flushData = () => {
       flushTimer = null;
-      if (pendingData && activeAgentViewers.has(ck)) {
+      if (pendingData && hasActiveViewer(ck)) {
         send({ type: 'terminal-data', agentId, data: pendingData });
       }
       pendingData = '';
@@ -474,7 +502,7 @@ async function startTerminalForAgent(
         console.log(`[TermServer] Primary ready signal for ${ck}: "Environment loaded" detected`);
         signalReady();
       }
-      if (!activeAgentViewers.has(ck)) return;
+      if (!hasActiveViewer(ck)) return;
       pendingData += data;
       if (pendingData.length >= MAX_PENDING_BYTES) {
         if (flushTimer) clearTimeout(flushTimer);
@@ -491,6 +519,7 @@ async function startTerminalForAgent(
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
       agentReadyState.delete(ck);
+      agentInTurn.delete(ck);
       const w = agentWatchers.get(ck);
       if (w) { w.stop(); agentWatchers.delete(ck); }
     });
@@ -559,6 +588,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           const w = agentWatchers.get(ck);
           if (w) { w.stop(); agentWatchers.delete(ck); }
           agentReadyState.delete(ck);
+          agentInTurn.delete(ck);
           send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         } catch (error) {
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
@@ -654,6 +684,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const resetWatcher = agentWatchers.get(ck);
       if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(ck); }
       agentReadyState.delete(ck);
+      agentInTurn.delete(ck);
       // Clear scrollback
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
@@ -710,6 +741,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentScrollbackBuffers.delete(ck);
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
+        agentInTurn.delete(ck);
         activeAgentViewers.delete(ck);
         hasAutoTitled.delete(ck);
         send({ type: 'session-meta-updated', agentId, meta: { title: '' } });
@@ -739,14 +771,15 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'query-agent-statuses': {
       const { officeId } = msg as MsgQueryAgentStatuses;
-      const statuses: Record<string, { alive: boolean; ready: boolean }> = {};
+      const statuses: Record<string, { alive: boolean; ready: boolean; inTurn: boolean }> = {};
       for (const [ck] of agentToTerminal) {
         if (officeId && !ck.startsWith(officeId + ':')) continue;
         const agentId = ck.split(':')[1] ?? ck;
         const key = agentToTerminal.get(ck);
         const alive = !!(key && ptyProcesses.has(key));
         const ready = agentReadyState.get(ck) ?? false;
-        statuses[agentId] = { alive, ready };
+        const inTurn = agentInTurn.get(ck) ?? false;
+        statuses[agentId] = { alive, ready, inTurn };
       }
       send({ type: 'response', requestId: msg.requestId, result: statuses });
       break;
@@ -824,6 +857,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // Copy ready state
         const ready = agentReadyState.get(fromCk);
         if (ready !== undefined) agentReadyState.set(toCk, ready);
+        // Copy turn state
+        const turnState = agentInTurn.get(fromCk);
+        if (turnState !== undefined) agentInTurn.set(toCk, turnState);
         // Do NOT share the EventsWatcher — it's bound to the original composite key's
         // closure. Sharing causes the destination's kill/reset to stop() the source's
         // watcher via the shared object reference. The destination creates its own watcher

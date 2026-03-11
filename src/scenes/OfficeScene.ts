@@ -1711,11 +1711,15 @@ export class OfficeScene extends Phaser.Scene {
   private async initFleetPipeline(): Promise<void> {
     // Use the source office ID (where terminal was started) for event watcher attach.
     // The server's EventsWatcher checks activeAgentViewers with the ORIGINAL composite key.
+    // The server's attach handler also adds the original key via agentToTerminal lookup
+    // (belt-and-suspenders), so even if we attach with the fleet office ID it should work.
     const attachOfficeId = this.fleetSourceOfficeId || officeManager.currentOfficeId;
     if (!attachOfficeId) {
       console.error('[OfficeScene] No officeId for fleet pipeline');
       return;
     }
+    const isReEntry = !this.fleetPrompt;
+    console.log(`[OfficeScene] initFleetPipeline: attachOfficeId=${attachOfficeId}, sourceOfficeId=${this.fleetSourceOfficeId}, currentOfficeId=${officeManager.currentOfficeId}, isReEntry=${isReEntry}`);
     try {
       this.fleetTracker = new FleetTracker('architect', attachOfficeId);
       await this.fleetTracker.startTracking();

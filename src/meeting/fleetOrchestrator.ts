@@ -32,8 +32,8 @@ export class FleetOrchestrator {
     'fleet:agent:failed': [],
     'fleet:all:complete': [],
   };
-  private cleanupFns: Array<() => void> = [];
   private cancelled = false;
+  private detached = false;
 
   private get bridge(): any {
     return (window as any).copilotBridge;
@@ -121,10 +121,11 @@ export class FleetOrchestrator {
 
   private attachListeners(): void {
     const bridge = this.bridge;
+    this.detached = false;
 
     // Track terminal readiness — agent is working once ready
     const onPreloadStatus = (agentId: string, status: string) => {
-      if (!this.agents.has(agentId)) return;
+      if (this.detached || !this.agents.has(agentId)) return;
       if (status === 'ready') {
         this.updateAgentState(agentId, 'working');
         const agentState = this.agents.get(agentId)!;
@@ -139,7 +140,7 @@ export class FleetOrchestrator {
 
     // Track unexpected exits
     const onExit = (agentId: string, exitCode: number) => {
-      if (!this.agents.has(agentId)) return;
+      if (this.detached || !this.agents.has(agentId)) return;
       const current = this.agents.get(agentId)!;
       if (current.state === 'done' || current.state === 'failed') return;
 
@@ -157,7 +158,7 @@ export class FleetOrchestrator {
 
     // Copilot turn end signals task completion
     const onTurnEnd = (agentId: string) => {
-      if (!this.agents.has(agentId)) return;
+      if (this.detached || !this.agents.has(agentId)) return;
       const current = this.agents.get(agentId)!;
       if (current.state !== 'working') return;
 
@@ -171,15 +172,13 @@ export class FleetOrchestrator {
     bridge.onTerminalExit(onExit);
     bridge.onCopilotTurnEnd(onTurnEnd);
 
-    this.cleanupFns.push(
-      () => bridge.removeTerminalListeners?.(),
-      () => bridge.removeCopilotListeners?.(),
-    );
+    // Do NOT call removeTerminalListeners/removeCopilotListeners — that nukes ALL
+    // ipcRenderer listeners for those channels, including main.ts's handlers.
+    // Instead, set the detached flag to make callbacks no-op.
   }
 
   private detachListeners(): void {
-    this.cleanupFns.forEach((fn) => fn());
-    this.cleanupFns = [];
+    this.detached = true;
   }
 
   private async spawnAgent(task: TaskAssignment, workingDir: string): Promise<void> {

@@ -403,3 +403,124 @@ This is a **fundamental architectural limitation** of the closure-based PTY call
 model. The closures capture the composite key at PTY creation time and cannot be
 updated after transfer. The belt-and-suspenders approach works but is fragile —
 any change to the attach/detach flow or listener cleanup must preserve both fixes.
+
+---
+
+## 10. Nuclear Listener Removal Anti-Pattern
+
+### The Problem
+
+Two different approaches exist for cleaning up IPC listeners:
+
+| Class | Cleanup Method | Impact |
+|-------|---------------|--------|
+| `FleetOrchestrator` (old) | `bridge.removeCopilotListeners()` | Removes **ALL** `ipcRenderer` listeners for every copilot event channel |
+| `FleetTracker` (new) | Sets `tracking = false`; calls `terminalDetach` | Only stops its own processing; other listeners are unaffected |
+
+`removeCopilotListeners()` in `preload.ts` calls `ipcRenderer.removeAllListeners()` on
+**six** IPC channels: `copilot-event`, `copilot-tool-start`, `copilot-tool-complete`,
+`copilot-turn-end`, `copilot-turn-start`, `copilot-user-message`, and `session-meta-updated`.
+
+This means if `FleetOrchestrator.detachListeners()` runs, it destroys:
+- `main.ts`'s copilot event handlers (tool badge updates, agent status transitions)
+- `FleetTracker`'s copilot event handlers (subagent lifecycle tracking)
+- Any other code that registered copilot event listeners
+
+After this, **no copilot events reach the renderer until a hard reload**.
+
+### The Correct Pattern
+
+Follow `FleetTracker`'s approach: **never call `removeCopilotListeners()`** during
+normal operation. Instead:
+- Set a flag to ignore events (like MeetingScene's `isExiting` pattern)
+- Or remove only your specific listener references
+- Reserve `removeCopilotListeners()` for page reload / shutdown only
+
+### Where Nuclear Removal Is Called
+
+| Location | When | Safe? |
+|----------|------|-------|
+| `FleetOrchestrator.detachListeners()` | Fleet cancel or all-complete | ❌ **Dangerous** — kills all listeners |
+| MeetingScene `setupPlanDetection()` | Was previously called here; fixed with `isExiting` guard | ✅ Fixed |
+| Soft reload (`Ctrl+R`) | Before re-running `main.ts` | ✅ Safe — all listeners are re-registered |
+
+---
+
+## 11. Inconsistent Event Forwarding Gates
+
+### `copilot-tool-*` vs `copilot-event`
+
+Server.ts has **two different forwarding policies** for copilot events:
+
+| IPC Message | Gate | Result |
+|-------------|------|--------|
+| `copilot-tool-start` | None — always forwarded after `hasSignalledReady` | NPC tool badges always update |
+| `copilot-tool-complete` | None — always forwarded after `hasSignalledReady` | Tool completion always reaches renderer |
+| `copilot-turn-start` | None — always forwarded | Turn tracking always works |
+| `copilot-turn-end` | None — always forwarded | Turn end always reaches renderer |
+| `copilot-user-message` | None — always forwarded | User message tracking always works |
+| `copilot-event` (raw) | `activeAgentViewers.has(ck)` | **Gated** — silently dropped if no viewer |
+
+This means:
+- NPC tool badges may update (via `copilot-tool-start/complete`)
+- But `FleetTracker` sees nothing (it depends on `copilot-event` for `subagent.*` events)
+- Console shows tool activity but fleet dashboard shows no sub-agents
+
+This inconsistency makes the bug confusing to diagnose — some events flow while
+others are silently dropped, depending on which IPC channel they use.
+
+### Why `copilot-event` Is Gated
+
+The `copilot-event` channel sends the **raw, verbose** event data from `events.jsonl`.
+It was originally gated to reduce IPC traffic when no terminal UI was displaying the
+agent. However, FleetTracker needs these events even when the terminal isn't visible
+(it uses "silent attach" to enable the flow).
+
+### Recommended Fix
+
+For transferred sessions, the viewer gate should check **both** the closure-captured key
+and any aliases registered in `agentToTerminal`. This ensures the event flows even if
+only the alias key (fleet office key) has an active viewer.
+
+---
+
+## 12. Office Switch → Fleet Re-Entry Flow
+
+When a user switches away from the fleet office and back:
+
+```
+1. User clicks non-fleet office tab
+   └─→ switchToOffice(otherOfficeId) in main.ts
+   └─→ 'office:switch' event → OfficeScene.rebuildLayout('default')
+
+2. rebuildLayout() calls disposeFleetPipeline()
+   └─→ FleetVisualizer.dispose() — clears game event listeners
+   └─→ FleetTracker.dispose() — sets tracking=false, detaches viewer
+       └─→ terminalDetach(officeId, agentId)
+       └─→ Server removes composite key from activeAgentViewers
+       └─→ ⚠️ If belt-and-suspenders applied, BOTH keys are removed
+
+3. User clicks fleet office tab
+   └─→ switchToOffice(fleetOfficeId) in main.ts
+   └─→ 'office:switch' event → OfficeScene.rebuildLayout('fleet-vteam')
+
+4. rebuildLayout() preserves fleetSourceOfficeId, then calls disposeFleetPipeline()
+   └─→ No-op: fleet components already disposed in step 2
+
+5. Fleet layout setup calls initFleetPipeline()
+   └─→ Creates new FleetTracker with preserved sourceOfficeId
+   └─→ FleetTracker.startTracking()
+       └─→ terminalAttach(sourceOfficeId, 'architect')
+       └─→ Server adds sourceOfficeId key to activeAgentViewers
+       └─→ ⚠️ Server attach handler ALSO adds original key via agentToTerminal
+
+6. ⚠️ POTENTIAL ISSUE: fleetSourceOfficeId may be null
+   └─→ disposeFleetPipeline() clears it
+   └─→ rebuildLayout() preserves it BEFORE dispose... but only if it was set
+   └─→ If it was already null (e.g., Path 1 deploy), falls back to currentOfficeId
+```
+
+**Key risk:** If `fleetSourceOfficeId` is lost between switch-away and switch-back,
+`initFleetPipeline()` falls back to `officeManager.currentOfficeId` (the fleet office ID).
+The `attach` handler's belt-and-suspenders code should still add the original key, but
+this relies on `agentToTerminal` having the correct mapping.
