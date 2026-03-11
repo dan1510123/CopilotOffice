@@ -1454,22 +1454,23 @@ export class OfficeScene extends Phaser.Scene {
   /** Common arrival logic: face down, set thinking status, decrement walk-in counter. */
   private onAgentSeated(npc: NPC, agentId: string): void {
     npc.setDirection(Direction.DOWN);
-    // In fleet mode, don't show badges on seating — wait for fleet to determine which agents are needed
+    // In fleet mode, don't show badges or set thinking — agents remain slacking
+    // until the fleet orchestrator actually kicks them off
     if (this.currentLayout !== 'fleet-vteam') {
       npc.setBadgeVisible(true);
+      const officeId = officeManager.currentOfficeId;
+      if (officeId) {
+        officeManager.setAgentThinking(officeId, agentId, 'Working on task');
+        this.game.events.emit('agent:status:changed', agentId);
+      }
+      npc.updateAgentStatus({
+        agentId,
+        state: 'active',
+        subState: 'thinking',
+        thinkingDetail: 'Working on task',
+        currentTool: null,
+      });
     }
-    const officeId = officeManager.currentOfficeId;
-    if (officeId) {
-      officeManager.setAgentThinking(officeId, agentId, 'Working on task');
-      this.game.events.emit('agent:status:changed', agentId);
-    }
-    npc.updateAgentStatus({
-      agentId,
-      state: 'active',
-      subState: 'thinking',
-      thinkingDetail: 'Working on task',
-      currentTool: null,
-    });
     // Remove from skip-tracking list (already seated)
     this.walkInAgents = this.walkInAgents.filter(a => a.agentId !== agentId);
     this.pendingWalkIns--;
@@ -1509,19 +1510,22 @@ export class OfficeScene extends Phaser.Scene {
 
     for (const agent of agentsToSeat) {
       agent.npc.setDirection(Direction.DOWN);
-      agent.npc.setBadgeVisible(true);
-      const officeId = officeManager.currentOfficeId;
-      if (officeId) {
-        officeManager.setAgentThinking(officeId, agent.agentId, 'Working on task');
-        this.game.events.emit('agent:status:changed', agent.agentId);
+      // In fleet mode, agents remain slacking until fleet orchestrator kicks them off
+      if (this.currentLayout !== 'fleet-vteam') {
+        agent.npc.setBadgeVisible(true);
+        const officeId = officeManager.currentOfficeId;
+        if (officeId) {
+          officeManager.setAgentThinking(officeId, agent.agentId, 'Working on task');
+          this.game.events.emit('agent:status:changed', agent.agentId);
+        }
+        agent.npc.updateAgentStatus({
+          agentId: agent.agentId,
+          state: 'active',
+          subState: 'thinking',
+          thinkingDetail: 'Working on task',
+          currentTool: null,
+        });
       }
-      agent.npc.updateAgentStatus({
-        agentId: agent.agentId,
-        state: 'active',
-        subState: 'thinking',
-        thinkingDetail: 'Working on task',
-        currentTool: null,
-      });
     }
 
     this.onAllWalkInsComplete?.();

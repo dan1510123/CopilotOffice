@@ -1052,14 +1052,8 @@ async function syncAgentStatuses(): Promise<void> {
       } else {
         // Agent has no running PTY — should be slacking
         if (current && current.state === 'active') {
-          // Don't forcibly set to slacking if agent is actively working —
-          // the PTY status may be transiently stale. Let the next sync retry.
-          if (current.subState === 'thinking' || current.subState === 'waiting') {
-            console.warn(`[Office] Skipping slacking for ${agent.id}: currently ${current.subState}`);
-          } else {
-            officeManager.setAgentSlacking(officeId, agent.id);
-            changed = true;
-          }
+          officeManager.setAgentSlacking(officeId, agent.id);
+          changed = true;
         }
       }
     }

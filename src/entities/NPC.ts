@@ -34,6 +34,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   private isNearPlayer: boolean = false;
   private hasActiveSession: boolean = false;
   private currentBadgeState: string = 'slacking';
+  private badgeHidden: boolean = false;
   private spriteScale: number = 1;
 
   constructor(scene: Phaser.Scene, config: AgentConfig, tileSize: number, spriteScale: number = 1) {
@@ -234,13 +235,17 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     if (!hasSession) {
       this.updateBadgeForState('slacking');
       this.sessionText.setText('💤');
-      this.sessionText.setVisible(true);
+      if (!this.badgeHidden) {
+        this.sessionText.setVisible(true);
+      }
       return;
     }
     
     if (hasSession && messageCount!== undefined && messageCount > 0) {
       this.sessionText.setText(messageCount.toString());
-      this.sessionText.setVisible(true);
+      if (!this.badgeHidden) {
+        this.sessionText.setVisible(true);
+      }
     } else {
       this.sessionText.setVisible(false);
     }
@@ -248,6 +253,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
 
   /** Toggle visibility of the status badge (circle + text). */
   setBadgeVisible(visible: boolean): void {
+    this.badgeHidden = !visible;
     this.sessionBadge.setVisible(visible);
     this.sessionText.setVisible(visible);
   }
@@ -264,7 +270,9 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       this.hasActiveSession = false;
       this.updateBadgeForState('slacking');
       this.sessionText.setText('💤');
-      this.sessionText.setVisible(true);
+      if (!this.badgeHidden) {
+        this.sessionText.setVisible(true);
+      }
       return;
     }
 
@@ -281,7 +289,9 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       error:    '❌',
     };
     this.sessionText.setText(icons[stateKey] || '');
-    this.sessionText.setVisible(stateKey !== 'slacking');
+    if (!this.badgeHidden) {
+      this.sessionText.setVisible(stateKey !== 'slacking');
+    }
   }
 
   private updateBadgeForState(stateKey: string): void {

@@ -24,8 +24,8 @@ const VALID_TRANSITIONS: Record<EffectiveState, Set<EffectiveState>> = {
   slacking: new Set(['starting', 'ready']),
   starting: new Set(['ready', 'error', 'slacking']),
   ready:    new Set(['thinking', 'waiting', 'slacking']),
-  thinking: new Set(['ready', 'waiting', 'thinking']),
-  waiting:  new Set(['thinking', 'ready']),
+  thinking: new Set(['ready', 'waiting', 'thinking', 'slacking']),
+  waiting:  new Set(['thinking', 'ready', 'slacking']),
   error:    new Set(['slacking', 'starting']),
 };
 
@@ -338,11 +338,7 @@ export class OfficeManager {
   setAgentSlacking(officeId: string, agentId: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
-    const from = this.getEffectiveState(status);
-    if (from !== 'slacking' && !VALID_TRANSITIONS[from]?.has('slacking')) {
-      console.warn(`[OfficeManager] Blocked transition: ${agentId} ${from} → slacking`);
-      return;
-    }
+    this.validateTransition(agentId, status, 'slacking');
     status.state = 'slacking';
     status.subState = null;
     status.thinkingDetail = null;
