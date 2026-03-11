@@ -751,6 +751,20 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAddon.fit();
 
+    // Enable Ctrl+V / Ctrl+Shift+V paste in Electron
+    this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'v' && event.type === 'keydown') {
+        if (this.isReadOnly) return false;
+        navigator.clipboard.readText().then((text) => {
+          if (text) this.terminal!.paste(text);
+        }).catch((err) => {
+          console.warn('[Terminal] Clipboard read failed:', err);
+        });
+        return false;
+      }
+      return true;
+    });
+
     // Handle terminal input (blocked in read-only mode)
     this.terminal.onData((data: string) => {
       if (this.isReadOnly) return;
