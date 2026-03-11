@@ -39,7 +39,7 @@ export interface SessionStart {
   };
 }
 
-export type EventCallback = (event: CopilotEvent) => void;
+export type EventCallback = (event: CopilotEvent, isHistorical: boolean) => void;
 
 export class EventsWatcher {
   private sessionId: string;
@@ -53,6 +53,7 @@ export class EventsWatcher {
   private callback: EventCallback | null = null;
   private stopped: boolean = false;
   private watchingFile: boolean = false;
+  private initialReadComplete: boolean = false;
 
   private static readonly POLL_INTERVAL_MS = 500;
   private static readonly FILE_CHECK_INTERVAL_MS = 200;
@@ -113,8 +114,9 @@ export class EventsWatcher {
 
   private startWatching(): void {
     console.log(`[EventsWatcher] Started watching: ${this.filePath}`);
-    // Read any existing content first
+    // Read any existing content first (these events are marked as historical)
     this.readNewLines();
+    this.initialReadComplete = true;
 
     // Primary: fs.watch (event-driven, fast but unreliable on some platforms)
     try {
@@ -172,7 +174,7 @@ export class EventsWatcher {
           const event = JSON.parse(line) as CopilotEvent;
           eventCount++;
           if (this.callback) {
-            this.callback(event);
+            this.callback(event, !this.initialReadComplete);
           }
         } catch (e) {
           console.log(`[EventsWatcher] Failed to parse line: ${e}`);

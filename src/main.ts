@@ -832,6 +832,14 @@ if (window.copilotBridge) {
 
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
+
+    // Guard: ignore events while agent is still starting (stale events from startup)
+    const current = officeManager.getAgentStatus(officeId, agentId);
+    if (current?.subState === 'starting') {
+      console.log(`[Office] Ignoring tool_start for ${agentId} — still in starting state`);
+      return;
+    }
+
     const agentTools = getCurrentAgentTools();
 
     if (!agentTools.has(agentId)) {
@@ -901,8 +909,12 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn end: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
-      // Clear task summary on turn end
+      // Clear task summary and tool stack on turn end for clean state
       officeManager.setTaskSummary(officeId, agentId, null);
+      const agentTools = getCurrentAgentTools();
+      if (agentTools.has(agentId)) {
+        agentTools.set(agentId, []);
+      }
       officeManager.setAgentReady(officeId, agentId);
       notifyAgent(agentId, 'turnEnd');
     }
@@ -915,6 +927,12 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn start: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
+    // Guard: ignore events while agent is still starting
+    const current = officeManager.getAgentStatus(officeId, agentId);
+    if (current?.subState === 'starting') {
+      console.log(`[Office] Ignoring turn_start for ${agentId} — still in starting state`);
+      return;
+    }
     // Set task summary on turn start
     officeManager.setTaskSummary(officeId, agentId, 'Processing...');
     officeManager.setAgentThinking(officeId, agentId, 'Processing...');
@@ -929,6 +947,12 @@ if (window.copilotBridge) {
     console.log(`[Office] User message: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
+    // Guard: ignore events while agent is still starting
+    const current = officeManager.getAgentStatus(officeId, agentId);
+    if (current?.subState === 'starting') {
+      console.log(`[Office] Ignoring user_message for ${agentId} — still in starting state`);
+      return;
+    }
     officeManager.setAgentThinking(officeId, agentId, 'Processing...');
     console.log(`[Office] Status: ${agentId} → thinking (user message)`);
     phaserGame?.events.emit('agent:status:changed', agentId);
@@ -1011,6 +1035,16 @@ async function syncAgentStatuses(): Promise<void> {
             officeManager.setAgentReady(officeId, agent.id);
             changed = true;
           } else if (current.subState === 'starting') {
+            officeManager.setAgentReady(officeId, agent.id);
+            changed = true;
+          } else if (current.subState === 'thinking' && !serverStatus.inTurn) {
+            // Server says agent is idle (not in a turn) but renderer shows thinking —
+            // recover from stuck thinking state (e.g. missed turn_end event)
+            console.warn(`[Office] Agent ${agent.id} stuck in thinking but server reports idle — resetting to ready`);
+            const agentTools = getCurrentAgentTools();
+            if (agentTools.has(agent.id)) {
+              agentTools.set(agent.id, []);
+            }
             officeManager.setAgentReady(officeId, agent.id);
             changed = true;
           }
