@@ -4,7 +4,7 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
-import { AGENTS, AgentConfig } from '../config/agents';
+import { AGENTS, AgentConfig, RESERVE_AGENTS } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
@@ -759,8 +759,15 @@ export class OfficeScene extends Phaser.Scene {
         const cx = (table.startCol + i * 2) * this.tileSize + this.tileSize / 2;
         // Skip the agent's stool position (already placed above)
         if (cx !== agentStoolX || chairAboveY !== agentStoolY) {
-          addDecor(cx, chairAboveY, 'stool')
+          const aboveStool = addDecor(cx, chairAboveY, 'stool')
             .setDepth(Depths.FLOOR_DETAIL);
+          // Track as unassigned seat for reserve agent spawning
+          this.desks.push({
+            sprite: aboveStool,
+            agentId: `unassigned-above-${table.startCol}`,
+            x: cx,
+            y: chairAboveY,
+          });
         }
       }
 
@@ -904,6 +911,9 @@ export class OfficeScene extends Phaser.Scene {
         y: hoopY,
       };
     }
+
+    // Make unassigned stools clickable so players can hire reserve agents
+    this.setupEmptySeatInteractivity();
   }
 
   /**
@@ -1480,6 +1490,72 @@ export class OfficeScene extends Phaser.Scene {
       this.onAllWalkInsComplete?.();
       this.onAllWalkInsComplete = undefined;
     }
+  }
+
+  /** Make unassigned stool sprites clickable to spawn reserve agents. Default layout only. */
+  private setupEmptySeatInteractivity(): void {
+    if (this.currentLayout !== 'default') return;
+
+    for (const desk of this.desks) {
+      if (!desk.agentId.startsWith('unassigned-')) continue;
+      const reserveConfig = RESERVE_AGENTS[desk.agentId];
+      if (!reserveConfig) continue;
+
+      const stool = desk.sprite;
+      stool.setInteractive({ useHandCursor: true });
+
+      // Hover effects
+      stool.on('pointerover', () => { stool.setTint(0x88ff88); });
+      stool.on('pointerout', () => { stool.clearTint(); });
+
+      // Click to spawn
+      stool.on('pointerup', () => { this.spawnReserveAgent(desk.agentId); });
+    }
+  }
+
+  /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance. */
+  private spawnReserveAgent(deskId: string): void {
+    // Guards
+    if (!this.playerInScene || this.animating) return;
+    const reserveConfig = RESERVE_AGENTS[deskId];
+    if (!reserveConfig) return;
+    if (AGENTS.find(a => a.id === reserveConfig.id)) return; // already spawned
+
+    // Push to AGENTS so all existing lookups (dashboard, getAgentConfig, getLayout) find it
+    AGENTS.push(reserveConfig);
+
+    // Create NPC
+    const npc = new NPC(this, reserveConfig, this.tileSize, this.spriteScale);
+    npc.setVisible(false); // hidden until walk-in starts
+    this.npcs.push(npc);
+
+    // Add physics collider for the new NPC
+    this.physics.add.collider(this.player, npc, () => { npc.bump(); });
+
+    // Update desk entry to use the real agent ID
+    const desk = this.desks.find(d => d.agentId === deskId);
+    if (desk) {
+      desk.agentId = reserveConfig.id;
+      // Remove interactivity from the stool
+      desk.sprite.disableInteractive();
+      desk.sprite.clearTint();
+    }
+
+    // Walk in from entrance
+    this.triggerAgentWalkIn([reserveConfig.id]);
+
+    // Start terminal in background immediately
+    const officeId = officeManager.currentOfficeId;
+    if (officeId && window.copilotBridge?.terminalStart) {
+      officeManager.setAgentStarting(officeId, reserveConfig.id);
+      this.game.events.emit('agent:status:changed', reserveConfig.id);
+      window.copilotBridge.terminalStart(officeId, reserveConfig.id).catch(err => {
+        console.error(`[OfficeScene] Failed to start terminal for ${reserveConfig.id}:`, err);
+      });
+    }
+
+    // Force dashboard refresh
+    this.game.events.emit('office:agents:changed');
   }
 
   /** Instantly seat all walking agents, cancelling ongoing animations. */

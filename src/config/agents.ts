@@ -91,6 +91,72 @@ export const FLEET_AGENTS: AgentConfig[] = FLEET_SEAT_POSITIONS.map((pos, i) => 
   };
 });
 
+// Reserve agents mapped to empty communal-table stools in the default layout.
+// Key = unassigned desk ID used in OfficeScene.desks[], value = full agent config.
+// Sprite keys match textures already generated in BootScene.
+export const RESERVE_AGENTS: Record<string, AgentConfig> = {
+  'unassigned-left-4': {
+    id: 'azure',
+    name: 'Azure',
+    skill: 'general',
+    sprite: 'npc_azure',
+    color: 0x0078d4,
+    position: { x: 3, y: 5 },
+    greeting: "☁️ Hey! I'm Azure, the Cloud Wizard. Need help with cloud architecture, deployments, or infrastructure? I've got you covered!",
+    description: 'Cloud Wizard',
+  },
+  'unassigned-right-4': {
+    id: 'validator',
+    name: 'Val',
+    skill: 'general',
+    sprite: 'npc_validator',
+    color: 0x00aa44,
+    position: { x: 7, y: 5 },
+    greeting: "🛡️ Greetings! I'm Val the Validator. I'll review your code, check for edge cases, and make sure everything is rock-solid!",
+    description: 'The Validator',
+  },
+  'unassigned-above-4': {
+    id: 'deployer',
+    name: 'Rex',
+    skill: 'general',
+    sprite: 'npc_deployer',
+    color: 0xff6600,
+    position: { x: 6, y: 3 },
+    greeting: "🚀 Hey there! I'm Rex the Deployer. CI/CD pipelines, releases, rollbacks — I'll get your code shipped!",
+    description: 'The Deployer',
+  },
+  'unassigned-left-13': {
+    id: 'doctor',
+    name: 'Doc',
+    skill: 'general',
+    sprite: 'npc_doctor',
+    color: 0xff4444,
+    position: { x: 12, y: 5 },
+    greeting: "🩺 Hello! I'm Doc, the Code Doctor. I diagnose performance issues, memory leaks, and unhealthy patterns. Let me take a look!",
+    description: 'Code Doctor',
+  },
+  'unassigned-right-13': {
+    id: 'scout',
+    name: 'Scout',
+    skill: 'general',
+    sprite: 'npc_scout',
+    color: 0x6622aa,
+    position: { x: 16, y: 5 },
+    greeting: "🔭 Hey! I'm Scout the Ranger. I explore codebases, find patterns, and map out dependencies. Where shall I look?",
+    description: 'The Scout',
+  },
+  'unassigned-above-13': {
+    id: 'accountant',
+    name: 'Penny',
+    skill: 'general',
+    sprite: 'npc_accountant',
+    color: 0x2a4a2a,
+    position: { x: 15, y: 3 },
+    greeting: "💰 Hi there! I'm Penny, the Accountant. I track metrics, costs, and keep your project's numbers in order!",
+    description: 'The Accountant',
+  },
+};
+
 // Positions match chair locations in officeLayouts.ts
 export const AGENTS: AgentConfig[] = [
   {
