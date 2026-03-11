@@ -1237,6 +1237,11 @@ phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOffi
     }
   }
 
+  // Tell OfficeScene the source office for FleetTracker attach
+  if (sourceOfficeId) {
+    phaserGame?.events.emit('fleet:source-office', { sourceOfficeId });
+  }
+
   switchToOffice(officeId);
 });
 

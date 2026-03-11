@@ -426,11 +426,22 @@ async function startTerminalForAgent(
             }
           }
         }
+      } else if (event.type === 'subagent.started') {
+        const d = event.data as { toolCallId?: string; agentName?: string; agentDisplayName?: string };
+        console.log(`[TermServer] Subagent started for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'})`);
+      } else if (event.type === 'subagent.completed') {
+        const d = event.data as { toolCallId?: string; agentName?: string };
+        console.log(`[TermServer] Subagent completed for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'})`);
+      } else if (event.type === 'subagent.failed') {
+        const d = event.data as { toolCallId?: string; agentName?: string; error?: string };
+        console.log(`[TermServer] Subagent FAILED for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'}, error: ${d.error ?? 'unknown'})`);
       }
 
       // Only forward the verbose raw copilot-event when someone is viewing
       if (activeAgentViewers.has(ck)) {
         send({ type: 'copilot-event', agentId, event });
+      } else if (event.type.startsWith('subagent.') || event.type === 'system.notification') {
+        console.warn(`[TermServer] Dropped ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
       }
     };
 

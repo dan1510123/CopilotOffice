@@ -49,6 +49,7 @@ export class EventsWatcher {
   private watcher: fs.FSWatcher | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private fileExistsTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private callback: EventCallback | null = null;
   private stopped: boolean = false;
   private watchingFile: boolean = false;
@@ -111,6 +112,7 @@ export class EventsWatcher {
   }
 
   private startWatching(): void {
+    console.log(`[EventsWatcher] Started watching: ${this.filePath}`);
     // Read any existing content first
     this.readNewLines();
 
@@ -137,6 +139,13 @@ export class EventsWatcher {
     this.pollTimer = setInterval(() => {
       if (!this.stopped) this.readNewLines();
     }, EventsWatcher.POLL_INTERVAL_MS);
+
+    // Heartbeat: log every 60s so a live-but-idle watcher is distinguishable from a dead one
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.stopped) {
+        console.log(`[EventsWatcher] Heartbeat — alive, watching ${this.filePath} (offset: ${this.fileOffset})`);
+      }
+    }, 60000);
   }
 
   /** Synchronous read — no reading guard needed, every trigger processes immediately. */
@@ -199,6 +208,8 @@ export class EventsWatcher {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
     }
+
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     
     this.callback = null;
   }
