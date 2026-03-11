@@ -44,10 +44,6 @@ function debugLog(...args: unknown[]): void {
 // ── Agent Preload Status ────────────────────────────────────────
 const agentPreloadStatus: Map<string, 'preloading' | 'ready' | 'failed'> = new Map();
 
-// When true, IPC event handlers block status transitions while agent is in 'starting' state.
-// Server-side filtering already handles historical events, so this is a secondary safety net.
-const ENABLE_STARTING_GUARD = true;
-
 // ── Debounced Updates ────────────────────────────────────────────
 let pendingStatusBarUpdate = false;
 let pendingTerminalContentUpdate = false;
@@ -850,20 +846,15 @@ if (window.copilotBridge) {
       officeManager.setTaskSummary(officeId, agentId, status);
     }
 
-    // Don't change status while agent is still starting — wait for the preload ready signal
-    const current = officeManager.getAgentStatus(officeId, agentId);
-    if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
-      if (toolName === 'ask_user') {
-        officeManager.setAgentWaiting(officeId, agentId);
-        console.log(`[Office] Status: ${agentId} → waiting (ask_user)`);
-        notifyAgent(agentId, 'askUser');
-      } else {
-        officeManager.setAgentThinking(officeId, agentId, `${toolName}`);
-        console.log(`[Office] Status: ${agentId} → thinking (${toolName})`);
-        notifyAgent(agentId, 'toolStart', { toolName });
-      }
+    // Update agent status based on tool type
+    if (toolName === 'ask_user') {
+      officeManager.setAgentWaiting(officeId, agentId);
+      console.log(`[Office] Status: ${agentId} → waiting (ask_user)`);
+      notifyAgent(agentId, 'askUser');
     } else {
-      console.log(`[Office] [BLOCKED] Tool start for ${agentId} blocked by starting guard (subState=${current?.subState})`);
+      officeManager.setAgentThinking(officeId, agentId, `${toolName}`);
+      console.log(`[Office] Status: ${agentId} → thinking (${toolName})`);
+      notifyAgent(agentId, 'toolStart', { toolName });
     }
 
     phaserGame?.events.emit('agent:tool:start', agentId, toolName, status);
@@ -892,15 +883,12 @@ if (window.copilotBridge) {
       officeManager.pushRecentAction(officeId, agentId, completedToolName, 'completed');
       notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
 
-      // Don't change status while agent is still starting — wait for the preload ready signal
-      const current = officeManager.getAgentStatus(officeId, agentId);
-      if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
-        if (remaining.length === 0) {
-          officeManager.setAgentReady(officeId, agentId);
-        } else {
-          const last = remaining[remaining.length - 1];
-          officeManager.setAgentThinking(officeId, agentId, `${last.name}`);
-        }
+      // Update status based on remaining tools
+      if (remaining.length === 0) {
+        officeManager.setAgentReady(officeId, agentId);
+      } else {
+        const last = remaining[remaining.length - 1];
+        officeManager.setAgentThinking(officeId, agentId, `${last.name}`);
       }
     }
 
@@ -915,11 +903,7 @@ if (window.copilotBridge) {
     if (officeId) {
       // Clear task summary on turn end
       officeManager.setTaskSummary(officeId, agentId, null);
-      // Don't change status while agent is still starting — wait for the preload ready signal
-      const current = officeManager.getAgentStatus(officeId, agentId);
-      if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
-        officeManager.setAgentReady(officeId, agentId);
-      }
+      officeManager.setAgentReady(officeId, agentId);
       notifyAgent(agentId, 'turnEnd');
     }
     phaserGame?.events.emit('agent:status:changed', agentId);
@@ -933,15 +917,9 @@ if (window.copilotBridge) {
     if (!officeId) return;
     // Set task summary on turn start
     officeManager.setTaskSummary(officeId, agentId, 'Processing...');
-    // Don't change status while agent is still starting — wait for the preload ready signal
-    const current = officeManager.getAgentStatus(officeId, agentId);
-    if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
-      officeManager.setAgentThinking(officeId, agentId, 'Processing...');
-      console.log(`[Office] Status: ${agentId} → thinking (turn start)`);
-      notifyAgent(agentId, 'turnStart');
-    } else {
-      console.log(`[Office] [BLOCKED] Turn start for ${agentId} blocked by starting guard`);
-    }
+    officeManager.setAgentThinking(officeId, agentId, 'Processing...');
+    console.log(`[Office] Status: ${agentId} → thinking (turn start)`);
+    notifyAgent(agentId, 'turnStart');
     phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
@@ -951,14 +929,8 @@ if (window.copilotBridge) {
     console.log(`[Office] User message: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
-    // Don't overwrite the starting state — copilot-turn-end will clear it to ready
-    const current = officeManager.getAgentStatus(officeId, agentId);
-    if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
-      officeManager.setAgentThinking(officeId, agentId, 'Processing...');
-      console.log(`[Office] Status: ${agentId} → thinking (user message)`);
-    } else {
-      console.log(`[Office] [BLOCKED] User message for ${agentId} blocked by starting guard`);
-    }
+    officeManager.setAgentThinking(officeId, agentId, 'Processing...');
+    console.log(`[Office] Status: ${agentId} → thinking (user message)`);
     phaserGame?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
   });

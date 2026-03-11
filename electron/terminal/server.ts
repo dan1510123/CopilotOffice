@@ -382,22 +382,26 @@ async function startTerminalForAgent(
         signalReady();
       }
 
-      // Only forward AFTER the agent is ready — during startup, old events
-      // from resumed sessions would interfere with the custom startup detection.
+      // Tool events are ALWAYS forwarded regardless of ready state — the renderer
+      // can decide what to do with them. This ensures tool activity is never silently lost.
+      if (event.type === 'tool.execution_start') {
+        const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
+        console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName} (ready=${hasSignalledReady})`);
+        send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
+      } else if (event.type === 'tool.execution_complete') {
+        const d = event.data as { toolCallId: string; success: boolean };
+        console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId} (ready=${hasSignalledReady})`);
+        send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
+      }
+
+      // Non-tool events are only forwarded after the agent is ready — during startup,
+      // old events from resumed sessions would interfere with custom startup detection.
       if (!hasSignalledReady) {
         skippedEventCount++;
         return;
       }
 
-      if (event.type === 'tool.execution_start') {
-        const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
-        console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName}`);
-        send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
-      } else if (event.type === 'tool.execution_complete') {
-        const d = event.data as { toolCallId: string; success: boolean };
-        console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
-        send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
-      } else if (event.type === 'assistant.turn_end') {
+      if (event.type === 'assistant.turn_end') {
         console.log(`[TermServer] Forwarding turn_end for ${ck}`);
         send({ type: 'copilot-turn-end', agentId });
       } else if (event.type === 'assistant.turn_start') {

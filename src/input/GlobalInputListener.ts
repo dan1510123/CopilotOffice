@@ -26,9 +26,20 @@ export class GlobalInputListener {
   private currentMode: FocusMode = 'none';
   private boundHandler: (e: KeyboardEvent) => void;
   private installed: boolean = false;
+  private debugEnabled: boolean = false;
 
   constructor() {
     this.boundHandler = this.onKeydown.bind(this);
+  }
+
+  /** Enable or disable verbose per-keydown logging. */
+  setDebug(enabled: boolean): void {
+    this.debugEnabled = enabled;
+    console.log(`[GlobalInput] debug mode ${enabled ? 'ON' : 'OFF'}`);
+  }
+
+  getDebug(): boolean {
+    return this.debugEnabled;
   }
 
   /** Install the global listener. Call once at startup. */
@@ -78,11 +89,13 @@ export class GlobalInputListener {
       .join('+');
 
     const keyDesc = modifiers ? `${modifiers}+${e.key}` : e.key;
-    console.log(
-      `[GlobalInput] keydown "${keyDesc}" | mode: ${this.currentMode} | target: ${
-        (e.target as HTMLElement)?.tagName ?? 'unknown'
-      } | time: ${Date.now()}`
-    );
+    if (this.debugEnabled) {
+      console.log(
+        `[GlobalInput] keydown "${keyDesc}" | mode: ${this.currentMode} | target: ${
+          (e.target as HTMLElement)?.tagName ?? 'unknown'
+        } | time: ${Date.now()}`
+      );
+    }
 
     // Ctrl+Shift+R — hard reload: restart terminal server + reload page
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'r') {

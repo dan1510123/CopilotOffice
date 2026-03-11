@@ -139,6 +139,11 @@ export class InputManager {
     terminal?.blur();
   }
 
+  /** Enable or disable verbose per-keydown logging in GlobalInputListener. */
+  setDebugInput(enabled: boolean): void {
+    this.global.setDebug(enabled);
+  }
+
   /** Current focus target (for debugging / assertions). */
   getCurrentFocus(): FocusTarget | 'none' {
     return this.currentFocus;
