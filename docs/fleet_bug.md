@@ -524,3 +524,40 @@ When a user switches away from the fleet office and back:
 `initFleetPipeline()` falls back to `officeManager.currentOfficeId` (the fleet office ID).
 The `attach` handler's belt-and-suspenders code should still add the original key, but
 this relies on `agentToTerminal` having the correct mapping.
+
+---
+
+## 13. Race Condition: New Session During Fleet Deploy
+
+### The Bug
+
+`handleNewSession()` and `handleCloseSession()` in `TerminalOverlay` use `this.getOfficeId()`
+which returns the **current** office ID at call time. This closure resolves to
+`officeManager.currentOfficeId`, which can change during async operations.
+
+**Scenario:**
+1. User clicks "New Session" on Arthur's terminal in MeetingScene (office = `office-0`)
+2. `resetSession(office-0, architect)` IPC is sent → `await` begins
+3. While awaiting: plan approval triggers fleet deploy → office switches to `office-1`
+4. `await` completes
+5. `startNewSession()` calls `terminalStart(this.getOfficeId(), ...)` → `getOfficeId()` now
+   returns `office-1`
+6. A **brand new** session starts in `office-1` for architect, overwriting the transferred
+   fleet session
+7. The `/fleet` command context is destroyed
+
+### The Fix
+
+Snapshot the office ID at the start of `handleNewSession()` / `handleCloseSession()` using
+`this.attachedOfficeId ?? this.getOfficeId()`. The `attachedOfficeId` field is set when the
+terminal is opened (in `show()`) and doesn't change during async operations. All subsequent
+IPC calls in the handler use this snapshotted value instead of re-evaluating `getOfficeId()`.
+
+### Pattern: Always Snapshot Mutable State Before Async Boundaries
+
+Any method that:
+1. Reads a mutable value (like `getOfficeId()`)
+2. Does an `await`
+3. Uses that value again after the `await`
+
+...must snapshot the value BEFORE the `await`. The value may change while suspended.

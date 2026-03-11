@@ -558,25 +558,51 @@ export class TerminalOverlay {
   private async handleNewSession(): Promise<void> {
     if (!this.currentAgentId || !this.currentAgent || this.isReadOnly) return;
     
+    // Snapshot office ID now — getOfficeId() returns the CURRENT office which may
+    // change during async operations (e.g. fleet deploy switches office mid-await).
+    const officeId = this.attachedOfficeId ?? this.getOfficeId();
+    console.log(`[TerminalOverlay] handleNewSession: agent=${this.currentAgentId}, office=${officeId}`);
+
     // Clear terminal
     this.terminal?.clear();
     this.terminal?.writeln('\x1b[33m[Starting new session...]\x1b[0m\r\n');
     
     // Reset session (clears meta/title, generates new session ID, kills PTY)
     await withTimeout(
-      window.copilotBridge.resetSession(this.getOfficeId(), this.currentAgentId),
+      window.copilotBridge.resetSession(officeId, this.currentAgentId),
       IPC_TIMEOUT, 'resetSession'
     ).catch(() => { /* ignore */ });
 
-    await this.startNewSession(this.currentAgentId, this.currentAgent.workingDir);
+    // Use the SAME snapshotted office ID for the new session start — if the office
+    // switched during the reset await, getOfficeId() would return the wrong office.
+    const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
+    if (el) el.textContent = 'starting...';
+    this.sessionId = null;
+    this.updateSessionDisplay();
+    this.fitAddon?.fit();
+    const dims = this.fitAddon?.proposeDimensions();
+    const result = await withTimeout(
+      window.copilotBridge.terminalStart(officeId, this.currentAgentId, this.currentAgent.workingDir, dims?.cols, dims?.rows),
+      IPC_TIMEOUT, 'terminalStart'
+    );
+    if (!result.success) {
+      this.terminal?.writeln(`Failed to start terminal: ${result.error}`);
+    } else if (result.sessionId) {
+      this.sessionId = result.sessionId;
+      this.updateSessionDisplay();
+    }
   }
 
   private async handleCloseSession(): Promise<void> {
     if (!this.currentAgentId || this.isReadOnly) return;
 
+    // Snapshot office ID — see handleNewSession comment for rationale
+    const officeId = this.attachedOfficeId ?? this.getOfficeId();
+    console.log(`[TerminalOverlay] handleCloseSession: agent=${this.currentAgentId}, office=${officeId}`);
+
     try {
       const result = await withTimeout(
-        window.copilotBridge.resetSession(this.getOfficeId(), this.currentAgentId),
+        window.copilotBridge.resetSession(officeId, this.currentAgentId),
         IPC_TIMEOUT, 'resetSession'
       );
       if (result.success && result.sessionId) {
