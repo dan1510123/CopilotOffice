@@ -223,6 +223,7 @@ This is the preferred path with correct source office propagation.
 | `8ee6b0c` | `/fleet` command sent before session transfer | The `/fleet` command was dispatched to Arthur's terminal while it was still attached to the old office; the transfer hadn't completed yet, so the command arrived at the wrong context |
 | `a3821ca` | `/fleet` command lost during scene switch | Command was sent to Arthur's terminal before the terminal was re-attached in the new office — the write went to a detached session and was silently dropped |
 | `f95a4be` | Fleet terminal input broken | The `write` path in server.ts didn't resolve through `agentToTerminal` for transferred sessions — it tried to find a PTY under the fleet key, which didn't exist |
+| *(latest)* | FleetTracker goes silent after fleet deploy | MeetingScene's `exitMeeting()` and `shutdown()` both call `terminalOverlay.hide()` which detaches the architect viewer. The `copilot-event` gate (`hasActiveViewer`) then drops all sub-agent lifecycle events. **Fix:** (1) Forward sub-agent events unconditionally in server.ts (bypass `hasActiveViewer`), (2) prevent MeetingScene double-detach during fleet deploy, (3) add periodic re-attach safety net in FleetTracker. |
 
 ### Pattern
 
@@ -325,10 +326,14 @@ For fleet subagent events to flow end-to-end, **ALL** of these must be true simu
    - Agent finished Copilot CLI startup sequence
    - Until this is true, ALL events from this watcher are silently dropped
 
-4. **`activeAgentViewers` contains the ORIGINAL composite key**
+4. **`activeAgentViewers` contains the ORIGINAL composite key** *(partially relaxed)*
    - e.g., `activeAgentViewers.has("office-0:architect")` returns true
    - The fleet key (`office-1:architect`) alone is insufficient
    - The `attach` handler must have added the original key via `agentToTerminal` lookup
+   - **Note:** Sub-agent lifecycle events (`subagent.*`, `system.notification`, `task` tool starts)
+     are now forwarded unconditionally — they bypass this gate. But `terminal-data` and
+     general `copilot-event` still require an active viewer.
+   - FleetTracker also periodically re-attaches (10s interval) as a safety net.
 
 5. **Copilot CLI is writing subagent events to events.jsonl**
    - The CLI must support and be emitting `subagent.started`, `subagent.completed`, etc.
@@ -343,7 +348,8 @@ For fleet subagent events to flow end-to-end, **ALL** of these must be true simu
    - `startTracking()` registered the event handler
 
 **If any single invariant is violated, fleet events silently stop flowing.**
-There are no error messages, no warnings, no retries. The pipeline just goes silent.
+Invariant 4 has been partially relaxed — sub-agent events now bypass the viewer gate,
+making the pipeline more resilient to MeetingScene cleanup races.
 
 ---
 
@@ -372,11 +378,11 @@ tool.execution_start  (toolCallId: "abc-123", toolName: "task")
 
 ### Important Note
 
-`subagent.*` events are **NOT** explicitly handled in server.ts `watcherCallback`.
-They are not matched by any `case` in the event type switch. Instead, they flow
-through as raw `copilot-event` messages, gated only by `activeAgentViewers`.
-This means the `activeAgentViewers` gate is the **sole** server-side filter for
-these events.
+`subagent.*` events, `system.notification`, and `tool.execution_start` (for `task` tool)
+are now forwarded **unconditionally** — they bypass the `activeAgentViewers` gate.
+This was changed because the viewer gate was the sole server-side filter for these events,
+and MeetingScene cleanup races could strip the viewer before FleetTracker recovered.
+Other `copilot-event` types still require an active viewer.
 
 ---
 

@@ -468,9 +468,17 @@ async function startTerminalForAgent(
         console.log(`[TermServer] Subagent FAILED for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'}, error: ${d.error ?? 'unknown'})`);
       }
 
-      // Only forward the verbose raw copilot-event when someone is viewing.
-      // For transferred sessions, also check if any alias key has an active viewer.
-      if (hasActiveViewer(ck)) {
+      // Sub-agent lifecycle events are critical for fleet tracking and must always
+      // be forwarded, even without an active terminal viewer. This matches how
+      // copilot-tool-start / copilot-tool-complete are already sent unconditionally.
+      // Without this, FleetTracker goes silent when MeetingScene cleanup detaches
+      // the viewer before FleetTracker can re-attach it.
+      const isFleetCriticalEvent =
+        event.type.startsWith('subagent.') ||
+        event.type === 'system.notification' ||
+        (event.type === 'tool.execution_start' && (event.data as { toolName?: string })?.toolName === 'task');
+
+      if (isFleetCriticalEvent || hasActiveViewer(ck)) {
         send({ type: 'copilot-event', agentId, event });
       } else {
         console.warn(`[TermServer] Dropped copilot-event ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);

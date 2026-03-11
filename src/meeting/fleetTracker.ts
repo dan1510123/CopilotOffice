@@ -64,6 +64,7 @@ export class FleetTracker {
   private totalToolsCompleted = 0;
   private listeners: FleetUpdateListener[] = [];
   private tracking = false;
+  private reattachInterval: ReturnType<typeof setInterval> | null = null;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private get bridge(): any | null {
@@ -125,6 +126,15 @@ export class FleetTracker {
       this.handleToolComplete(toolId);
     });
 
+    // Periodic re-attach as safety net: if the viewer is unexpectedly stripped
+    // (e.g., by another UI operation detaching the architect terminal), this
+    // ensures event flow is restored within one interval.
+    this.reattachInterval = setInterval(async () => {
+      try {
+        await this.bridge?.terminalAttach(this.officeId, this.agentId);
+      } catch { /* best-effort */ }
+    }, 10_000);
+
     this.tracking = true;
     console.log(`[FleetTracker] Started tracking sub-agents for "${this.agentId}"`);
   }
@@ -158,6 +168,10 @@ export class FleetTracker {
   dispose(): void {
     this.tracking = false;
     this.listeners = [];
+    if (this.reattachInterval) {
+      clearInterval(this.reattachInterval);
+      this.reattachInterval = null;
+    }
     // Detach silent viewer if we attached one
     this.bridge?.terminalDetach(this.officeId, this.agentId);
     console.log(`[FleetTracker] Disposed tracker for "${this.agentId}"`);

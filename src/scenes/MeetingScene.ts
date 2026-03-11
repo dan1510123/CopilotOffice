@@ -24,6 +24,7 @@ export class MeetingScene extends Phaser.Scene {
   private leaveMeetingCleanup: (() => void) | null = null;
   private isExiting: boolean = false;
   private isDeploying: boolean = false;
+  private wasFleetDeploy: boolean = false;
 
   constructor() {
     super({ key: 'MeetingScene' });
@@ -260,6 +261,12 @@ export class MeetingScene extends Phaser.Scene {
         this.game.events.emit('fleet:deploy-requested', { officeName, prompt, sourceOfficeId, resolve });
       }).then(() => {
         this.isDeploying = false;
+        this.wasFleetDeploy = true;
+        // Clear overlay's agent reference so hide() inside exitMeeting() skips
+        // the terminalDetach — FleetTracker now owns the viewer for architect.
+        if (this.terminalOverlay) {
+          (this.terminalOverlay as any).currentAgentId = null;
+        }
         this.exitMeeting();
       }).catch(() => {
         this.isDeploying = false;
@@ -470,11 +477,17 @@ export class MeetingScene extends Phaser.Scene {
     this.fleetDialog?.remove();
     this.fleetDialog = null;
     this.planApproval?.hide();
-    this.terminalOverlay?.hide();
+    // Skip terminal detach during fleet deploy — FleetTracker owns the viewer.
+    // hide() would resolve the fleet office alias back to the original key and
+    // strip the viewer that FleetTracker just attached.
+    if (!this.wasFleetDeploy) {
+      this.terminalOverlay?.hide();
+    }
     this.inputManager?.destroy();
     this.meetingPlan = null;
     this.terminalOutputBuffer = '';
     this.isExiting = false;
     this.isDeploying = false;
+    this.wasFleetDeploy = false;
   }
 }
