@@ -478,6 +478,7 @@ export class OfficeScene extends Phaser.Scene {
     }, this);
 
     // Click on NPC → open / switch conversation immediately.
+    // Click on empty stool → spawn reserve agent.
     // Click on empty canvas → regain keyboard focus so player can move again.
     // Uses pointerup so click-to-drag panning can distinguish drags from clicks.
     this.input.on('pointerup', (
@@ -490,7 +491,22 @@ export class OfficeScene extends Phaser.Scene {
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
       if (clickedNPC) {
         this.startConversation(clickedNPC.config);
-      } else if (this.playerInScene) {
+        return;
+      }
+
+      // Check if an unassigned stool was clicked → spawn reserve agent
+      if (this.currentLayout === 'default') {
+        for (const desk of this.desks) {
+          if (!desk.agentId.startsWith('unassigned-')) continue;
+          if (currentlyOver.includes(desk.sprite)) {
+            console.log(`[OfficeScene] Empty seat clicked via scene handler: ${desk.agentId}`);
+            this.spawnReserveAgent(desk.agentId);
+            return;
+          }
+        }
+      }
+
+      if (this.playerInScene) {
         // Background click — give game focus back
         debugLog(this, 'background click — returning focus to game');
         this.terminalOverlay.blurTerminal();
@@ -881,10 +897,10 @@ export class OfficeScene extends Phaser.Scene {
     
     // (rug moved to entrance area)
     
-    // Ping pong table (left of center) - with collision
+    // Ping pong table (center of floor) - with collision
     if (ENABLE_PING_PONG) {
-      const pingpongX = Math.floor(this.mapWidth / 2 - 3) * this.tileSize + this.tileSize / 2;
-      const pingpongY = Math.floor(this.mapHeight / 2) * this.tileSize + this.tileSize / 2;
+      const pingpongX = Math.floor(this.mapWidth / 2) * this.tileSize + this.tileSize / 2;
+      const pingpongY = Math.floor(this.mapHeight / 2 + 1) * this.tileSize + this.tileSize / 2;
       const pingpongSprite = addFurniture(pingpongX, pingpongY, 'pingpong');
       
       // Track ping pong table for interaction
@@ -913,6 +929,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Make unassigned stools clickable so players can hire reserve agents
+    console.log('[OfficeScene] createOfficeLayout complete, setting up empty seat interactivity...');
     this.setupEmptySeatInteractivity();
   }
 
@@ -1503,7 +1520,7 @@ export class OfficeScene extends Phaser.Scene {
       if (!reserveConfig) continue;
 
       const stool = desk.sprite;
-      stool.setInteractive({ useHandCursor: true });
+      stool.setInteractive({ useHandCursor: true, pixelPerfect: false });
 
       // Hover effects
       stool.on('pointerover', () => { stool.setTint(0x88ff88); });
@@ -1511,7 +1528,10 @@ export class OfficeScene extends Phaser.Scene {
 
       // Capture deskId before it changes
       const deskId = desk.agentId;
-      stool.on('pointerup', () => { this.spawnReserveAgent(deskId); });
+      stool.on('pointerdown', () => {
+        console.log(`[OfficeScene] Stool clicked: ${deskId}`);
+        this.spawnReserveAgent(deskId);
+      });
       count++;
     }
     console.log(`[OfficeScene] Setup ${count} empty seat(s) for reserve agent hiring`);
