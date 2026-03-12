@@ -36,6 +36,7 @@ Electron Desktop App
 ├── Phaser 3 Game Engine ──── 2D office world, sprites, physics, scenes
 ├── xterm.js Terminals ────── Full VT100 terminal emulator per agent
 ├── node-pty ──────────────── Real pseudo-terminals running Copilot CLI
+├── Layout System ─────────── Pluggable office layouts (default, fleet) via src/layouts/
 └── IPC Bridge ────────────── Secure context bridge between game and system
 ```
 
@@ -50,16 +51,15 @@ Three-tier terminal stack: **xterm.js** (display) → **Electron IPC** (transpor
 | Multi-office management | ✅ Complete |
 | Notification system | ✅ Complete |
 | Meeting Mode — planning & approval | ✅ Complete |
-| Meeting Mode — fleet orchestration | 🔧 In Progress |
+| Meeting Mode — fleet orchestration | ✅ Built (orchestrator, tracker, visualizer) |
 | Mini-games (Pong, Basketball) | ✅ Built, behind feature flags |
 
 ## What's Next
 
-1. **Fleet Orchestration** — After plan approval, agents spin up in parallel and execute assigned tasks autonomously
+1. **Fleet Refinement** — Core fleet code exists (orchestrator, tracker, visualizer); polishing parallel execution and completion detection
 2. **Pre-seeded Prompts** — Inject task context directly into agent terminals at spawn time
 3. **Git Worktrees** — Each agent works in an isolated branch to prevent conflicts
-4. **Agent Completion Detection** — Reliably detect when agents finish their assigned work
-5. **Meeting Re-entry** — Return to the meeting room to check progress while agents work
+4. **Meeting Re-entry** — Return to the meeting room to check progress while agents work
 
 ## Tech Stack
 

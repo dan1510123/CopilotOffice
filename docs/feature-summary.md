@@ -62,7 +62,7 @@
 | **Plan Approval UI** | ✅ Phase 1 | Modal showing tasks + agent assignments; approve, revise, or cancel |
 | **Exit Animation** | ✅ Phase 1 | Player & Arthur walk to doors, fade to black, return to office |
 | **Agent Walk-In** | ✅ Phase 1 | Assigned agents animate walking from entrance to their desks |
-| **Fleet Orchestration** | ⏳ Phase 2 | Parallel agent spawning to execute approved plan tasks |
+| **Fleet Orchestration** | ✅ Phase 3 | Parallel agent spawning to execute approved plan tasks, fleet v-team room visualization |
 | **Pre-seeded Prompts** | 📋 Planned | Server-side prompt injection on terminal start |
 | **Git Worktrees** | 📋 Planned | Isolated working directories per agent |
 | **Meeting Re-entry** | 📋 Planned | Return to meeting room while fleet is running |
@@ -130,9 +130,8 @@
 
 ## 🚧 Planned / In Progress
 
-1. **Fleet Orchestration (Phase 2)** — After approving a meeting plan, agents execute tasks in parallel
-2. **Pre-seeded Prompts** — Inject task context into agent terminals at spawn time
-3. **Git Worktrees** — Each agent works in an isolated branch/directory
-4. **Meeting Re-entry** — Jump back into the meeting room while agents are working
-5. **Agent Completion Detection** — Reliably detect when an agent finishes its task
-6. **Decorative Furniture** — 18+ sprites already generated, behind feature flag
+1. **Pre-seeded Prompts** — Inject task context into agent terminals at spawn time
+2. **Git Worktrees** — Each agent works in an isolated branch/directory
+3. **Meeting Re-entry** — Jump back into the meeting room while agents are working
+4. **Agent Completion Detection** — Reliably detect when an agent finishes its task
+5. **Decorative Furniture** — 18+ sprites already generated, behind feature flag

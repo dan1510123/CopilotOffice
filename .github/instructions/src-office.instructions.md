@@ -13,11 +13,14 @@ outward happens exclusively through callbacks.
 
 ## Office Model
 
-Each office is an `OfficeConfig`: `id`, `name`, `workingDirectory`, `createdAt`, `index`.
-The `index` field (`number`) determines display order; the office at **index 0 cannot be deleted**.
+Each office is an `OfficeConfig`: `id`, `name`, `workingDirectory`, `createdAt`, `layout`.
+The `layout` field is an `OfficeLayout` type (`'default' | 'fleet-vteam'`), controlling which
+layout definition the office uses (agent roster, dashboard, click handler).
 `OfficeData` wraps the config with runtime maps for agent statuses and tool stacks.
-CRUD operations: `createOffice`, `getOffice`/`getAllOffices`, `updateOffice`, `deleteOffice`.
-Deleting the current office auto-switches to the next available one.
+CRUD operations: `createOffice(name, workingDirectory, layout = 'default')`,
+`getOffice`/`getAllOffices`, `updateOffice` (can update `name`, `workingDirectory`, `layout`),
+`deleteOffice`. Deleting the current office auto-switches to the next available one.
+Backfill logic exists for offices saved before the `layout` field was added (defaults to `'default'`).
 
 ## Agent Status Tracking
 

@@ -14,7 +14,7 @@ spritesheets (no external image assets).
 
 - Movement via **WASD / Arrow keys**; hold **Shift** to sprint (2× `baseSpeed`).
 - Uses Phaser Arcade Physics body with a tight hitbox (`setSize(16, 13)`,
-  offset lowered for better desk overlap).
+  `setOffset(8, 13)` — offset lowered for better desk overlap).
 - Diagonal movement is normalized to prevent faster diagonal speed.
 - Direction detected from velocity via `directionFromVelocity()`.
 - Walk animations play per-direction using `walkAnimKey('player', dir)`;
@@ -26,6 +26,7 @@ spritesheets (no external image assets).
 
 - Constructed from an `AgentConfig` (see `src/config/agents.ts`).
 - **Immovable** physics body — player collides but NPC doesn't move.
+- Tight hitbox: `setSize(8, 8)`, `setOffset(12, 13)` — centers 8px body in 32×34 frame.
 - `walkTo(x, y, speed)` provides tween-based scripted movement with walk
   animation and automatic y-sort depth updates.
 - Attached child objects (all positioned relative to sprite):

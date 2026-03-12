@@ -1,5 +1,9 @@
 # Meeting Room — Phase 2 Implementation Plan
 
+> **Status**: Phase 2 items described below have been largely implemented. Fleet orchestration
+> code exists in `src/meeting/fleetOrchestrator.ts`, `fleetTracker.ts`, and `fleetVisualizer.ts`.
+> The remaining work is wiring the pipeline end-to-end (see `MeetingRoom-Phase3.md`).
+
 ## What's Done (Phase 1)
 
 Phase 1 delivered the core meeting room experience:
@@ -49,9 +53,15 @@ Player presses E near Arthur
 
 ---
 
-## Phase 2: What Remains
+## Phase 2: What Remains (Mostly Built)
 
-### 2.1 Fleet Orchestrator — Parallel Agent Spawning
+> Most items below now have implementations. See current fleet code:
+> - `src/meeting/fleetOrchestrator.ts` — agent spawning, staggered starts, retry logic, cancel support
+> - `src/meeting/fleetTracker.ts` — sub-agent event tracking from events.jsonl
+> - `src/meeting/fleetVisualizer.ts` — bridges tracker data to Phaser game events
+> - Fleet V-Team layout with 14 seats in `src/config/agents.ts` (`FLEET_AGENTS`, `FLEET_SEAT_POSITIONS`)
+
+### 2.1 Fleet Orchestrator — Parallel Agent Spawning (Built)
 **New file**: `src/meeting/fleetOrchestrator.ts`
 
 When the player approves a plan and returns to the office, the fleet orchestrator should:

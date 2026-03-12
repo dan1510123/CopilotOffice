@@ -31,14 +31,41 @@ DOM-based overlay (`z-index: 10002`) that displays the parsed plan for player re
 - Revise mode shows a textarea for player feedback, then hides overlay and calls `onRevise(feedback)`.
 - Uses `PlanApprovalCallbacks` interface: `{ onApprove, onRevise, onCancel }`.
 
+### `fleetOrchestrator.ts` — Fleet Task Orchestration
+Manages parallel agent spawning and task execution after a plan is approved:
+- **`FleetOrchestrator`** class with event-driven architecture (`on`/`off`/`emit` pattern).
+- **`FleetAgentState`** — per-agent state: `pending` → `starting` → `working` → `done`/`failed`, with timestamps and error tracking.
+- **`executePlan(plan, workingDir)`** — initializes all agents as pending, attaches IPC listeners, then spawns agents with staggered starts (`STAGGER_DELAY_MS` = 1500 ms).
+- **`spawnAgent()`** — calls `terminalStart`, retries once on failure (`RETRY_DELAY_MS` = 2000 ms), then writes the task prompt and sets session metadata.
+- Tracks readiness via `onTerminalPreloadStatus` (→ `working`), completion via `onCopilotTurnEnd` (→ `done`), and unexpected exits via `onTerminalExit`.
+- **`cancel()`** — kills all active agents and marks them as failed.
+- Events: `fleet:agent:started`, `fleet:agent:working`, `fleet:agent:done`, `fleet:agent:failed`, `fleet:all:complete`.
+- Uses a `detached` flag pattern to disable listeners without calling `removeListeners()` (which would nuke all IPC listeners including main.ts's).
+
+### `fleetTracker.ts` — Renderer-Side Fleet State Machine
+Tracks sub-agent lifecycle from the parent agent's (Arthur's) Copilot CLI event stream:
+- **`FleetTracker`** — subscribes to `onCopilotEvent`, `onCopilotToolStart`, `onCopilotToolComplete` for a specific parent agent.
+- **`SubAgentTracker`** — per-sub-agent state: `dispatched` → `running` → `completed`/`failed`, with `toolCallId`, `agentType`, `taskDescription`, `taskPrompt`, timestamps.
+- **`FleetState`** — aggregate snapshot: `subAgents` map, `activeToolCount`, `totalToolsCompleted`, `isActive`, `counts` by state.
+- Event processing pipeline: `tool.execution_start` (dispatched) → `subagent.started` (running) → `subagent.completed`/`subagent.failed` → `system.notification` (agent ID mapping).
+- **Silent attach**: calls `terminalAttach` without showing the terminal UI to enable event flow. Periodic re-attach (10 s) as a safety net.
+- `startTracking()` / `dispose()` / `reset()` lifecycle. `onUpdate(cb)` returns an unsubscribe function.
+
+### `fleetVisualizer.ts` — Fleet NPC Visualization
+Bridges `FleetTracker` data to OfficeScene Phaser visuals via game events:
+- **`FleetVisualizer`** — subscribes to `FleetTracker.onUpdate()`, emits `fleet:*` game events.
+- **Seat assignment**: Maps sub-agents to fleet NPC seats (random selection, excludes Arthur's seat at index 7). Uses a 2-second debounce window to batch initial assignments.
+- **Game events emitted**: `fleet:assign` (batch seat mappings), `fleet:dismiss-unassigned` (walk out unused NPCs), `fleet:agent:badge` (per-agent status update), `fleet:agent:exit` (walk out on completion, 2 s delay), `fleet:agent:late-spawn` (single agent after initial batch), `fleet:status` (aggregate counts), `fleet:complete` (all done).
+- Maps `SubAgentTracker` states to `AgentStatus` badge states: dispatched→starting, running→thinking, completed→ready, failed→error.
+- `start(scene)` / `dispose()` lifecycle.
+
 ## Feature Context
 
-This is an **active feature under development**. Read `MeetingMode.md` at the repo root for the full design.
+Read `MeetingMode.md` at the repo root for the full design.
 
 - **Phase 1** (done): Meeting room scene, sprite generation, scene transitions, terminal integration
 - **Phase 2** (done): Plan parsing, plan approval UI, exit animations
-- **Phase 3** (next): Fleet orchestrator — parallel agent spawning and execution
-- See `MeetingRoomPhase2.md` for Phase 2 details and Phase 3 plan
+- **Phase 3** (implemented): Fleet orchestrator, tracker, and visualizer — parallel sub-agent spawning, lifecycle tracking, and NPC visualization
 
 ## Key Rules
 

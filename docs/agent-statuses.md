@@ -7,7 +7,7 @@ This document defines the agent status tracking model used in Copilot Office. Re
 Copilot Office uses a **two-tier status model**:
 
 - **AgentState** — top-level: `slacking` or `active`
-- **ActiveSubState** — when active: `initializing`, `ready`, `waiting`, or `thinking`
+- **ActiveSubState** — when active: `starting`, `ready`, `waiting`, `thinking`, or `error`
 
 ## Statuses
 
@@ -18,11 +18,12 @@ Copilot Office uses a **two-tier status model**:
 - **Icon**: 💤
 - **When**: Agent has never been started, or its terminal was killed/destroyed
 
-### Initializing ⟳
-- **State**: `active` → `initializing`
+### Starting 🚀
+- **State**: `active` → `starting`
 - **Meaning**: Agent's terminal is starting up (preloading)
-- **Color**: `#ff4` (yellow)
-- **Icon**: ⟳
+- **Color**: `#ff9944` (orange)
+- **Icon**: 🚀
+- **Pulse**: Yes (pulsing badge animation)
 - **When**: `terminalPreloadStatus` reports `'preloading'`
 
 ### Ready ✓
@@ -46,11 +47,12 @@ Copilot Office uses a **two-tier status model**:
 - **Icon**: ❌
 - **When**: Preload failed, or agent was stuck in `starting` for >60 seconds
 
-### Thinking ⚡
+### Thinking 🧠
 - **State**: `active` → `thinking`
 - **Meaning**: Agent is actively doing work
 - **Color**: `#50fa7b` (green)
-- **Icon**: ⚡
+- **Icon**: 🧠
+- **Pulse**: Yes (pulsing badge animation)
 - **Detail**: `thinkingDetail` provides info on what the agent is doing (e.g. tool name, "Processing...")
 - **When**: A tool starts (`onCopilotToolStart`), or user sends a message (`onCopilotUserMessage`)
 
@@ -62,7 +64,7 @@ Copilot Office uses a **two-tier status model**:
         terminal starts
                  │
                  ▼
-           Initializing
+             Starting
                  │
           preload ready
                  │
@@ -91,14 +93,20 @@ Terminal killed at any point → **Slacking**
 
 ```typescript
 type AgentState = 'slacking' | 'active';
-type ActiveSubState = 'initializing' | 'ready' | 'waiting' | 'thinking' | 'error';
+type ActiveSubState = 'starting' | 'ready' | 'waiting' | 'thinking' | 'error';
 
 interface AgentStatus {
   agentId: string;
   state: AgentState;
   subState: ActiveSubState | null;   // null when slacking
   thinkingDetail: string | null;     // what agent is doing when thinking
-  currentTool: string | null;        // raw tool name
+  currentTool: string | null;        // derived from agentTools stack (last tool name)
+  unreadCount: number;               // unread action count
+  lastEvent: string | null;          // last event type received
+  activityStartTime: number | null;  // when current activity began
+  lastCompletedAction: string | null; // last completed tool/action
+  recentActions: RecentAction[];     // recent action history
+  taskSummary: string | null;        // summary of current task
 }
 ```
 
@@ -106,9 +114,9 @@ interface AgentStatus {
 
 | Status | Dashboard | NPC Badge | Status Bar |
 |--------|-----------|-----------|------------|
-| Slacking | Gray `💤 Slacking` | No badge | `💤 N` |
-| Initializing | Yellow `⟳ Initializing...` | Yellow badge + ⟳ | `⟳ N` |
+| Slacking | Gray `💤 Slacking` | Gray badge + 💤 | `💤 N` |
+| Starting | Orange `🚀 Starting...` | Orange pulsing badge + 🚀 | `🚀 N` |
 | Ready | Cyan `✓ Ready` | Cyan badge + ✓ | `✓ N` |
 | Waiting | Orange `⏳ Waiting for input` | Orange badge + ⏳ | `⏳ N` |
 | Error | Red `❌ Error: {detail}` | Red badge + ❌ | `❌ N` |
-| Thinking | Green `⚡ Thinking: {detail}` | Green pulsing badge + ⚡ | `⚡ N` |
+| Thinking | Green `🧠 Thinking: {detail}` | Green pulsing badge + 🧠 | `🧠 N` |

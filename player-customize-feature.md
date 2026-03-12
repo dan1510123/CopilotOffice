@@ -44,26 +44,18 @@ This proves the pattern works. We just need to do the same for the player.
 
 ## Todos
 
-### Todo 1: Create `src/config/playerCustomization.ts` (no dependencies)
+### Todo 1: Create `src/config/playerCustomization.ts` (no dependencies) — ✅ DONE
 
-**Goal:** Config module with types, defaults, preset palettes, and localStorage persistence.
-
-**Exports:**
-- `PlayerColors` interface: `{ hair: number; skin: number; suit: number; tie: number; pants: number; shoes: number }`
+**This file now exists** with all planned exports implemented:
+- `PlayerColors` interface: `{ hair, skin, suit, tie, pants, shoes }` (all `number`)
 - `DEFAULT_PLAYER_COLORS` — the current hardcoded values from SpriteGenerator
-- `COLOR_REGION_LABELS`: `Record<keyof PlayerColors, string>` — display names (hair→"Hair", suit→"Jacket", etc.)
-- `PLAYER_COLOR_PRESETS`: `Record<keyof PlayerColors, number[]>` — 8-10 curated hex swatches per region:
-  - Hair: blonde → black, including auburn, red, gray
-  - Skin: inclusive range of tones (very light to very dark)
-  - Suit: professional (navy, charcoal, black, gray, brown, burgundy, forest green, cream, tan, slate)
-  - Tie: accent colors (red, blue, gold, green, purple, black, burgundy, orange, silver)
-  - Pants: neutral (dark blue, black, gray, charcoal, khaki, brown, navy, olive)
-  - Shoes: dark tones (black, dark brown, brown, tan, dark gray, burgundy, navy)
-- `loadPlayerColors(): PlayerColors` — reads localStorage `agencyOffice:playerColors`, merges with defaults
-- `savePlayerColors(colors): void` — writes to localStorage
-- `resetPlayerColors(): PlayerColors` — removes key, returns default clone
+- `COLOR_REGION_LABELS`: display names (`hair→"Hair"`, `suit→"Jacket"`, etc.)
+- `PLAYER_COLOR_PRESETS`: 8-9 curated hex swatches per region (hair: blonde→black; skin: inclusive range; suit: professional tones; etc.)
+- `loadPlayerColors()` — reads localStorage `agencyOffice:playerColors`, merges with defaults
+- `savePlayerColors(colors)` — writes to localStorage
+- `resetPlayerColors()` — removes key, returns default clone
 
-**Pattern:** Follow `src/config/notifications.ts` — `structuredClone`, try/catch, merge with defaults.
+Uses `structuredClone` + try/catch pattern matching `src/config/notifications.ts`.
 
 ### Todo 2: Parameterize `src/sprites/SpriteGenerator.ts` (no dependencies)
 
@@ -268,6 +260,15 @@ Run `npm run build` and verify:
 - Colors persist across reload
 - Reset button works
 - Preview displays correctly
+
+## Current Status
+
+- **Todo 1** (Config): ✅ Done — `src/config/playerCustomization.ts` exists with all types, presets, and persistence
+- **Todo 2** (SpriteGen parameterization): Pending
+- **Todo 3** (UI Panel): Pending (depends on Todo 1 ✅)
+- **Todo 4** (BootScene wiring): Pending (depends on Todo 2)
+- **Todo 5** (main.ts button + panel): Pending (depends on Todos 2, 3)
+- **Todo 6** (Build & verify): Pending (depends on Todo 5)
 
 ## Parallelization Strategy
 

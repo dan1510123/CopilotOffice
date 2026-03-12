@@ -11,7 +11,9 @@ import Phaser from 'phaser';
 import {
   FRAME_WIDTH, FRAME_HEIGHT, SPRITE_COLS, SPRITE_ROWS,
   SHEET_WIDTH, SHEET_HEIGHT,
+  registerWalkAnimations,
 } from './DirectionalSprite';
+import { PlayerColors, DEFAULT_PLAYER_COLORS } from '../config/playerCustomization';
 
 /* ------------------------------------------------------------------ */
 /*  Drawing context with offset support                                */
@@ -115,7 +117,8 @@ function finalizeSpritesheet(scene: Phaser.Scene, g: Phaser.GameObjects.Graphics
 /*  PLAYER SPRITESHEET                                                 */
 /* ================================================================== */
 
-export function generatePlayerSpritesheet(scene: Phaser.Scene): void {
+export function generatePlayerSpritesheet(scene: Phaser.Scene, colors?: PlayerColors): void {
+  const c = colors ?? DEFAULT_PLAYER_COLORS;
   const g = scene.make.graphics({ x: 0, y: 0 });
 
   for (let wf = 0; wf < 3; wf++) {
@@ -123,88 +126,98 @@ export function generatePlayerSpritesheet(scene: Phaser.Scene): void {
     const ox = wf * FRAME_WIDTH;
 
     // Row 0: DOWN
-    drawPlayerDown(new D(g, ox, 0), ldy, rdy);
+    drawPlayerDown(new D(g, ox, 0), ldy, rdy, c);
     // Row 1: LEFT
     const leftCtx = new D(g, ox, FRAME_HEIGHT);
-    drawPlayerLeft(leftCtx, ldy, rdy);
+    drawPlayerLeft(leftCtx, ldy, rdy, c);
     // Row 2: RIGHT (mirror of LEFT)
     const rightCtx = new MirrorD(g, ox, 2 * FRAME_HEIGHT);
-    drawPlayerLeft(rightCtx, rdy, ldy); // swap leg offsets for mirror
+    drawPlayerLeft(rightCtx, rdy, ldy, c); // swap leg offsets for mirror
     // Row 3: UP
-    drawPlayerUp(new D(g, ox, 3 * FRAME_HEIGHT), ldy, rdy);
+    drawPlayerUp(new D(g, ox, 3 * FRAME_HEIGHT), ldy, rdy, c);
   }
 
   finalizeSpritesheet(scene, g, 'player');
 }
 
+export function regeneratePlayerSprite(scene: Phaser.Scene, colors: PlayerColors): void {
+  scene.textures.remove('player');
+  generatePlayerSpritesheet(scene, colors);
+  for (const dir of ['down', 'left', 'right', 'up']) {
+    const key = `player_walk_${dir}`;
+    if (scene.anims.exists(key)) scene.anims.remove(key);
+  }
+  registerWalkAnimations(scene.anims, 'player');
+}
+
 /* -- Player DOWN (front) -- */
-function drawPlayerDown(d: DrawCtx, ldy: number, rdy: number): void {
+function drawPlayerDown(d: DrawCtx, ldy: number, rdy: number, c: PlayerColors): void {
   // Hair
-  d.fillStyle(0x2a1a0a).rect(10, 2, 12, 6);
+  d.fillStyle(c.hair).rect(10, 2, 12, 6);
   // Face
-  d.fillStyle(0xffdbac).rect(10, 6, 12, 10);
-  // Eyes
+  d.fillStyle(c.skin).rect(10, 6, 12, 10);
+  // Eyes — keep hardcoded 0x000000
   d.fillStyle(0x000000).rect(12, 9, 2, 2).rect(18, 9, 2, 2);
-  // Smile
+  // Smile — keep hardcoded 0x000000
   d.fillStyle(0x000000).rect(14, 13, 4, 1);
   // Suit jacket
-  d.fillStyle(0x1a2a4a).rect(6, 16, 20, 12);
-  // Collar
+  d.fillStyle(c.suit).rect(6, 16, 20, 12);
+  // Collar — keep hardcoded 0xffffff
   d.fillStyle(0xffffff).rect(13, 16, 6, 4);
   // Tie
-  d.fillStyle(0xcc2222).rect(15, 18, 2, 8);
+  d.fillStyle(c.tie).rect(15, 18, 2, 8);
   // Hands
-  d.fillStyle(0xffdbac).rect(4, 24, 4, 4).rect(24, 24, 4, 4);
+  d.fillStyle(c.skin).rect(4, 24, 4, 4).rect(24, 24, 4, 4);
   // Pants
-  d.fillStyle(0x1a1a2a).rect(10, 28 + ldy, 5, 4).rect(17, 28 + rdy, 5, 4);
+  d.fillStyle(c.pants).rect(10, 28 + ldy, 5, 4).rect(17, 28 + rdy, 5, 4);
   // Shoes
-  d.fillStyle(0x111111).rect(9, 31 + ldy, 6, 2).rect(17, 31 + rdy, 6, 2);
+  d.fillStyle(c.shoes).rect(9, 31 + ldy, 6, 2).rect(17, 31 + rdy, 6, 2);
 }
 
 /* -- Player UP (back) -- */
-function drawPlayerUp(d: DrawCtx, ldy: number, rdy: number): void {
+function drawPlayerUp(d: DrawCtx, ldy: number, rdy: number, c: PlayerColors): void {
   // Hair (covers back of head fully)
-  d.fillStyle(0x2a1a0a).rect(10, 2, 12, 14);
+  d.fillStyle(c.hair).rect(10, 2, 12, 14);
   // Ears
-  d.fillStyle(0xffdbac).rect(9, 9, 2, 4).rect(21, 9, 2, 4);
+  d.fillStyle(c.skin).rect(9, 9, 2, 4).rect(21, 9, 2, 4);
   // Suit back
-  d.fillStyle(0x1a2a4a).rect(6, 16, 20, 12);
-  // Back seam
-  d.fillStyle(0x141e38).rect(15, 16, 2, 12);
+  d.fillStyle(c.suit).rect(6, 16, 20, 12);
+  // Back seam — use darken(c.suit)
+  d.fillStyle(darken(c.suit)).rect(15, 16, 2, 12);
   // Hands
-  d.fillStyle(0xffdbac).rect(4, 24, 4, 4).rect(24, 24, 4, 4);
+  d.fillStyle(c.skin).rect(4, 24, 4, 4).rect(24, 24, 4, 4);
   // Pants
-  d.fillStyle(0x1a1a2a).rect(10, 28 + ldy, 5, 4).rect(17, 28 + rdy, 5, 4);
+  d.fillStyle(c.pants).rect(10, 28 + ldy, 5, 4).rect(17, 28 + rdy, 5, 4);
   // Shoes
-  d.fillStyle(0x111111).rect(9, 31 + ldy, 6, 2).rect(17, 31 + rdy, 6, 2);
+  d.fillStyle(c.shoes).rect(9, 31 + ldy, 6, 2).rect(17, 31 + rdy, 6, 2);
 }
 
 /* -- Player LEFT (side profile) -- */
-function drawPlayerLeft(d: DrawCtx, ldy: number, rdy: number): void {
+function drawPlayerLeft(d: DrawCtx, ldy: number, rdy: number, c: PlayerColors): void {
   // Hair (side)
-  d.fillStyle(0x2a1a0a).rect(12, 2, 10, 7);
+  d.fillStyle(c.hair).rect(12, 2, 10, 7);
   // Head (narrower profile)
-  d.fillStyle(0xffdbac).rect(10, 6, 10, 10);
-  // One eye
+  d.fillStyle(c.skin).rect(10, 6, 10, 10);
+  // One eye — keep hardcoded 0x000000
   d.fillStyle(0x000000).rect(11, 9, 2, 2);
-  // Nose
-  d.fillStyle(0xeec89a).rect(9, 11, 2, 3);
+  // Nose — use noseHighlight(c.skin)
+  d.fillStyle(noseHighlight(c.skin)).rect(9, 11, 2, 3);
   // Suit (profile)
-  d.fillStyle(0x1a2a4a).rect(10, 16, 14, 12);
-  // Collar edge
+  d.fillStyle(c.suit).rect(10, 16, 14, 12);
+  // Collar edge — keep hardcoded 0xffffff
   d.fillStyle(0xffffff).rect(10, 16, 3, 3);
   // Arm
-  d.fillStyle(0x1a2a4a).rect(20, 18, 4, 8);
+  d.fillStyle(c.suit).rect(20, 18, 4, 8);
   // Hand
-  d.fillStyle(0xffdbac).rect(20, 26, 4, 3);
+  d.fillStyle(c.skin).rect(20, 26, 4, 3);
   // Front leg
-  d.fillStyle(0x1a1a2a).rect(11, 28 + ldy, 6, 4);
+  d.fillStyle(c.pants).rect(11, 28 + ldy, 6, 4);
   // Back leg (partially hidden)
-  d.fillStyle(0x1a1a2a).rect(15, 28 + rdy, 5, 4);
+  d.fillStyle(c.pants).rect(15, 28 + rdy, 5, 4);
   // Front shoe
-  d.fillStyle(0x111111).rect(9, 31 + ldy, 7, 2);
+  d.fillStyle(c.shoes).rect(9, 31 + ldy, 7, 2);
   // Back shoe
-  d.fillStyle(0x111111).rect(15, 31 + rdy, 5, 2);
+  d.fillStyle(c.shoes).rect(15, 31 + rdy, 5, 2);
 }
 
 /* ================================================================== */
@@ -734,5 +747,12 @@ function darken(color: number): number {
   const r = Math.max(0, ((color >> 16) & 0xff) - 30);
   const g = Math.max(0, ((color >> 8) & 0xff) - 30);
   const b = Math.max(0, (color & 0xff) - 30);
+  return (r << 16) | (g << 8) | b;
+}
+
+function noseHighlight(skin: number): number {
+  const r = Math.max(0, ((skin >> 16) & 0xff) - 17);
+  const g = Math.max(0, ((skin >> 8) & 0xff) - 19);
+  const b = Math.max(0, (skin & 0xff) - 18);
   return (r << 16) | (g << 8) | b;
 }

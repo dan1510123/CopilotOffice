@@ -51,6 +51,31 @@ Three components work together:
 Supported event types: `turnEnd`, `askUser`, `turnStart`, `toolStart`, `toolComplete`,
 `sessionReady`, `sessionError`.
 
+## CameraDragController.ts — Camera Pan Controller
+
+Click-to-drag camera panning for the Phaser game viewport.
+
+- **Drag vs click detection** — uses a 5px distance threshold to distinguish drags from NPC clicks.
+- **`CameraDragConfig`** — accepts `worldWidth`, `worldHeight`, `tileSize`, optional `bufferTiles` (extra panning padding, default 1), and `excludeObjects` (game objects that should not trigger drag, e.g. zoom bar).
+- **Camera clamping** — constrains scroll within room bounds plus the tile buffer. Centers camera when viewport exceeds bounds.
+- **`wasDragging()`** — returns true once per gesture if dragging occurred; callers should skip click handling.
+- **`onPlayerMove(playerX, playerY)`** — called from `update()` to smoothly lerp camera back to player after manual pan (0.08 lerp speed).
+- **`enable()` / `disable()`** — toggle panning (disabled during terminal focus or mini-games).
+- **`updateBounds()`** — refreshes camera bounds after zoom changes.
+- **`destroy()`** — removes all pointer event listeners.
+
+## FleetDashboard.ts — Fleet Execution Dashboard
+
+DOM-based dashboard showing real-time fleet execution progress, displayed in the right panel during fleet mode.
+
+- **Layout**: Header (title + progress text) → progress bar → scrollable agent list → aggregate footer.
+- **`updateState(state: FleetState)`** — renders sub-agent rows sorted by state (running → dispatched → completed → failed), updates progress bar percentage, and aggregate tool counts.
+- **Agent rows**: Each row shows status icon (⏳/🧠/✅/❌), task description, agent type badge, and elapsed time.
+- **`show()` / `hide()`** — toggles `display: flex/none`.
+- **`destroy()`** — removes container and injected `<style>` element.
+- Styled inline via injected CSS (`.fleet-dashboard` class family). Background: `#1e1e2e`, accent: `#4488cc`.
+- No z-index used — renders inline within the right panel DOM, not as an overlay.
+
 ## DialogBox.ts — DEPRECATED
 
 Legacy Phaser-based conversation UI. Replaced entirely by `TerminalOverlay`.

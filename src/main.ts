@@ -11,6 +11,8 @@ import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
 import { NotificationSettingsPanel } from './ui/NotificationSettingsPanel';
+import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
+import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -163,6 +165,19 @@ function renderOfficeTabs() {
       color: #4a4;
     ">+ New Office</div>
     <div style="flex: 1;"></div>
+    <div id="sprite-customizer-btn" style="
+      padding: 8px 16px;
+      background: #252538;
+      border: 2px solid #444;
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: monospace;
+      color: #666;
+      font-size: 16px;
+      user-select: none;
+      transition: all 0.2s;
+      margin-right: 8px;
+    " title="Customize Player">🎨</div>
     <div id="zoom-bar" style="
       display: flex;
       align-items: center;
@@ -309,6 +324,17 @@ function renderOfficeTabs() {
 
   document.getElementById('notif-settings-btn')?.addEventListener('click', () => {
     notificationSettingsPanel.toggle();
+  });
+
+  document.getElementById('sprite-customizer-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const btn = document.getElementById('sprite-customizer-btn')!;
+    spriteCustomizerPanel.toggle(btn);
+    // Provide initial preview if panel just opened
+    if (spriteCustomizerPanel.isOpen() && phaserGameRef) {
+      const base64 = phaserGameRef.textures.getBase64('player');
+      spriteCustomizerPanel.updatePreview(base64);
+    }
   });
 
   // BGM controls in top bar
@@ -633,6 +659,18 @@ function notifyAgent(agentId: string, eventType: import('./config/notifications'
 }
 
 const notificationSettingsPanel = new NotificationSettingsPanel(notificationService);
+
+// ── Sprite Customizer ────────────────────────────────────────────
+const spriteCustomizerPanel = new SpriteCustomizerPanel({
+  onColorsChanged: (colors) => {
+    const scene = phaserGameRef?.scene.getScene('OfficeScene');
+    if (scene) {
+      regeneratePlayerSprite(scene, colors);
+      const base64 = scene.textures.getBase64('player');
+      spriteCustomizerPanel.updatePreview(base64);
+    }
+  },
+});
 
 // ── Terminal Content Updates ────────────────────────────────────
 

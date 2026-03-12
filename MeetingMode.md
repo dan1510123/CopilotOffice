@@ -233,7 +233,7 @@ interface FleetStatus {
 
 ---
 
-## Phase 3: Exit Animations & Return to Office
+## Phase 3: Exit Animations & Return to Office (Done)
 
 ### 3.1 NPC Walk Animation System
 **Modified file**: `src/entities/NPC.ts`
@@ -264,38 +264,54 @@ On plan approval:
 ### 3.3 Office Re-entry Sequence
 OfficeScene receives plan data via `scene.wake()` event:
 1. Player enters from normal entrance (tween upward)
-2. Arthur appears at his desk position (4, 7)
+2. Arthur appears at his desk position (2, 9)
 3. If plan has task assignments → trigger Phase 4 (fleet spawning)
 
 ---
 
-## Phase 4: Parallel Agent Spawning (Future)
+## Phase 4: Parallel Agent Spawning (Code Exists — Wiring Incomplete)
 
-### 4.1 Fleet Orchestrator
-**New file**: `src/meeting/fleetOrchestrator.ts`
+Fleet orchestration code has been built but the full pipeline is not yet connected end-to-end.
 
-```typescript
-class FleetOrchestrator {
-  async executePlan(plan: MeetingPlan): Promise<void> {
-    for (const task of plan.tasks) {
-      // 1. Start terminal: copilotBridge.terminalStart(task.agentId, workingDir)
-      // 2. Wait for ready: listen for terminal-preload-status 'ready'
-      // 3. Send prompt: copilotBridge.terminalWrite(task.agentId, task.prompt)
-      // 4. Track status
-    }
-  }
-}
-```
+### 4.1 Fleet Orchestrator (Built)
+**File**: `src/meeting/fleetOrchestrator.ts`
 
-- Spawn sessions in parallel (Promise.all or staggered)
-- Track fleet status per agent
-- Emit events: `fleet:agent:started`, `fleet:agent:complete`, `fleet:all:complete`
+The `FleetOrchestrator` class exists and handles:
+- Staggered agent spawning via `copilotBridge.terminalStart()`
+- Per-agent state tracking (pending → starting → working → done/failed)
+- Event listeners for terminal preload status, exit, and copilot turn end
+- Retry logic (one retry on spawn failure)
+- Cancel support with process-tree kill
+- Event emission: `fleet:agent:started`, `fleet:agent:working`, `fleet:agent:done`, `fleet:agent:failed`, `fleet:all:complete`
 
-### 4.2 Agent Walk-to-Desk Animation
-After each agent's terminal spawns:
-1. NPC appears at bottom entrance doors
-2. NPC walks to their desk position using `walkTo()`
-3. NPC shows "working" status badge (green pulsing)
+### 4.1b Fleet Tracker (Built)
+**File**: `src/meeting/fleetTracker.ts`
+
+The `FleetTracker` class monitors Copilot CLI sub-agent events from `events.jsonl`:
+- Tracks sub-agent lifecycle: dispatched → running → completed/failed
+- Parses `tool.execution_start`, `subagent.started`, `subagent.completed`, `subagent.failed` events
+- Provides `FleetState` snapshots with aggregate counts and active tool tracking
+- Uses silent `terminalAttach()` to enable event flow without showing the terminal UI
+
+### 4.1c Fleet Visualizer (Built)
+**File**: `src/meeting/fleetVisualizer.ts`
+
+The `FleetVisualizer` bridges `FleetTracker` data to Phaser game events:
+- Maps sub-agents to fleet NPC seat positions (14 seats, Arthur's seat reserved)
+- 2-second debounce window for batch seat assignment
+- Emits `fleet:assign`, `fleet:dismiss-unassigned`, `fleet:agent:badge`, `fleet:agent:exit`, `fleet:agent:late-spawn`, `fleet:status`, `fleet:complete`
+- Handles walk-out scheduling for completed/failed agents
+
+### Remaining gaps
+- **Pipeline wiring**: FleetTracker and FleetVisualizer are never instantiated — need to be connected in OfficeScene
+- **Meeting→Fleet transition**: OfficeScene wake handler has a stub for fleet orchestration
+- **FleetDashboard integration**: Dashboard exists but not wired to FleetTracker updates
+
+### 4.2 Agent Walk-to-Desk Animation (Built)
+Fleet V-Team uses a dedicated layout (`fleet-vteam`) with a 9×3 conference table and 14 seats
+(5 top, 5 bottom, 2 left, 2 right). Seat index 7 (bottom-middle) is reserved for Arthur.
+Agent walk-in/walk-out animations and badge updates are driven by `fleet:*` game events
+emitted by `FleetVisualizer`.
 
 ### 4.3 Agent Status Integration
 Leverage existing `officeManager.ts` status system:
@@ -305,7 +321,7 @@ Leverage existing `officeManager.ts` status system:
 
 ---
 
-## Phase 5: Fleet Dashboard (Future)
+## Phase 5: Fleet Dashboard (Partially Built)
 
 ### 5.1 Fleet Overview Panel
 Modify right-panel dashboard when fleet is active:
@@ -331,7 +347,10 @@ When all agents finish:
 | `src/meeting/types.ts` | 2 | Shared types (MeetingPlan, TaskAssignment, FleetStatus) |
 | `src/config/meetingPrompt.ts` | 2 | Arthur's meeting system prompt template |
 | `src/meeting/planParser.ts` | 2 | Parse structured plan from terminal output |
+| `src/meeting/planApproval.ts` | 2 | Plan approval overlay (Approve/Revise/Cancel) |
 | `src/meeting/fleetOrchestrator.ts` | 4 | Spawn and coordinate parallel agent sessions |
+| `src/meeting/fleetTracker.ts` | 4 | Track sub-agent events from events.jsonl |
+| `src/meeting/fleetVisualizer.ts` | 4 | Bridge tracker data to Phaser game events |
 
 ### Modified Files
 | File | Phase | Changes |
@@ -340,7 +359,7 @@ When all agents finish:
 | `src/main.ts` | 1 | Register MeetingScene in Phaser config, meeting events |
 | `src/scenes/OfficeScene.ts` | 1,3 | Meeting trigger on Arthur interaction, fleet return handling |
 | `src/entities/NPC.ts` | 3 | Add `walkTo()` tween-based movement method |
-| `src/config/agents.ts` | 1 | ✅ Done — Arthur moved to (4, 7) |
+| `src/config/agents.ts` | 1 | ✅ Done — Gene (4,3), Arthur (2,9), Dan (13,3), Alice (17,9) |
 | `src/config/depths.ts` | 1 | Add meeting-specific depth constants if needed |
 | `src/ui/TerminalOverlay.ts` | 1 | Support meeting mode terminal header |
 | `src/office/officeManager.ts` | 4 | Fleet tracking state |
@@ -358,7 +377,7 @@ When all agents finish:
 | Plan parsing | JSON in fenced code blocks + ANSI stripping | Robust enough with manual fallback button |
 | Agent isolation | Same working directory | Simpler to start; git worktrees can be added later |
 | Multi-agent backend | Hybrid (Arthur plans → app spawns independent sessions) | Best of both worlds: visible planning + visible execution |
-| Implementation scope | Phases 1-3 first, then 4-5 | Meeting room + planning + animations first; fleet execution follow-up |
+| Implementation scope | Phases 1-3 done, Phase 4 code built (wiring incomplete) | Meeting room + planning + animations done; fleet code exists but pipeline not connected |
 
 ---
 

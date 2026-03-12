@@ -38,8 +38,10 @@ Phaser scenes follow `preload()` → `create()` → `update()`:
   const ENABLE_PING_PONG = false;
   const ENABLE_DECORATIONS = false;
   const ENABLE_BASKETBALL = false;
+  const ENABLE_ZOOM_BAR = true;
   ```
-- **NPCs** created from `AGENTS` array in `src/config/agents.ts`. Each gets a desk, laptop, and status badge.
+- **Layout system**: `rebuildLayout(layout)` switches between `'default'` and `'fleet-vteam'` layouts by calling `getLayout()` from `src/layouts/index.ts`. Each layout defines its own agent roster, dashboard component, and click handler. The `currentLayout` is derived from the active office's `layout` field.
+- **NPCs** created from the active layout's agent list. Each gets a desk, laptop, and status badge.
 - **Player** instantiated with collision against walls, furniture, and NPCs.
 - **`createOfficeLayout()`** places all floor tiles, walls, doors, desks, and decorative items.
 - **Exit system**: Player walks off-screen downward to leave; re-enters via Space/Enter.

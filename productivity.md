@@ -66,12 +66,13 @@ Notifications are configurable per event type (toast, OS-native, or silent) with
 
 ### 5. Fleet Orchestration — True Parallelism at Scale
 
-The fleet system enables **up to 14 agents** working simultaneously on a single coordinated plan:
+The fleet system enables **up to 14 agents** working simultaneously on a single coordinated plan (13 fleet agents + Arthur as orchestrator):
 
 - Arthur decomposes work → agents spawn in a fleet office with assigned seats
 - Each agent executes its subtask in an isolated Copilot CLI session
 - Real-time status badges show dispatched → running → completed/failed per agent
 - Aggregate progress tracking via a fleet dashboard
+- Fleet orchestration code is built (`fleetOrchestrator.ts`, `fleetTracker.ts`, `fleetVisualizer.ts`); pipeline wiring is in progress
 
 For large tasks (refactors, migrations, multi-service changes), this transforms hours of sequential agent interaction into minutes of parallel execution.
 

@@ -13,7 +13,7 @@ The application has two mutually exclusive focus states:
 | State      | Owner                  | What receives keys        |
 |------------|------------------------|---------------------------|
 | `game`     | Phaser canvas element  | Player movement (WASD / arrows), scene shortcuts |
-| `terminal` | xterm.js textarea      | Terminal input, F10 close, Ctrl+Shift+N new-session |
+| `terminal` | xterm.js textarea      | Terminal input, F10 close, Ctrl+Shift+N new-session, Ctrl+F toggle fullscreen |
 
 There is also a transient `none` state at startup before `OfficeScene.create()`
 completes and calls `InputManager.switchToGame()`.
@@ -30,7 +30,7 @@ All input capture is managed through four classes in `src/input/`:
   `TerminalInputListener`.
 - Public API:
   - `switchToGame(reason)` — transition to game focus
-  - `switchToTerminal(reason, onNewSession)` — transition to terminal focus
+  - `switchToTerminal(reason, onNewSession, onToggleFullscreen?)` — transition to terminal focus
   - `activateTerminalF10(onClose)` — install F10-close handler (terminal visible)
   - `deactivateTerminalF10()` — remove F10-close handler (terminal hidden)
   - `focusTerminalXterm(terminal)` — call `terminal.focus()` after 100 ms delay
@@ -65,8 +65,8 @@ All input capture is managed through four classes in `src/input/`:
   1. **`f10Handler`** — active while terminal is _visible_; intercepts `F10` →
      calls `onClose()` callback.
   2. **`shortcutHandler`** — active while terminal has _keyboard focus_; intercepts
-     `Ctrl+Shift+N` → calls `onNewSession()`. Does **not** stop propagation for any
-     other key (xterm must receive them).
+     `Ctrl+Shift+N` → calls `onNewSession()` and `Ctrl+F` → calls `onToggleFullscreen()`.
+     Does **not** stop propagation for any other key (xterm must receive them).
 - Logs `[TerminalInput]` on every install/remove.
 
 ---
@@ -133,7 +133,7 @@ game.events.emit('open:agent:terminal', agentId)
    If `keyboard.enabled = true` and there are active captures, Phaser calls
    `preventDefault()` on captured keys (arrows, space) before xterm ever sees them.
 
-2. **Only `F10` and `Ctrl+Shift+N` are intercepted** from the document while the
+2. **Only `F10`, `Ctrl+Shift+N`, and `Ctrl+F` are intercepted** from the document while the
    terminal is focused. Every other key passes through to xterm's textarea without
    being stopped.
 
@@ -193,7 +193,7 @@ Example console output during NPC interaction:
 | `src/input/InputManager.ts` | Orchestrator, public API, logging |
 | `src/input/GlobalInputListener.ts` | Observational document listener |
 | `src/input/GameInputListener.ts` | Phaser keyboard wrapper |
-| `src/input/TerminalInputListener.ts` | F10 + Ctrl+Shift+N intercepts |
+| `src/input/TerminalInputListener.ts` | F10 + Ctrl+Shift+N + Ctrl+F intercepts |
 | `src/ui/TerminalOverlay.ts` | Calls InputManager; owns xterm lifecycle |
 | `src/scenes/OfficeScene.ts` | Creates InputManager; handles scene events |
 | `src/entities/Player.ts` | Uses Phaser cursor keys; unaware of InputManager |

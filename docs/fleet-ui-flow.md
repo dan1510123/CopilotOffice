@@ -34,6 +34,8 @@ UI spawns / updates / removes NPC sprites in the fleet v-team room
 | Walk-in animation | `OfficeScene.ts` → `triggerAgentWalkIn()` | ✅ Built |
 | Layout switching | `OfficeScene.ts` → `rebuildLayout('fleet-vteam')` | ✅ Built |
 | Sub-agent event tracking | `fleetTracker.ts` → `FleetTracker` class | ✅ Built |
+| Fleet visualization | `fleetVisualizer.ts` → `FleetVisualizer` class | ✅ Built |
+| Fleet orchestration | `fleetOrchestrator.ts` → `FleetOrchestrator` class | ✅ Built |
 | Event pipeline | `events-watcher.ts` → `server.ts` → `preload.ts` | ✅ Built |
 
 ---
@@ -170,21 +172,15 @@ interface FleetNPCMapping {
   npcRef: NPC | null;        // reference to Phaser NPC instance
 }
 
-// FleetTracker event → NPC update flow:
+// FleetVisualizer emits game events that OfficeScene consumes:
 //
-// FleetTracker.onUpdate(state => {
-//   state.subAgents.forEach((tracker, toolCallId) => {
-//     const mapping = npcMappings.get(toolCallId);
-//     if (!mapping) return;
-//
-//     switch (tracker.state) {
-//       case 'dispatched': setBadge(mapping.npcRef, 'starting', 'Queued');
-//       case 'running':    setBadge(mapping.npcRef, 'thinking', tracker.taskDescription);
-//       case 'completed':  setBadge(mapping.npcRef, 'ready', 'Done'); scheduleWalkOut(mapping);
-//       case 'failed':     setBadge(mapping.npcRef, 'error', tracker.error); scheduleWalkOut(mapping);
-//     }
-//   });
-// });
+// fleet:assign          → Batch assignment (2s debounce after first subagent.started)
+// fleet:agent:badge     → Per-agent badge update (dispatched/running/completed/failed)
+// fleet:agent:exit      → Agent walk-out on completion/failure
+// fleet:agent:late-spawn → Single agent arriving after initial batch
+// fleet:dismiss-unassigned → Unassigned agents walk out
+// fleet:status          → Aggregate status (e.g. "7/10 complete")
+// fleet:complete        → All agents finished
 ```
 
 ---

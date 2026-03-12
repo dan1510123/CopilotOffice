@@ -21,8 +21,9 @@ src/                          # Renderer process (Phaser + DOM)
 ├── ui/                       # DOM overlays (terminal, mini-games, notifications)
 ├── input/                    # Three-tier keyboard focus system
 ├── office/                   # Multi-office state management (no rendering)
-├── config/                   # Agent definitions, depth constants, notification settings
-└── meeting/                  # Meeting Mode types + plan parsing
+├── layouts/                  # Layout system (default + fleet-vteam)
+├── config/                   # Agent definitions, depth constants, notification settings, player customization
+└── meeting/                  # Meeting Mode: plan parsing, approval, fleet orchestration + tracking
 electron/                     # Main process
 ├── main.ts                   # Window, IPC handlers, hot reload
 └── terminal/                 # PTY server, preload bridge, event watcher, protocol types
@@ -37,10 +38,10 @@ electron/                     # Main process
 Phaser ↔ DOM coordination uses `game.events`. Key events: `agent:interact`, `terminal:open/close`, `office:switch`, `agent:status:changed`, `agent:tool:start`, `npc:highlight/clear-highlight`, `game:panel:clicked`.
 
 ### Multi-Office
-`officeManager.ts` manages multiple offices with per-agent status tracking. Persisted to `localStorage`. Pure data — never renders.
+`officeManager.ts` manages multiple offices with per-agent status tracking. Each `OfficeConfig` includes a `layout: OfficeLayout` field (`'default' | 'fleet-vteam'`). Persisted to `.data/copilot-offices.json`. Pure data — never renders.
 
 ### Feature Flags
-Top of `OfficeScene.ts`: `ENABLE_PING_PONG`, `ENABLE_DECORATIONS`, `ENABLE_BASKETBALL`.
+Top of `OfficeScene.ts`: `ENABLE_PING_PONG`, `ENABLE_DECORATIONS`, `ENABLE_BASKETBALL`, `ENABLE_ZOOM_BAR`.
 
 ### Procedural Sprites
 All sprites generated in code (BootScene + SpriteGenerator) — no external image assets. 4-direction walk animations via DirectionalSprite.
@@ -55,17 +56,24 @@ Two mutually exclusive states: `game` and `terminal`. All transitions through `I
 
 | ID | Name | Skill | Position | Purpose |
 |----|------|-------|----------|---------|
-| `generalist` | Gene | general | (3, 3) | General-purpose assistant |
-| `architect` | Arthur | general | (4, 7) | Architect — orchestrates plans and agents |
-| `debugger` | Dan | general | (9, 3) | Debugger — investigates and fixes issues |
-| `admin` | Alice | general | (15, 7) | Office Admin — edits this game directly (`workingDir: '.'`) |
+| `generalist` | Gene | general | (4, 3) | General-purpose assistant |
+| `architect` | Arthur | general | (2, 9) | Architect — orchestrates plans and agents |
+| `debugger` | Dan | general | (13, 3) | Debugger — investigates and fixes issues |
+| `admin` | Alice | general | (17, 9) | Office Admin — edits this game directly (`workingDir: '.'`) |
 
 6 reserve agents (Azure, Validator, Deployer, Doctor, Scout, Accountant) have pre-generated sprites ready to activate. Status badges track: slacking → starting → ready ↔ waiting/thinking → slacking.
 
 ## Active Feature Plans
 
-### Meeting Mode (in progress)
-See **`MeetingMode.md`** for the full plan. Arthur plans tasks in a meeting room, outputs structured JSON with agent assignments, then agents spin up parallel CLI sessions. Always read `MeetingMode.md` before working on this feature.
+### Meeting Mode and Fleet Execution (implemented)
+Arthur plans tasks in a meeting room, outputs structured JSON with agent assignments, then agents spin up parallel CLI sessions via the fleet orchestrator. The meeting directory contains:
+
+- `types.ts` / `planParser.ts` / `planApproval.ts` — plan parsing and approval UI
+- `fleetOrchestrator.ts` — fleet task orchestration (spawns parallel agent sessions)
+- `fleetTracker.ts` — renderer-side fleet state machine
+- `fleetVisualizer.ts` — fleet NPC visualization
+
+See **`MeetingMode.md`** for design context. Always read it before making changes to meeting/fleet code.
 
 ## Common Tasks
 

@@ -180,8 +180,9 @@ agentToTerminal.set('fleet-1:architect', 'office-0:architect')
 
 This allows `getTerminalKey('fleet-1', 'architect')` to resolve to the original PTY. The transfer also copies:
 - `activeAgentViewers` state (if source had a viewer, fleet key also marked active)
-- Scrollback buffers (so `attach` from fleet office replays full history)
-- Event watcher reference (so copilot events forward under new key)
-- Ready state
+- Scrollback buffers and byte counts (so `attach` from fleet office replays full history)
+- Ready state and turn state
+- Session history
+- Does **NOT** share `EventsWatcher` — the destination creates its own watcher when a new session starts. Sharing would cause the destination's kill/reset to stop the source's watcher.
 
 The `detach` handler follows the alias chain — detaching `fleet-1:architect` also removes `office-0:architect` from `activeAgentViewers`, and vice versa. This is why it's critical that `hide()` detaches from the **source** office (via `attachedOfficeId`), not the **fleet** office.

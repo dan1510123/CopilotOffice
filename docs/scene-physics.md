@@ -25,8 +25,8 @@ body.y = gameObject.y + scaleY * (offset.y - displayOriginY)
 Example (Player):
 ```ts
 this.setScale(spriteScale);
-this.setSize(16 * spriteScale, 18 * spriteScale);  // world pixels
-this.setOffset(8, 8);  // frame coords: (32-16)/2=8, (34-18)/2=8
+this.setSize(16, 13);          // body size in pixels
+this.setOffset(8, 13);         // frame coords: lowered hitbox for better desk overlap
 ```
 
 Example (NPC — immovable dynamic body):

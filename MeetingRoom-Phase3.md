@@ -1,4 +1,8 @@
-# Meeting Room — Phase 3 Implementation Plan
+# Meeting Room — Phase 3: Pipeline Wiring & Integration
+
+> **Status**: All core fleet components are built (FleetOrchestrator, FleetTracker, FleetVisualizer,
+> FleetDashboard, OfficeScene event listeners, 14-seat fleet layout, BootScene sprite generation).
+> The remaining work is **wiring the pipeline end-to-end** and handling edge cases.
 
 ## What's Done (Phase 1 & 2)
 
@@ -10,9 +14,10 @@
 - ✅ Scene transition (Office → Meeting → Office)
 - ✅ Exit animations and office re-entry with plan data
 
-### Phase 2 — Fleet Infrastructure (Built but Not Wired)
-- ✅ `FleetTracker` — observes sub-agent events from `events.jsonl`
-- ✅ `FleetVisualizer` — bridges tracker data to Phaser via `fleet:*` game events
+### Phase 2 — Fleet Infrastructure (Built)
+- ✅ `FleetOrchestrator` (`src/meeting/fleetOrchestrator.ts`) — staggered agent spawning, retry logic, cancel, event emission, turn-end completion detection
+- ✅ `FleetTracker` (`src/meeting/fleetTracker.ts`) — observes sub-agent events from `events.jsonl` via copilotBridge, tracks dispatched→running→completed/failed lifecycle
+- ✅ `FleetVisualizer` (`src/meeting/fleetVisualizer.ts`) — bridges tracker data to Phaser via `fleet:*` game events, handles seat assignment with 2s debounce, walk-out scheduling
 - ✅ `FleetDashboard` (src/ui) — DOM-based fleet progress panel
 - ✅ OfficeScene `fleet:*` event listeners — spawn, badge, exit, late-spawn, complete
 - ✅ Fleet v-team room layout with 14 seats and walk-in animations
@@ -23,7 +28,7 @@
 
 ---
 
-## Phase 3: What Remains
+## Phase 3: What Remains (Wiring & Integration)
 
 The core pieces are built but **the pipeline is not connected**. The full meeting-to-fleet
 experience requires wiring the components together and handling the end-to-end flow.
@@ -31,10 +36,12 @@ experience requires wiring the components together and handling the end-to-end f
 ```
 Current state:
 
-  FleetTracker (class exists, never instantiated)
-      ↓ ❌ gap
-  FleetVisualizer (class exists, never instantiated)
-      ↓ ❌ gap
+  FleetOrchestrator (class exists — executePlan(), cancel(), staggered spawning)
+      ↓ ❌ gap — never called from OfficeScene wake handler
+  FleetTracker (class exists — startTracking(), onUpdate(), dispose())
+      ↓ ❌ gap — never instantiated
+  FleetVisualizer (class exists — start(), dispose(), seat assignment)
+      ↓ ❌ gap — never instantiated
   game.events (fleet:spawn, fleet:agent:badge, etc.)
       ↓ ✅ connected
   OfficeScene listeners (ready, waiting for events)

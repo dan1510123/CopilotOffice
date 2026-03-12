@@ -2,7 +2,7 @@
 
 ## Overview
 
-All character sprites (player + 10 NPCs) are **procedurally generated** pixel art using Phaser's Graphics API — no external image files. Each character is a **12-frame spritesheet** supporting 4 walking directions with 3 animation frames each.
+All character sprites (player + 4 active NPCs + 6 reserve NPCs + 14 fleet NPCs) are **procedurally generated** pixel art using Phaser's Graphics API — no external image files. Each character is a **12-frame spritesheet** supporting 4 walking directions with 3 animation frames each.
 
 ## Spritesheet Layout
 
@@ -135,14 +135,13 @@ All game objects use named depth constants from `src/config/depths.ts`:
 | -10 | `BACKGROUND` | Floor tiles, background fill |
 | 0 | `FLOOR_DETAIL` | Welcome mat, rug, floor decorations |
 | 1 | `WALLS` | Wall tiles, windows, door |
-| 2 | `FURNITURE` | Desks, chairs, computers, shelves |
-| 5 | `GAME_OBJECTS` | Pong table, basketball hoop |
-| 10 | `NPC_EFFECTS` | Highlight ring, highlight glow |
-| 20 | `NPC_SPRITES` | NPC character sprites |
-| 25 | `NPC_LABELS` | Name/description labels |
-| 50 | `PLAYER` | Player character sprite |
-| 55 | `BADGES` | Session badges, session text |
+| 9 | `NPC_EFFECTS` | Highlight ring, highlight glow |
+| 10 | `SORTABLE_BASE` | Start of y-sorted depth range |
+| 40 | `SORTABLE_RANGE` | Range for y-sorting (depth = SORTABLE_BASE + normalized_y × SORTABLE_RANGE) |
+| 55 | `NPC_LABELS` | Name/description labels |
+| 60 | `BADGES` | Session badges, session text |
 | 100 | `UI_OVERLAY` | Prompts, title/instruction text |
+| 150 | `ZOOM_BAR` | Zoom bar UI element |
 | 200 | `MINI_GAMES` | Pong, Basketball containers |
 | 1000 | `DIALOG` | Dialog box (deprecated) |
 

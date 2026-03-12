@@ -261,138 +261,77 @@ Fleet: 7/10 complete  |  12 tools running  |  89 tools completed
 
 ---
 
-## Implementation: Isolated Architecture
+## Implementation: Current Architecture
 
-To avoid risk to existing functionality, fleet/sub-agent tracking is built as a **separate, opt-in layer** that sits alongside existing code without modifying it.
+Fleet/sub-agent tracking is built as a **separate, opt-in layer** that observes existing event pipelines without modifying core terminal code.
 
-### New Files Only (No Existing Code Modified)
+### Implemented Files
 
 ```
-electron/terminal/
-  ├─ server.ts              ← UNCHANGED
-  ├─ ipc-relay.ts           ← UNCHANGED
-  ├─ preload.ts             ← UNCHANGED (except 1 thin registration block)
-  ├─ protocol.ts            ← UNCHANGED
-  ├─ events-watcher.ts      ← UNCHANGED
-  └─ fleet-events.ts        ← NEW: fleet event processing + IPC
-
 src/meeting/
-  ├─ types.ts               ← UNCHANGED
-  ├─ planParser.ts          ← UNCHANGED
-  ├─ planApproval.ts        ← UNCHANGED
-  └─ fleetTracker.ts        ← NEW: renderer-side fleet state machine
+  ├─ types.ts               ← Shared interfaces (MeetingPlan, TaskAssignment, FleetStatus)
+  ├─ planParser.ts           ← Terminal output → MeetingPlan parser
+  ├─ planApproval.ts         ← Plan approval overlay UI
+  ├─ fleetTracker.ts         ← Renderer-side fleet state machine (event → state)
+  ├─ fleetVisualizer.ts      ← Translates FleetTracker state into Phaser game events
+  └─ fleetOrchestrator.ts    ← Orchestrates plan execution across agents
 ```
 
-### `electron/terminal/fleet-events.ts` (NEW)
-
-This module registers a **secondary event listener** on the existing server message bus. It doesn't touch `server.ts` internals — it listens to the same IPC channel that already forwards raw `copilot-event` messages.
-
-```typescript
-// fleet-events.ts — Standalone fleet event processor
-// Hooks into existing copilot-event passthrough (no server.ts changes)
-
-import { ipcMain } from 'electron';
-
-interface SubAgentEvent {
-  agentId: string;
-  toolCallId: string;
-  agentName: string;
-  agentDisplayName: string;
-  taskDescription?: string;
-  taskPrompt?: string;
-  error?: string;
-  timestamp: string;
-}
-
-export function registerFleetEvents(mainWindow: BrowserWindow) {
-  // Listen to the EXISTING copilot-event channel that server.ts already emits
-  // Also listen to copilot-tool-start which already fires for all tool calls
-  // No changes to server.ts needed — we're a passive observer
-
-  ipcMain.on('fleet:subscribe', (event, agentId: string) => {
-    // Renderer opts in to fleet tracking for a specific agent
-    // We start forwarding fleet-specific events to a separate channel
-  });
-}
-```
-
-**Alternative approach (simpler):** Since `onCopilotEvent` already forwards ALL raw events when a viewer is attached, the renderer can do all fleet processing client-side — no Electron changes needed at all for v1.
-
-### `src/meeting/fleetTracker.ts` (NEW)
+### `src/meeting/fleetTracker.ts`
 
 Pure renderer-side state machine. Listens to existing `copilotBridge.onCopilotEvent()` and `copilotBridge.onCopilotToolStart()` — both already available.
 
 ```typescript
-// fleetTracker.ts — Renderer-side fleet state machine
-// Uses ONLY existing copilotBridge APIs — no new IPC channels needed
+export type SubAgentState = 'dispatched' | 'running' | 'completed' | 'failed';
+
+export interface FleetState {
+  subAgents: ReadonlyMap<string, Readonly<SubAgentTracker>>;
+  activeToolCount: number;
+  totalToolsCompleted: number;
+  isActive: boolean;
+  counts: { dispatched: number; running: number; completed: number; failed: number };
+}
 
 export class FleetTracker {
-  private subAgents = new Map<string, SubAgentTracker>();
-  private activeToolCount = 0;
-  private totalToolsCompleted = 0;
-  private listeners: FleetEventListener[] = [];
-
-  constructor(private agentId: string) {}
-
-  /** Call this once to start tracking. Uses existing bridge APIs. */
-  startTracking() {
-    // These APIs already exist and work:
-    window.copilotBridge.onCopilotEvent(this.agentId, (agentId, event) => {
-      this.processEvent(event);
-    });
-  }
-
-  private processEvent(event: CopilotEvent) {
-    switch (event.type) {
-      case 'tool.execution_start':
-        if (event.data.toolName === 'task') {
-          // Sub-agent dispatched — extract description from arguments
-          this.createSubAgent(event.data.toolCallId, event.data.arguments);
-        }
-        this.activeToolCount++;
-        break;
-      case 'tool.execution_complete':
-        this.activeToolCount--;
-        this.totalToolsCompleted++;
-        break;
-      case 'subagent.started':
-        this.updateSubAgent(event.data.toolCallId, 'running');
-        break;
-      case 'subagent.completed':
-        this.updateSubAgent(event.data.toolCallId, 'completed');
-        break;
-      case 'subagent.failed':
-        this.updateSubAgent(event.data.toolCallId, 'failed', event.data.error);
-        break;
-      case 'system.notification':
-        this.handleNotification(event.data.content);
-        break;
-    }
-    this.notifyListeners();
-  }
-
-  /** Subscribe to fleet state changes */
-  onUpdate(cb: FleetEventListener) { ... }
-
-  /** Get current fleet state snapshot */
-  getState(): FleetState { ... }
-
-  /** Clean up listeners */
-  dispose() { ... }
+  async startTracking(): Promise<void>;  // attaches terminal + sets up event listeners
+  onUpdate(cb: FleetUpdateListener): () => void;  // subscribe to state changes
+  getState(): FleetState;               // snapshot of current fleet state
+  dispose(): void;                      // stop tracking and clean up
+  reset(): void;                        // reset state for new fleet run
 }
 ```
 
-### Integration Point
+**Key implementation details:**
+- Silently attaches terminal via `terminalAttach()` to ensure events flow (even without visible terminal)
+- Periodically re-attaches every 10 seconds as safety net against detach races
+- Uses existing `copilotBridge` APIs — no new IPC channels needed
 
-The `FleetTracker` is instantiated by `FleetDashboard.ts` (also new) or directly in `main.ts` when a fleet is active. It doesn't modify any existing code paths — it's additive only.
+### `src/meeting/fleetVisualizer.ts`
+
+Translates FleetTracker state updates into Phaser game events for NPC visualization:
+
+| Game Event | Purpose |
+|-----------|---------|
+| `fleet:assign` | Batch assignment of sub-agents to NPC sprites (2s debounce) |
+| `fleet:dismiss-unassigned` | Unassigned agents walk out |
+| `fleet:agent:badge` | Per-agent badge/status update |
+| `fleet:agent:exit` | Agent walk-out animation on completion/failure |
+| `fleet:agent:late-spawn` | Single agent arriving after initial batch |
+| `fleet:status` | Aggregate fleet status update |
+| `fleet:complete` | All agents finished |
+
+### `src/meeting/fleetOrchestrator.ts`
+
+Orchestrates plan execution across multiple agents:
 
 ```typescript
-// In main.ts or FleetDashboard.ts (when fleet starts):
-const tracker = new FleetTracker('architect');  // track Arthur's sub-agents
-tracker.startTracking();
-tracker.onUpdate((state) => {
-  updateFleetDashboardUI(state);  // new UI, doesn't touch existing dashboard
-});
+export class FleetOrchestrator {
+  async executePlan(plan: MeetingPlan, workingDir: string): Promise<void>;
+  cancel(): void;
+  getFleetState(): FleetAgentState[];
+  on(event: string, cb: Function): void;
+  off(event: string, cb: Function): void;
+}
 ```
 
 ### Risk Assessment
@@ -401,18 +340,12 @@ tracker.onUpdate((state) => {
 |---------|-----------|
 | Breaking existing terminal flow | FleetTracker is a passive observer — reads events, never writes |
 | Breaking existing event handlers | Uses `onCopilotEvent` which already works; doesn't modify server.ts handlers |
-| Breaking existing IPC | No new IPC channels in v1 — all processing happens renderer-side |
-| Breaking existing UI | FleetDashboard is a new DOM element, toggled on only during fleet mode |
+| Breaking existing IPC | No new IPC channels — all processing happens renderer-side |
+| Breaking existing UI | FleetVisualizer emits game events consumed by OfficeScene; doesn't touch existing dashboard |
 
 ### Caveat: `onCopilotEvent` Requires Viewer Attached
 
-The raw `copilot-event` passthrough in `server.ts` only fires when `activeAgentViewers.has(agentId)`. For fleet tracking to work without the terminal visible, we'd need ONE small change in `server.ts`:
-
-**Option A (minimal server.ts change):** Add fleet events to the "always send" list alongside `copilot-tool-start`, `copilot-turn-end`, etc. These already fire without a viewer.
-
-**Option B (no server.ts change):** Call `terminalAttach(agentId)` silently when fleet starts — this adds the agent to `activeAgentViewers` even without showing the terminal UI. The scrollback data is discarded but events flow.
-
-Option B is preferred for v1 — zero changes to `server.ts`.
+The raw `copilot-event` passthrough in `server.ts` only fires when `activeAgentViewers.has(agentId)`. FleetTracker handles this by silently calling `terminalAttach()` on startup and periodically re-attaching every 10 seconds as a safety net. This adds the agent to `activeAgentViewers` even without showing the terminal UI — scrollback data is discarded but events flow.
 
 ---
 

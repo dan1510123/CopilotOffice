@@ -5,8 +5,8 @@ DETAILED CODE SNIPPETS FOR SOFT RELOAD BUG
 1. SOFT RELOAD MECHANISM (Ctrl+R)
 ================================================================================
 
-File: src/input/GlobalInputListener.ts (Lines 103-110)
-────────────────────────────────────────────────────────
+File: src/input/GlobalInputListener.ts (`preReloadCleanup()` and `onKeydown()`)
+────────────────────────────────────────────────────────────────────────────────
 
     // Ctrl+R — soft reload: keep terminal server alive, only reload UI
     if ((e.ctrlKey || e.metaKey) && e.key === 'r') {
@@ -17,12 +17,12 @@ File: src/input/GlobalInputListener.ts (Lines 103-110)
       window.location.reload();
     }
 
-NOTE: preReloadCleanup() (line 17-23) removes IPC listeners but doesn't clear 
+NOTE: preReloadCleanup() removes IPC listeners but doesn't clear 
       the TerminalOverlay instance or xterm terminal.
 
 
-File: electron/main.ts (Lines 118-130)
-──────────────────────────────────────
+File: electron/main.ts (`did-start-navigation` handler)
+──────────────────────────────────────────────────────────
 
     mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace) => {
       if (isInPlace && pendingHardReload) {
@@ -45,7 +45,7 @@ KEY: When isInPlace=true and pendingHardReload=false, the terminal server is
 2. TERMINAL REATTACHMENT FLOW (THE BUG)
 ================================================================================
 
-File: src/ui/TerminalOverlay.ts (Lines 148-201 in show() method)
+File: src/ui/TerminalOverlay.ts (`show()` method — reattach path)
 ─────────────────────────────────────────────────────────────────
 
     // Create or reuse terminal
@@ -110,66 +110,71 @@ File: src/ui/TerminalOverlay.ts (Lines 148-201 in show() method)
     this.isVisible = true;
 
 PROBLEM SUMMARY:
-- Line 152: clear() wipes display but doesn't sync xterm cursor with PTY cursor
-- Line 172: terminalAttach() returns scrollback but it's never written back
-- Line 198: focus() is called while xterm state is wrong
+- `clear()` wipes display but doesn't sync xterm cursor with PTY cursor
+- `terminalAttach()` returns scrollback but it's never written back
+- `focus()` is called while xterm state is wrong
 
 WHAT SHOULD HAPPEN:
 - After clear(), xterm should be reset or scrollback should be replayed
-- terminalAttach() response has scrollback[] that should be written to terminal
+- terminalAttach() response has scrollback (raw string) that should be written to terminal
 - focus() should only happen after terminal state matches PTY state
 
 
 3. SERVER ATTACH HANDLER (Returns scrollback)
 ================================================================================
 
-File: electron/terminal/server.ts (Lines 381-386)
-──────────────────────────────────────────────────
+File: electron/terminal/server.ts (`attach` handler)
+──────────────────────────────────────────────────────
 
     case 'attach': {
-      console.log(\[TermServer] Attaching viewer for \\);
-      activeAgentViewers.add(msg.agentId);
-      const scrollback = agentScrollbackBuffers.get(msg.agentId) || [];
+      console.log(`[TermServer] Attaching viewer for ${ck}`);
+      activeAgentViewers.add(ck);
+      const chunks = agentScrollbackBuffers.get(ck) || [];
+      const rawScrollback = chunks.join('');
       send({ type: 'response', requestId: msg.requestId, result: { 
-        success: true, scrollback 
+        success: true, scrollback: rawScrollback 
       } });
       break;
     }
 
 THE SERVER CORRECTLY PROVIDES THE SCROLLBACK! But the renderer ignores it.
 
-The scrollback is built up in line 292:
+The scrollback is built up in the PTY data handler:
 
     proc.onData((data: string) => {
       appendToScrollback(agentId, data);  // ← Accumulates all PTY output
       ...
     });
 
-Where appendToScrollback() (lines 52-65):
+Where `appendToScrollback()` stores raw data as byte-counted chunks:
 
     function appendToScrollback(agentId: string, data: string): void {
       let buf = agentScrollbackBuffers.get(agentId);
       if (!buf) {
         buf = [];
         agentScrollbackBuffers.set(agentId, buf);
+        agentScrollbackBytes.set(agentId, 0);
       }
-      const lines = data.split('\n');
-      for (const line of lines) {
-        buf.push(line);
-      }
-      if (buf.length > MAX_BUFFER_LINES) {
-        buf.splice(0, buf.length - MAX_BUFFER_LINES);
+      buf.push(data);
+      const currentBytes = (agentScrollbackBytes.get(agentId) || 0) + data.length;
+      agentScrollbackBytes.set(agentId, currentBytes);
+      // Trim oldest chunks if over byte limit
+      while ((agentScrollbackBytes.get(agentId) || 0) > MAX_BUFFER_BYTES && buf.length > 1) {
+        const removed = buf.shift()!;
+        agentScrollbackBytes.set(agentId,
+          (agentScrollbackBytes.get(agentId) || 0) - removed.length);
       }
     }
 
-STORAGE: const MAX_BUFFER_LINES = 500; (line 36)
+STORAGE: const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB (byte-based, not line-based)
+Scrollback is returned as a single joined string on attach, not an array of lines.
 
 
 4. TERMINAL CREATION & INITIALIZATION
 ================================================================================
 
-File: src/ui/TerminalOverlay.ts (Lines 647-713 in createTerminal() method)
-───────────────────────────────────────────────────────────────────────────
+File: src/ui/TerminalOverlay.ts (`createTerminal()` method)
+───────────────────────────────────────────────────────────
 
     private createTerminal(): void {
       if (!this.terminalDiv) return;
@@ -228,27 +233,27 @@ KEY POINTS:
 - xterm is created fresh with new Terminal() and opened into this.terminalDiv
 - Initial cursor position is (0, 0) when opened
 - When reusing existing terminal after reload, createTerminal() is NOT called
-- Instead, the existing instance is reused (line 150 of show())
+- Instead, the existing instance is reused (in the reattach branch of `show()`)
 - This is where the mismatch occurs
 
 
 5. IPC BRIDGE & PRELOAD
 ================================================================================
 
-File: electron/terminal/preload.ts (Line 30)
-──────────────────────────────────────────
+File: electron/terminal/preload.ts (`terminalAttach` in copilotBridge)
+──────────────────────────────────────────────────────────────────────
 
     terminalAttach: (agentId: string): Promise<{ success: boolean; 
-                                                   scrollback?: string[] }> => {
+                                                   scrollback?: string }> => {
       return ipcRenderer.invoke('terminal-attach', agentId);
     },
 
-The type signature shows scrollback SHOULD be returned, but the renderer's 
+The type signature shows scrollback SHOULD be returned (as a raw string), but the renderer's 
 TerminalOverlay.ts doesn't use it.
 
 
-File: electron/terminal/ipc-relay.ts (Lines 235-237)
-────────────────────────────────────────────────────
+File: electron/terminal/ipc-relay.ts (`terminal-attach` IPC handler)
+────────────────────────────────────────────────────────────────────
 
     ipcMain.handle('terminal-attach', (_event, agentId: string) =>
       this.request({ type: 'attach', requestId: this.id(), agentId })
@@ -261,7 +266,7 @@ The request() method (lines 140-152) waits for server response.
 6. FOCUS & INPUT MANAGEMENT
 ================================================================================
 
-File: src/input/InputManager.ts (Lines 118-133 in focusTerminalXterm)
+File: src/input/InputManager.ts (`focusTerminalXterm()` method)
 ───────────────────────────────────────────────────────────────────
 
     focusTerminalXterm(terminal: any): void {
@@ -293,8 +298,8 @@ This works IF xterm's internal state is correct. If scrollback wasn't replayed,
 xterm's cursor position is wrong and input handling fails.
 
 
-File: src/ui/TerminalOverlay.ts (Lines 789-812 in focusTerminal)
-───────────────────────────────────────────────────────────────
+File: src/ui/TerminalOverlay.ts (`focusTerminal()` method)
+───────────────────────────────────────────────────────────
 
     focusTerminal(): void {
       console.log('[TerminalOverlay] focusTerminal() — delegating to InputManager');
@@ -324,7 +329,7 @@ File: src/ui/TerminalOverlay.ts (Lines 789-812 in focusTerminal)
       this.setTerminalFocusVisual(true);
     }
 
-This is called from show() line 217, AFTER terminalAttach() returns.
+This is called from `show()` after `terminalAttach()` returns.
 
 
 7. CURSOR POSITIONING AFTER REATTACH
@@ -353,8 +358,8 @@ EXAMPLE SCENARIO:
 8. DEBOUNCEDREFIT MECHANISM  
 ================================================================================
 
-File: src/ui/TerminalOverlay.ts (Lines 754-779)
-────────────────────────────────────────────────
+File: src/ui/TerminalOverlay.ts (`debouncedRefit()` method)
+────────────────────────────────────────────────────────────
 
     private debouncedRefit(): void {
       if (!this.fitAddon || !this.terminal || !this.currentAgentId) return;
@@ -386,11 +391,11 @@ File: src/ui/TerminalOverlay.ts (Lines 754-779)
 
 This does fit() + sends resize to PTY at 3 stages to catch layout settling.
 
-The comment at line 179-180 says:
+The comment in the reattach path of `show()` says:
     // Do NOT fit() here — the container may not be visible/laid out yet.
     // All sizing is deferred to the post-layout rAF block below.
 
-But focus() is still called at line 198 BEFORE debouncedRefit()!
+But focus() is still called BEFORE debouncedRefit()!
 
 
 ================================================================================
@@ -399,7 +404,7 @@ SUMMARY OF ALL AFFECTED LOCATIONS
 
 TO FIX THE BUG, CHANGES NEEDED IN:
 
-1. src/ui/TerminalOverlay.ts, show() method (lines 148-201)
+1. src/ui/TerminalOverlay.ts, `show()` method (reattach path)
    - Capture terminalAttach() response
    - Write scrollback to terminal if reattaching existing session
    - Defer focus() to after layout settles

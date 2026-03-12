@@ -42,10 +42,23 @@ and ensure the sprite key exists in BootScene's generation block.
 | NPC_LABELS | 55 | Name/description labels |
 | BADGES | 60 | Status badges, session text |
 | UI_OVERLAY | 100 | Prompts, instruction text |
+| ZOOM_BAR | 150 | Camera zoom slider bar |
 | MINI_GAMES | 200 | Pong, Basketball containers |
 | DIALOG | 1000 | Dialog box (deprecated) |
 
 `ySortDepth(y, worldHeight)` maps a y-coordinate into the sortable range for dynamic depth.
+
+## playerCustomization.ts — Player Appearance
+
+Defines player sprite color customization with persistence.
+
+- **`PlayerColors` interface** — six color regions: `hair`, `skin`, `suit`, `tie`, `pants`, `shoes` (all `number` hex values).
+- **`DEFAULT_PLAYER_COLORS`** — default palette (dark brown hair, light peach skin, navy suit, red tie, dark pants, black shoes).
+- **`COLOR_REGION_LABELS`** — human-readable labels for each region (e.g. `suit` → `'Jacket'`).
+- **`PLAYER_COLOR_PRESETS`** — per-region arrays of preset hex colors (8–10 swatches each) for the customization UI.
+- **`loadPlayerColors()`** — loads from `localStorage` key `agencyOffice:playerColors`, merges with defaults for forward compatibility.
+- **`savePlayerColors(colors)`** — persists to `localStorage`.
+- **`resetPlayerColors()`** — removes saved colors and returns defaults.
 
 ## notifications.ts — Notification Settings
 

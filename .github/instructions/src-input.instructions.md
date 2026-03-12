@@ -31,9 +31,14 @@ Public API consumed by `OfficeScene` and `TerminalOverlay`:
 - `switchToTerminal(reason, onNewSession, onToggleFullscreen?)` — disable Phaser keyboard → activate terminal shortcuts
 - `activateTerminalF10(onClose)` — install F10 close handler (independent of focus state)
 - `deactivateTerminalF10()` — remove F10 handler
-- `focusTerminalXterm(terminal)` — delayed focus with retry (100 ms + backoff, up to 3 attempts)
+- `focusTerminalXterm(terminal)` — delayed focus with retry (100 ms + backoff, up to 2 retries)
 - `blurTerminalXterm(terminal)` — return DOM focus away from xterm
-- `destroy()` — tear down all listeners
+- `setDebugInput(enabled)` — enable/disable verbose per-keydown logging in GlobalInputListener
+- `getCurrentFocus()` — returns current focus: `'game'` | `'terminal'` | `'none'`
+- `destroy()` — tear down all listeners; sets focus to `'none'`
+
+Three focus states: **`game`** (Phaser keyboard active), **`terminal`** (xterm.js active),
+and **`none`** (transient state at startup/shutdown before first `switchToGame()` call).
 
 All methods are **idempotent** — safe to call repeatedly without side effects.
 
@@ -46,8 +51,9 @@ All methods are **idempotent** — safe to call repeatedly without side effects.
 ## GlobalInputListener.ts — Document-Level Observer
 
 - Installs a single `keydown` listener in **capture phase** at startup
-- Logs every key with modifiers, current mode, and target element tag
-- Tracks current focus mode via `setMode()` for log context
+- Logs every key with modifiers, current mode, and target element tag (when debug enabled)
+- Tracks current focus mode via `setMode()` / `getMode()` for log context
+- Debug logging toggled via `setDebug()` / `getDebug()`
 - Intercepts `Ctrl+R` (soft reload) and `Ctrl+Shift+R` (hard reload with terminal cleanup)
 - Runs for the entire application lifetime; installed/uninstalled once
 

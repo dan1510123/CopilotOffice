@@ -4,6 +4,7 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
+import { GalaxianGame } from '../ui/GalaxianGame';
 import { AGENTS, AgentConfig, RESERVE_AGENTS } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
@@ -41,9 +42,10 @@ interface ExitDoor {
 }
 
 // Feature flags
-const ENABLE_PING_PONG = false;
+const ENABLE_PING_PONG = true;
 const ENABLE_DECORATIONS = false;
 const ENABLE_BASKETBALL = false;
+const ENABLE_GALAXIAN = true;
 const ENABLE_ZOOM_BAR = true;
 
 export class OfficeScene extends Phaser.Scene {
@@ -53,12 +55,16 @@ export class OfficeScene extends Phaser.Scene {
   private terminalOverlay!: TerminalOverlay;
   private pongGame!: PongGame;
   private basketballGame!: BasketballGame;
+  private galaxianGame!: GalaxianGame;
   private pingPongTable: GameTable | null = null;
   private basketballHoop: GameTable | null = null;
+  private arcadeMachine: GameTable | null = null;
   private nearPingPong: boolean = false;
   private nearBasketball: boolean = false;
+  private nearArcade: boolean = false;
   private pingPongPrompt!: Phaser.GameObjects.Text;
   private basketballPrompt!: Phaser.GameObjects.Text;
+  private arcadePrompt!: Phaser.GameObjects.Text;
   private tileSize: number = 64;
   private mapWidth: number = 20;
   private mapHeight: number = 12;
@@ -237,6 +243,9 @@ export class OfficeScene extends Phaser.Scene {
     // Create basketball game overlay
     this.basketballGame = new BasketballGame(this);
 
+    // Create galaxian game overlay
+    this.galaxianGame = new GalaxianGame(this);
+
     // Create ping pong prompt (hidden by default)
     this.pingPongPrompt = this.add.text(0, 0, '[E] Play Ping Pong', {
       font: 'bold 14px monospace',
@@ -258,6 +267,17 @@ export class OfficeScene extends Phaser.Scene {
     this.basketballPrompt.setOrigin(0.5, 1);
     this.basketballPrompt.setDepth(Depths.UI_OVERLAY);
     this.basketballPrompt.setVisible(false);
+
+    // Create arcade prompt (hidden by default)
+    this.arcadePrompt = this.add.text(0, 0, '[E] Play Galaxian', {
+      font: 'bold 14px monospace',
+      color: '#00ffff',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 4 },
+    });
+    this.arcadePrompt.setOrigin(0.5, 1);
+    this.arcadePrompt.setDepth(Depths.UI_OVERLAY);
+    this.arcadePrompt.setVisible(false);
 
     // Create exit prompt(hidden by default)
     this.exitPrompt = this.add.text(0, 0, '[E] Exit', {
@@ -914,6 +934,19 @@ export class OfficeScene extends Phaser.Scene {
     // Volleyball court (right of center) - removed
     // McDonald's nuggets stand - removed
     // Arcade machine - removed
+    
+    // Arcade machine (Galaxian) - left wall area
+    if (ENABLE_GALAXIAN) {
+      const arcadeX = 2 * this.tileSize + this.tileSize / 2;
+      const arcadeY = 3 * this.tileSize + this.tileSize / 2;
+      const arcadeSprite = addFurniture(arcadeX, arcadeY, 'arcade');
+
+      this.arcadeMachine = {
+        sprite: arcadeSprite,
+        x: arcadeX,
+        y: arcadeY,
+      };
+    }
 
     // Basketball hoop (top right area) - with collision
     if (ENABLE_BASKETBALL) {
@@ -1727,6 +1760,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.instructionText) preserveSet.add(this.instructionText);
     if (this.pingPongPrompt) preserveSet.add(this.pingPongPrompt);
     if (this.basketballPrompt) preserveSet.add(this.basketballPrompt);
+    if (this.arcadePrompt) preserveSet.add(this.arcadePrompt);
     if (this.exitPrompt) preserveSet.add(this.exitPrompt);
 
     // Destroy old physics colliders (prevent accumulation)
@@ -1770,6 +1804,7 @@ export class OfficeScene extends Phaser.Scene {
     this.exitDoors = [];
     this.pingPongTable = null;
     this.basketballHoop = null;
+    this.arcadeMachine = null;
     this.nearestNPC = null;
     this.nearestDesk = null;
     this.nearestExitDoor = null;
@@ -1914,7 +1949,7 @@ export class OfficeScene extends Phaser.Scene {
 
   update(): void {
     // Don't update if player hasn't entered, pong game, basketball game, or terminal overlay is active
-    if (!this.playerInScene || this.pongGame.getIsVisible() || this.basketballGame.getIsVisible() || !this.playerMovementEnabled) {
+    if (!this.playerInScene || this.pongGame.getIsVisible() || this.basketballGame.getIsVisible() || this.galaxianGame.getIsVisible() || !this.playerMovementEnabled) {
       return;
     }
 
@@ -1943,6 +1978,9 @@ export class OfficeScene extends Phaser.Scene {
     // Check for basketball hoop proximity
     this.updateBasketballProximity();
 
+    // Check for arcade machine proximity
+    this.updateArcadeProximity();
+
     // Check for exit door proximity
     this.updateExitDoorProximity();
 
@@ -1960,6 +1998,8 @@ export class OfficeScene extends Phaser.Scene {
         this.startPongGame();
       } else if (this.nearBasketball) {
         this.startBasketballGame();
+      } else if (this.nearArcade) {
+        this.startGalaxianGame();
       } else if (this.nearestExitDoor) {
         this.triggerExit();
       } else if (this.nearestNPC) {
@@ -2034,6 +2074,39 @@ export class OfficeScene extends Phaser.Scene {
     this.cameraDrag?.disable();
 
     this.basketballGame.show(() => {
+      this.player.enableMovement();
+      this.applyZoom(this.cameras.main.zoom);
+    });
+  }
+
+  private updateArcadeProximity(): void {
+    if (!this.arcadeMachine) {
+      this.nearArcade = false;
+      return;
+    }
+
+    const dist = Phaser.Math.Distance.Between(
+      this.player.x, this.player.y,
+      this.arcadeMachine.x, this.arcadeMachine.y
+    );
+
+    const interactionDistance = this.tileSize * 2;
+    this.nearArcade = dist < interactionDistance;
+
+    if (this.nearArcade && !this.terminalOverlay.getIsVisible()) {
+      this.arcadePrompt.setPosition(this.arcadeMachine.x, this.arcadeMachine.y - 40);
+      this.arcadePrompt.setVisible(true);
+    } else {
+      this.arcadePrompt.setVisible(false);
+    }
+  }
+
+  private startGalaxianGame(): void {
+    this.player.disableMovement();
+    this.arcadePrompt.setVisible(false);
+    this.cameraDrag?.disable();
+
+    this.galaxianGame.show(() => {
       this.player.enableMovement();
       this.applyZoom(this.cameras.main.zoom);
     });

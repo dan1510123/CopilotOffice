@@ -66,19 +66,17 @@ xterm.js terminal, so conversations are real AI interactions — not scripted di
 │                ▼                ▼                          ▼        │
 │  ┌─────────────────────────────────────────────────────────────┐  │
 │  │                    src/index.html                            │  │
-│  │  ┌────────────────────┐  ┌────────────────────────────────┐ │  │
-│  │  │   Phaser 3 Game    │  │    Legacy Canvas System        │ │  │
-│  │  │  BootScene →       │  │  officeManager, gameLoop,      │ │  │
-│  │  │  OfficeScene       │  │  renderer, officeState         │ │  │
-│  │  │  (Player, NPCs,    │  │  (multi-office, tabs,          │ │  │
-│  │  │   mini-games)      │  │   terminal panel)              │ │  │
-│  │  └────────┬───────────┘  └──────────────┬─────────────────┘ │  │
-│  │           │                             │                    │  │
-│  │           ▼                             ▼                    │  │
+│  │  ┌─────────────────────────────────────────────────────────┐ │  │
+│  │  │              Phaser 3 Game (sole renderer)              │ │  │
+│  │  │  BootScene → OfficeScene (+MeetingScene)                │ │  │
+│  │  │  Player, NPCs, mini-games, officeManager (state only)  │ │  │
+│  │  └────────────────────────┬────────────────────────────────┘ │  │
+│  │                           │                                  │  │
+│  │                           ▼                                  │  │
 │  │  ┌────────────────────────────────────────────────────────┐  │  │
-│  │  │              UI Overlays (DOM-based)                    │  │  │
-│  │  │  TerminalOverlay (xterm.js) | PongGame | ArcadeGame    │  │  │
-│  │  │  VolleyballGame             | DialogBox (unused)       │  │  │
+│  │  │              UI Overlays (DOM + Phaser)                  │  │  │
+│  │  │  TerminalOverlay (xterm.js/DOM) | PongGame (Phaser)    │  │  │
+│  │  │  BasketballGame (Phaser) | FleetDashboard (DOM)        │  │  │
 │  │  └────────────────────────────────────────────────────────┘  │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
@@ -87,65 +85,78 @@ xterm.js terminal, so conversations are real AI interactions — not scripted di
 ### Directory Structure
 
 ```
-CopilotOffice/
+AgencyOffice/
 ├── electron/                    # Node.js main process
-│   ├── main.ts                  # Window, IPC handlers, PTY management
-│   ├── preload.ts               # Context bridge (copilotBridge API)
-│   ├── cli-bridge.ts            # CLI routing (currently unused)
-│   └── events-watcher.ts        # Monitors copilot events.jsonl
+│   ├── main.ts                  # Window, IPC handlers, hot reload
+│   └── terminal/                # Terminal server subsystem
+│       ├── server.ts            # PTY owner (forked child process)
+│       ├── ipc-relay.ts         # IPC bridge (renderer ↔ main ↔ server)
+│       ├── preload.ts           # Context bridge (copilotBridge API)
+│       ├── protocol.ts          # IPC type definitions
+│       └── events-watcher.ts    # Monitors copilot events.jsonl
 ├── src/                         # Renderer process (browser)
 │   ├── index.html               # Single-page shell
-│   ├── main.ts                  # Entry point: legacy canvas system + DOM setup
+│   ├── main.ts                  # Entry point: DOM layout, Phaser init, IPC wiring
 │   ├── config/
-│   │   └── agents.ts            # NPC agent definitions
+│   │   ├── agents.ts            # NPC agent definitions
+│   │   ├── depths.ts            # Phaser depth layer constants
+│   │   ├── notifications.ts     # Notification event types & settings
+│   │   ├── meetingPrompt.ts     # Meeting coordinator prompt builder
+│   │   └── playerCustomization.ts # Player color customization config
 │   ├── scenes/
 │   │   ├── BootScene.ts         # Procedural sprite generation
-│   │   └── OfficeScene.ts       # Main game scene (Phaser)
+│   │   ├── OfficeScene.ts       # Main game scene (Phaser)
+│   │   └── MeetingScene.ts      # Meeting room scene with Arthur
 │   ├── entities/
 │   │   ├── Player.ts            # Player movement & controls
 │   │   └── NPC.ts               # Agent NPCs with indicators
+│   ├── sprites/
+│   │   ├── SpriteGenerator.ts   # Procedural sprite sheet generation
+│   │   └── DirectionalSprite.ts # 4-direction animation utilities
+│   ├── input/
+│   │   ├── InputManager.ts      # Central keyboard focus coordinator
+│   │   ├── GameInputListener.ts # Phaser keyboard wrapper
+│   │   ├── TerminalInputListener.ts # Terminal shortcut interceptor
+│   │   └── GlobalInputListener.ts   # Document-level key observer
+│   ├── layouts/                 # Office layout system
+│   │   ├── types.ts             # OfficeLayout type definitions
+│   │   ├── index.ts             # Layout registry / exports
+│   │   ├── default/             # Default office layout
+│   │   └── fleet/               # Fleet V-team layout
 │   ├── ui/
 │   │   ├── TerminalOverlay.ts   # xterm.js terminal modal
 │   │   ├── PongGame.ts          # Ping pong mini-game
-│   │   ├── VolleyballGame.ts    # Volleyball mini-game (disabled)
-│   │   ├── ArcadeGame.ts        # Asteroids mini-game
+│   │   ├── BasketballGame.ts    # Basketball mini-game
+│   │   ├── FleetDashboard.ts    # Fleet execution dashboard
+│   │   ├── CameraDragController.ts # Camera drag controller
+│   │   ├── ToastNotification.ts # Toast popup renderer
+│   │   ├── NotificationService.ts  # Central notification dispatch
+│   │   ├── NotificationSettingsPanel.ts # Per-event toggle UI
 │   │   └── DialogBox.ts         # Legacy dialog system (unused)
-│   └── office/                  # Legacy canvas-based office system
-│       ├── officeManager.ts     # Multi-office management
-│       ├── constants.ts         # Tile sizes, zoom, animation params
-│       ├── types.ts             # TileType, Character, Seat, Layout
-│       ├── engine/
-│       │   ├── gameLoop.ts      # RAF loop with delta capping
-│       │   ├── officeState.ts   # Character spawn, pathfinding, state
-│       │   └── renderer.ts      # Canvas tile/furniture/character renderer
-│       ├── layout/
-│       │   ├── officeLayouts.ts # Default/small/open-plan layouts
-│       │   ├── furnitureCatalog.ts  # Furniture sprite definitions
-│       │   └── themes.ts        # Color theme presets
-│       └── sprites/
-│           ├── spriteCache.ts   # Sprite caching
-│           └── spriteData.ts    # 16×16 pixel sprite definitions
+│   ├── office/                  # Multi-office state management (no rendering)
+│   │   └── officeManager.ts     # Office CRUD, agent status, persistence
+│   └── meeting/                 # Meeting Mode types + plan parsing
+│       ├── types.ts             # MeetingPlan, TaskAssignment, FleetStatus
+│       ├── planParser.ts        # Terminal output → structured plan
+│       ├── planApproval.ts      # Plan approval overlay
+│       ├── fleetOrchestrator.ts # Fleet parallel agent execution
+│       ├── fleetTracker.ts      # Fleet agent status tracking
+│       └── fleetVisualizer.ts   # Fleet progress visualization
 ├── dist/                        # Build output (gitignored)
 ├── .data/
 │   ├── copilot-offices.json         # Persistent office configs
-│   └── copilot-office-sessions.json # Persistent session GUIDs
+│   └── copilot-office-sessions.json # Persistent session data
 ├── package.json
 └── tsconfig.json
 ```
 
-### Two Parallel Systems
+### Rendering Architecture
 
-The codebase contains **two rendering systems** that coexist:
-
-1. **Legacy canvas system** (`src/office/`, `src/main.ts`) — The **currently active** system.
-   Canvas-based office visualization with multi-office tabs, character pathfinding, a split
-   terminal panel, and xterm.js integration. This is what actually runs when you launch the app.
-
-2. **Phaser 3 system** (`src/scenes/`, `src/entities/`) — An RPG-style game with player
-   movement, NPC interactions, mini-games, and a terminal overlay. **Not currently functional**
-   because Phaser is not installed as a dependency. The code exists but cannot be bundled.
-
-Both systems share the same `agents.ts` configuration and `copilotBridge` IPC layer.
+The game uses **Phaser 3 as the sole renderer**. `src/main.ts` creates the DOM layout
+(office tabs, split panels, status bar) and initializes a `Phaser.Game` instance that
+runs through `BootScene` → `OfficeScene` (+ `MeetingScene`). The `src/office/officeManager.ts`
+module is a **pure state manager** (office CRUD, agent status tracking, persistence) — it
+never renders anything. All rendering is handled by Phaser scenes and DOM overlays.
 
 ---
 
@@ -216,21 +227,14 @@ handles the actual compilation (it ignores `tsconfig.json` output settings).
 | Package | Version | Purpose |
 |---------|---------|---------|
 | electron | ^40.6.1 | Desktop window + Node.js integration |
+| phaser | ^3.90.0 | 2D game engine (sole renderer) |
 | node-pty | ^1.1.0 | Native PTY for shell processes |
 | xterm | ^5.3.0 | Terminal emulator (browser) |
 | xterm-addon-fit | ^0.8.0 | Auto-size terminal to container |
-| ansi-to-html | ^0.7.2 | ANSI escape → HTML (currently unused) |
+| ansi-to-html | ^0.7.2 | ANSI escape → HTML |
 | esbuild | ^0.27.3 | Bundler |
 | concurrently | ^9.2.1 | Parallel script runner for dev mode |
 | typescript | ^5.9.3 | Type checking |
-
-> **Note**: Phaser 3 is imported (`import Phaser from 'phaser'`) in 9 source files under
-> `src/scenes/`, `src/entities/`, and `src/ui/`, but **phaser is not listed in
-> `package.json` and is not installed in `node_modules`**. The Phaser scene files
-> (`BootScene.ts`, `OfficeScene.ts`, `Player.ts`, `NPC.ts`, mini-games) will fail to
-> bundle. The actively running system is the legacy canvas-based renderer in `src/main.ts`
-> + `src/office/`. The Phaser code appears to be a parallel implementation that was started
-> but is not currently connected to the build.
 
 ---
 
@@ -452,6 +456,7 @@ specifies Arcade physics, transparent background, and two scenes: `BootScene` �
 | `npc_generalist` | 32×32 | Blue-robed character (#4488cc) |
 | `npc_architect` | 32×32 | Dark blue-black character (#1a1a2e) |
 | `npc_admin` | 32×32 | Hot pink character (#ff69b4), recursive symbol |
+| `npc_debugger` | 32×32 | Green character (#22aa44), debugger |
 | `npc_azure` | 32×32 | Cloud Wizard — blue robes (#0078d4), staff |
 | `npc_validator` | 32×32 | Knight — green armor (#008833), helmet, shield |
 | `npc_deployer` | 32×32 | Rocket pilot — orange suit (#ff6600), goggles |
@@ -486,18 +491,17 @@ After all textures are generated, transitions to `OfficeScene`.
 **Feature Flags** (top of file):
 
 ```typescript
-const ENABLE_PING_PONG    = true;
-const ENABLE_VOLLEYBALL   = false;
-const ENABLE_DECORATIONS  = true;
-const ENABLE_MCDONALDS    = false;
-const ENABLE_ARCADE       = true;
+const ENABLE_PING_PONG    = false;
+const ENABLE_DECORATIONS  = false;
+const ENABLE_BASKETBALL   = false;
+const ENABLE_ZOOM_BAR     = true;
 ```
 
 **World Setup**:
-- Map: **27 tiles wide × 16 tiles tall**
-- Tile size: `Math.max(48, Math.floor(Math.min(screenWidth/27, screenHeight/16)))` — default **64px**
+- Map: **20 tiles wide × 12 tiles tall**
+- Tile size: `Math.max(48, Math.floor(Math.min(screenWidth/20, screenHeight/12)))` — default **64px**
 - Sprite scale: `tileSize / 32` (≈ 2.0 for 64px tiles)
-- Physics bounds: `(tileSize, 2×tileSize, 25×tileSize, 14×tileSize)`
+- Physics bounds: computed from tile size and map dimensions (inset from edges)
 - Camera: centered on room, no follow (room fits screen)
 
 **create() sequence**:
@@ -574,7 +578,7 @@ update()
 | Base speed | 300 px/s |
 | Sprint multiplier | 2× (600 px/s) |
 | Sprint key | Shift |
-| Hitbox | 24×24px, offset (4, 8) |
+| Hitbox | 16×13px, offset (8, 13) |
 | Diagonal normalization | Yes — consistent speed at all angles |
 
 **Controls**:
@@ -607,7 +611,7 @@ body.setVelocity(vx × speed, vy × speed)
 | Element | Details |
 |---------|---------|
 | **Sprite** | Agent-specific texture from BootScene, scaled to `tileSize/32` |
-| **Hitbox** | 28×28px, offset (2, 4) |
+| **Hitbox** | 8×8px, offset (12, 13) |
 | **Name label** | Bold monospace, white on `#000000cc` background, positioned -28×scale above NPC. Supports multi-line (splits on `" ("`) |
 | **Indicator** | Yellow "E" speech bubble, positioned -48×scale above. Pulsing animation: 500ms duration, 12px Y range, yoyo loop. Hidden by default |
 | **Session badge** | Green circle: `#00cc44` fill, `#00ff66` stroke. Positioned 16×scale right, -24×scale above. Radius: 8×scale. Shown when agent has active session |
@@ -844,9 +848,10 @@ interface AgentConfig {
 
 | ID | Name | Color | Position | Description | Working Dir |
 |----|------|-------|----------|-------------|-------------|
-| `generalist` | Gene | 0x4488cc (blue) | (3, 7) | General-purpose assistant | *(default)* |
-| `architect` | Arthur | 0x1a1a2e (dark blue-black) | (3, 13) | Orchestrates plans & spins up agents | *(default)* |
-| `admin` | Alice | 0xff69b4 (hot pink) | (20, 13) | Edits game UI code | `src` |
+| `generalist` | Gene | 0x4488cc (blue) | (4, 3) | General-purpose assistant | *(default)* |
+| `architect` | Arthur | 0x1a1a2e (dark blue-black) | (2, 9) | Orchestrates plans & spins up agents | *(default)* |
+| `debugger` | Dan | 0x22aa44 (green) | (13, 3) | Debugger — investigates & fixes issues | *(default)* |
+| `admin` | Alice | 0xff69b4 (hot pink) | (17, 9) | Edits game UI code | `.` |
 
 All agents currently use the `general` skill. The `skill` field exists for future routing
 through `cli-bridge.ts` but is unused since all agents run `copilot --resume {sessionId}`.
@@ -857,6 +862,25 @@ through `cli-bridge.ts` but is unused since all agents run `copilot --resume {se
 2. Ensure unique `id`, `position` (no overlaps), and `color`
 3. Add sprite generation in `BootScene.ts` using the new texture key
 4. Rebuild — the NPC will appear automatically at the configured grid position
+
+### Depth Constants (`src/config/depths.ts`)
+
+| Constant | Value | Used for |
+|----------|-------|----------|
+| BACKGROUND | -10 | Floor tiles, background fill |
+| FLOOR_DETAIL | 0 | Welcome mat, floor decorations |
+| WALLS | 1 | Wall tiles, windows, door |
+| NPC_EFFECTS | 9 | Highlight rings/glow (just below sortable) |
+| SORTABLE_BASE | 10 | Start of y-sorted depth range |
+| SORTABLE_RANGE | 40 | Range for y-sorting (10–50) |
+| NPC_LABELS | 55 | Name/description labels |
+| BADGES | 60 | Status badges, session text |
+| UI_OVERLAY | 100 | Prompts, instruction text |
+| ZOOM_BAR | 150 | Camera zoom bar control |
+| MINI_GAMES | 200 | Pong, Basketball containers |
+| DIALOG | 1000 | Dialog box (deprecated) |
+
+`ySortDepth(y, worldHeight)` maps a y-coordinate into the sortable range (10–50) for dynamic depth.
 
 ---
 
@@ -878,11 +902,10 @@ electron .
   │   ├─ Preload injects window.copilotBridge
   │   ├─ Load dist/game.bundle.js
   │   │
-  │   ├─ Legacy canvas system initializes (main.ts)
+  │   ├─ main.ts initializes
+  │   │   ├─ Create DOM: office tabs + left panel (Phaser) + right panel (dashboard/terminal)
   │   │   ├─ officeManager.ensureDefaultOffice()
-  │   │   ├─ Create DOM: tabs bar + office panel + terminal panel
-  │   │   ├─ Initialize xterm terminals per agent
-  │   │   └─ Start canvas game loop (RAF)
+  │   │   └─ Wire IPC event listeners (copilotBridge)
   │   │
   │   └─ Phaser game initializes
   │       ├─ BootScene.preload()
@@ -994,10 +1017,10 @@ electron .
 - Saved after: new session created, session ID parsed from PTY output
 - Enables `copilot --resume {sessionId}` across app restarts
 
-**Legacy: `localStorage`** (via officeManager):
-- Multi-office configurations (names, layouts, agent assignments)
-- Office theme preferences
-- Used only by the legacy canvas system
+**`localStorage`** (renderer):
+- Terminal full-width preference (`agencyOffice:terminalFullWidth`)
+- Notification settings (`copilot-notification-settings`)
+- Multi-office configurations (via officeManager persistence)
 
 ### Runtime State (Main Process)
 
@@ -1026,18 +1049,6 @@ electron .
 | `NPC` | `nearPlayer`, `hasActiveSession` | Interaction state |
 | `TerminalOverlay` | `isVisible`, `currentAgentId`, `sessionId` | Terminal state |
 
-### Runtime State (Renderer — Legacy Canvas)
-
-| Location | State | Details |
-|----------|-------|---------|
-| `main.ts` | `agentTerminals` | `Map<string, AgentTerminal>` — xterm instances per agent |
-| `main.ts` | `activeTerminalAgentId` | Currently shown terminal |
-| `main.ts` | `agentPreloadStatus` | `Map<string, 'preloading' \| 'ready' \| 'failed'>` |
-| `main.ts` | `zoom`, `panX`, `panY` | Canvas viewport |
-| `main.ts` | `selectedAgentId`, `interactingWithAgent`, `nearbyAgentId` | Interaction state |
-| `officeManager` | Office configs, current office, agent assignments | Multi-office state |
-| `officeState` | Characters, furniture, tiles | Canvas rendering state |
-
 ---
 
 ## 10. Resource Management
@@ -1059,7 +1070,6 @@ electron .
 | Volleyball update | VolleyballGame.ts | Per frame | While visible | `hide()` removes listener |
 | Arcade update | ArcadeGame.ts | Per frame | While visible | `hide()` removes listener |
 | esbuild watcher | main.ts | Continuous | Entire app lifetime | Killed on quit |
-| RAF game loop | officeState/gameLoop | Per frame | Always | Never stopped |
 
 #### OS Processes
 
@@ -1155,18 +1165,6 @@ Hidden terminal overlay containers stay in the DOM. With only 3 agents this is t
 it doesn't scale.
 
 ### Architectural Coupling
-
-**🔴 Two Parallel Rendering Systems**
-
-`src/main.ts` runs a legacy canvas-based office system (officeManager, gameLoop, renderer)
-alongside the Phaser game. Both systems:
-- Import and use `AGENTS` configuration
-- Create their own terminal instances (xterm in main.ts, TerminalOverlay in Phaser)
-- Manage their own interaction state
-- Render to the same page
-
-This duplication creates confusion about which system is "primary" and doubles the DOM/memory
-footprint for terminals.
 
 **🟡 Tight Coupling Between OfficeScene and Overlays**
 

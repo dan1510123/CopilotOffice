@@ -62,7 +62,7 @@
 | **Plan Approval UI** | ✅ Phase 1 | Modal showing tasks + agent assignments; approve, revise, or cancel |
 | **Exit Animation** | ✅ Phase 1 | Player & Arthur walk to doors, fade to black, return to office |
 | **Agent Walk-In** | ✅ Phase 1 | Assigned agents animate walking from entrance to their desks |
-| **Fleet Orchestration** | ⏳ Phase 2 | Parallel agent spawning to execute approved plan tasks |
+| **Fleet Orchestration** | ✅ Phase 2 | Parallel agent spawning via fleetOrchestrator, fleetTracker, fleetVisualizer |
 | **Pre-seeded Prompts** | 📋 Planned | Server-side prompt injection on terminal start |
 | **Git Worktrees** | 📋 Planned | Isolated working directories per agent |
 | **Meeting Re-entry** | 📋 Planned | Return to meeting room while fleet is running |
@@ -95,6 +95,10 @@
 | **Sprite Cards** | ✅ Shipped | Agent portrait + name + description in terminal footer |
 | **Context Prompts** | ✅ Shipped | Dynamic instruction text based on proximity ("Press E to talk to Gene") |
 | **Debug Mode** | ✅ Shipped | 🐛 button toggles physics body visualization |
+| **Layout System** | ✅ Shipped | Pluggable layouts (`src/layouts/`) with default and fleet variants (dashboard + click handler) |
+| **Camera Drag** | ✅ Shipped | CameraDragController enables click-to-drag camera panning with click/drag discrimination |
+| **Responsive Tiles** | ✅ Shipped | Tile size: `max(48, floor(min(screenW/20, screenH/12)))` scales to screen |
+| **Player Customization** | 🔧 Partial | Config module (`playerCustomization.ts`) with color presets; UI panel planned |
 
 ## ⌨️ Input System
 
@@ -110,7 +114,7 @@
 |---------|--------|-------------|
 | **Hot Reload** | ✅ Shipped | `Ctrl+R` soft reload (keeps sessions), `Ctrl+Shift+R` hard reload |
 | **Watch Mode** | ✅ Shipped | `npm run dev` with concurrent esbuild watchers |
-| **Feature Flags** | ✅ Shipped | 5 boolean toggles at top of source files |
+| **Feature Flags** | ✅ Shipped | 4 boolean toggles at top of OfficeScene.ts (PING_PONG, DECORATIONS, BASKETBALL, ZOOM_BAR) |
 | **Debug Logging** | ✅ Shipped | Namespaced console logs across all subsystems |
 
 ---
@@ -121,7 +125,7 @@
 - **2** mini-games (behind feature flags)
 - **3** Phaser scenes (Boot, Office, Meeting)
 - **7** notification event types with per-type configuration
-- **5** feature flags
+- **4** feature flags (ENABLE_PING_PONG, ENABLE_DECORATIONS, ENABLE_BASKETBALL, ENABLE_ZOOM_BAR)
 - **20×12** tile office grid
 - **0** external image assets (100% procedural sprites)
 - **3-tier** terminal architecture (xterm.js → Electron IPC → node-pty)
@@ -130,9 +134,9 @@
 
 ## 🚧 Planned / In Progress
 
-1. **Fleet Orchestration (Phase 2)** — After approving a meeting plan, agents execute tasks in parallel
+1. **Fleet Refinement** — Fleet orchestrator, tracker, and visualizer are built; refining parallel execution and completion detection
 2. **Pre-seeded Prompts** — Inject task context into agent terminals at spawn time
 3. **Git Worktrees** — Each agent works in an isolated branch/directory
 4. **Meeting Re-entry** — Jump back into the meeting room while agents are working
-5. **Agent Completion Detection** — Reliably detect when an agent finishes its task
+5. **Player Customizer UI** — SpriteCustomizerPanel for in-game character color customization (config exists)
 6. **Decorative Furniture** — 18+ sprites already generated, behind feature flag

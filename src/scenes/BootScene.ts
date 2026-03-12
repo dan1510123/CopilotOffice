@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { generatePlayerSpritesheet, generateHeroSpritesheet } from '../sprites/SpriteGenerator';
+import { loadPlayerColors } from '../config/playerCustomization';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -43,7 +44,7 @@ export class BootScene extends Phaser.Scene {
 
   private generatePlaceholderSprites(): void {
     // ===== CHARACTER SPRITESHEETS (4 directions × 3 walk frames) =====
-    generatePlayerSpritesheet(this);
+    generatePlayerSpritesheet(this, loadPlayerColors());
 
     // ===== AGENT SPRITES (8-bit heroes) =====
     

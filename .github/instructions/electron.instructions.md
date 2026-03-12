@@ -37,12 +37,22 @@ Runs as a **forked child process** (not in the main Electron process). Owns all 
 
 Defines `MainToServer` and `ServerToMain` discriminated union types for all IPC messages:
 
-- **MainToServer**: `start`, `write`, `resize`, `kill`, `attach`, `detach`, `exists`, `get-session-id`, `pop-out`, `shutdown`, `reset-all-sessions`, `reset-session`, `get-session-history`, `clear-session-history`, `list-active`, `query-agent-statuses`, `set-session-meta`, `get-session-meta`, `get-all-session-meta`.
+- **MainToServer**: `start`, `write`, `resize`, `kill`, `attach`, `detach`, `exists`, `get-session-id`, `pop-out`, `shutdown`, `reset-all-sessions`, `reset-session`, `get-session-history`, `clear-session-history`, `list-active`, `query-agent-statuses`, `set-session-meta`, `get-session-meta`, `get-all-session-meta`, `create-office-session`, `delete-office-session`, `transfer-session`.
 - **ServerToMain**: `ready`, `response`, `terminal-data`, `terminal-exit`, `copilot-event`, `copilot-tool-start`, `copilot-tool-complete`, `copilot-turn-start`, `copilot-turn-end`, `copilot-user-message`, `terminal-preload-status`, `session-meta-updated`.
 
 ## terminal/preload.ts — Context Bridge
 
 Exposes `window.copilotBridge` to the renderer via `contextBridge.exposeInMainWorld()`. This is the **only** way the renderer communicates with main/server. Wraps all `ipcRenderer.invoke()` and `ipcRenderer.on()` calls. Also declares the global `Window.copilotBridge` TypeScript type.
+
+Key method groups:
+- **Terminal management**: `terminalStart`, `terminalWrite`, `terminalResize`, `terminalKill`, `terminalExists`, `terminalAttach`, `terminalDetach`, `terminalPopOut`
+- **Session persistence**: `getSessionId`, `resetAllSessions`, `resetSession`, `getSessionHistory`, `clearSessionHistory`, `listActiveTerminals`, `queryAgentStatuses`
+- **Session metadata**: `setSessionMeta`, `getSessionMeta`, `getAllSessionMeta`
+- **Office session files**: `createOfficeSession`, `deleteOfficeSession`, `transferSession`
+- **Office persistence**: `saveOffices`, `loadOffices`
+- **Event listeners**: `onTerminalData`, `onTerminalExit`, `onTerminalPreloadStatus`, `onCopilotEvent`, `onCopilotToolStart`, `onCopilotToolComplete`, `onCopilotTurnEnd`, `onCopilotTurnStart`, `onCopilotUserMessage`, `onSessionMetaUpdated`
+- **Listener cleanup**: `removeTerminalListeners`, `removeCopilotListeners`
+- **System**: `requestHardReload`, `showNativeNotification`
 
 ## terminal/ipc-relay.ts — IPC Bridge
 

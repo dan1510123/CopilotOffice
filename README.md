@@ -1,28 +1,35 @@
-# Copilot Office 🏢
+# Agency Office 🏢
 
-A 2D pixel-art RPG-style game where you walk around a virtual office and interact with AI agents. Each agent runs as a real Copilot CLI session with full coding capabilities.
-
-![Screenshot placeholder]
+A 2D pixel-art RPG-style game where you walk around a virtual office and interact with AI agents. Each NPC runs a real Copilot CLI session with full coding capabilities — plan tasks, debug code, and orchestrate multi-agent workflows from inside a game.
 
 ## Features
 
-- **Pixel-art office environment** with procedurally generated sprites - no external image assets
-- **3 unique NPC agents**, each with specialized capabilities:
-  - **Gene** (Generalist) - General-purpose assistant for coding, debugging, and research
-  - **Arthur** (Architect) - Orchestrates plans and spins up agents for complex tasks
-  - **Alice** (Admin) - Has direct access to edit this game's UI code
-- **Real terminal integration** via xterm.js - agents run actual Copilot CLI sessions
-- **Mini-games** - Pong, Volleyball, and Arcade games for breaks
+- **Pixel-art office environment** — all sprites procedurally generated in code, no external image assets
+- **4 active NPC agents**, each with specialized capabilities:
+  - **Gene** (Generalist) — general-purpose coding, debugging, and research
+  - **Arthur** (Architect) — orchestrates plans and spins up agents for complex tasks
+  - **Dan** (Debugger) — bug investigation and root cause analysis
+  - **Alice** (Admin) — has direct access to edit this game's UI code (`workingDir: '.'`)
+- **6 reserve agent slots** — Azure, Val, Rex, Doc, Scout, and Penny have pre-generated sprites ready to activate
+- **Real terminal integration** via xterm.js — agents run actual Copilot CLI sessions through node-pty
+- **Multi-office management** — switch between projects with independent agent state per office
+- **Meeting Mode** — meet with Arthur in a private meeting room to plan and decompose complex tasks into structured subtasks
+- **Fleet execution** — parallel agent spawning for approved task plans
+- **Real-time status badges** — agent states (thinking, waiting, ready, slacking) with animated indicators
+- **Toast & OS notifications** — configurable per-event notifications for agent activity
+- **Session persistence** — terminal sessions and history survive restarts
+- **Player customization** — customizable character colors
+- **Mini-games** — Pong and Basketball (behind feature flags) for breaks
 - **Hot reload** development mode with file watching
 
 ## Tech Stack
 
-- **Phaser 3** - 2D game framework (browser-based)
-- **Electron** - Desktop app with Node.js integration
-- **TypeScript** - Type-safe development
-- **esbuild** - Fast bundling for game and Electron code
-- **xterm.js** - Terminal emulator for agent conversations
-- **node-pty** - Pseudo-terminal for running CLI processes
+- **Phaser 3** — 2D game framework (sole renderer)
+- **Electron 40+** — desktop app with Node.js integration
+- **TypeScript** — strict mode throughout
+- **esbuild** — fast bundling for game and Electron code
+- **xterm.js** — terminal emulator for agent conversations
+- **node-pty** — pseudo-terminal for running CLI processes
 
 ## Getting Started
 
@@ -34,7 +41,7 @@ A 2D pixel-art RPG-style game where you walk around a virtual office and interac
 ### Installation
 
 ```bash
-cd CopilotOffice
+cd AgencyOffice
 npm install
 ```
 
@@ -52,41 +59,80 @@ npm run dev
 
 | Key | Action |
 |-----|--------|
-| `WASD` or `Arrow Keys` | Move around the office |
+| `WASD` / `Arrow Keys` | Move around the office |
 | `Shift` | Sprint (2x speed) |
-| `Space` | Interact with nearby agent or object |
-| `Enter` | Send message in terminal |
+| `E` | Interact with nearby agent or object |
+| `F10` | Close terminal |
 | `Escape` | Close terminal or mini-game |
+| `Ctrl+Shift+N` | New terminal session |
 
 ## Project Structure
 
 ```
-CopilotOffice/
-├── electron/               # Node.js main process
-│   ├── main.ts             # Electron window, IPC handlers
-│   ├── preload.ts          # Context bridge (exposes APIs to renderer)
-│   ├── cli-bridge.ts       # CLI integration
-│   └── events-watcher.ts   # File watcher for hot reload
-├── src/
-│   ├── main.ts             # Phaser game entry, config
-│   ├── index.html          # HTML host page
-│   ├── scenes/
-│   │   ├── BootScene.ts    # Procedural sprite generation
-│   │   └── OfficeScene.ts  # Main game scene (layout, NPCs, interactions)
-│   ├── ui/
-│   │   ├── TerminalOverlay.ts  # xterm.js terminal for agent chat
-│   │   ├── DialogBox.ts        # Simple dialog interface
-│   │   ├── PongGame.ts         # Pong mini-game
-│   │   ├── VolleyballGame.ts   # Volleyball mini-game
-│   │   └── ArcadeGame.ts       # Arcade mini-game
-│   └── config/
-│       └── agents.ts       # NPC definitions (skills, positions, colors)
-└── dist/                   # Build output (gitignored)
+AgencyOffice/
+├── electron/                    # Electron main process
+│   ├── main.ts                  # Window, IPC handlers, hot reload
+│   ├── cli-bridge.ts            # Mock/placeholder (not used at runtime)
+│   └── terminal/                # Terminal server subsystem
+│       ├── server.ts            # PTY owner (forked child process)
+│       ├── ipc-relay.ts         # IPC bridge (renderer ↔ main ↔ server)
+│       ├── preload.ts           # Context bridge (window.copilotBridge)
+│       ├── protocol.ts          # IPC message type definitions
+│       └── events-watcher.ts    # Copilot CLI event file parser
+├── src/                         # Renderer process (Phaser + DOM)
+│   ├── main.ts                  # Entry point — DOM layout, Phaser init, IPC wiring
+│   ├── index.html               # HTML host page
+│   ├── scenes/                  # Phaser scenes
+│   │   ├── BootScene.ts         # Procedural sprite generation
+│   │   ├── OfficeScene.ts       # Main game scene (layout, NPCs, interactions)
+│   │   └── MeetingScene.ts      # Meeting room with Arthur for planning
+│   ├── entities/                # Game entities
+│   │   ├── Player.ts            # Player character with movement
+│   │   └── NPC.ts               # NPC agents with status badges
+│   ├── sprites/                 # Procedural sprite generation
+│   │   ├── SpriteGenerator.ts   # Sprite sheet generation
+│   │   └── DirectionalSprite.ts # 4-direction animation utilities
+│   ├── ui/                      # UI overlays
+│   │   ├── TerminalOverlay.ts   # xterm.js terminal for agent sessions
+│   │   ├── FleetDashboard.ts    # Fleet execution dashboard
+│   │   ├── PongGame.ts          # Pong mini-game
+│   │   ├── BasketballGame.ts    # Basketball mini-game
+│   │   ├── ToastNotification.ts # Toast notification popups
+│   │   ├── NotificationService.ts
+│   │   ├── NotificationSettingsPanel.ts
+│   │   ├── CameraDragController.ts
+│   │   └── DialogBox.ts         # Legacy (deprecated)
+│   ├── input/                   # Keyboard focus management
+│   │   ├── InputManager.ts      # Central coordinator
+│   │   ├── GameInputListener.ts
+│   │   ├── GlobalInputListener.ts
+│   │   └── TerminalInputListener.ts
+│   ├── office/                  # Multi-office state management
+│   │   └── officeManager.ts     # Office CRUD, agent status tracking
+│   ├── meeting/                 # Meeting mode & fleet orchestration
+│   │   ├── types.ts             # MeetingPlan, TaskAssignment, FleetStatus
+│   │   ├── planParser.ts        # Terminal output → structured plan
+│   │   ├── planApproval.ts      # Plan review overlay
+│   │   ├── fleetOrchestrator.ts # Parallel agent spawning
+│   │   ├── fleetTracker.ts      # Fleet state machine
+│   │   └── fleetVisualizer.ts   # Fleet NPC visualization
+│   ├── layouts/                 # Layout system
+│   │   ├── types.ts             # DashboardRenderer, LayoutDefinition
+│   │   ├── index.ts             # Layout registry
+│   │   ├── default/             # Default office layout
+│   │   └── fleet/               # Fleet v-team layout
+│   └── config/                  # Static configuration
+│       ├── agents.ts            # Agent definitions & fleet config
+│       ├── depths.ts            # Phaser depth layer constants
+│       ├── notifications.ts     # Notification event settings
+│       ├── meetingPrompt.ts     # Meeting coordinator prompt
+│       └── playerCustomization.ts # Player color customization
+└── dist/                        # Build output
 ```
 
 ## Adding New Agents
 
-Edit `src/config/agents.ts` to add new NPCs:
+Edit `src/config/agents.ts` to add new NPCs. Six reserve agent slots (Azure, Val, Rex, Doc, Scout, Penny) already have pre-generated sprites — activate one by adding its config to the `AGENTS` array:
 
 ```typescript
 {
@@ -102,7 +148,7 @@ Edit `src/config/agents.ts` to add new NPCs:
 }
 ```
 
-Sprites are auto-generated based on the color - no image assets needed.
+Sprites are auto-generated based on the color — no image assets needed.
 
 ## Development
 

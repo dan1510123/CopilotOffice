@@ -4,7 +4,7 @@ Documents the full lifecycle of agent terminal sessions — how they start, pers
 
 ## Session Storage
 
-**File:** `.data/copilot-office-sessions.json` (`.data/` folder)
+**File:** `.data/{officeId}.sessions.json` (per-office, in the `.data/` folder)
 
 ```json
 {
@@ -21,6 +21,7 @@ Documents the full lifecycle of agent terminal sessions — how they start, pers
 
 - `current` — one active session UUID per agent
 - `history` — archived UUIDs from previous sessions (viewable in Session History popover)
+- Each office has its own session file (e.g., `.data/office-0.sessions.json`)
 - Loaded on terminal server startup (`server.ts` → `loadSessionIds()`)
 - Saved after every mutation (`saveSessionIds()`)
 
@@ -150,11 +151,11 @@ SHUTDOWN:
   → sends 'shutdown' to server
   → server: killAllPtyProcesses() + process.exit(0)
   → All PTYs die, all watchers stop
-  → .data/copilot-office-sessions.json is NOT modified (current UUIDs preserved)
+  → .data/{officeId}.sessions.json is NOT modified (current UUIDs preserved)
 
 STARTUP:
   New server spawned
-  → loadSessionIds() reads .data/copilot-office-sessions.json
+  → loadSessionIds() reads .data/{officeId}.sessions.json
   → agentSessionIds restored (e.g. generalist → "uuid-from-before-restart")
   → No PTYs running yet
 
@@ -168,7 +169,7 @@ STARTUP:
   → Previous conversation and tool calls resume
 ```
 
-The server reloads the persisted UUID from `.data/copilot-office-sessions.json` and the Copilot CLI finds existing session state at `~/.copilot/session-state/{uuid}/`. This is intentional resume behavior — users who want a fresh session should use Ctrl+Shift+N or the ⏹ Close Session button before restarting.
+The server reloads the persisted UUID from `.data/{officeId}.sessions.json` and the Copilot CLI finds existing session state at `~/.copilot/session-state/{uuid}/`. This is intentional resume behavior — users who want a fresh session should use Ctrl+Shift+N or the ⏹ Close Session button before restarting.
 
 ### 7. Pop Out (External Terminal)
 
@@ -229,15 +230,15 @@ Opens Windows Terminal with the same session UUID. Both the in-game terminal and
 | Concept | Location | Notes |
 |---------|----------|-------|
 | Session UUID storage | `server.ts` → `agentSessionIds` Map | In-memory, synced to JSON file |
-| JSON persistence file | `.data/copilot-office-sessions.json` | `.data/` folder, survives restarts |
+| JSON persistence file | `.data/{officeId}.sessions.json` | Per-office file in `.data/` folder, survives restarts |
 | UUID generation | `crypto.randomUUID()` | Standard v4 UUID |
 | Archive old UUID | `archiveSessionId()` | Pushes to `history[agentId][]` |
 | PTY spawn | `pty.spawn('powershell.exe', [...])` | With tagged env vars |
 | CLI start command | `copilot --resume <sessionId>` | Always uses `--resume` flag |
 | CLI start delay | `setTimeout(500ms)` | Waits for shell to initialize |
-| Ready detection | PTY output contains `"Environment loaded"` | Triggers `preload-status: ready` |
+| Ready detection | `assistant.turn_end` or `user.message` event (+ `"Environment loaded"` in PTY output) | Triggers `preload-status: ready` |
 | Event streaming | `EventsWatcher` → `events.jsonl` | File watcher with polling fallback |
-| Scrollback buffer | `agentScrollbackBuffers` | Max 500 lines per agent |
+| Scrollback buffer | `agentScrollbackBuffers` | Max 512 KB per agent (byte-based eviction) |
 
 ---
 

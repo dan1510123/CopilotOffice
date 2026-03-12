@@ -18,6 +18,12 @@ interface AgentStatus {
   subState: ActiveSubState | null;   // null when slacking
   thinkingDetail: string | null;     // e.g. "view", "grep", "Processing..."
   currentTool: string | null;        // derived from agentTools stack (last tool name)
+  unreadCount: number;               // unread action count
+  lastEvent: string | null;          // last event type received
+  activityStartTime: number | null;  // when current activity began
+  lastCompletedAction: string | null; // last completed tool/action
+  recentActions: RecentAction[];     // recent action history
+  taskSummary: string | null;        // summary of current task
 }
 ```
 
@@ -33,7 +39,7 @@ OfficeData {
 - **Single source of truth**: `officeManager.currentOffice?.agents`
 - Per-office — each office tracks its own agent statuses independently
 - **Not persisted** — agent status maps are rebuilt at startup from the terminal server via `syncAgentStatuses()`
-- Office configs are persisted to `localStorage` but status is transient
+- Office configs are persisted to `.data/copilot-offices.json` (via `copilotBridge`) but status is transient
 
 ### Supplementary state in `main.ts`
 
@@ -51,7 +57,7 @@ Tracks preload status separately from the officeManager model. Used only in `onT
                   │                                          │
    ┌──────────┐  │  ┌──────────┐    ┌─────────┐    ┌──────────┐
    │ SLACKING │──┼─▶│ STARTING │───▶│  READY  │◀──▶│ THINKING │
-   │   (💤)   │  │  │   (🚀)   │    │   (✓)   │    │   (⚡)    │
+   │   (💤)   │  │  │   (🚀)   │    │   (✓)   │    │   (🧠)    │
    └──────────┘  │  └──────────┘    └─────────┘    └──────────┘
         ▲        │       │               │  ▲            │
         │        │       │               │  │            │
@@ -194,7 +200,7 @@ if (!ENABLE_STARTING_GUARD || current?.subState !== 'starting') {
                           │                                           │
                           │  NPC.updateAgentStatus()                  │
                           │  - Updates badge color (BADGE_COLORS map) │
-                          │  - Updates icon emoji (💤🚀✓⏳⚡)        │
+                          │  - Updates icon emoji (💤🚀✓⏳🧠❌)        │
                           │  - Thinking detail → truncated text       │
                           │  - Pulse animation for thinking/starting  │
                           └───────────────────────────────────────────┘
@@ -249,7 +255,7 @@ When terminal is reattached → triggers `syncAgentStatuses()` for reconciliatio
 ### 5a. NPC Badges (`src/entities/NPC.ts`)
 `updateAgentStatus(status)` method:
 - Maps state to badge color via `BADGE_COLORS` lookup
-- Sets emoji icon: 💤 🚀 ✓ ⏳ ⚡
+- Sets emoji icon: 💤 🚀 ✓ ⏳ 🧠 ❌
 - Truncates thinkingDetail to 5 chars for badge text
 - Pulse animation for `thinking` and `starting` states
 
@@ -262,7 +268,7 @@ When terminal is reattached → triggers `syncAgentStatuses()` for reconciliatio
 ### 5c. Status Bar (`src/main.ts:650-671`)
 Counts agents per state and displays summary:
 ```
-💤 Slacking 2  🚀 Starting 1  ✓ Ready 1  ⚡ Thinking 0  ⏳ Waiting 0
+💤 Slacking 2  🚀 Starting 1  ✓ Ready 1  🧠 Thinking 0  ⏳ Waiting 0
 ```
 
 ---
