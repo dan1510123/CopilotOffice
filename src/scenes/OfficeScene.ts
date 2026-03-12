@@ -15,6 +15,7 @@ import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
 import { CameraDragController } from '../ui/CameraDragController';
+import { getDefaultTerminalPath } from '../ui/SettingsPanel';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
@@ -1622,7 +1623,7 @@ export class OfficeScene extends Phaser.Scene {
     if (officeId && window.copilotBridge?.terminalStart) {
       officeManager.setAgentStarting(officeId, reserveConfig.id);
       this.game.events.emit('agent:status:changed', reserveConfig.id);
-      window.copilotBridge.terminalStart(officeId, reserveConfig.id).catch(err => {
+      window.copilotBridge.terminalStart(officeId, reserveConfig.id, getDefaultTerminalPath()).catch(err => {
         console.error(`[OfficeScene] Failed to start terminal for ${reserveConfig.id}:`, err);
       });
     }
@@ -1936,7 +1937,7 @@ export class OfficeScene extends Phaser.Scene {
         } else {
           console.log(`[CopilotOffice] Starting new ${label} session (no saved session found)`);
         }
-        await window.copilotBridge.terminalStart(oid, agentId, agent?.workingDir);
+        await window.copilotBridge.terminalStart(oid, agentId, agent?.workingDir || getDefaultTerminalPath());
         console.log(`[CopilotOffice] ${label} session ready`);
       };
 

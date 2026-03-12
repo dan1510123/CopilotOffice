@@ -10,7 +10,7 @@ import { AGENTS } from './config/agents';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
-import { NotificationSettingsPanel } from './ui/NotificationSettingsPanel';
+import { SettingsPanel } from './ui/SettingsPanel';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 
@@ -230,7 +230,7 @@ function renderOfficeTabs() {
       transition: all 0.2s;
       ${debugMode ? 'box-shadow: 0 0 8px #ff880044;' : ''}
     ">🐛 Debug</div>
-    <div id="notif-settings-btn" style="
+    <div id="settings-btn" style="
       padding: 8px 16px;
       background: #252538;
       border: 2px solid #444;
@@ -241,35 +241,7 @@ function renderOfficeTabs() {
       font-size: 16px;
       user-select: none;
       transition: all 0.2s;
-    ">🔔</div>
-    <div id="bgm-control" style="
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 8px;
-      background: #252538;
-      border: 2px solid #444;
-      border-radius: 6px;
-      font-family: monospace;
-      font-size: 14px;
-    ">
-      <span style="color: #666; font-size: 12px;">BGM</span>
-      <button id="bgm-mute-btn" style="
-        background: #333;
-        border: 1px solid #555;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 11px;
-        font-family: monospace;
-        padding: 3px 6px;
-        color: ${bgmMuted ? '#ff6666' : '#00ff88'};
-        min-width: 50px;
-      ">${bgmMuted ? 'MUTED' : 'ON'}</button>
-      <input id="bgm-slider" type="range" min="0" max="100"
-        value="${Math.round(parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5') * 100)}"
-        title="Volume"
-        style="width: 70px; cursor: pointer; accent-color: #00ff88;" />
-    </div>
+    ">⚙ Settings</div>
   `;
 
   tabsBar.innerHTML = html;
@@ -322,8 +294,8 @@ function renderOfficeTabs() {
   document.getElementById('zoom-minus-btn')?.addEventListener('click', () => { setZoom(currentZoom - 0.1); });
   document.getElementById('zoom-plus-btn')?.addEventListener('click', () => { setZoom(currentZoom + 0.1); });
 
-  document.getElementById('notif-settings-btn')?.addEventListener('click', () => {
-    notificationSettingsPanel.toggle();
+  document.getElementById('settings-btn')?.addEventListener('click', () => {
+    settingsPanel.toggle();
   });
 
   document.getElementById('sprite-customizer-btn')?.addEventListener('click', (e) => {
@@ -337,21 +309,6 @@ function renderOfficeTabs() {
     }
   });
 
-  // BGM controls in top bar
-  document.getElementById('bgm-mute-btn')?.addEventListener('click', () => {
-    bgmMuted = !bgmMuted;
-    localStorage.setItem('copilot-office-bgm-muted', String(bgmMuted));
-    const vol = parseInt((document.getElementById('bgm-slider') as HTMLInputElement)?.value ?? '50', 10) / 100;
-    updateSpeakerIcon(vol, bgmMuted);
-    phaserGameRef?.events.emit('bgm:mute', bgmMuted);
-  });
-
-  document.getElementById('bgm-slider')?.addEventListener('input', (e) => {
-    const vol = parseInt((e.target as HTMLInputElement).value, 10) / 100;
-    localStorage.setItem('copilot-office-bgm-volume', String(vol));
-    updateSpeakerIcon(vol, bgmMuted);
-    phaserGameRef?.events.emit('bgm:volume', vol);
-  });
 }
 
 function switchToOffice(officeId: string) {
@@ -589,19 +546,13 @@ document.body.appendChild(statusBar);
 // ── Background Music State ───────────────────────────────────────
 let bgmMuted = localStorage.getItem('copilot-office-bgm-muted') !== 'false';
 
-function updateSpeakerIcon(vol: number, muted: boolean): void {
-  const btn = document.getElementById('bgm-mute-btn');
-  if (!btn) return;
-  if (muted || vol === 0) { btn.textContent = 'MUTED'; btn.style.color = '#ff6666'; }
-  else { btn.textContent = 'ON'; btn.style.color = '#00ff88'; }
+function updateSpeakerIcon(_vol: number, _muted: boolean): void {
+  // BGM controls moved to SettingsPanel — no top-bar DOM elements to update
 }
 
-// Sync slider when music starts (in case OfficeScene restores saved state)
+// Sync state when music starts (in case OfficeScene restores saved state)
 function onBgmStarted(state: { volume: number; muted: boolean }): void {
-  const slider = document.getElementById('bgm-slider') as HTMLInputElement | null;
-  if (slider) slider.value = String(Math.round(state.volume * 100));
   bgmMuted = state.muted;
-  updateSpeakerIcon(state.volume, state.muted);
 }
 
 // ── Notifications ────────────────────────────────────────────────
@@ -658,7 +609,50 @@ function notifyAgent(agentId: string, eventType: import('./config/notifications'
   notificationService.notify(agentId, eventType, context, selectedAgentId);
 }
 
-const notificationSettingsPanel = new NotificationSettingsPanel(notificationService);
+
+const settingsPanel = new SettingsPanel(
+  notificationService,
+  officeManager,
+  {
+    onBgmVolumeChange: (vol) => {
+      updateSpeakerIcon(vol, bgmMuted);
+      phaserGameRef?.events.emit('bgm:volume', vol);
+    },
+    onBgmMuteChange: (muted) => {
+      updateSpeakerIcon(parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5'), muted);
+      phaserGameRef?.events.emit('bgm:mute', muted);
+    },
+    onOfficesUpdated: () => {
+      renderOfficeTabs();
+      updateTerminalContent();
+    },
+    onOfficeDeleted: (deletedId) => {
+      if (officeManager.currentOfficeId !== deletedId) {
+        renderOfficeTabs();
+        updateTerminalContent();
+      } else {
+        switchToOffice('office-0');
+      }
+    },
+    getBgmMuted: () => bgmMuted,
+    setBgmMuted: (muted) => { bgmMuted = muted; },
+    onTerminalPathChanged: async () => {
+      // Kill all sessions across all offices so they restart on the new path
+      const allOffices = officeManager.getAllOffices();
+      for (const office of allOffices) {
+        if (window.copilotBridge) {
+          await window.copilotBridge.resetAllSessions(office.id);
+        }
+        // Reset all agent statuses to slacking
+        for (const agent of AGENTS) {
+          officeManager.setAgentSlacking(office.id, agent.id);
+          phaserGameRef?.events.emit('agent:status:changed', agent.id);
+        }
+      }
+      updateTerminalContent();
+    },
+  },
+);
 
 // ── Sprite Customizer ────────────────────────────────────────────
 const spriteCustomizerPanel = new SpriteCustomizerPanel({

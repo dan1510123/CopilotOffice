@@ -326,7 +326,9 @@ async function startTerminalForAgent(
   const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
   let cwd = process.cwd();
   if (workingDir) {
-    const customPath = path.join(process.cwd(), workingDir);
+    const customPath = path.isAbsolute(workingDir)
+      ? workingDir
+      : path.join(process.cwd(), workingDir);
     try {
       await fs.promises.access(customPath, fs.constants.F_OK);
       cwd = customPath;
