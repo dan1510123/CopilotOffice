@@ -32,16 +32,16 @@ export interface SettingsPanelCallbacks {
   onBgmVolumeChange: (volume: number) => void;
   /** Emit bgm:mute event to Phaser */
   onBgmMuteChange: (muted: boolean) => void;
-  /** Called after an office is renamed/path-changed so tabs can re-render */
-  onOfficesUpdated: () => void;
-  /** Called when an office is deleted */
-  onOfficeDeleted: (deletedId: string) => void;
   /** Get the current bgmMuted state */
   getBgmMuted: () => boolean;
   /** Set the bgmMuted state */
   setBgmMuted: (muted: boolean) => void;
   /** Called when the global terminal path is changed — should reset all sessions */
   onTerminalPathChanged: (newPath: string) => void;
+  /** Called when settings panel opens — disable game input */
+  onOpen?: () => void;
+  /** Called when settings panel closes — re-enable game input */
+  onClose?: () => void;
 }
 
 export class SettingsPanel {
@@ -119,6 +119,7 @@ export class SettingsPanel {
     document.addEventListener('keydown', escHandler);
 
     this.bindEvents(panel);
+    this.callbacks.onOpen?.();
   }
 
   close(): void {
@@ -126,6 +127,7 @@ export class SettingsPanel {
       this.overlay.remove();
       this.overlay = null;
     }
+    this.callbacks.onClose?.();
   }
 
   // ── Rendering ────────────────────────────────────────────────────
@@ -142,7 +144,6 @@ export class SettingsPanel {
       ${this.renderAudioSection()}
       ${this.renderTerminalSection()}
       ${this.renderNotificationsSection()}
-      ${this.renderOfficesSection()}
       ${this.renderAboutSection()}
     `;
   }
@@ -314,68 +315,6 @@ export class SettingsPanel {
     `;
   }
 
-  private renderOfficesSection(): string {
-    const offices = this.officeManager.getAllOffices();
-    let rows = '';
-
-    for (const office of offices) {
-      const isMain = office.id === 'office-0';
-      rows += `
-        <div class="settings-office-row" data-office-id="${office.id}" style="
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 8px 10px;
-          border-bottom: 1px solid #2a2a3e;
-        ">
-          <div style="flex: 1; min-width: 0;">
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-              <input type="text" class="settings-office-name" data-office-id="${office.id}"
-                value="${this.escapeHtml(office.name)}"
-                style="
-                  background: #12121f; border: 1px solid #333; border-radius: 4px;
-                  padding: 4px 8px; color: #dde; font-family: inherit; font-size: 12px;
-                  width: 160px;
-                "
-              />
-              ${isMain ? '<span style="font-size: 9px; color: #556; background: #1a1a2e; border: 1px solid #333; border-radius: 3px; padding: 1px 6px;">main</span>' : ''}
-            </div>
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="font-size: 10px; color: #556;">Path:</span>
-              <input type="text" class="settings-office-path" data-office-id="${office.id}"
-                value="${this.escapeHtml(office.workingDirectory)}"
-                style="
-                  background: #12121f; border: 1px solid #333; border-radius: 4px;
-                  padding: 3px 6px; color: #899; font-family: inherit; font-size: 11px;
-                  flex: 1;
-                "
-              />
-            </div>
-          </div>
-          <button class="settings-office-save-btn" data-office-id="${office.id}" style="
-            background: #1a1a3a; border: 1px solid #336; border-radius: 4px;
-            padding: 4px 10px; color: #88f; cursor: pointer; font-family: inherit; font-size: 11px;
-          ">Save</button>
-          ${isMain ? '' : `
-            <button class="settings-office-delete-btn" data-office-id="${office.id}" style="
-              background: #2a1a1a; border: 1px solid #633; border-radius: 4px;
-              padding: 4px 10px; color: #f88; cursor: pointer; font-family: inherit; font-size: 11px;
-            ">Delete</button>
-          `}
-        </div>
-      `;
-    }
-
-    return `
-      <div class="settings-section" style="margin-bottom: 20px;">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
-          🏢 Offices
-        </h3>
-        ${rows}
-      </div>
-    `;
-  }
-
   private renderAboutSection(): string {
     return `
       <div class="settings-section">
@@ -409,7 +348,6 @@ export class SettingsPanel {
     this.bindAudioEvents(panel);
     this.bindTerminalEvents(panel);
     this.bindNotificationEvents(panel);
-    this.bindOfficeEvents(panel);
   }
 
   private bindAudioEvents(panel: HTMLElement): void {
@@ -533,56 +471,6 @@ export class SettingsPanel {
         saveBtn.textContent = '✓ Saved';
         setTimeout(() => { saveBtn.textContent = '💾 Save'; }, 1500);
       }
-    });
-  }
-
-  private bindOfficeEvents(panel: HTMLElement): void {
-    // Save buttons
-    panel.querySelectorAll('.settings-office-save-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const officeId = (e.target as HTMLElement).dataset.officeId;
-        if (!officeId) return;
-        const row = panel.querySelector(`.settings-office-row[data-office-id="${officeId}"]`);
-        if (!row) return;
-
-        const nameInput = row.querySelector('.settings-office-name') as HTMLInputElement | null;
-        const pathInput = row.querySelector('.settings-office-path') as HTMLInputElement | null;
-        const newName = nameInput?.value.trim();
-        const newPath = pathInput?.value.trim();
-
-        if (newName) this.officeManager.updateOffice(officeId, { name: newName });
-        if (newPath) this.officeManager.updateOffice(officeId, { workingDirectory: newPath });
-        this.callbacks.onOfficesUpdated();
-
-        // Visual feedback
-        const saveBtn = e.target as HTMLButtonElement;
-        saveBtn.textContent = '✓';
-        setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
-      });
-    });
-
-    // Delete buttons
-    panel.querySelectorAll('.settings-office-delete-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const officeId = (e.target as HTMLElement).dataset.officeId;
-        if (!officeId || officeId === 'office-0') return;
-
-        const office = this.officeManager.getOffice(officeId);
-        const name = office?.config.name ?? officeId;
-        if (!confirm(`Delete office "${name}"? This cannot be undone.`)) return;
-
-        this.officeManager.deleteOffice(officeId);
-        this.callbacks.onOfficeDeleted(officeId);
-
-        // Re-render the offices section
-        const section = (e.target as HTMLElement).closest('.settings-section');
-        if (section) {
-          section.outerHTML = this.renderOfficesSection();
-          // Re-bind office events on the new DOM
-          const newPanel = this.overlay?.querySelector('div > div') as HTMLElement | null;
-          if (newPanel) this.bindOfficeEvents(newPanel);
-        }
-      });
     });
   }
 

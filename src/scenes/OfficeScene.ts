@@ -498,6 +498,20 @@ export class OfficeScene extends Phaser.Scene {
       }
     }, this);
 
+    // Settings / modal overlay — disable game input while open
+    this.game.events.on('settings:open', () => {
+      this.player.disableMovement();
+      this.playerMovementEnabled = false;
+      this.inputManager.suspendGameInput('settings:open');
+    }, this);
+    this.game.events.on('settings:close', () => {
+      this.inputManager.resumeGameInput('settings:close');
+      if (this.playerInScene) {
+        this.player.enableMovement();
+        this.playerMovementEnabled = true;
+      }
+    }, this);
+
     // Click on NPC → open / switch conversation immediately.
     // Click on empty stool → spawn reserve agent.
     // Click on empty canvas → regain keyboard focus so player can move again.

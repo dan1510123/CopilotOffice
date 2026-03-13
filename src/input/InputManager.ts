@@ -4,6 +4,7 @@ import { GameInputListener } from './GameInputListener';
 import { TerminalInputListener } from './TerminalInputListener';
 
 export type FocusTarget = 'game' | 'terminal';
+export type FocusFull = FocusTarget | 'none';
 
 /**
  * InputManager — central orchestrator for all keyboard focus transitions.
@@ -29,7 +30,8 @@ export class InputManager {
   readonly game: GameInputListener;
   readonly terminal: TerminalInputListener;
 
-  private currentFocus: FocusTarget | 'none' = 'none';
+  private currentFocus: FocusFull = 'none';
+  private suspendedFocus: FocusFull | null = null;
 
   constructor(scene: Phaser.Scene) {
     this.global = new GlobalInputListener();
@@ -145,8 +147,53 @@ export class InputManager {
   }
 
   /** Current focus target (for debugging / assertions). */
-  getCurrentFocus(): FocusTarget | 'none' {
+  getCurrentFocus(): FocusFull {
     return this.currentFocus;
+  }
+
+  /**
+   * Temporarily deactivate game input for a modal overlay (settings, dialogs).
+   * Saves the current focus state so it can be restored by `resumeGameInput()`.
+   * Safe to call when already suspended (idempotent — won't overwrite saved state).
+   */
+  suspendGameInput(reason: string): void {
+    console.log(
+      `[InputManager] ── suspendGameInput() ──────────────────────────────────\n` +
+      `  reason  : "${reason}"\n` +
+      `  from    : "${this.currentFocus}"\n` +
+      `  time    : ${Date.now()}`
+    );
+
+    if (this.suspendedFocus === null) {
+      this.suspendedFocus = this.currentFocus;
+    }
+    this.game.deactivate(reason);
+    this.global.setMode('game');
+  }
+
+  /**
+   * Restore game input after a modal overlay is closed.
+   * If the saved focus was 'game', re-activates Phaser keyboard.
+   * If the saved focus was 'terminal', leaves game input deactivated.
+   * Safe to call when not suspended (no-op).
+   */
+  resumeGameInput(reason: string): void {
+    const savedFocus = this.suspendedFocus;
+    this.suspendedFocus = null;
+
+    console.log(
+      `[InputManager] ── resumeGameInput() ──────────────────────────────────\n` +
+      `  reason  : "${reason}"\n` +
+      `  restoring : "${savedFocus}"\n` +
+      `  time    : ${Date.now()}`
+    );
+
+    if (savedFocus === null) return;
+
+    if (savedFocus === 'game' || savedFocus === 'none') {
+      this.game.activate(reason);
+    }
+    // If savedFocus was 'terminal', game stays deactivated — terminal still owns keyboard
   }
 
   /** Tear down all listeners. Call when the scene is destroyed. */

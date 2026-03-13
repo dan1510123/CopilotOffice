@@ -261,8 +261,9 @@ function renderOfficeTabs() {
   tabsBar.querySelectorAll('.edit-office-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const officeId = (e.target as HTMLElement).dataset.officeId;
-      if (officeId) showEditOfficeDialog(officeId);
+      const target = e.target as HTMLElement;
+      const officeId = target.dataset.officeId;
+      if (officeId) showOfficeSettingsPopover(officeId, target);
     });
   });
 
@@ -337,6 +338,8 @@ function switchToOffice(officeId: string) {
 
 function showNewOfficeDialog() {
   // DOM-based dialog — prompt() is blocked in Electron
+  phaserGameRef?.events.emit('settings:open');
+
   const overlay = document.createElement('div');
   overlay.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -411,7 +414,10 @@ function showNewOfficeDialog() {
   defaultBtn.addEventListener('click', () => selectLayout('default'));
   fleetBtn.addEventListener('click', () => selectLayout('fleet-vteam'));
 
-  const close = () => overlay.remove();
+  const close = () => {
+    overlay.remove();
+    phaserGameRef?.events.emit('settings:close');
+  };
   document.getElementById('nod-cancel')!.addEventListener('click', close);
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
@@ -430,37 +436,128 @@ function showNewOfficeDialog() {
   nameInput.select();
 }
 
-function showEditOfficeDialog(officeId: string) {
+// ── Per-Office Settings Popover ────────────────────────────────
+let activeOfficePopover: HTMLDivElement | null = null;
+
+function closeOfficePopover() {
+  if (activeOfficePopover) {
+    activeOfficePopover.remove();
+    activeOfficePopover = null;
+    phaserGameRef?.events.emit('settings:close');
+  }
+}
+
+function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
+  // Close any existing popover
+  if (activeOfficePopover) {
+    activeOfficePopover.remove();
+    activeOfficePopover = null;
+  }
+
   const office = officeManager.getOffice(officeId);
   if (!office) return;
 
+  phaserGameRef?.events.emit('settings:open');
+
   const canDelete = office.config.id !== 'office-0';
-  const deleteOption = canDelete ? '\n- "delete" to remove office' : '';
+  const popover = document.createElement('div');
+  popover.className = 'office-settings-popover';
+  popover.style.cssText = `
+    position: absolute;
+    background: #1e1e2e;
+    border: 2px solid #4488ff;
+    border-radius: 10px;
+    padding: 16px 20px;
+    min-width: 280px;
+    font-family: 'Cascadia Code', Consolas, monospace;
+    color: #eee;
+    z-index: 100000;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  `;
 
-  const action = prompt(
-    `Office: ${office.config.name}\nPath: ${office.config.workingDirectory}\n\nEnter action:\n- "rename" to change name\n- "path" to change working directory${deleteOption}`,
-    'rename'
-  );
+  const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  if (action === 'rename') {
-    const newName = prompt('Enter new name:', office.config.name);
-    if (newName) {
-      officeManager.updateOffice(officeId, { name: newName });
-      renderOfficeTabs();
-    }
-  } else if (action === 'path') {
-    const newPath = prompt('Enter new working directory:', office.config.workingDirectory);
-    if (newPath) {
-      officeManager.updateOffice(officeId, { workingDirectory: newPath });
-      renderOfficeTabs();
-    }
-  } else if (action === 'delete') {
+  popover.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+      <span style="font-size: 13px; font-weight: bold; color: #8af;">⚙ Office Settings</span>
+      <button class="osp-close" style="background: none; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 2px 6px;">✕</button>
+    </div>
+    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Name</label>
+    <input class="osp-name" type="text" value="${escapeHtml(office.config.name)}" style="
+      width: 100%; padding: 6px 8px; margin-bottom: 10px; background: #12121f; border: 1px solid #333;
+      border-radius: 5px; color: #dde; font-family: inherit; font-size: 12px; box-sizing: border-box;
+    " />
+    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Working Directory</label>
+    <input class="osp-path" type="text" value="${escapeHtml(office.config.workingDirectory)}" style="
+      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12121f; border: 1px solid #333;
+      border-radius: 5px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+    " />
+    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+      ${canDelete ? `<button class="osp-delete" style="
+        padding: 5px 12px; background: #2a1a1a; border: 1px solid #633; border-radius: 5px;
+        color: #f88; cursor: pointer; font-family: inherit; font-size: 11px; margin-right: auto;
+      ">Delete</button>` : ''}
+      <button class="osp-save" style="
+        padding: 5px 14px; background: #1a1a3a; border: 1px solid #336; border-radius: 5px;
+        color: #88f; cursor: pointer; font-family: inherit; font-size: 11px;
+      ">💾 Save</button>
+    </div>
+  `;
+
+  document.body.appendChild(popover);
+  activeOfficePopover = popover;
+
+  // Position below the anchor element
+  const rect = anchorEl.getBoundingClientRect();
+  popover.style.top = `${rect.bottom + 4}px`;
+  popover.style.left = `${Math.max(4, rect.left - 80)}px`;
+
+  // Bind events
+  const nameInput = popover.querySelector('.osp-name') as HTMLInputElement;
+  const pathInput = popover.querySelector('.osp-path') as HTMLInputElement;
+
+  popover.querySelector('.osp-close')?.addEventListener('click', closeOfficePopover);
+
+  popover.querySelector('.osp-save')?.addEventListener('click', () => {
+    const newName = nameInput.value.trim();
+    const newPath = pathInput.value.trim();
+    if (newName) officeManager.updateOffice(officeId, { name: newName });
+    if (newPath) officeManager.updateOffice(officeId, { workingDirectory: newPath });
+    renderOfficeTabs();
+    updateTerminalContent();
+    closeOfficePopover();
+  });
+
+  popover.querySelector('.osp-delete')?.addEventListener('click', () => {
     if (!canDelete) return;
     if (confirm(`Delete office "${office.config.name}"? This cannot be undone.`)) {
       officeManager.deleteOffice(officeId);
+      closeOfficePopover();
       switchToOffice('office-0');
     }
-  }
+  });
+
+  // Close on click outside
+  const outsideClickHandler = (e: MouseEvent) => {
+    if (activeOfficePopover && !activeOfficePopover.contains(e.target as Node)) {
+      document.removeEventListener('click', outsideClickHandler, true);
+      closeOfficePopover();
+    }
+  };
+  // Delay to avoid the triggering click from closing immediately
+  setTimeout(() => document.addEventListener('click', outsideClickHandler, true), 0);
+
+  // Close on Escape
+  const escHandler = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      document.removeEventListener('keydown', escHandler);
+      closeOfficePopover();
+    }
+  };
+  document.addEventListener('keydown', escHandler);
+
+  nameInput.focus();
+  nameInput.select();
 }
 
 renderOfficeTabs();
@@ -622,18 +719,6 @@ const settingsPanel = new SettingsPanel(
       updateSpeakerIcon(parseFloat(localStorage.getItem('copilot-office-bgm-volume') ?? '0.5'), muted);
       phaserGameRef?.events.emit('bgm:mute', muted);
     },
-    onOfficesUpdated: () => {
-      renderOfficeTabs();
-      updateTerminalContent();
-    },
-    onOfficeDeleted: (deletedId) => {
-      if (officeManager.currentOfficeId !== deletedId) {
-        renderOfficeTabs();
-        updateTerminalContent();
-      } else {
-        switchToOffice('office-0');
-      }
-    },
     getBgmMuted: () => bgmMuted,
     setBgmMuted: (muted) => { bgmMuted = muted; },
     onTerminalPathChanged: async () => {
@@ -650,6 +735,12 @@ const settingsPanel = new SettingsPanel(
         }
       }
       updateTerminalContent();
+    },
+    onOpen: () => {
+      phaserGameRef?.events.emit('settings:open');
+    },
+    onClose: () => {
+      phaserGameRef?.events.emit('settings:close');
     },
   },
 );
