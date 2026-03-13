@@ -771,14 +771,16 @@ export class OfficeScene extends Phaser.Scene {
     // === COMMUNAL TABLES (open office layout) ===
     // Two 3×2 desk formations with a 3-tile walkway between them
     // Left table: cols 4-6, rows 4-5  |  Right table: cols 13-15, rows 4-5
+    // AGENTS[0] sits at left table, AGENTS[2] sits at right table
     const communalTables = [
-      { startCol: 4, agentId: 'generalist' },   // Gene at left table
-      { startCol: 13, agentId: 'debugger' },     // Dan at right table
+      { startCol: 4, agent: AGENTS[0] },
+      { startCol: 13, agent: AGENTS[2] },
     ];
     const tableStartRow = 4;
 
     communalTables.forEach(table => {
-      const agent = AGENTS.find(a => a.id === table.agentId)!;
+      const agent = table.agent;
+      if (!agent) return;
 
       // All 6 desks in the 3×2 grid use seamless tile variants
       for (let col = 0; col < 3; col++) {
@@ -860,8 +862,8 @@ export class OfficeScene extends Phaser.Scene {
       });
     });
 
-    // === CORNER DESKS (Arthur bottom-left, Alice bottom-right) ===
-    AGENTS.filter(a => a.id === 'architect' || a.id === 'admin').forEach(agent => {
+    // === CORNER DESKS (AGENTS[1] bottom-left, AGENTS[3] bottom-right) ===
+    [AGENTS[1], AGENTS[3]].filter(Boolean).forEach(agent => {
       const deskX = agent.position.x * this.tileSize + this.tileSize / 2;
       const deskY = (agent.position.y + 1) * this.tileSize + this.tileSize / 2;
       placeAgentDesk(agent, deskX, deskY);
