@@ -6,7 +6,7 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout } from './office/officeManager';
-import { AGENTS } from './config/agents';
+import { AGENTS, swapActiveAgents } from './config/agents';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
@@ -322,6 +322,10 @@ function switchToOffice(officeId: string) {
   selectedAgentId = null;
 
   officeManager.switchOffice(officeId);
+
+  // Swap global agent roster before rendering dashboard
+  const office = officeManager.currentOffice;
+  if (office) swapActiveAgents(office.config);
 
   phaserGame?.events.emit('office:switch', officeId, officeManager.currentOffice?.config.workingDirectory);
 

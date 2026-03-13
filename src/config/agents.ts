@@ -10,8 +10,10 @@ export interface AgentConfig {
   workingDir?: string; // Optional custom working directory
 }
 
-// Pool of common first names for fleet agents
-const FLEET_NAMES = [
+import type { HeroConfig } from '../sprites/SpriteGenerator';
+
+// Pool of common first names for agents
+export const FLEET_NAMES = [
   'Liam', 'Emma', 'Noah', 'Olivia', 'James', 'Ava', 'Ethan', 'Sophia',
   'Mason', 'Mia', 'Logan', 'Chloe', 'Lucas', 'Lily', 'Jack', 'Zoe',
   'Owen', 'Grace', 'Ryan', 'Ella', 'Caleb', 'Aria', 'Leo', 'Nora',
@@ -207,3 +209,166 @@ export const AGENTS: AgentConfig[] = [
     workingDir: '.',  // Points to whole project
   },
 ];
+
+// ===== Snapshots of office-0 defaults (immutable) =====
+export const DEFAULT_AGENTS: readonly AgentConfig[] = [...AGENTS];
+const DEFAULT_RESERVE_MAP: Readonly<Record<string, AgentConfig>> = { ...RESERVE_AGENTS };
+
+// ===== Random sprite pool — 20 diverse appearance presets =====
+export const RANDOM_POOL_CONFIGS: { heroConfig: HeroConfig; color: number }[] = [
+  { heroConfig: { skinColor: 0xffdbac, hairColor: 0xcc3333, hairStyle: 'spiky', bodyColor: 0xcc4444, bodyStyle: 'robe', accessory: 'staff', accessoryColor: 0xff8888 }, color: 0xcc4444 },
+  { heroConfig: { skinColor: 0xd4a574, hairColor: 0x222222, hairStyle: 'helmet', helmetColor: 0x6688cc, bodyColor: 0x4466cc, bodyStyle: 'armor', accessory: 'shield', accessoryColor: 0x88aaff }, color: 0x4466cc },
+  { heroConfig: { skinColor: 0xf1c27d, hairColor: 0x663300, hairStyle: 'goggles', bodyColor: 0xff8800, bodyStyle: 'pilot', accessory: 'rocket', accessoryColor: 0xffcc44 }, color: 0xff8800 },
+  { heroConfig: { skinColor: 0xc68642, hairColor: 0x111111, hairStyle: 'short', bodyColor: 0xeeeeee, bodyStyle: 'coat', accessory: 'stethoscope', accessoryColor: 0x44cc44 }, color: 0x44cc44 },
+  { heroConfig: { skinColor: 0xffdbac, hairColor: 0x6644aa, hairStyle: 'long', bodyColor: 0x553399, bodyStyle: 'cloak', accessory: 'binoculars', accessoryColor: 0x9966ff }, color: 0x553399 },
+  { heroConfig: { skinColor: 0xe0ac69, hairColor: 0x1a1a1a, hairStyle: 'bun', bodyColor: 0x336633, bodyStyle: 'vest', accessory: 'coins', accessoryColor: 0xffdd00 }, color: 0x336633 },
+  { heroConfig: { skinColor: 0x8d5524, hairColor: 0x442200, hairStyle: 'short', bodyColor: 0x2266aa, bodyStyle: 'coat', accessory: 'book', accessoryColor: 0x66aadd }, color: 0x2266aa },
+  { heroConfig: { skinColor: 0xffdbac, hairColor: 0xaa4400, hairStyle: 'spiky', bodyColor: 0xcc6622, bodyStyle: 'vest', accessory: 'blueprint', accessoryColor: 0x88bbff }, color: 0xcc6622 },
+  { heroConfig: { skinColor: 0xf1c27d, hairColor: 0x333333, hairStyle: 'helmet', helmetColor: 0xaa3366, bodyColor: 0x882255, bodyStyle: 'armor', accessory: 'shield', accessoryColor: 0xdd6699 }, color: 0x882255 },
+  { heroConfig: { skinColor: 0xd4a574, hairColor: 0x884422, hairStyle: 'goggles', bodyColor: 0x44aa88, bodyStyle: 'pilot', accessory: 'rocket', accessoryColor: 0x88ddbb }, color: 0x44aa88 },
+  { heroConfig: { skinColor: 0xffdbac, hairColor: 0x2244aa, hairStyle: 'long', bodyColor: 0x3355bb, bodyStyle: 'robe', accessory: 'staff', accessoryColor: 0x7799ee }, color: 0x3355bb },
+  { heroConfig: { skinColor: 0xc68642, hairColor: 0x222222, hairStyle: 'bun', bodyColor: 0xbb4444, bodyStyle: 'cloak', accessory: 'binoculars', accessoryColor: 0xee8888 }, color: 0xbb4444 },
+  { heroConfig: { skinColor: 0xe0ac69, hairColor: 0x664422, hairStyle: 'short', bodyColor: 0x888833, bodyStyle: 'vest', accessory: 'coins', accessoryColor: 0xcccc44 }, color: 0x888833 },
+  { heroConfig: { skinColor: 0xffdbac, hairColor: 0x44aa44, hairStyle: 'spiky', bodyColor: 0x33aa55, bodyStyle: 'coat', accessory: 'book', accessoryColor: 0x77dd88 }, color: 0x33aa55 },
+  { heroConfig: { skinColor: 0x8d5524, hairColor: 0x111111, hairStyle: 'helmet', helmetColor: 0xccaa22, bodyColor: 0xaa8811, bodyStyle: 'armor', accessory: 'shield', accessoryColor: 0xffdd44 }, color: 0xaa8811 },
+  { heroConfig: { skinColor: 0xf1c27d, hairColor: 0x993366, hairStyle: 'long', bodyColor: 0xaa3377, bodyStyle: 'cloak', accessory: 'blueprint', accessoryColor: 0xdd77aa }, color: 0xaa3377 },
+  { heroConfig: { skinColor: 0xd4a574, hairColor: 0x444444, hairStyle: 'goggles', bodyColor: 0x555555, bodyStyle: 'pilot', accessory: 'rocket', accessoryColor: 0x999999 }, color: 0x555555 },
+  { heroConfig: { skinColor: 0xffdbac, hairColor: 0xcc6600, hairStyle: 'bun', bodyColor: 0xcc7722, bodyStyle: 'robe', accessory: 'staff', accessoryColor: 0xffaa55 }, color: 0xcc7722 },
+  { heroConfig: { skinColor: 0xe0ac69, hairColor: 0x223344, hairStyle: 'short', bodyColor: 0x226688, bodyStyle: 'coat', accessory: 'stethoscope', accessoryColor: 0x44aacc }, color: 0x226688 },
+  { heroConfig: { skinColor: 0xc68642, hairColor: 0x883344, hairStyle: 'spiky', bodyColor: 0x993355, bodyStyle: 'vest', accessory: 'binoculars', accessoryColor: 0xcc6688 }, color: 0x993355 },
+];
+
+export const RANDOM_SPRITE_COUNT = RANDOM_POOL_CONFIGS.length;
+
+// Desk positions in the default office layout (4 core + 6 reserve)
+const CORE_POSITIONS: { x: number; y: number }[] = [
+  { x: 4, y: 3 },   // above-left communal table
+  { x: 2, y: 9 },   // bottom-left corner desk
+  { x: 13, y: 3 },  // above-right communal table
+  { x: 17, y: 9 },  // bottom-right corner desk
+];
+
+const RESERVE_DESK_IDS = [
+  'unassigned-left-4', 'unassigned-right-4', 'unassigned-above-4',
+  'unassigned-left-13', 'unassigned-right-13', 'unassigned-above-13',
+];
+
+const RESERVE_POSITIONS: { x: number; y: number }[] = [
+  { x: 3, y: 5 }, { x: 7, y: 5 }, { x: 6, y: 3 },
+  { x: 12, y: 5 }, { x: 16, y: 5 }, { x: 15, y: 3 },
+];
+
+const ROLE_TITLES = [
+  'Assistant', 'Analyst', 'Specialist', 'Engineer', 'Consultant',
+  'Developer', 'Advisor', 'Researcher', 'Coordinator', 'Strategist',
+];
+
+/** Seeded pseudo-random number generator for deterministic office agent generation. */
+function seededRandom(seed: number): () => number {
+  let s = seed;
+  return () => {
+    s = (s * 16807 + 0) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+
+/** Generate random agents for a non-office-0 office. Returns { core, reserve }. */
+export function generateRandomOfficeAgents(officeId: string): {
+  coreAgents: AgentConfig[];
+  reserveAgents: Record<string, AgentConfig>;
+} {
+  const idNum = parseInt(officeId.replace('office-', ''), 10) || 1;
+  const rng = seededRandom(idNum * 7919);
+
+  // Shuffle name indices
+  const nameIndices = Array.from({ length: FLEET_NAMES.length }, (_, i) => i);
+  for (let i = nameIndices.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [nameIndices[i], nameIndices[j]] = [nameIndices[j], nameIndices[i]];
+  }
+
+  // Shuffle sprite indices
+  const spriteIndices = Array.from({ length: RANDOM_SPRITE_COUNT }, (_, i) => i);
+  for (let i = spriteIndices.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [spriteIndices[i], spriteIndices[j]] = [spriteIndices[j], spriteIndices[i]];
+  }
+
+  let namePtr = 0;
+  let spritePtr = 0;
+  const pickName = () => FLEET_NAMES[nameIndices[namePtr++]];
+  const pickSprite = () => spriteIndices[spritePtr++];
+
+  // Generate 4 core agents
+  const coreAgents: AgentConfig[] = CORE_POSITIONS.map((pos, i) => {
+    const name = pickName();
+    const si = pickSprite();
+    const pool = RANDOM_POOL_CONFIGS[si];
+    const roleIdx = Math.floor(rng() * ROLE_TITLES.length);
+    return {
+      id: `${officeId}-agent-${i}`,
+      name,
+      skill: 'general',
+      sprite: `npc_random_${si}`,
+      color: pool.color,
+      position: pos,
+      greeting: `Hey! I'm ${name}. What are we working on?`,
+      description: ROLE_TITLES[roleIdx],
+    };
+  });
+
+  // Generate 6 reserve agents
+  const reserveAgents: Record<string, AgentConfig> = {};
+  RESERVE_DESK_IDS.forEach((deskId, i) => {
+    const name = pickName();
+    const si = pickSprite();
+    const pool = RANDOM_POOL_CONFIGS[si];
+    const roleIdx = Math.floor(rng() * ROLE_TITLES.length);
+    reserveAgents[deskId] = {
+      id: `${officeId}-reserve-${i}`,
+      name,
+      skill: 'general',
+      sprite: `npc_random_${si}`,
+      color: pool.color,
+      position: RESERVE_POSITIONS[i],
+      greeting: `Hi! I'm ${name}. Ready to help!`,
+      description: ROLE_TITLES[roleIdx],
+    };
+  });
+
+  return { coreAgents, reserveAgents };
+}
+
+/**
+ * Swap the global AGENTS and RESERVE_AGENTS contents for the given office.
+ * Office-0 uses the original defaults; other offices use their custom roster.
+ */
+export function swapActiveAgents(officeConfig: {
+  id: string;
+  customAgents?: AgentConfig[];
+  customReserveAgents?: Record<string, AgentConfig>;
+}): void {
+  AGENTS.length = 0;
+  for (const key of Object.keys(RESERVE_AGENTS)) delete RESERVE_AGENTS[key];
+
+  if (officeConfig.id === 'office-0' || !officeConfig.customAgents?.length) {
+    AGENTS.push(...DEFAULT_AGENTS);
+    Object.assign(RESERVE_AGENTS, DEFAULT_RESERVE_MAP);
+  } else {
+    AGENTS.push(...officeConfig.customAgents);
+    if (officeConfig.customReserveAgents) {
+      Object.assign(RESERVE_AGENTS, officeConfig.customReserveAgents);
+    }
+  }
+
+  // Rebuild reverse lookup
+  for (const key of Object.keys(RESERVE_AGENT_DESK)) delete RESERVE_AGENT_DESK[key];
+  Object.assign(
+    RESERVE_AGENT_DESK,
+    Object.fromEntries(Object.entries(RESERVE_AGENTS).map(([deskId, config]) => [config.id, deskId]))
+  );
+
+  // Update CORE_AGENT_IDS — core (starting) agents are never dismissable in any office
+  CORE_AGENT_IDS.clear();
+  for (const a of AGENTS) CORE_AGENT_IDS.add(a.id);
+}

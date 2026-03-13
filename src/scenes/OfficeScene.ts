@@ -5,7 +5,7 @@ import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
-import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS } from '../config/agents';
+import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, swapActiveAgents } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
@@ -1664,15 +1664,14 @@ export class OfficeScene extends Phaser.Scene {
     this.game.events.emit('office:agents:changed');
   }
 
-  /** Dismiss a reserve agent: kill terminal, walk them out, free the seat, remove from persistence. */
+  /** Dismiss an agent: kill terminal, walk them out, free the seat if reserve. */
   private dismissReserveAgent(npc: NPC): void {
     if (this.animating) return;
 
     const agentId = npc.config.id;
-    const deskId = RESERVE_AGENT_DESK[agentId];
-    if (!deskId) return;
+    const deskId = RESERVE_AGENT_DESK[agentId]; // null for core custom agents
 
-    console.log(`[OfficeScene] Dismissing reserve agent: ${npc.config.name} (${agentId})`);
+    console.log(`[OfficeScene] Dismissing agent: ${npc.config.name} (${agentId})`);
 
     // Kill terminal session
     const officeId = officeManager.currentOfficeId;
@@ -1685,7 +1684,9 @@ export class OfficeScene extends Phaser.Scene {
         });
       }
       // Remove from persistence
-      officeManager.removeSeatedAgent(officeId, agentId);
+      if (deskId) {
+        officeManager.removeSeatedAgent(officeId, agentId);
+      }
     }
 
     // Close terminal overlay if it's showing this agent
@@ -1712,17 +1713,19 @@ export class OfficeScene extends Phaser.Scene {
       const agentIdx = AGENTS.findIndex(a => a.id === agentId);
       if (agentIdx !== -1) AGENTS.splice(agentIdx, 1);
 
-      // Restore desk to unassigned so stool is clickable again
-      const desk = this.desks.find(d => d.agentId === agentId);
-      if (desk) {
-        desk.agentId = deskId;
-        desk.sprite.setInteractive({ useHandCursor: true, pixelPerfect: false });
-        desk.sprite.on('pointerover', () => { desk.sprite.setTint(0x88ff88); });
-        desk.sprite.on('pointerout', () => { desk.sprite.clearTint(); });
-        desk.sprite.on('pointerdown', () => {
-          console.log(`[OfficeScene] Stool clicked: ${deskId}`);
-          this.spawnReserveAgent(deskId);
-        });
+      // Restore desk to unassigned so stool is clickable again (reserve agents only)
+      if (deskId) {
+        const desk = this.desks.find(d => d.agentId === agentId);
+        if (desk) {
+          desk.agentId = deskId;
+          desk.sprite.setInteractive({ useHandCursor: true, pixelPerfect: false });
+          desk.sprite.on('pointerover', () => { desk.sprite.setTint(0x88ff88); });
+          desk.sprite.on('pointerout', () => { desk.sprite.clearTint(); });
+          desk.sprite.on('pointerdown', () => {
+            console.log(`[OfficeScene] Stool clicked: ${deskId}`);
+            this.spawnReserveAgent(deskId);
+          });
+        }
       }
 
       // Force dashboard refresh
@@ -2015,6 +2018,14 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private createNPCs(): void {
+    // Swap global AGENTS/RESERVE_AGENTS for the current office's roster
+    if (this.currentLayout === 'default') {
+      const office = officeManager.currentOffice;
+      if (office) {
+        swapActiveAgents(office.config);
+      }
+    }
+
     // Restore persisted reserve agents before building the NPC list (default layout only)
     if (this.currentLayout === 'default') {
       const officeId = officeManager.currentOfficeId;
@@ -2059,10 +2070,11 @@ export class OfficeScene extends Phaser.Scene {
         console.log(`[CopilotOffice] ${label} session ready`);
       };
 
-      await Promise.all([
-        startAgent('admin', 'Admin (Alice)'),
-        startAgent('architect', 'Architect (Arthur)'),
-      ]);
+      // Pre-start first 2 agents from the current roster
+      const agentsToStart = AGENTS.slice(0, 2);
+      await Promise.all(
+        agentsToStart.map(a => startAgent(a.id, `${a.name} (${a.description})`))
+      );
     }
   }
 

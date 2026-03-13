@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { generatePlayerSpritesheet, generateHeroSpritesheet } from '../sprites/SpriteGenerator';
 import { loadPlayerColors } from '../config/playerCustomization';
+import { RANDOM_POOL_CONFIGS } from '../config/agents';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
@@ -178,6 +179,11 @@ export class BootScene extends Phaser.Scene {
         accessory: 'book',
         accessoryColor: (fleetColors[i] & 0xfefefe) >> 1 | 0x888888, // lighter tint
       });
+    }
+
+    // ===== RANDOM OFFICE AGENT POOL (20 diverse sprites) =====
+    for (let i = 0; i < RANDOM_POOL_CONFIGS.length; i++) {
+      generateHeroSpritesheet(this, `npc_random_${i}`, RANDOM_POOL_CONFIGS[i].heroConfig);
     }
 
     // ===== FURNITURE SPRITES =====

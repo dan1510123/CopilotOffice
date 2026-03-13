@@ -1,6 +1,9 @@
 // Office Manager - handles multiple offices with separate sessions
 // Each office has its own working directory and set of agents
 
+import type { AgentConfig } from '../config/agents';
+import { generateRandomOfficeAgents } from '../config/agents';
+
 export type OfficeLayout = 'default' | 'fleet-vteam';
 
 export interface SeatedAgent {
@@ -15,6 +18,8 @@ export interface OfficeConfig {
   createdAt: number;
   layout: OfficeLayout;
   seatedAgents: SeatedAgent[];
+  customAgents?: AgentConfig[];
+  customReserveAgents?: Record<string, AgentConfig>;
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -108,6 +113,13 @@ export class OfficeManager {
       layout,
       seatedAgents: [],
     };
+
+    // Generate random agents for non-primary offices with default layout
+    if (id !== 'office-0' && layout === 'default') {
+      const { coreAgents, reserveAgents } = generateRandomOfficeAgents(id);
+      config.customAgents = coreAgents;
+      config.customReserveAgents = reserveAgents;
+    }
     
     const data: OfficeData = {
       config,
