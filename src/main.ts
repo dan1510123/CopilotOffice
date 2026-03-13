@@ -448,15 +448,14 @@ function closeOfficePopover() {
     activeOfficePopover.remove();
     activeOfficePopover = null;
     phaserGameRef?.events.emit('settings:close');
+    // Ensure game canvas regains DOM focus
+    phaserGameRef?.events.emit('game:panel:clicked');
   }
 }
 
 function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
-  // Close any existing popover
-  if (activeOfficePopover) {
-    activeOfficePopover.remove();
-    activeOfficePopover = null;
-  }
+  // Close any existing popover (with proper cleanup)
+  closeOfficePopover();
 
   const office = officeManager.getOffice(officeId);
   if (!office) return;
