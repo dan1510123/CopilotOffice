@@ -5,7 +5,7 @@ import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
-import { AGENTS, AgentConfig, RESERVE_AGENTS } from '../config/agents';
+import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
@@ -70,6 +70,7 @@ export class OfficeScene extends Phaser.Scene {
   private mapWidth: number = 20;
   private mapHeight: number = 12;
   private interactKey!: Phaser.Input.Keyboard.Key;
+  private dismissKey!: Phaser.Input.Keyboard.Key;
   private walls!: Phaser.Physics.Arcade.StaticGroup;
   private furniture!: Phaser.Physics.Arcade.StaticGroup;
   private nearestNPC: NPC | null = null;
@@ -82,6 +83,7 @@ export class OfficeScene extends Phaser.Scene {
   private exitDoors: ExitDoor[] = [];
   private nearestExitDoor: ExitDoor | null = null;
   private exitPrompt!: Phaser.GameObjects.Text;
+  private dismissPrompt!: Phaser.GameObjects.Text;
   private inputManager!: InputManager;
   private bgMusic: Phaser.Sound.BaseSound | null = null;
   private layoutObjects: Phaser.GameObjects.GameObject[] = [];
@@ -291,6 +293,17 @@ export class OfficeScene extends Phaser.Scene {
     this.exitPrompt.setDepth(Depths.UI_OVERLAY);
     this.exitPrompt.setVisible(false);
 
+    // Create dismiss prompt for reserve agents (hidden by default)
+    this.dismissPrompt = this.add.text(0, 0, '[F] Dismiss', {
+      font: 'bold 14px monospace',
+      color: '#ff6666',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 4 },
+    });
+    this.dismissPrompt.setOrigin(0.5, 1);
+    this.dismissPrompt.setDepth(Depths.UI_OVERLAY);
+    this.dismissPrompt.setVisible(false);
+
     // Register exit zone at the center of the grand entrance doors
     this.exitDoors.push({
       x: 10 * this.tileSize,
@@ -300,9 +313,10 @@ export class OfficeScene extends Phaser.Scene {
     // Pre-start copilot sessions for all agents in background
     this.preStartAgentSessions();
     
-    // Set up interact key (E)
+    // Set up interact key (E) and dismiss key (F)
     if (this.input.keyboard) {
       this.interactKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+      this.dismissKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.F);
     }
     
     // Add collision between player and walls
@@ -1626,6 +1640,12 @@ export class OfficeScene extends Phaser.Scene {
       desk.sprite.clearTint();
     }
 
+    // Persist seat assignment so it survives restart
+    const officeId = officeManager.currentOfficeId;
+    if (officeId) {
+      officeManager.addSeatedAgent(officeId, deskId, reserveConfig.id);
+    }
+
     // Walk in from entrance — triggerAgentWalkIn calls setVisible(true) + syncLabelPositions
     this.triggerAgentWalkIn([reserveConfig.id]);
 
@@ -1633,7 +1653,6 @@ export class OfficeScene extends Phaser.Scene {
     npc.setLabelsVisible(true);
 
     // Start terminal in background immediately
-    const officeId = officeManager.currentOfficeId;
     if (officeId && window.copilotBridge?.terminalStart) {
       officeManager.setAgentStarting(officeId, reserveConfig.id);
       this.game.events.emit('agent:status:changed', reserveConfig.id);
@@ -1646,7 +1665,71 @@ export class OfficeScene extends Phaser.Scene {
     this.game.events.emit('office:agents:changed');
   }
 
-  /** Instantly seat all walking agents, cancelling ongoing animations. */
+  /** Dismiss a reserve agent: kill terminal, walk them out, free the seat, remove from persistence. */
+  private dismissReserveAgent(npc: NPC): void {
+    if (this.animating) return;
+
+    const agentId = npc.config.id;
+    const deskId = RESERVE_AGENT_DESK[agentId];
+    if (!deskId) return;
+
+    console.log(`[OfficeScene] Dismissing reserve agent: ${npc.config.name} (${agentId})`);
+
+    // Kill terminal session
+    const officeId = officeManager.currentOfficeId;
+    if (officeId) {
+      officeManager.setAgentSlacking(officeId, agentId);
+      this.game.events.emit('agent:status:changed', agentId);
+      if (window.copilotBridge?.terminalKill) {
+        window.copilotBridge.terminalKill(officeId, agentId).catch(err => {
+          console.error(`[OfficeScene] Failed to kill terminal for ${agentId}:`, err);
+        });
+      }
+      // Remove from persistence
+      officeManager.removeSeatedAgent(officeId, agentId);
+    }
+
+    // Close terminal overlay if it's showing this agent
+    if (this.terminalOverlay.getIsVisible()) {
+      this.terminalOverlay.hide();
+    }
+
+    // Hide badge and labels immediately
+    npc.setBadgeVisible(false);
+    npc.setLabelsVisible(false);
+
+    // Walk to entrance and disappear
+    const entranceX = this.mapWidth * this.tileSize / 2;
+    const entranceY = (this.mapHeight + 1) * this.tileSize;
+    npc.walkTo(entranceX, entranceY, 200).then(() => {
+      npc.setVisible(false);
+
+      // Remove NPC from scene arrays
+      const npcIdx = this.npcs.indexOf(npc);
+      if (npcIdx !== -1) this.npcs.splice(npcIdx, 1);
+      npc.destroy();
+
+      // Remove from AGENTS array
+      const agentIdx = AGENTS.findIndex(a => a.id === agentId);
+      if (agentIdx !== -1) AGENTS.splice(agentIdx, 1);
+
+      // Restore desk to unassigned so stool is clickable again
+      const desk = this.desks.find(d => d.agentId === agentId);
+      if (desk) {
+        desk.agentId = deskId;
+        desk.sprite.setInteractive({ useHandCursor: true, pixelPerfect: false });
+        desk.sprite.on('pointerover', () => { desk.sprite.setTint(0x88ff88); });
+        desk.sprite.on('pointerout', () => { desk.sprite.clearTint(); });
+        desk.sprite.on('pointerdown', () => {
+          console.log(`[OfficeScene] Stool clicked: ${deskId}`);
+          this.spawnReserveAgent(deskId);
+        });
+      }
+
+      // Force dashboard refresh
+      this.game.events.emit('office:agents:changed');
+    });
+  }
   private skipWalkInAnimation(): void {
     if (!this.animating || this.walkInAgents.length === 0) return;
 
@@ -1777,6 +1860,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.basketballPrompt) preserveSet.add(this.basketballPrompt);
     if (this.arcadePrompt) preserveSet.add(this.arcadePrompt);
     if (this.exitPrompt) preserveSet.add(this.exitPrompt);
+    if (this.dismissPrompt) preserveSet.add(this.dismissPrompt);
 
     // Destroy old physics colliders (prevent accumulation)
     this.wallCollider?.destroy();
@@ -1932,6 +2016,27 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private createNPCs(): void {
+    // Restore persisted reserve agents before building the NPC list (default layout only)
+    if (this.currentLayout === 'default') {
+      const officeId = officeManager.currentOfficeId;
+      if (officeId) {
+        const seatedAgents = officeManager.getSeatedAgents(officeId);
+        for (const { deskId, agentId } of seatedAgents) {
+          const reserveConfig = RESERVE_AGENTS[deskId];
+          if (!reserveConfig || reserveConfig.id !== agentId) continue;
+          // Skip if already in AGENTS (e.g. from a previous restore)
+          if (AGENTS.find(a => a.id === agentId)) continue;
+          AGENTS.push(reserveConfig);
+          // Mark the desk as occupied
+          const desk = this.desks.find(d => d.agentId === deskId);
+          if (desk) {
+            desk.agentId = agentId;
+            desk.sprite.disableInteractive();
+          }
+        }
+      }
+    }
+
     const agents = getLayout(this.currentLayout).agents;
     agents.forEach(agentConfig => {
       const npc = new NPC(this, agentConfig, this.tileSize, this.spriteScale);
@@ -2024,6 +2129,15 @@ export class OfficeScene extends Phaser.Scene {
         if (agent) {
           this.startConversation(agent);
         }
+      }
+    }
+
+    // Check for dismiss (F key) — only reserve agents can be dismissed
+    if (Phaser.Input.Keyboard.JustDown(this.dismissKey) && this.currentLayout === 'default') {
+      const targetNPC = this.nearestNPC
+        ?? (this.nearestDesk ? this.npcs.find(n => n.config.id === this.nearestDesk!.agentId) ?? null : null);
+      if (targetNPC && !CORE_AGENT_IDS.has(targetNPC.config.id) && RESERVE_AGENT_DESK[targetNPC.config.id]) {
+        this.dismissReserveAgent(targetNPC);
       }
     }
   }
@@ -2225,6 +2339,20 @@ export class OfficeScene extends Phaser.Scene {
     } else {
       this.nearestNPC = null;
       this.nearestDesk = null;
+    }
+
+    // Show/hide dismiss prompt for dismissable reserve agents
+    if (this.currentLayout === 'default' && !this.terminalOverlay.getIsVisible()) {
+      const targetNPC = this.nearestNPC
+        ?? (this.nearestDesk ? this.npcs.find(n => n.config.id === this.nearestDesk!.agentId) ?? null : null);
+      if (targetNPC && !CORE_AGENT_IDS.has(targetNPC.config.id) && RESERVE_AGENT_DESK[targetNPC.config.id]) {
+        this.dismissPrompt.setPosition(targetNPC.x, targetNPC.y - 50);
+        this.dismissPrompt.setVisible(true);
+      } else {
+        this.dismissPrompt.setVisible(false);
+      }
+    } else {
+      this.dismissPrompt.setVisible(false);
     }
   }
 

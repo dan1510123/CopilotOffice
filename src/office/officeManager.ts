@@ -3,12 +3,18 @@
 
 export type OfficeLayout = 'default' | 'fleet-vteam';
 
+export interface SeatedAgent {
+  deskId: string;
+  agentId: string;
+}
+
 export interface OfficeConfig {
   id: string;
   name: string;
   workingDirectory: string;
   createdAt: number;
   layout: OfficeLayout;
+  seatedAgents: SeatedAgent[];
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -100,6 +106,7 @@ export class OfficeManager {
       workingDirectory,
       createdAt: Date.now(),
       layout,
+      seatedAgents: [],
     };
     
     const data: OfficeData = {
@@ -220,6 +227,28 @@ export class OfficeManager {
     const office = this.currentOffice;
     return office?.config.workingDirectory || '.';
   }
+
+  // Seated agent persistence helpers
+  addSeatedAgent(officeId: string, deskId: string, agentId: string): void {
+    const office = this.offices.get(officeId);
+    if (!office) return;
+    // Avoid duplicates
+    if (office.config.seatedAgents.some(s => s.deskId === deskId)) return;
+    office.config.seatedAgents.push({ deskId, agentId });
+    this.saveToStorage();
+  }
+
+  removeSeatedAgent(officeId: string, agentId: string): void {
+    const office = this.offices.get(officeId);
+    if (!office) return;
+    office.config.seatedAgents = office.config.seatedAgents.filter(s => s.agentId !== agentId);
+    this.saveToStorage();
+  }
+
+  getSeatedAgents(officeId: string): SeatedAgent[] {
+    const office = this.offices.get(officeId);
+    return office?.config.seatedAgents ?? [];
+  }
   
   // Persistence — saves to both localStorage (fast) and .data/copilot-offices.json (durable)
   private saveToStorage(): void {
@@ -274,6 +303,8 @@ export class OfficeManager {
           const config = data.offices[i];
           // Backfill layout for offices saved before this field existed
           if (!config.layout) config.layout = 'default';
+          // Backfill seatedAgents for offices saved before this field existed
+          if (!Array.isArray(config.seatedAgents)) config.seatedAgents = [];
           // Derive id from array position (replaces legacy UUID-style ids)
           config.id = `office-${i}`;
           // Drop legacy index field if present

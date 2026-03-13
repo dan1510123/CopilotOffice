@@ -157,7 +157,13 @@ export const RESERVE_AGENTS: Record<string, AgentConfig> = {
   },
 };
 
-// Positions match chair locations in officeLayouts.ts
+// Core agent IDs that cannot be dismissed
+export const CORE_AGENT_IDS = new Set(['generalist', 'architect', 'debugger', 'admin']);
+
+// Reverse lookup: agentId → deskId (for dismiss/restore flows)
+export const RESERVE_AGENT_DESK: Record<string, string> = Object.fromEntries(
+  Object.entries(RESERVE_AGENTS).map(([deskId, config]) => [config.id, deskId])
+);
 export const AGENTS: AgentConfig[] = [
   {
     id: 'generalist',
