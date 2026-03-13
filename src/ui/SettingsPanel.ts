@@ -1,21 +1,11 @@
-// SettingsPanel — Unified settings overlay consolidating Audio, Terminal, Notifications, and Offices
+// SettingsPanel — Unified settings overlay for Audio, Notifications, and About
 
 import {
   type NotificationEventType,
-  type NotificationSettings,
   NOTIFICATION_EVENT_LABELS,
   resetNotificationSettings,
 } from '../config/notifications';
 import { type NotificationService } from './NotificationService';
-import { type OfficeManager } from '../office/officeManager';
-
-const TERMINAL_PATH_KEY = 'copilot-office-terminal-path';
-
-/** Returns the user-configured default terminal path, or undefined if not set. */
-export function getDefaultTerminalPath(): string | undefined {
-  const val = localStorage.getItem(TERMINAL_PATH_KEY);
-  return val && val.trim() ? val.trim() : undefined;
-}
 
 const ALL_EVENT_TYPES: NotificationEventType[] = [
   'turnEnd',
@@ -36,8 +26,6 @@ export interface SettingsPanelCallbacks {
   getBgmMuted: () => boolean;
   /** Set the bgmMuted state */
   setBgmMuted: (muted: boolean) => void;
-  /** Called when the global terminal path is changed — should reset all sessions */
-  onTerminalPathChanged: (newPath: string) => void;
   /** Called when settings panel opens — disable game input */
   onOpen?: () => void;
   /** Called when settings panel closes — re-enable game input */
@@ -47,16 +35,13 @@ export interface SettingsPanelCallbacks {
 export class SettingsPanel {
   private overlay: HTMLDivElement | null = null;
   private notificationService: NotificationService;
-  private officeManager: OfficeManager;
   private callbacks: SettingsPanelCallbacks;
 
   constructor(
     notificationService: NotificationService,
-    officeManager: OfficeManager,
     callbacks: SettingsPanelCallbacks,
   ) {
     this.notificationService = notificationService;
-    this.officeManager = officeManager;
     this.callbacks = callbacks;
   }
 
@@ -142,7 +127,6 @@ export class SettingsPanel {
       </div>
 
       ${this.renderAudioSection()}
-      ${this.renderTerminalSection()}
       ${this.renderNotificationsSection()}
       ${this.renderAboutSection()}
     `;
@@ -175,50 +159,6 @@ export class SettingsPanel {
             title="Volume"
             style="width: 120px; cursor: pointer; accent-color: #00ff88;" />
           <span id="settings-bgm-volume-label" style="color: #888; font-size: 11px; min-width: 32px;">${bgmVolume}%</span>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderTerminalSection(): string {
-    const terminalPath = localStorage.getItem(TERMINAL_PATH_KEY) ?? '';
-
-    return `
-      <div class="settings-section" style="margin-bottom: 20px;">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
-          🖥 Terminal
-        </h3>
-        <div style="padding: 8px 0;">
-          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-            <span style="color: #aab; font-size: 13px; min-width: 100px;">Default Path</span>
-            <input id="settings-terminal-path" type="text"
-              value="${this.escapeHtml(terminalPath)}"
-              placeholder="Default (app directory)"
-              style="
-                flex: 1;
-                background: #12121f;
-                border: 1px solid #333;
-                border-radius: 4px;
-                padding: 6px 10px;
-                color: #dde;
-                font-family: inherit;
-                font-size: 12px;
-              "
-            />
-          </div>
-          <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
-            <button id="settings-terminal-clear-btn" style="
-              background: #2a1a1a; border: 1px solid #633; border-radius: 4px;
-              padding: 4px 12px; color: #f88; cursor: pointer; font-family: inherit; font-size: 11px;
-            ">Clear</button>
-            <button id="settings-terminal-save-btn" style="
-              background: #1a1a3a; border: 1px solid #336; border-radius: 4px;
-              padding: 4px 12px; color: #88f; cursor: pointer; font-family: inherit; font-size: 11px;
-            ">💾 Save</button>
-          </div>
-          <p style="margin-top: 8px; font-size: 9px; color: #556;">
-            Absolute path where all new terminals will spawn. Saving resets all active sessions.
-          </p>
         </div>
       </div>
     `;
@@ -346,7 +286,6 @@ export class SettingsPanel {
     panel.querySelector('#settings-close-btn')?.addEventListener('click', () => this.close());
 
     this.bindAudioEvents(panel);
-    this.bindTerminalEvents(panel);
     this.bindNotificationEvents(panel);
   }
 
@@ -375,38 +314,6 @@ export class SettingsPanel {
       localStorage.setItem('copilot-office-bgm-volume', String(vol));
       this.callbacks.onBgmVolumeChange(vol);
       if (volumeLabel) volumeLabel.textContent = `${Math.round(vol * 100)}%`;
-    });
-  }
-
-  private bindTerminalEvents(panel: HTMLElement): void {
-    const pathInput = panel.querySelector('#settings-terminal-path') as HTMLInputElement | null;
-    const saveBtn = panel.querySelector('#settings-terminal-save-btn') as HTMLButtonElement | null;
-    const clearBtn = panel.querySelector('#settings-terminal-clear-btn') as HTMLButtonElement | null;
-
-    saveBtn?.addEventListener('click', () => {
-      const newPath = pathInput?.value.trim() ?? '';
-      if (newPath) {
-        localStorage.setItem(TERMINAL_PATH_KEY, newPath);
-      } else {
-        localStorage.removeItem(TERMINAL_PATH_KEY);
-      }
-      this.callbacks.onTerminalPathChanged(newPath);
-
-      if (saveBtn) {
-        saveBtn.textContent = '✓ Saved — resetting sessions…';
-        setTimeout(() => { saveBtn.textContent = '💾 Save'; }, 2000);
-      }
-    });
-
-    clearBtn?.addEventListener('click', () => {
-      localStorage.removeItem(TERMINAL_PATH_KEY);
-      if (pathInput) pathInput.value = '';
-      this.callbacks.onTerminalPathChanged('');
-
-      if (clearBtn) {
-        clearBtn.textContent = '✓ Cleared';
-        setTimeout(() => { clearBtn.textContent = 'Clear'; }, 1500);
-      }
     });
   }
 

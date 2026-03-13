@@ -3,7 +3,7 @@ import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { AgentConfig } from '../config/agents';
 import { InputManager } from '../input/InputManager';
-import { getDefaultTerminalPath } from './SettingsPanel';
+import { officeManager } from '../office/officeManager';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -209,7 +209,7 @@ export class TerminalOverlay {
         );
         if (!exists) {
           this.isReplaying = false;
-          await this.startNewSession(agent.id, agent.workingDir || getDefaultTerminalPath());
+          await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory());
         } else {
           // Session exists - reattach and replay scrollback to sync xterm with PTY state.
           // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
@@ -583,7 +583,7 @@ export class TerminalOverlay {
     this.fitAddon?.fit();
     const dims = this.fitAddon?.proposeDimensions();
     const result = await withTimeout(
-      window.copilotBridge.terminalStart(officeId, this.currentAgentId, this.currentAgent.workingDir || getDefaultTerminalPath(), dims?.cols, dims?.rows),
+      window.copilotBridge.terminalStart(officeId, this.currentAgentId, this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(), dims?.cols, dims?.rows),
       IPC_TIMEOUT, 'terminalStart'
     );
     if (!result.success) {

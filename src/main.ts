@@ -709,7 +709,6 @@ function notifyAgent(agentId: string, eventType: import('./config/notifications'
 
 const settingsPanel = new SettingsPanel(
   notificationService,
-  officeManager,
   {
     onBgmVolumeChange: (vol) => {
       updateSpeakerIcon(vol, bgmMuted);
@@ -721,21 +720,6 @@ const settingsPanel = new SettingsPanel(
     },
     getBgmMuted: () => bgmMuted,
     setBgmMuted: (muted) => { bgmMuted = muted; },
-    onTerminalPathChanged: async () => {
-      // Kill all sessions across all offices so they restart on the new path
-      const allOffices = officeManager.getAllOffices();
-      for (const office of allOffices) {
-        if (window.copilotBridge) {
-          await window.copilotBridge.resetAllSessions(office.id);
-        }
-        // Reset all agent statuses to slacking
-        for (const agent of AGENTS) {
-          officeManager.setAgentSlacking(office.id, agent.id);
-          phaserGameRef?.events.emit('agent:status:changed', agent.id);
-        }
-      }
-      updateTerminalContent();
-    },
     onOpen: () => {
       phaserGameRef?.events.emit('settings:open');
     },
