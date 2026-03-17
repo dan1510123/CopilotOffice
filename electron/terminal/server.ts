@@ -7,18 +7,16 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
-import { EventsWatcher, CopilotEvent, formatToolStatus } from './events-watcher';
+import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
+import { formatToolStatus } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
-
-// ── node-pty ────────────────────────────────────────────────────
-
-let pty: typeof import('node-pty') | null = null;
+import { CopilotSdkBackend, NodePtyBackend, TerminalBackend, TerminalProcess } from './terminal-backend';
 
 // ── State ───────────────────────────────────────────────────────
 
 interface PtyProcess {
   pid: number;
-  process: any;
+  process: TerminalProcess;
   agentId: string;
   sessionId: string;
   workingDir?: string;
@@ -27,7 +25,9 @@ interface PtyProcess {
 const ptyProcesses: Map<string, PtyProcess> = new Map();
 const agentToTerminal: Map<string, string> = new Map();
 const activeAgentViewers: Set<string> = new Set();
-const agentWatchers: Map<string, EventsWatcher> = new Map();
+const agentWatchers: Map<string, CopilotEventSource> = new Map();
+let terminalBackend: TerminalBackend | null = null;
+const eventSourceFactory = new FileWatcherEventSourceFactory();
 
 // Track per-agent ready state so it can be queried by the renderer
 const agentReadyState: Map<string, boolean> = new Map();
@@ -273,17 +273,7 @@ function killAllPtyProcesses(): void {
  *  the entire tree (shell + copilot CLI + children). Single canonical kill
  *  function — all PTY kill sites must use this, never bare proc.process.kill(). */
 function killPtyProcess(proc: PtyProcess): void {
-  try {
-    if (os.platform() === 'win32') {
-      try {
-        execSync(`taskkill /T /F /PID ${proc.pid}`, { stdio: 'ignore' });
-      } catch {
-        proc.process.kill();
-      }
-    } else {
-      proc.process.kill();
-    }
-  } catch { /* process already dead */ }
+  proc.process.kill();
 }
 
 // ── PTY Lifecycle ───────────────────────────────────────────────
@@ -299,8 +289,8 @@ async function startTerminalForAgent(
   rows?: number,
   preseededPrompt?: string
 ): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
-  if (!pty) {
-    return { success: false, error: 'node-pty not available' };
+  if (!terminalBackend || !terminalBackend.isAvailable()) {
+    return { success: false, error: 'terminal backend not available' };
   }
 
   const ck = compositeKey(officeId, agentId);
@@ -342,8 +332,9 @@ async function startTerminalForAgent(
   } as { [key: string]: string };
 
   try {
-    const proc = pty.spawn(shell, [], {
-      name: 'xterm-256color',
+    const proc = await terminalBackend.start({
+      sessionId,
+      shell,
       cols: cols ?? 120,
       rows: rows ?? 30,
       cwd,
@@ -363,10 +354,10 @@ async function startTerminalForAgent(
     // Signal that the PTY is spawned and copilot CLI is starting
     send({ type: 'terminal-preload-status', agentId, status: 'preloading' });
 
-    // EventsWatcher — defer start so the preloading signal has time to reach
-    // the renderer and render 'starting' before the watcher processes historical
-    // events and potentially fires signalReady() (which sends 'ready').
-    const watcher = new EventsWatcher(sessionId);
+     // EventsWatcher — defer start so the preloading signal has time to reach
+     // the renderer and render 'starting' before the watcher processes historical
+     // events and potentially fires signalReady() (which sends 'ready').
+    const watcher = eventSourceFactory.create(sessionId);
     agentWatchers.set(ck, watcher);
 
     let hasSignalledReady = false;
@@ -393,6 +384,10 @@ async function startTerminalForAgent(
         proc.write(prompt + '\r');
       }
     };
+
+    if (terminalBackend.name === 'copilot-sdk') {
+      setTimeout(signalReady, 50);
+    }
 
     const watcherCallback = (event: CopilotEvent, isHistorical: boolean) => {
       // Ready detection works on ALL events (historical + new) so both
@@ -508,7 +503,7 @@ async function startTerminalForAgent(
     proc.onData((data: string) => {
       appendToScrollback(ck, data);
       // Primary ready signal: "Environment loaded" in PTY output
-      if (!hasSignalledReady && data.includes('Environment loaded')) {
+      if (terminalBackend?.name === 'node-pty' && !hasSignalledReady && data.includes('Environment loaded')) {
         console.log(`[TermServer] Primary ready signal for ${ck}: "Environment loaded" detected`);
         signalReady();
       }
@@ -534,11 +529,13 @@ async function startTerminalForAgent(
       if (w) { w.stop(); agentWatchers.delete(ck); }
     });
 
-    // Start copilot CLI
-    setTimeout(() => {
-      console.log(`[TermServer] Starting copilot --resume for ${ck}: ${sessionId}`);
-      proc.write(`copilot --resume ${sessionId}\r`);
-    }, 500);
+    if (terminalBackend.name === 'node-pty') {
+      // Start copilot CLI
+      setTimeout(() => {
+        console.log(`[TermServer] Starting copilot --resume for ${ck}: ${sessionId}`);
+        proc.write(`copilot --resume ${sessionId}\r`);
+      }, 500);
+    }
 
     return { success: true, pid: proc.pid, sessionId };
   } catch (error) {
@@ -903,12 +900,22 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 async function main(): Promise<void> {
   console.log('[TermServer] Starting...');
 
-  // Load node-pty
-  try {
-    pty = require('node-pty');
-    console.log('[TermServer] node-pty loaded');
-  } catch (e) {
-    console.error('[TermServer] Failed to load node-pty:', e);
+  const preferredBackend = (process.env.COPILOT_TERMINAL_BACKEND || 'node-pty').toLowerCase();
+  if (preferredBackend === 'sdk') {
+    terminalBackend = await CopilotSdkBackend.tryCreate();
+    if (!terminalBackend) {
+      console.warn('[TermServer] COPILOT_TERMINAL_BACKEND=sdk requested but @github/copilot-sdk is unavailable; falling back to node-pty');
+    }
+  }
+
+  if (!terminalBackend) {
+    terminalBackend = NodePtyBackend.tryCreate();
+  }
+
+  if (terminalBackend) {
+    console.log(`[TermServer] ${terminalBackend.name} backend loaded`);
+  } else {
+    console.error('[TermServer] Failed to load any terminal backend');
   }
 
   await loadAllOfficeSessions();
