@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import * as os from 'os';
+import * as path from 'path';
 
 export interface TerminalExitEvent {
   exitCode: number;
@@ -27,6 +28,48 @@ export interface TerminalBackend {
   readonly name: string;
   isAvailable(): boolean;
   start(options: StartTerminalOptions): Promise<TerminalProcess>;
+}
+
+function splitPathEntries(pathValue: string): string[] {
+  return pathValue.split(path.delimiter).filter(Boolean);
+}
+
+function normalizeEntry(entry: string): string {
+  return path.normalize(entry).replace(/[\\\/]+$/, '');
+}
+
+function getRepoNodeModulesBin(repoRoot: string): string {
+  return normalizeEntry(path.join(repoRoot, 'node_modules', '.bin'));
+}
+
+function isRepoNodeModulesBin(entry: string, repoRoot: string): boolean {
+  return normalizeEntry(entry).toLowerCase() === getRepoNodeModulesBin(repoRoot).toLowerCase();
+}
+
+export function sanitizeCopilotPath(pathValue: string | undefined, repoRoot: string): string {
+  if (!pathValue) return '';
+  return splitPathEntries(pathValue)
+    .filter((entry) => !isRepoNodeModulesBin(entry, repoRoot))
+    .join(path.delimiter);
+}
+
+export function resolveCopilotCliPath(repoRoot: string, pathValue: string | undefined): string | null {
+  const sanitizedPath = sanitizeCopilotPath(pathValue, repoRoot);
+  const env = { ...process.env, PATH: sanitizedPath };
+
+  try {
+    const command = os.platform() === 'win32' ? 'where.exe copilot' : 'which -a copilot';
+    const output = execSync(command, { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'ignore'] });
+    const candidates = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((candidate) => !candidate.toLowerCase().includes(`${path.sep}node_modules${path.sep}.bin${path.sep}copilot`.toLowerCase()));
+
+    return candidates[0] || null;
+  } catch {
+    return null;
+  }
 }
 
 class NodePtyProcess implements TerminalProcess {
@@ -268,13 +311,22 @@ export class CopilotSdkBackend implements TerminalBackend {
   private startPromise: Promise<void> | null = null;
   private nextPid = 1_000_000;
 
-  constructor(private readonly CopilotClient: new (options?: Record<string, unknown>) => any) {}
+  constructor(
+    private readonly CopilotClient: new (options?: Record<string, unknown>) => any,
+    private readonly cliPath: string,
+    private readonly cliArgs: string[],
+  ) {}
 
-  static async tryCreate(): Promise<CopilotSdkBackend | null> {
+  static async tryCreate(cliPath: string | null): Promise<CopilotSdkBackend | null> {
+    if (!cliPath) {
+      return null;
+    }
+
     try {
       const sdk = await import('@github/copilot-sdk') as { CopilotClient?: new (options?: Record<string, unknown>) => any };
       if (!sdk.CopilotClient) return null;
-      return new CopilotSdkBackend(sdk.CopilotClient);
+      const launchConfig = createSdkCliLaunchConfig(cliPath);
+      return new CopilotSdkBackend(sdk.CopilotClient, launchConfig.cliPath, launchConfig.cliArgs);
     } catch {
       return null;
     }
@@ -306,7 +358,8 @@ export class CopilotSdkBackend implements TerminalBackend {
       this.client = new this.CopilotClient({
         useLoggedInUser: true,
         autoStart: false,
-        cliPath: 'copilot',
+        cliPath: this.cliPath,
+        cliArgs: this.cliArgs,
       });
       this.startPromise = this.client.start();
     }
@@ -337,4 +390,16 @@ export class CopilotSdkBackend implements TerminalBackend {
       });
     }
   }
+}
+
+function createSdkCliLaunchConfig(cliPath: string): { cliPath: string; cliArgs: string[] } {
+  if (os.platform() === 'win32' && /\.(bat|cmd)$/i.test(cliPath)) {
+    const commandProcessor = process.env.ComSpec || path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'cmd.exe');
+    return {
+      cliPath: commandProcessor,
+      cliArgs: ['/c', cliPath],
+    };
+  }
+
+  return { cliPath, cliArgs: [] };
 }

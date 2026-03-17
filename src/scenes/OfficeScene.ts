@@ -2,7 +2,6 @@ import Phaser from 'phaser';
 import { Player } from '../entities/Player';
 import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
-import { PongGame } from '../ui/PongGame';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
 import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, swapActiveAgents } from '../config/agents';
@@ -42,7 +41,6 @@ interface ExitDoor {
 }
 
 // Feature flags
-const ENABLE_PING_PONG = true;
 const ENABLE_DECORATIONS = false;
 const ENABLE_BASKETBALL = false;
 const ENABLE_GALAXIAN = true;
@@ -53,16 +51,12 @@ export class OfficeScene extends Phaser.Scene {
   private npcs: NPC[] = [];
   private desks: DeskInfo[] = [];
   private terminalOverlay!: TerminalOverlay;
-  private pongGame!: PongGame;
   private basketballGame!: BasketballGame;
   private galaxianGame!: GalaxianGame;
-  private pingPongTable: GameTable | null = null;
   private basketballHoop: GameTable | null = null;
   private arcadeMachine: GameTable | null = null;
-  private nearPingPong: boolean = false;
   private nearBasketball: boolean = false;
   private nearArcade: boolean = false;
-  private pingPongPrompt!: Phaser.GameObjects.Text;
   private basketballPrompt!: Phaser.GameObjects.Text;
   private arcadePrompt!: Phaser.GameObjects.Text;
   private tileSize: number = 64;
@@ -239,25 +233,11 @@ export class OfficeScene extends Phaser.Scene {
       }
     });
 
-    // Create pong game overlay
-    this.pongGame = new PongGame(this);
-
     // Create basketball game overlay
     this.basketballGame = new BasketballGame(this);
 
     // Create galaxian game overlay
     this.galaxianGame = new GalaxianGame(this);
-
-    // Create ping pong prompt (hidden by default)
-    this.pingPongPrompt = this.add.text(0, 0, '[E] Play Ping Pong', {
-      font: 'bold 14px monospace',
-      color: '#ffcc00',
-      backgroundColor: '#000000',
-      padding: { x: 8, y: 4 },
-    });
-    this.pingPongPrompt.setOrigin(0.5, 1);
-    this.pingPongPrompt.setDepth(Depths.UI_OVERLAY);
-    this.pingPongPrompt.setVisible(false);
 
     // Create basketball prompt (hidden by default)
     this.basketballPrompt = this.add.text(0, 0, '[E] Play Basketball', {
@@ -946,24 +926,6 @@ export class OfficeScene extends Phaser.Scene {
     }
     
     // (rug moved to entrance area)
-    
-    // Ping pong table (center of floor) - with collision
-    if (ENABLE_PING_PONG) {
-      const pingpongX = Math.floor(this.mapWidth / 2) * this.tileSize + this.tileSize / 2;
-      const pingpongY = Math.floor(this.mapHeight / 2 + 1) * this.tileSize + this.tileSize / 2;
-      const pingpongSprite = addFurniture(pingpongX, pingpongY, 'pingpong');
-      
-      // Track ping pong table for interaction
-      this.pingPongTable = {
-        sprite: pingpongSprite,
-        x: pingpongX,
-        y: pingpongY,
-      };
-    }
-    
-    // Volleyball court (right of center) - removed
-    // McDonald's nuggets stand - removed
-    // Arcade machine - removed
     
     // Arcade machine (Galaxian) - left wall area
     if (ENABLE_GALAXIAN) {
@@ -1860,7 +1822,6 @@ export class OfficeScene extends Phaser.Scene {
     if (this.player) preserveSet.add(this.player);
     if (this.titleText) preserveSet.add(this.titleText);
     if (this.instructionText) preserveSet.add(this.instructionText);
-    if (this.pingPongPrompt) preserveSet.add(this.pingPongPrompt);
     if (this.basketballPrompt) preserveSet.add(this.basketballPrompt);
     if (this.arcadePrompt) preserveSet.add(this.arcadePrompt);
     if (this.exitPrompt) preserveSet.add(this.exitPrompt);
@@ -1905,7 +1866,6 @@ export class OfficeScene extends Phaser.Scene {
     // Reset tracking arrays
     this.desks = [];
     this.exitDoors = [];
-    this.pingPongTable = null;
     this.basketballHoop = null;
     this.arcadeMachine = null;
     this.nearestNPC = null;
@@ -2082,7 +2042,7 @@ export class OfficeScene extends Phaser.Scene {
 
   update(): void {
     // Don't update if player hasn't entered, pong game, basketball game, or terminal overlay is active
-    if (!this.playerInScene || this.pongGame.getIsVisible() || this.basketballGame.getIsVisible() || this.galaxianGame.getIsVisible() || !this.playerMovementEnabled) {
+    if (!this.playerInScene || this.basketballGame.getIsVisible() || this.galaxianGame.getIsVisible() || !this.playerMovementEnabled) {
       return;
     }
 
@@ -2105,9 +2065,6 @@ export class OfficeScene extends Phaser.Scene {
     // Check for nearest NPC or desk
     this.updateNearestInteractable();
 
-    // Check for ping pong table proximity
-    this.updatePingPongProximity();
-
     // Check for basketball hoop proximity
     this.updateBasketballProximity();
 
@@ -2127,8 +2084,6 @@ export class OfficeScene extends Phaser.Scene {
         if (targetAgent) {
           this.startConversation(targetAgent);
         }
-      } else if (this.nearPingPong) {
-        this.startPongGame();
       } else if (this.nearBasketball) {
         this.startBasketballGame();
       } else if (this.nearArcade) {
@@ -2153,39 +2108,6 @@ export class OfficeScene extends Phaser.Scene {
         this.dismissReserveAgent(targetNPC);
       }
     }
-  }
-
-  private updatePingPongProximity(): void {
-    if (!this.pingPongTable) {
-      this.nearPingPong = false;
-      return;
-    }
-
-    const dist = Phaser.Math.Distance.Between(
-      this.player.x, this.player.y,
-      this.pingPongTable.x, this.pingPongTable.y
-    );
-
-    const interactionDistance = this.tileSize * 2;
-    this.nearPingPong = dist < interactionDistance;
-
-    if (this.nearPingPong && !this.terminalOverlay.getIsVisible()) {
-      this.pingPongPrompt.setPosition(this.pingPongTable.x, this.pingPongTable.y - 40);
-      this.pingPongPrompt.setVisible(true);
-    } else {
-      this.pingPongPrompt.setVisible(false);
-    }
-  }
-
-  private startPongGame(): void {
-    this.player.disableMovement();
-    this.pingPongPrompt.setVisible(false);
-    this.cameraDrag?.disable();
-
-    this.pongGame.show(() => {
-      this.player.enableMovement();
-      this.applyZoom(this.cameras.main.zoom);
-    });
   }
 
   private updateBasketballProximity(): void {

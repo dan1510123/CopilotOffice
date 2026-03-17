@@ -10,7 +10,7 @@ import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
-import { CopilotSdkBackend, NodePtyBackend, TerminalBackend, TerminalProcess } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess } from './terminal-backend';
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -327,6 +327,7 @@ async function startTerminalForAgent(
 
   const taggedEnv = {
     ...process.env,
+    PATH: sanitizeCopilotPath(process.env.PATH, process.cwd()),
     COPILOT_OFFICE_PROCESS: 'true',
     COPILOT_OFFICE_AGENT: agentId,
   } as { [key: string]: string };
@@ -900,16 +901,23 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 async function main(): Promise<void> {
   console.log('[TermServer] Starting...');
 
+  const resolvedCopilotCliPath = resolveCopilotCliPath(process.cwd(), process.env.PATH);
   const preferredBackend = (process.env.COPILOT_TERMINAL_BACKEND || 'node-pty').toLowerCase();
   if (preferredBackend === 'sdk') {
-    terminalBackend = await CopilotSdkBackend.tryCreate();
+    terminalBackend = await CopilotSdkBackend.tryCreate(resolvedCopilotCliPath);
     if (!terminalBackend) {
-      console.warn('[TermServer] COPILOT_TERMINAL_BACKEND=sdk requested but @github/copilot-sdk is unavailable; falling back to node-pty');
+      console.warn('[TermServer] COPILOT_TERMINAL_BACKEND=sdk requested but the SDK backend could not initialize; falling back to node-pty');
     }
   }
 
   if (!terminalBackend) {
     terminalBackend = NodePtyBackend.tryCreate();
+  }
+
+  if (resolvedCopilotCliPath) {
+    console.log(`[TermServer] Using Copilot CLI at: ${resolvedCopilotCliPath}`);
+  } else {
+    console.warn('[TermServer] Could not resolve a non-local Copilot CLI path');
   }
 
   if (terminalBackend) {
