@@ -1004,6 +1004,9 @@ if (window.copilotBridge) {
       // Update status based on remaining tools
       if (remaining.length === 0) {
         officeManager.setAgentReady(officeId, agentId);
+      } else if (remaining.some(t => t.name === 'ask_user')) {
+        // ask_user is still active — preserve waiting state even if other tools completed
+        officeManager.setAgentWaiting(officeId, agentId);
       } else {
         const last = remaining[remaining.length - 1];
         officeManager.setAgentThinking(officeId, agentId, `${last.name}`);
