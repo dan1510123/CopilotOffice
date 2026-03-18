@@ -50,10 +50,25 @@ const agentPreloadStatus: Map<string, 'preloading' | 'ready' | 'failed'> = new M
 let pendingStatusBarUpdate = false;
 let pendingTerminalContentUpdate = false;
 
+function scheduleUiUpdateWithFallback(callback: () => void): void {
+  let done = false;
+  const runOnce = () => {
+    if (done) return;
+    done = true;
+    callback();
+  };
+
+  requestAnimationFrame(runOnce);
+  // In background/unfocused states requestAnimationFrame may be throttled heavily.
+  // Keep a timeout fallback so status updates continue to flow.
+  const fallbackDelayMs = document.hidden ? 80 : 200;
+  setTimeout(runOnce, fallbackDelayMs);
+}
+
 function scheduleStatusBarUpdate() {
   if (pendingStatusBarUpdate) return;
   pendingStatusBarUpdate = true;
-  requestAnimationFrame(() => {
+  scheduleUiUpdateWithFallback(() => {
     pendingStatusBarUpdate = false;
     updateStatusBarNow();
   });
@@ -62,7 +77,7 @@ function scheduleStatusBarUpdate() {
 function scheduleTerminalContentUpdate() {
   if (pendingTerminalContentUpdate) return;
   pendingTerminalContentUpdate = true;
-  requestAnimationFrame(() => {
+  scheduleUiUpdateWithFallback(() => {
     pendingTerminalContentUpdate = false;
     updateTerminalContentNow();
   });
@@ -1143,10 +1158,17 @@ async function syncAgentStatuses(): Promise<void> {
 
       if (serverStatus?.alive) {
         if (serverStatus.ready) {
-          // Agent is alive and ready — if we think it's slacking or starting, fix it
-          if (!current || current.state === 'slacking') {
-            officeManager.setAgentReady(officeId, agent.id);
+          if (serverStatus.inTurn) {
+            // Catch-up path for missed turn_start events while unfocused/backgrounded.
+            if (!current || current.subState !== 'thinking') {
+              officeManager.setTaskSummary(officeId, agent.id, 'Processing...');
+              officeManager.setAgentThinking(officeId, agent.id, 'Processing...');
+              changed = true;
+            }
+          // Agent is alive and ready — if we think it's slacking/starting/error, fix it
+          } else if (!current || current.state === 'slacking' || current.subState === 'error') {
             changed = true;
+            officeManager.setAgentReady(officeId, agent.id);
           } else if (current.subState === 'starting') {
             officeManager.setAgentReady(officeId, agent.id);
             changed = true;
@@ -1197,6 +1219,16 @@ syncAgentStatuses();
 // Periodic sync every 10 seconds to catch missed events and dead sessions
 const STATUS_SYNC_INTERVAL_MS = 10_000;
 setInterval(syncAgentStatuses, STATUS_SYNC_INTERVAL_MS);
+
+function catchUpStatusViews(reason: string): void {
+  console.log(`[Office] Status catch-up: ${reason}`);
+  pendingStatusBarUpdate = false;
+  pendingTerminalContentUpdate = false;
+  updateStatusBarNow();
+  updateTerminalContentNow();
+  phaserGameRef?.events.emit('agent:status:changed');
+  void syncAgentStatuses();
+}
 
 // ── Elapsed Time Ticker ─────────────────────────────────────────────
 // Updates elapsed time displays on dashboard cards every second (DOM-only, no full re-render)
@@ -1317,6 +1349,16 @@ officePanel.addEventListener('mousedown', () => {
 // Once Phaser boots and textures are ready, draw sprites for the overview cards
 phaserGame.events.once('ready', () => {
   drawOverviewSprites();
+});
+
+// Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
+window.addEventListener('focus', () => {
+  catchUpStatusViews('window focus');
+});
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    catchUpStatusViews('document visible');
+  }
 });
 
 // When a session is closed via the Close Session button, set agent to slacking
