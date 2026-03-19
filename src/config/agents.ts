@@ -159,8 +159,16 @@ export const RESERVE_AGENTS: Record<string, AgentConfig> = {
   },
 };
 
+// Temporary toggle to hide Arthur from the default office.
+const SHOW_ARCHITECT_IN_DEFAULT_OFFICE = false;
+
 // Core agent IDs that cannot be dismissed
-export const CORE_AGENT_IDS = new Set(['generalist', 'architect', 'debugger', 'admin']);
+export const CORE_AGENT_IDS = new Set([
+  'generalist',
+  ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? ['architect'] : []),
+  'debugger',
+  'admin',
+]);
 
 // Reverse lookup: agentId → deskId (for dismiss/restore flows)
 export const RESERVE_AGENT_DESK: Record<string, string> = Object.fromEntries(
@@ -177,7 +185,7 @@ export const AGENTS: AgentConfig[] = [
     greeting: "Hey! I'm Gene, the Generalist. I can help with just about anything - coding, debugging, research, you name it!",
     description: 'the Generalist',
   },
-  {
+  ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? [{
     id: 'architect',
     name: 'Arthur',
     skill: 'general',
@@ -186,7 +194,7 @@ export const AGENTS: AgentConfig[] = [
     position: { x: 2, y: 9 },  // bottom-left corner, own desk
     greeting: "⚡ I am Arthur, The Architect. I design systems, orchestrate plans, and spin up agents to execute complex tasks. Tell me your vision, and I'll build the team to make it happen.",
     description: 'The Architect',
-  },
+  }] : []),
   {
     id: 'debugger',
     name: 'Dan',

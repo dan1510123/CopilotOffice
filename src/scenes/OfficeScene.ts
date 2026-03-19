@@ -751,10 +751,13 @@ export class OfficeScene extends Phaser.Scene {
     // === COMMUNAL TABLES (open office layout) ===
     // Two 3×2 desk formations with a 3-tile walkway between them
     // Left table: cols 4-6, rows 4-5  |  Right table: cols 13-15, rows 4-5
-    // AGENTS[0] sits at left table, AGENTS[2] sits at right table
+    // Resolve by seat coordinates rather than AGENTS[] indices so roster changes
+    // (e.g. temporarily hiding Arthur) do not break desk assignment.
+    const leftTableAgent = AGENTS.find(a => a.position.x === 4 && a.position.y === 3);
+    const rightTableAgent = AGENTS.find(a => a.position.x === 13 && a.position.y === 3);
     const communalTables = [
-      { startCol: 4, agent: AGENTS[0] },
-      { startCol: 13, agent: AGENTS[2] },
+      { startCol: 4, agent: leftTableAgent },
+      { startCol: 13, agent: rightTableAgent },
     ];
     const tableStartRow = 4;
 
@@ -842,8 +845,9 @@ export class OfficeScene extends Phaser.Scene {
       });
     });
 
-    // === CORNER DESKS (AGENTS[1] bottom-left, AGENTS[3] bottom-right) ===
-    [AGENTS[1], AGENTS[3]].filter(Boolean).forEach(agent => {
+    // === CORNER DESKS (bottom-row seats) ===
+    const cornerAgents = AGENTS.filter(agent => agent.position.y >= 8);
+    cornerAgents.forEach(agent => {
       const deskX = agent.position.x * this.tileSize + this.tileSize / 2;
       const deskY = (agent.position.y + 1) * this.tileSize + this.tileSize / 2;
       placeAgentDesk(agent, deskX, deskY);
