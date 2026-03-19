@@ -35,12 +35,12 @@
   "type": "commonjs",
   "dependencies": {
     "@github/copilot-sdk": "^0.1.32",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "ansi-to-html": "^0.7.2",
     "electron": "^40.6.1",
     "node-pty": "^1.1.0",
-    "phaser": "^3.90.0",
-    "xterm": "^5.3.0",
-    "xterm-addon-fit": "^0.8.0"
+    "phaser": "^3.90.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.1",

@@ -3,8 +3,8 @@ import type { AgentConfig } from '../../../src/config/agents';
 import { installMockCopilotBridge } from '../../setup/copilot-bridge-mock';
 import { MockFitAddon, MockTerminal } from '../../setup/xterm-mock';
 
-vi.mock('xterm', () => ({ Terminal: MockTerminal }));
-vi.mock('xterm-addon-fit', () => ({ FitAddon: MockFitAddon }));
+vi.mock('@xterm/xterm', () => ({ Terminal: MockTerminal }));
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: MockFitAddon }));
 
 import { TerminalOverlay } from '../../../src/ui/TerminalOverlay';
 

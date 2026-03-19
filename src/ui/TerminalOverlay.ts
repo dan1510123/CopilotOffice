@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
-import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
 import { AgentConfig } from '../config/agents';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
