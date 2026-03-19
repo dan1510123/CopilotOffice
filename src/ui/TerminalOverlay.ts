@@ -6,12 +6,19 @@ import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`IPC timeout: ${label} after ${ms}ms`)), ms)
-    ),
-  ]);
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  return new Promise<T>((resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`IPC timeout: ${label} after ${ms}ms`));
+    }, ms);
+
+    promise.then(resolve, reject).finally(() => {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    });
+  });
 }
 
 const IPC_TIMEOUT = 10_000;
@@ -97,6 +104,12 @@ export class TerminalOverlay {
     // the show() reattach path which read the session ID from the server.
   }
 
+  private acknowledgeCompletedWork(officeId: string, agentId: string): void {
+    if (officeManager.acknowledgeAgentCompletion(officeId, agentId)) {
+      this.scene.game.events.emit('agent:status:changed', agentId);
+    }
+  }
+
   private updateSessionDisplay(): void {
     // Query within our own SpriteCard to avoid collisions with other TerminalOverlay instances
     const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLSpanElement;
@@ -108,6 +121,12 @@ export class TerminalOverlay {
   }
 
   async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean }): Promise<void> {
+    const previousAgentId = this.currentAgentId;
+    const previousOfficeId = this.attachedOfficeId ?? this.getOfficeId();
+    if (previousAgentId && previousAgentId !== agent.id) {
+      this.acknowledgeCompletedWork(previousOfficeId, previousAgentId);
+    }
+
     this.currentAgentId = agent.id;
     this.onCloseCallback = onClose;
     this.isReadOnly = options?.readOnly ?? false;
@@ -923,6 +942,10 @@ export class TerminalOverlay {
     console.log('[TerminalOverlay] blurTerminal() — delegating to InputManager');
     this.inputManager.switchToGame('TerminalOverlay.blurTerminal()');
     this.inputManager.blurTerminalXterm(this.terminal);
+    if (this.currentAgentId) {
+      const officeId = this.attachedOfficeId ?? this.getOfficeId();
+      this.acknowledgeCompletedWork(officeId, this.currentAgentId);
+    }
 
     // Clear NPC highlight glow
     this.scene.game.events.emit('npc:clear-highlight');

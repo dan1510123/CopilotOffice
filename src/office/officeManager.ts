@@ -54,6 +54,7 @@ export interface AgentStatus {
   subState: ActiveSubState | null;   // null when slacking
   thinkingDetail: string | null;     // what agent is doing when thinking
   currentTool: string | null;        // raw tool name for backward compat
+  completionPendingAck?: boolean;    // true when latest completed response is unacknowledged
   // Enhanced tracking fields
   unreadCount: number;               // notifications unseen by user
   lastEvent: string | null;          // last notable event description
@@ -360,8 +361,11 @@ export class OfficeManager {
     if (!office) return null;
     let status = office.agents.get(agentId);
     if (!status) {
-      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null, unreadCount: 0, lastEvent: null, activityStartTime: null, lastCompletedAction: null, recentActions: [], taskSummary: null };
+      status = { agentId, state: 'slacking', subState: null, thinkingDetail: null, currentTool: null, completionPendingAck: false, unreadCount: 0, lastEvent: null, activityStartTime: null, lastCompletedAction: null, recentActions: [], taskSummary: null };
       office.agents.set(agentId, status);
+    }
+    if (status.completionPendingAck === undefined) {
+      status.completionPendingAck = false;
     }
     return status;
   }
@@ -386,6 +390,7 @@ export class OfficeManager {
     status.subState = null;
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.completionPendingAck = false;
     status.activityStartTime = null;
     status.recentActions = [];
     status.taskSummary = null;
@@ -400,6 +405,7 @@ export class OfficeManager {
     status.subState = 'starting';
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.completionPendingAck = false;
     status.activityStartTime = Date.now();
   }
 
@@ -411,7 +417,27 @@ export class OfficeManager {
     status.subState = 'ready';
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.completionPendingAck = false;
     status.activityStartTime = null;
+  }
+
+  setAgentDonePendingAck(officeId: string, agentId: string): void {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status) return;
+    this.validateTransition(agentId, status, 'ready');
+    status.state = 'active';
+    status.subState = 'ready';
+    status.thinkingDetail = null;
+    status.currentTool = null;
+    status.completionPendingAck = true;
+    status.activityStartTime = null;
+  }
+
+  acknowledgeAgentCompletion(officeId: string, agentId: string): boolean {
+    const status = this.getOrCreateStatus(officeId, agentId);
+    if (!status || !status.completionPendingAck) return false;
+    status.completionPendingAck = false;
+    return true;
   }
 
   setAgentWaiting(officeId: string, agentId: string): void {
@@ -422,6 +448,7 @@ export class OfficeManager {
     status.subState = 'waiting';
     status.thinkingDetail = null;
     status.currentTool = null;
+    status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
   }
 
@@ -436,6 +463,7 @@ export class OfficeManager {
     const office = this.offices.get(officeId);
     const tools = office?.agentTools.get(agentId);
     status.currentTool = tools?.length ? tools[tools.length - 1].name : null;
+    status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
   }
 
@@ -469,6 +497,7 @@ export class OfficeManager {
     status.subState = 'error';
     status.thinkingDetail = detail;
     status.currentTool = null;
+    status.completionPendingAck = false;
     status.activityStartTime = null;
   }
 

@@ -32,6 +32,21 @@ function getCurrentAgentTools(): Map<string, { toolId: string; name: string; sta
   return officeManager.currentOffice?.agentTools || new Map();
 }
 
+function normalizeToolName(toolName: string | null | undefined): string {
+  return (toolName ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function isAskUserTool(toolName: string | null | undefined, status: string | null | undefined): boolean {
+  const normalized = normalizeToolName(toolName);
+  if (normalized === 'ask_user' || normalized === 'askuser') return true;
+  const statusText = (status ?? '').toLowerCase();
+  return statusText.includes('waiting for your answer') || statusText.includes('waiting on user input');
+}
+
+function isDonePendingAck(status: { completionPendingAck?: boolean } | null | undefined): boolean {
+  return !!status?.completionPendingAck;
+}
+
 let selectedAgentId: string | null = null;
 let phaserGameRef: Phaser.Game | undefined;
 let debugMode = false;
@@ -980,7 +995,7 @@ if (window.copilotBridge) {
     }
 
     // Update agent status based on tool type
-    if (toolName === 'ask_user') {
+    if (isAskUserTool(toolName, status)) {
       officeManager.setAgentWaiting(officeId, agentId);
       console.log(`[Office] Status: ${agentId} → waiting (ask_user)`);
       notifyAgent(agentId, 'askUser');
@@ -1019,7 +1034,7 @@ if (window.copilotBridge) {
       // Update status based on remaining tools
       if (remaining.length === 0) {
         officeManager.setAgentReady(officeId, agentId);
-      } else if (remaining.some(t => t.name === 'ask_user')) {
+      } else if (remaining.some(t => isAskUserTool(t.name, t.status))) {
         // ask_user is still active — preserve waiting state even if other tools completed
         officeManager.setAgentWaiting(officeId, agentId);
       } else {
@@ -1037,13 +1052,20 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn end: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
+      const agentTools = getCurrentAgentTools();
+      const activeTools = agentTools.get(agentId) || [];
+      const waitingToolActive = activeTools.some(t => isAskUserTool(t.name, t.status));
       // Clear task summary and tool stack on turn end for clean state
       officeManager.setTaskSummary(officeId, agentId, null);
-      const agentTools = getCurrentAgentTools();
       if (agentTools.has(agentId)) {
         agentTools.set(agentId, []);
       }
-      officeManager.setAgentReady(officeId, agentId);
+      if (waitingToolActive) {
+        officeManager.setAgentWaiting(officeId, agentId);
+      } else {
+        // Turn finished and no wait tool active: mark response done until user acknowledges.
+        officeManager.setAgentDonePendingAck(officeId, agentId);
+      }
       notifyAgent(agentId, 'turnEnd');
     }
     phaserGame?.events.emit('agent:status:changed', agentId);
@@ -1146,6 +1168,8 @@ async function syncAgentStatuses(): Promise<void> {
     for (const agent of getCurrentAgents()) {
       const serverStatus = statuses[agent.id];
       const current = officeManager.getAgentStatus(officeId, agent.id);
+      const activeTools = getCurrentAgentTools().get(agent.id) || [];
+      const waitingToolActive = activeTools.some(t => isAskUserTool(t.name, t.status));
 
       // Timeout: if agent has been in 'starting' for too long, transition to error
       if (current?.subState === 'starting' && current.activityStartTime
@@ -1158,9 +1182,16 @@ async function syncAgentStatuses(): Promise<void> {
 
       if (serverStatus?.alive) {
         if (serverStatus.ready) {
-          if (serverStatus.inTurn) {
+          if (waitingToolActive) {
+            // ask_user is active: always prefer waiting over thinking.
+            if (!current || current.subState !== 'waiting') {
+              officeManager.setAgentWaiting(officeId, agent.id);
+              changed = true;
+            }
+          } else if (serverStatus.inTurn) {
             // Catch-up path for missed turn_start events while unfocused/backgrounded.
-            if (!current || current.subState !== 'thinking') {
+            // Preserve waiting state while a turn is open; don't force it back to thinking.
+            if (!current || (current.subState !== 'thinking' && current.subState !== 'waiting')) {
               officeManager.setTaskSummary(officeId, agent.id, 'Processing...');
               officeManager.setAgentThinking(officeId, agent.id, 'Processing...');
               changed = true;
@@ -1169,7 +1200,7 @@ async function syncAgentStatuses(): Promise<void> {
           } else if (!current || current.state === 'slacking' || current.subState === 'error') {
             changed = true;
             officeManager.setAgentReady(officeId, agent.id);
-          } else if (current.subState === 'starting') {
+          } else if (current.subState === 'starting' || current.subState === 'waiting') {
             officeManager.setAgentReady(officeId, agent.id);
             changed = true;
           } else if (current.subState === 'thinking' && !serverStatus.inTurn) {
@@ -1271,7 +1302,8 @@ function updateStatusBarNow() {
   // Count per state
   const slackingCount = getCurrentAgents().length - agents.filter(a => a.state === 'active').length;
   const startingCount = agents.filter(a => a.subState === 'starting').length;
-  const readyCount = agents.filter(a => a.subState === 'ready').length;
+  const doneCount = agents.filter(a => a.subState === 'ready' && isDonePendingAck(a)).length;
+  const readyCount = agents.filter(a => a.subState === 'ready' && !isDonePendingAck(a)).length;
   const waitingCount = agents.filter(a => a.subState === 'waiting').length;
   const thinkingCount = agents.filter(a => a.subState === 'thinking').length;
   const errorCount = agents.filter(a => a.subState === 'error').length;
@@ -1280,7 +1312,8 @@ function updateStatusBarNow() {
     <span style="margin-right: 29px; color: #8af;">${officeName}</span>
     <span style="margin-right: 22px; color: #555;">💤 Slacking ${slackingCount}</span>
     <span style="margin-right: 22px; color: #ff9944;">🚀 Starting ${startingCount}</span>
-    ${readyCount > 0 ? `<span style="margin-right: 22px; color: #4af;">✓ Ready ${readyCount}</span>` : ''}
+    ${readyCount > 0 ? `<span style="margin-right: 22px; color: #ffffff;">📭 Ready ${readyCount}</span>` : ''}
+    ${doneCount > 0 ? `<span style="margin-right: 22px; color: #4a78ff;">📬 Done ${doneCount}</span>` : ''}
     <span style="margin-right: 22px; color: #50fa7b;">⚡ Thinking ${thinkingCount}</span>
     <span style="margin-right: 22px; color: #ffb86c;">⏳ Waiting ${waitingCount}</span>
     ${errorCount > 0 ? `<span style="margin-right: 22px; color: #f44;">❌ Error ${errorCount}</span>` : ''}
@@ -1372,6 +1405,7 @@ phaserGame.events.on('agent:session:closed', (agentId: string) => {
 
 // Sync status bar whenever any agent status changes (e.g. Starting set by OfficeScene)
 phaserGame.events.on('agent:status:changed', () => {
+  updateTerminalContent();
   updateStatusBar();
 });
 

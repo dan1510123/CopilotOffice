@@ -11,7 +11,8 @@ import {
 const BADGE_COLORS: Record<string, { fill: number; stroke: number }> = {
   slacking:     { fill: 0x555555, stroke: 0x666666 },
   starting:     { fill: 0xff9944, stroke: 0xffbb66 },
-  ready:        { fill: 0x44aaff, stroke: 0x66ccff },
+  ready:        { fill: 0xffffff, stroke: 0xdddddd },
+  done:         { fill: 0x4a78ff, stroke: 0x6b90ff },
   waiting:      { fill: 0xffb86c, stroke: 0xffcc88 },
   thinking:     { fill: 0x50fa7b, stroke: 0x66ff99 },
   error:        { fill: 0xff4444, stroke: 0xff6666 },
@@ -277,13 +278,14 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     }
 
     this.hasActiveSession = true;
-    const stateKey = status.subState || 'ready';
+    const stateKey = (status.subState === 'ready' && status.completionPendingAck) ? 'done' : (status.subState || 'ready');
     this.updateBadgeForState(stateKey);
 
     // Show status icon in badge
     const icons: Record<string, string> = {
       starting: '🚀',
-      ready:    '✓',
+      ready:    '📭',
+      done:     '📬',
       waiting:  '⏳',
       thinking: '🧠',
       error:    '❌',

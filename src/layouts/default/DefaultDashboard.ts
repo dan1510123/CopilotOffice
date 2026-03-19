@@ -27,9 +27,15 @@ export const defaultDashboard: DashboardRenderer = {
               statusIcon = '🚀';
               break;
             case 'ready':
-              statusDot = '#4af';
-              statusLabel = 'Ready';
-              statusIcon = '✓';
+              if (liveStatus.completionPendingAck) {
+                statusDot = '#4a78ff';
+                statusLabel = 'Done';
+                statusIcon = '📬';
+              } else {
+                statusDot = '#ffffff';
+                statusLabel = 'Ready';
+                statusIcon = '📭';
+              }
               break;
             case 'waiting':
               statusDot = '#ffb86c';
