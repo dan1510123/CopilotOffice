@@ -100,6 +100,21 @@ npm start            # Build and run
 npm run dev          # Watch mode with hot reload
 ```
 
+## Testing
+
+Use the existing npm scripts for all validation:
+
+```bash
+npm run test          # Vitest unit/integration suite
+npm run test:coverage # Vitest with coverage output
+npm run test:e2e      # Playwright end-to-end tests (runs build first)
+```
+
+Testing notes:
+- Prefer `npm run test` for quick local verification during iteration.
+- Use `npm run test:coverage` when changing logic and you need coverage visibility.
+- Use `npm run test:e2e` for workflow/UI regressions that require full app boot.
+
 ## Code Style
 
 - TypeScript strict mode — Phaser is the **sole renderer**

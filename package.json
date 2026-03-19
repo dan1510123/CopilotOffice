@@ -9,7 +9,11 @@
     "build": "npm run build:game && npm run build:electron",
     "start": "npm run build && electron .",
     "dev": "concurrently \"npm run build:game -- --watch\" \"npm run build:electron -- --watch\" \"electron .\"",
-    "electron": "electron ."
+    "electron": "electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "npm run build && playwright test"
   },
   "keywords": [
     "copilot",
@@ -30,9 +34,14 @@
     "xterm-addon-fit": "^0.8.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@testing-library/dom": "^10.4.1",
+    "@vitest/coverage-v8": "^4.0.0",
     "@types/node": "^25.3.3",
     "concurrently": "^9.2.1",
     "esbuild": "^0.27.3",
-    "typescript": "^5.9.3"
+    "jsdom": "^27.0.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
   }
 }

@@ -6,11 +6,14 @@ Add thorough automated backend and UI test coverage for the main AgencyOffice ex
 
 This plan focuses on the highest-value major features and use cases first, especially session/status tracking, office management, notifications, terminal UI behavior, and core input/gameplay behavior. Mock data should be used heavily so tests stay deterministic and fast.
 
-## Current State
+## Current State (Updated)
 
-- There is currently no automated test framework or test suite in the repository.
-- `package.json` has build and run scripts only; there are no test scripts or test dependencies.
-- The current build baseline is healthy: `npm run build` succeeds.
+- Automated tests are now wired and runnable with Vitest + jsdom + Playwright.
+- `package.json` includes `test`, `test:watch`, `test:coverage`, and `test:e2e` scripts.
+- Shared mocks/factories live under `tests/setup/` and `tests/factories/`.
+- A broad unit/DOM suite is active, with integration coverage for terminal and main bootstrap flows.
+- Electron smoke coverage is active (boot + office create/switch flow).
+- The current build baseline remains healthy: `npm run build` succeeds.
 - The codebase has a mix of:
   - pure or mostly-pure state logic that is straightforward to unit test
   - DOM/UI modules that are suitable for `jsdom` testing
@@ -275,3 +278,19 @@ tests/
 6. Selective gameplay behavior tests
 7. Playwright Electron smoke tests
 8. Test documentation and coverage guidance
+
+## Quality Gates and Daily Commands
+
+- Fast local verification:
+  - `npm test`
+- Coverage verification:
+  - `npm run test:coverage`
+- Full verification including Electron smoke:
+  - `npm run test:e2e`
+
+Pass policy:
+
+- Build must pass before/after test changes: `npm run build`
+- Unit/integration suite must pass without Meeting/Fleet scope violations
+- E2E smoke must boot Electron and complete office create/switch path
+- Coverage must meet the thresholds defined in `vitest.config.ts`
