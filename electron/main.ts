@@ -5,7 +5,9 @@ import { spawn, execSync, ChildProcess } from 'child_process';
 import { TerminalRelay } from './terminal/ipc-relay';
 
 // ── Feature Flags ───────────────────────────────────────────────
-const OPEN_DEVTOOLS_ON_START = true;
+// Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
+const OPEN_DEVTOOLS_ON_START = process.env.COPILOT_OFFICE_OPEN_DEVTOOLS !== '0';
+const ENABLE_FILE_WATCHER = process.env.COPILOT_OFFICE_ENABLE_WATCHER !== '0';
 
 // ── Orphan Cleanup ──────────────────────────────────────────────
 // Kill stale processes tagged with COPILOT_OFFICE_PROCESS from previous
@@ -197,7 +199,11 @@ app.whenReady().then(async () => {
     }
   });
   await relay.spawnServer(__dirname);
-  startFileWatcher();
+  if (ENABLE_FILE_WATCHER) {
+    startFileWatcher();
+  } else {
+    console.log('[Main] File watcher disabled');
+  }
   createWindow();
 
   app.on('activate', () => {

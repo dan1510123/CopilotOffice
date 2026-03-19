@@ -3,10 +3,19 @@
   "version": "1.0.0",
   "description": "A 2D pixel-art game where you interact with AI agents in a virtual office",
   "main": "dist/electron/main.js",
+  "bin": {
+    "copilotoffice": "bin/copilotoffice.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "src/index.html"
+  ],
   "scripts": {
     "build:game": "esbuild src/main.ts --bundle --outfile=dist/game.bundle.js --platform=browser --format=iife --global-name=CopilotOffice",
     "build:electron": "esbuild electron/main.ts electron/terminal/preload.ts electron/cli-bridge.ts electron/terminal/events-watcher.ts electron/terminal/server.ts electron/terminal/protocol.ts electron/terminal/ipc-relay.ts --bundle --outdir=dist/electron --platform=node --format=cjs --external:electron --external:node-pty",
     "build": "npm run build:game && npm run build:electron",
+    "prepack": "npm run build",
     "start": "npm run build && electron .",
     "dev": "concurrently \"npm run build:game -- --watch\" \"npm run build:electron -- --watch\" \"electron .\"",
     "electron": "electron .",

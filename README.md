@@ -38,16 +38,19 @@ A 2D pixel-art RPG-style game where you walk around a virtual office and interac
 - Node.js 18+
 - npm
 
-### Installation
+### Install from npm (global command)
+
+```bash
+npm i -g copilotoffice
+copilotoffice
+```
+
+### Install from source (development)
 
 ```bash
 cd AgencyOffice
 npm install
-```
 
-### Running the Game
-
-```bash
 # Build and run
 npm start
 
@@ -161,6 +164,25 @@ npm run build
 
 # Run without rebuilding
 npm run electron
+```
+
+## Release channels
+
+- **Stable**: `npm i -g copilotoffice` (uses npm `latest` dist-tag)
+- **Beta**: `npm i -g copilotoffice@beta` (uses npm `beta` dist-tag)
+
+For maintainers: pushing to GitHub is not enough for `npm i -g copilotoffice` by name.
+You must publish to npm. Typical flow:
+
+```bash
+npm run build
+npm test
+npm version patch
+npm publish
+
+# Beta example
+npm version prerelease --preid=beta
+npm publish --tag beta
 ```
 
 ## License
