@@ -112,6 +112,39 @@ const STYLES = `
   flex-shrink: 0;
   text-align: center;
 }
+.fleet-dashboard.mobile-mode {
+  font-size: 16px;
+}
+.fleet-dashboard.mobile-mode .fleet-header {
+  padding: 16px 20px;
+}
+.fleet-dashboard.mobile-mode .fleet-title {
+  font-size: 20px;
+}
+.fleet-dashboard.mobile-mode .fleet-progress-text {
+  font-size: 15px;
+}
+.fleet-dashboard.mobile-mode .fleet-agent-row {
+  padding: 12px 20px;
+}
+.fleet-dashboard.mobile-mode .fleet-agent-status {
+  width: 32px;
+  font-size: 20px;
+}
+.fleet-dashboard.mobile-mode .fleet-agent-name {
+  font-size: 16px;
+}
+.fleet-dashboard.mobile-mode .fleet-agent-type {
+  font-size: 14px;
+}
+.fleet-dashboard.mobile-mode .fleet-agent-time {
+  width: 64px;
+  font-size: 14px;
+}
+.fleet-dashboard.mobile-mode .fleet-aggregate {
+  font-size: 14px;
+  padding: 12px 20px;
+}
 `;
 
 export class FleetDashboard {
@@ -123,6 +156,7 @@ export class FleetDashboard {
   private aggregateEl: HTMLElement;
   private styleEl: HTMLStyleElement;
   private visible = false;
+  private resizeHandler: (() => void) | null = null;
 
   constructor(parentEl: HTMLElement) {
     // Inject styles
@@ -169,6 +203,10 @@ export class FleetDashboard {
     this.aggregateEl.className = 'fleet-aggregate';
     this.aggregateEl.textContent = '0 tools active | 0 tools completed';
     this.container.appendChild(this.aggregateEl);
+
+    this.applyMobileModeClass();
+    this.resizeHandler = () => this.applyMobileModeClass();
+    window.addEventListener('resize', this.resizeHandler);
   }
 
   show(): void {
@@ -246,8 +284,17 @@ export class FleetDashboard {
   }
 
   destroy(): void {
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
     this.container.remove();
     this.styleEl.remove();
+  }
+
+  private applyMobileModeClass(): void {
+    const isMobile = window.__copilotOfficeMobileModeActive?.() === true;
+    this.container.classList.toggle('mobile-mode', isMobile);
   }
 
   private createAgentRow(agent: SubAgentTracker): HTMLElement {

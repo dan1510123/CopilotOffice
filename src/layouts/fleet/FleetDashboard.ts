@@ -1,4 +1,4 @@
-import { DashboardRenderer, DashboardRenderContext } from '../types';
+import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
 
 /**
  * Dashboard renderer for the fleet v-team layout.
@@ -7,6 +7,7 @@ import { DashboardRenderer, DashboardRenderContext } from '../types';
 export const fleetDashboard: DashboardRenderer = {
   renderCards(ctx: DashboardRenderContext): string {
     const { agents, office, selectedAgentId, formatElapsed, formatRelativeTime } = ctx;
+    const t = getDashboardTypography();
     let html = '';
 
     for (const agent of agents) {
@@ -71,7 +72,7 @@ export const fleetDashboard: DashboardRenderer = {
       const isActive = liveStatus?.state === 'active' && liveStatus?.subState !== 'ready' && liveStatus?.subState !== 'error';
 
       // Elapsed time display
-      const elapsedHtml = elapsed ? `<span data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: 10px; margin-left: 8px;">⏱ ${elapsed}</span>` : '';
+      const elapsedHtml = elapsed ? `<span data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: ${t.elapsed}; margin-left: 8px;">⏱ ${elapsed}</span>` : '';
 
       // ── Recent Activity Log ──
       let activityLogHtml = '';
@@ -79,27 +80,27 @@ export const fleetDashboard: DashboardRenderer = {
       if (completedActions.length > 0) {
         const rows = completedActions.map(a => {
           const relTime = formatRelativeTime(a.timestamp);
-          return `<div style="display: flex; gap: 8px; font-size: 10px; padding: 1px 0;" data-action-ts="${a.timestamp}">
+          return `<div style="display: flex; gap: 8px; font-size: ${t.activityRow}; padding: 1px 0;" data-action-ts="${a.timestamp}">
             <span style="color: #445; flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
             <span style="color: #5a5a7a;">✓ ${a.action}</span>
           </div>`;
         }).join('');
         activityLogHtml = `
           <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
-            <div style="font-size: 9px; color: #3a3a5a; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
+            <div style="font-size: ${t.sectionLabel}; color: #3a3a5a; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
             ${rows}
           </div>`;
       }
 
       // ── Task Summary ──
       const taskSummaryHtml = taskSummary && isActive ? `
-        <div style="font-size: 10px; color: #667; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+        <div style="font-size: ${t.taskSummary}; color: #667; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
           📋 ${taskSummary}
         </div>` : '';
 
       // ── Arthur: "View conversation" indicator ──
       const arthurHint = isArthur ? `
-        <div style="font-size: 10px; color: #4af; margin-top: 4px; display: flex; align-items: center; gap: 4px;">
+        <div style="font-size: ${t.arthurHint}; color: #4af; margin-top: 4px; display: flex; align-items: center; gap: 4px;">
           💬 Open Arthur's terminal
         </div>` : '';
 
@@ -138,17 +139,17 @@ export const fleetDashboard: DashboardRenderer = {
           </div>
           <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px;">
             <div>
-              <div style="font-weight: bold; color: #dde; font-size: 14px;">${agent.name}</div>
-              <div style="color: #778; font-size: 10px; margin-top: 2px;">${agent.description}</div>
+              <div style="font-weight: bold; color: #dde; font-size: ${t.cardTitle};">${agent.name}</div>
+              <div style="color: #778; font-size: ${t.cardDescription}; margin-top: 2px;">${agent.description}</div>
             </div>
             <div>
               <div style="display: flex; align-items: center; flex-wrap: wrap; margin-top: 3px;">
                 <div style="
-                  font-size: 11px;
+                  font-size: ${t.statusText};
                   color: ${statusDot};
                   display: flex; align-items: center; gap: 4px;
                 ">
-                  <span style="font-size: 8px;">●</span>
+                  <span style="font-size: ${t.statusDot};">●</span>
                   <span>${statusIcon} ${statusLabel}</span>
                 </div>
                 ${elapsedHtml}
