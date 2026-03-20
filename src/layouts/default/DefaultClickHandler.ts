@@ -7,7 +7,9 @@ import { CardClickHandler } from '../types';
 export const defaultClickHandler: CardClickHandler = {
   handleCardClick(agentId, context) {
     context.setSelectedAgent(agentId);
-    context.clearUnread(agentId);
+    if (agentId !== 'pc-terminal') {
+      context.clearUnread(agentId);
+    }
     context.updateContent();
     context.emitOpenTerminal(agentId);
   },

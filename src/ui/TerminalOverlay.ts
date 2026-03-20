@@ -22,6 +22,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 const IPC_TIMEOUT = 10_000;
+type TerminalLaunchMode = 'copilot' | 'shell';
 
 export class TerminalOverlay {
   private scene: Phaser.Scene;
@@ -50,6 +51,7 @@ export class TerminalOverlay {
   private attachedOfficeId: string | null = null;
   private isReadOnly: boolean = false;
   private isReplaying: boolean = false;
+  private launchMode: TerminalLaunchMode = 'copilot';
   private readonly instanceId: string;
 
   private static nextInstanceId = 0;
@@ -105,6 +107,7 @@ export class TerminalOverlay {
   }
 
   private acknowledgeCompletedWork(officeId: string, agentId: string): void {
+    if (agentId === 'pc-terminal') return;
     if (officeManager.acknowledgeAgentCompletion(officeId, agentId)) {
       this.scene.game.events.emit('agent:status:changed', agentId);
     }
@@ -120,7 +123,7 @@ export class TerminalOverlay {
     }
   }
 
-  async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean }): Promise<void> {
+  async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean; launchMode?: TerminalLaunchMode }): Promise<void> {
     const previousAgentId = this.currentAgentId;
     const previousOfficeId = this.attachedOfficeId ?? this.getOfficeId();
     if (previousAgentId && previousAgentId !== agent.id) {
@@ -130,6 +133,7 @@ export class TerminalOverlay {
     this.currentAgentId = agent.id;
     this.onCloseCallback = onClose;
     this.isReadOnly = options?.readOnly ?? false;
+    this.launchMode = options?.launchMode ?? 'copilot';
 
     // Snapshot the office ID at attach time so hide() detaches from the correct
     // office even if switchToOffice() changes currentOfficeId before hide() runs.
@@ -327,7 +331,23 @@ export class TerminalOverlay {
     const dims = this.fitAddon?.proposeDimensions();
 
     const result = await withTimeout(
-      window.copilotBridge.terminalStart(this.getOfficeId(), agentId, workingDir, dims?.cols, dims?.rows),
+      this.launchMode === 'shell'
+        ? window.copilotBridge.terminalStart(
+            this.getOfficeId(),
+            agentId,
+            workingDir,
+            dims?.cols,
+            dims?.rows,
+            undefined,
+            'shell',
+          )
+        : window.copilotBridge.terminalStart(
+            this.getOfficeId(),
+            agentId,
+            workingDir,
+            dims?.cols,
+            dims?.rows,
+          ),
       IPC_TIMEOUT, 'terminalStart'
     );
     if (!result.success) {
@@ -602,7 +622,23 @@ export class TerminalOverlay {
     this.fitAddon?.fit();
     const dims = this.fitAddon?.proposeDimensions();
     const result = await withTimeout(
-      window.copilotBridge.terminalStart(officeId, this.currentAgentId, this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(), dims?.cols, dims?.rows),
+      this.launchMode === 'shell'
+        ? window.copilotBridge.terminalStart(
+            officeId,
+            this.currentAgentId,
+            this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(),
+            dims?.cols,
+            dims?.rows,
+            undefined,
+            'shell',
+          )
+        : window.copilotBridge.terminalStart(
+            officeId,
+            this.currentAgentId,
+            this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(),
+            dims?.cols,
+            dims?.rows,
+          ),
       IPC_TIMEOUT, 'terminalStart'
     );
     if (!result.success) {

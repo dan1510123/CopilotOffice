@@ -45,6 +45,7 @@ const ENABLE_DECORATIONS = false;
 const ENABLE_BASKETBALL = false;
 const ENABLE_GALAXIAN = true;
 const ENABLE_ZOOM_BAR = true;
+const PC_TERMINAL_ID = 'pc-terminal';
 
 export class OfficeScene extends Phaser.Scene {
   private player!: Player;
@@ -361,6 +362,10 @@ export class OfficeScene extends Phaser.Scene {
     // Allow external UI(e.g. overview panel) to open agent terminal directly
     // Fleet v-team agents don't open terminals — except Arthur (read-only view)
     this.game.events.on('open:agent:terminal', (agentId: string) => {
+      if (agentId === PC_TERMINAL_ID) {
+        this.openPlayerPcTerminal();
+        return;
+      }
       if (this.currentLayout === 'fleet-vteam' && agentId !== 'architect') return;
       const agents = getLayout(this.currentLayout).agents;
       const agent = agents.find(a => a.id === agentId);
@@ -519,6 +524,14 @@ export class OfficeScene extends Phaser.Scene {
       const clickedNPC = currentlyOver.find((go): go is NPC => go instanceof NPC);
       if (clickedNPC) {
         this.startConversation(clickedNPC.config);
+        return;
+      }
+
+      const clickedPcTerminal = this.desks.some(
+        desk => desk.agentId === PC_TERMINAL_ID && currentlyOver.includes(desk.sprite),
+      );
+      if (clickedPcTerminal) {
+        this.openPlayerPcTerminal();
         return;
       }
 
@@ -871,6 +884,13 @@ export class OfficeScene extends Phaser.Scene {
     // Desktop PC on boss desk (centered)
     const bossPC = addDecor(bossDeskX, bossDeskY - 2 * scale, 'desktop_pc');
     bossPC.setDepth(ySortDepth(bossDeskY, worldH) + 0.1);
+    bossPC.setInteractive({ useHandCursor: true, pixelPerfect: false });
+    this.desks.push({
+      sprite: bossPC,
+      agentId: PC_TERMINAL_ID,
+      x: bossDeskX,
+      y: bossDeskY - 2 * scale,
+    });
     
     // Boss chair (behind desk, decorative — keeps player spawn area clear)
     addDecor(bossDeskX, bossDeskY + this.tileSize, 'chair')
@@ -2081,6 +2101,10 @@ export class OfficeScene extends Phaser.Scene {
     // Check for interaction (E key)
     if (Phaser.Input.Keyboard.JustDown(this.interactKey)) {
       if (this.terminalOverlay.getIsVisible()) {
+        if (this.nearestDesk?.agentId === PC_TERMINAL_ID) {
+          this.openPlayerPcTerminal();
+          return;
+        }
         // Terminal open but game focused — E switches/refocuses terminal to nearest agent
         const targetAgent = this.nearestNPC?.config
           ?? (this.nearestDesk ? AGENTS.find(a => a.id === this.nearestDesk!.agentId) : null)
@@ -2097,6 +2121,10 @@ export class OfficeScene extends Phaser.Scene {
       } else if (this.nearestNPC) {
         this.startConversation(this.nearestNPC.config);
       } else if (this.nearestDesk) {
+        if (this.nearestDesk.agentId === PC_TERMINAL_ID) {
+          this.openPlayerPcTerminal();
+          return;
+        }
         const agent = AGENTS.find(a => a.id === this.nearestDesk!.agentId);
         if (agent) {
           this.startConversation(agent);
@@ -2378,6 +2406,41 @@ export class OfficeScene extends Phaser.Scene {
         // Update badges when closing terminal
         this.updateSessionBadges();
       }
+    );
+  }
+
+  private openPlayerPcTerminal(): void {
+    if (this.currentLayout !== 'default') return;
+
+    const workingDir = officeManager.getCurrentWorkingDirectory();
+    const pcTerminalConfig: AgentConfig = {
+      id: PC_TERMINAL_ID,
+      name: 'PC TERMINAL',
+      skill: 'general',
+      sprite: 'desktop_pc',
+      color: 0x5da9ff,
+      position: { x: 10, y: 2 },
+      greeting: 'PC terminal ready.',
+      description: 'Local Shell',
+      workingDir,
+    };
+
+    this.playerMovementEnabled = false;
+    if (this.playerInScene) {
+      this.player.disableMovement();
+    }
+    this.cameraDrag?.disable();
+
+    this.terminalOverlay.show(
+      pcTerminalConfig,
+      () => {
+        this.playerMovementEnabled = true;
+        if (this.playerInScene) {
+          this.player.enableMovement();
+        }
+        this.applyZoom(this.cameras.main.zoom);
+      },
+      { launchMode: 'shell' },
     );
   }
 

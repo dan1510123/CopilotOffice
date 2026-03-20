@@ -9,6 +9,44 @@ export const defaultDashboard: DashboardRenderer = {
     const { agents, office, selectedAgentId, cachedSessionMeta, agentTools, formatElapsed, formatRelativeTime } = ctx;
     let html = '';
 
+    const pcCardSelected = selectedAgentId === 'pc-terminal';
+    html += `
+      <div class="agent-card" data-agent="pc-terminal" style="
+        background: ${pcCardSelected ? '#1e1e3a' : '#13131f'};
+        border: 1.5px solid ${pcCardSelected ? '#6677ff' : '#252540'};
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 10px;
+        cursor: pointer;
+        transition: border-color 0.15s;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      ">
+        <div style="
+          width: 64px;
+          background: #5da9ff22;
+          border: 1px solid #5da9ff44;
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+          flex-shrink: 0;
+        ">
+          <canvas
+            id="overview-sprite-pc-terminal"
+            width="32" height="32"
+            style="image-rendering: pixelated; width: 48px; height: 48px; display: block;"
+          ></canvas>
+        </div>
+        <div style="min-width: 0;">
+          <div style="font-weight: bold; color: #dde; font-size: 14px;">PC TERMINAL</div>
+          <div style="color: #778; font-size: 11px; margin-top: 2px;">Local shell</div>
+        </div>
+      </div>
+    `;
+
     for (const agent of agents) {
       const liveStatus = office?.agents.get(agent.id);
       const tools = agentTools.get(agent.id) || [];

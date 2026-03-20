@@ -287,10 +287,15 @@ async function startTerminalForAgent(
   workingDir?: string,
   cols?: number,
   rows?: number,
-  preseededPrompt?: string
+  preseededPrompt?: string,
+  launchMode: 'copilot' | 'shell' = 'copilot',
 ): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
   if (!terminalBackend || !terminalBackend.isAvailable()) {
     return { success: false, error: 'terminal backend not available' };
+  }
+  const shellOnlyMode = launchMode === 'shell';
+  if (shellOnlyMode && terminalBackend.name !== 'node-pty') {
+    return { success: false, error: 'shell mode requires node-pty backend' };
   }
 
   const ck = compositeKey(officeId, agentId);
@@ -352,26 +357,22 @@ async function startTerminalForAgent(
 
     agentToTerminal.set(ck, terminalKey);
 
-    // Signal that the PTY is spawned and copilot CLI is starting
-    send({ type: 'terminal-preload-status', agentId, status: 'preloading' });
+    if (!shellOnlyMode) {
+      // Signal that the PTY is spawned and copilot CLI is starting
+      send({ type: 'terminal-preload-status', agentId, status: 'preloading' });
+    }
 
-     // EventsWatcher — defer start so the preloading signal has time to reach
-     // the renderer and render 'starting' before the watcher processes historical
-     // events and potentially fires signalReady() (which sends 'ready').
-    const watcher = eventSourceFactory.create(sessionId);
-    agentWatchers.set(ck, watcher);
-
-    let hasSignalledReady = false;
+    let hasSignalledReady = shellOnlyMode;
     let skippedEventCount = 0;
-    agentReadyState.set(ck, false);
+    agentReadyState.set(ck, shellOnlyMode);
 
     // Store pre-seeded prompt before signalReady is defined so it's available on first ready
-    if (preseededPrompt) {
+    if (!shellOnlyMode && preseededPrompt) {
       pendingPreseededPrompts.set(ck, preseededPrompt);
     }
 
     const signalReady = () => {
-      if (hasSignalledReady) return;
+      if (shellOnlyMode || hasSignalledReady) return;
       hasSignalledReady = true;
       agentReadyState.set(ck, true);
       console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
@@ -386,107 +387,115 @@ async function startTerminalForAgent(
       }
     };
 
-    if (terminalBackend.name === 'copilot-sdk') {
-      setTimeout(signalReady, 50);
-    }
+    if (!shellOnlyMode) {
+      // EventsWatcher — defer start so the preloading signal has time to reach
+      // the renderer and render 'starting' before the watcher processes historical
+      // events and potentially fires signalReady() (which sends 'ready').
+      const watcher = eventSourceFactory.create(sessionId);
+      agentWatchers.set(ck, watcher);
 
-    const watcherCallback = (event: CopilotEvent, isHistorical: boolean) => {
-      // Ready detection works on ALL events (historical + new) so both
-      // detection paths (first turn_end and "Environment loaded") remain functional.
-      if (!hasSignalledReady && (event.type === 'assistant.turn_end' || event.type === 'user.message')) {
-        signalReady();
+      if (terminalBackend.name === 'copilot-sdk') {
+        setTimeout(signalReady, 50);
       }
 
-      // Historical events (from a resumed session's existing events.jsonl) are
-      // used for ready detection above but never forwarded to the renderer.
-      // Forwarding them caused two bugs: (1) tool events before ready triggered
-      // invalid starting→thinking transitions, and (2) turn/user events after
-      // ready left the agent stuck in thinking with no matching turn_end.
-      if (isHistorical) {
-        skippedEventCount++;
-        return;
-      }
+      const watcherCallback = (event: CopilotEvent, isHistorical: boolean) => {
+        // Ready detection works on ALL events (historical + new) so both
+        // detection paths (first turn_end and "Environment loaded") remain functional.
+        if (!hasSignalledReady && (event.type === 'assistant.turn_end' || event.type === 'user.message')) {
+          signalReady();
+        }
 
-      // New events before ready are also skipped — the CLI is still loading.
-      if (!hasSignalledReady) {
-        skippedEventCount++;
-        return;
-      }
+        // Historical events (from a resumed session's existing events.jsonl) are
+        // used for ready detection above but never forwarded to the renderer.
+        // Forwarding them caused two bugs: (1) tool events before ready triggered
+        // invalid starting→thinking transitions, and (2) turn/user events after
+        // ready left the agent stuck in thinking with no matching turn_end.
+        if (isHistorical) {
+          skippedEventCount++;
+          return;
+        }
 
-      // Forward tool events
-      if (event.type === 'tool.execution_start') {
-        const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
-        console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName}`);
-        send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
-      } else if (event.type === 'tool.execution_complete') {
-        const d = event.data as { toolCallId: string; success: boolean };
-        console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
-        send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
-      }
+        // New events before ready are also skipped — the CLI is still loading.
+        if (!hasSignalledReady) {
+          skippedEventCount++;
+          return;
+        }
 
-      if (event.type === 'assistant.turn_end') {
-        agentInTurn.set(ck, false);
-        console.log(`[TermServer] Forwarding turn_end for ${ck}`);
-        send({ type: 'copilot-turn-end', agentId });
-      } else if (event.type === 'assistant.turn_start') {
-        agentInTurn.set(ck, true);
-        console.log(`[TermServer] Forwarding turn_start for ${ck}`);
-        send({ type: 'copilot-turn-start', agentId });
-      } else if (event.type === 'user.message') {
-        console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
-        send({ type: 'copilot-user-message', agentId });
+        // Forward tool events
+        if (event.type === 'tool.execution_start') {
+          const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
+          console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName}`);
+          send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
+        } else if (event.type === 'tool.execution_complete') {
+          const d = event.data as { toolCallId: string; success: boolean };
+          console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
+          send({ type: 'copilot-tool-complete', agentId, toolId: d.toolCallId, success: d.success });
+        }
 
-        // Auto-set session title from first user message if no title exists
-        if (!hasAutoTitled.has(ck)) {
-          hasAutoTitled.add(ck);
-          const existing = officeData.sessionMeta.get(agentId);
-          if (!existing?.title) {
-            const d = event.data as Record<string, unknown>;
-            const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
-            const raw = String(msgText).trim();
-            if (raw) {
-              const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
-              const meta = existing || { title: '' };
-              meta.title = title;
-              officeData.sessionMeta.set(agentId, meta);
-              saveOfficeSessionFile(officeId);
-              console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
-              send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
+        if (event.type === 'assistant.turn_end') {
+          agentInTurn.set(ck, false);
+          console.log(`[TermServer] Forwarding turn_end for ${ck}`);
+          send({ type: 'copilot-turn-end', agentId });
+        } else if (event.type === 'assistant.turn_start') {
+          agentInTurn.set(ck, true);
+          console.log(`[TermServer] Forwarding turn_start for ${ck}`);
+          send({ type: 'copilot-turn-start', agentId });
+        } else if (event.type === 'user.message') {
+          console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
+          send({ type: 'copilot-user-message', agentId });
+
+          // Auto-set session title from first user message if no title exists
+          if (!hasAutoTitled.has(ck)) {
+            hasAutoTitled.add(ck);
+            const existing = officeData.sessionMeta.get(agentId);
+            if (!existing?.title) {
+              const d = event.data as Record<string, unknown>;
+              const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
+              const raw = String(msgText).trim();
+              if (raw) {
+                const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
+                const meta = existing || { title: '' };
+                meta.title = title;
+                officeData.sessionMeta.set(agentId, meta);
+                saveOfficeSessionFile(officeId);
+                console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
+                send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
+              }
             }
           }
+        } else if (event.type === 'subagent.started') {
+          const d = event.data as { toolCallId?: string; agentName?: string; agentDisplayName?: string };
+          console.log(`[TermServer] Subagent started for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'})`);
+        } else if (event.type === 'subagent.completed') {
+          const d = event.data as { toolCallId?: string; agentName?: string };
+          console.log(`[TermServer] Subagent completed for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'})`);
+        } else if (event.type === 'subagent.failed') {
+          const d = event.data as { toolCallId?: string; agentName?: string; error?: string };
+          console.log(`[TermServer] Subagent FAILED for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'}, error: ${d.error ?? 'unknown'})`);
         }
-      } else if (event.type === 'subagent.started') {
-        const d = event.data as { toolCallId?: string; agentName?: string; agentDisplayName?: string };
-        console.log(`[TermServer] Subagent started for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'})`);
-      } else if (event.type === 'subagent.completed') {
-        const d = event.data as { toolCallId?: string; agentName?: string };
-        console.log(`[TermServer] Subagent completed for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'})`);
-      } else if (event.type === 'subagent.failed') {
-        const d = event.data as { toolCallId?: string; agentName?: string; error?: string };
-        console.log(`[TermServer] Subagent FAILED for ${ck}: ${d.agentName ?? 'unknown'} (toolCallId: ${d.toolCallId ?? '?'}, error: ${d.error ?? 'unknown'})`);
-      }
 
-      // Sub-agent lifecycle events are critical for fleet tracking and must always
-      // be forwarded, even without an active terminal viewer. This matches how
-      // copilot-tool-start / copilot-tool-complete are already sent unconditionally.
-      // Without this, FleetTracker goes silent when MeetingScene cleanup detaches
-      // the viewer before FleetTracker can re-attach it.
-      const isFleetCriticalEvent =
-        event.type.startsWith('subagent.') ||
-        event.type === 'system.notification' ||
-        (event.type === 'tool.execution_start' && (event.data as { toolName?: string })?.toolName === 'task');
+        // Sub-agent lifecycle events are critical for fleet tracking and must always
+        // be forwarded, even without an active terminal viewer. This matches how
+        // copilot-tool-start / copilot-tool-complete are already sent unconditionally.
+        // Without this, FleetTracker goes silent when MeetingScene cleanup detaches
+        // the viewer before FleetTracker can re-attach it.
+        const isFleetCriticalEvent =
+          event.type.startsWith('subagent.') ||
+          event.type === 'system.notification' ||
+          (event.type === 'tool.execution_start' && (event.data as { toolName?: string })?.toolName === 'task');
 
-      if (isFleetCriticalEvent || hasActiveViewer(ck)) {
-        send({ type: 'copilot-event', agentId, event });
-      } else {
-        console.warn(`[TermServer] Dropped copilot-event ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
-      }
-    };
+        if (isFleetCriticalEvent || hasActiveViewer(ck)) {
+          send({ type: 'copilot-event', agentId, event });
+        } else {
+          console.warn(`[TermServer] Dropped copilot-event ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
+        }
+      };
 
-    // Defer watcher start by 100ms so the 'preloading' IPC message has time to
-    // reach the renderer and render 'starting' before the watcher processes
-    // historical events and fires signalReady() (which sends 'ready').
-    setTimeout(() => watcher.start(watcherCallback), 100);
+      // Defer watcher start by 100ms so the 'preloading' IPC message has time to
+      // reach the renderer and render 'starting' before the watcher processes
+      // historical events and fires signalReady() (which sends 'ready').
+      setTimeout(() => watcher.start(watcherCallback), 100);
+    }
 
     // Batched PTY data output
     const MAX_PENDING_BYTES = 65536;
@@ -504,7 +513,7 @@ async function startTerminalForAgent(
     proc.onData((data: string) => {
       appendToScrollback(ck, data);
       // Primary ready signal: "Environment loaded" in PTY output
-      if (terminalBackend?.name === 'node-pty' && !hasSignalledReady && data.includes('Environment loaded')) {
+      if (!shellOnlyMode && terminalBackend?.name === 'node-pty' && !hasSignalledReady && data.includes('Environment loaded')) {
         console.log(`[TermServer] Primary ready signal for ${ck}: "Environment loaded" detected`);
         signalReady();
       }
@@ -530,7 +539,7 @@ async function startTerminalForAgent(
       if (w) { w.stop(); agentWatchers.delete(ck); }
     });
 
-    if (terminalBackend.name === 'node-pty') {
+    if (!shellOnlyMode && terminalBackend.name === 'node-pty') {
       // Start copilot CLI
       setTimeout(() => {
         console.log(`[TermServer] Starting copilot --resume for ${ck}: ${sessionId}`);
@@ -551,7 +560,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       activeAgentViewers.add(ck);
-      const result = await startTerminalForAgent(msg.officeId, msg.agentId, msg.workingDir, msg.cols, msg.rows, msg.preseededPrompt);
+      const result = await startTerminalForAgent(msg.officeId, msg.agentId, msg.workingDir, msg.cols, msg.rows, msg.preseededPrompt, msg.launchMode);
       send({ type: 'response', requestId: msg.requestId, result });
       break;
     }

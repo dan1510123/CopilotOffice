@@ -853,6 +853,20 @@ function drawOverviewSprites() {
         ctx.drawImage(source, 0, 0);
       }
     }
+
+    const pcCanvas = document.getElementById('overview-sprite-pc-terminal') as HTMLCanvasElement | null;
+    if (pcCanvas) {
+      const ctx = pcCanvas.getContext('2d');
+      if (!ctx) return;
+      const texture = phaserGameRef.textures.get('desktop_pc');
+      if (!texture || texture.key === '__MISSING') return;
+      const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement;
+      if (source) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, pcCanvas.width, pcCanvas.height);
+        ctx.drawImage(source, 0, 0);
+      }
+    }
   }, 50);
 }
 

@@ -231,8 +231,8 @@ export class TerminalRelay {
   // ── IPC Handler Registration ──────────────────────────────────
 
   registerIpc(): void {
-    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string) =>
-      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows, preseededPrompt })
+    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') =>
+      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode })
     );
 
     ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string) =>

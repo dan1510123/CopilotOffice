@@ -14,6 +14,7 @@ export interface MsgStart {
   cols?: number;
   rows?: number;
   preseededPrompt?: string;
+  launchMode?: 'copilot' | 'shell';
 }
 
 export interface MsgWrite {
