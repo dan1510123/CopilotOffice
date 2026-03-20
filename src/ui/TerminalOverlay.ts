@@ -43,6 +43,7 @@ export class TerminalOverlay {
   private inputManager: InputManager;
   private isFullWidth: boolean = false;
   private fullscreenBtn: HTMLButtonElement | null = null;
+  private mobileKeyboardBtn: HTMLButtonElement | null = null;
   private isFocused: boolean = false;
   private resizeHandler: (() => void) | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -195,6 +196,7 @@ export class TerminalOverlay {
     if (this.spriteCardElement) {
       this.spriteCardElement.style.display = 'flex';
     }
+    this.updateMobileKeyboardButtonVisibility();
 
     // Apply panel layout based on persisted fullscreen preference
     this.applyPanelLayout();
@@ -495,7 +497,15 @@ export class TerminalOverlay {
     `;
     this.spriteCardElement.appendChild(agentDisplay);
 
-    // Right side: Button grid
+    // Right side: controls (mobile keyboard CTA + button grid)
+    const controlsColumn = document.createElement('div');
+    controlsColumn.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      align-items: stretch;
+    `;
+
     const buttonGrid = document.createElement('div');
     buttonGrid.style.cssText = `
       display: grid;
@@ -565,7 +575,31 @@ export class TerminalOverlay {
     refreshFocusBtn.title = 'Re-focus terminal input when typing stops working';
     buttonGrid.appendChild(refreshFocusBtn);
 
-    this.spriteCardElement.appendChild(buttonGrid);
+    this.mobileKeyboardBtn = document.createElement('button');
+    this.mobileKeyboardBtn.textContent = '⌨ Open Keyboard';
+    this.mobileKeyboardBtn.style.cssText = `
+      ${btnStyle}
+      width: 100%;
+      min-height: 56px;
+      font-size: 20px;
+      font-weight: bold;
+      color: #ffffff;
+      background: #3a4f8f;
+      border: 2px solid #6f86d8;
+    `;
+    this.mobileKeyboardBtn.onmouseover = () => {
+      if (this.mobileKeyboardBtn) this.mobileKeyboardBtn.style.background = '#4a63b0';
+    };
+    this.mobileKeyboardBtn.onmouseout = () => {
+      if (this.mobileKeyboardBtn) this.mobileKeyboardBtn.style.background = '#3a4f8f';
+    };
+    this.mobileKeyboardBtn.onclick = () => this.focusTerminal();
+    this.mobileKeyboardBtn.title = 'Tap to open the device keyboard for terminal input';
+
+    controlsColumn.appendChild(this.mobileKeyboardBtn);
+    controlsColumn.appendChild(buttonGrid);
+    this.spriteCardElement.appendChild(controlsColumn);
+    this.updateMobileKeyboardButtonVisibility();
 
     // Mount to #game-container so it spans full width, between mainContent and status bar
     const gameContainer = document.getElementById('game-container');
@@ -858,6 +892,7 @@ export class TerminalOverlay {
     // Handle resize — store reference for cleanup in destroy()
     this.resizeHandler = () => {
       if (this.isVisible) {
+        this.updateMobileKeyboardButtonVisibility();
         this.debouncedRefit();
       }
     };
@@ -866,6 +901,7 @@ export class TerminalOverlay {
     // ResizeObserver catches CSS-driven panel resizes that window.resize misses
     this.resizeObserver = new ResizeObserver(() => {
       if (this.isVisible) {
+        this.updateMobileKeyboardButtonVisibility();
         this.debouncedRefit();
       }
     });
@@ -968,6 +1004,12 @@ export class TerminalOverlay {
     }
   }
 
+  private updateMobileKeyboardButtonVisibility(): void {
+    if (!this.mobileKeyboardBtn) return;
+    const isMobile = window.__copilotOfficeMobileModeActive?.() === true;
+    this.mobileKeyboardBtn.style.display = isMobile ? 'block' : 'none';
+  }
+
   /** Give keyboard focus to the terminal. Safe to call when already focused. */
   focusTerminal(): void {
     console.log('[TerminalOverlay] focusTerminal() — delegating to InputManager');
@@ -1045,6 +1087,7 @@ export class TerminalOverlay {
     if (this.spriteCardElement) {
       this.spriteCardElement.style.display = 'none';
     }
+    this.updateMobileKeyboardButtonVisibility();
     this.isVisible = false;
     this.isReadOnly = false;
     this.closeHistoryPopover();
