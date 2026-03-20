@@ -162,6 +162,7 @@ declare global {
   }
   
   interface Window {
+    __copilotOfficeMobileModeActive?: () => boolean;
     copilotBridge: {
       terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;

@@ -294,3 +294,11 @@ Pass policy:
 - Unit/integration suite must pass without Meeting/Fleet scope violations
 - E2E smoke must boot Electron and complete office create/switch path
 - Coverage must meet the thresholds defined in `vitest.config.ts`
+
+## Manual verification: portrait dashboard mode
+
+- Start the app and keep it in normal landscape size. Confirm both the Phaser game panel and dashboard panel are visible.
+- Resize to a portrait/mobile-like window (for example narrow width via RDP from a phone). Confirm the app switches to dashboard-only mode and the game panel is hidden.
+- While in portrait mode, verify game movement keys do not move the player.
+- Resize back to landscape. Confirm the game panel reappears and normal movement/input behavior returns.
+- Confirm this mode switch does not alter persisted office layout configuration (runtime-only behavior).

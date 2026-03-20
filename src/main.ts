@@ -7,6 +7,7 @@ import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout } from './office/officeManager';
 import { AGENTS, swapActiveAgents } from './config/agents';
+import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
@@ -52,6 +53,7 @@ let phaserGameRef: Phaser.Game | undefined;
 let debugMode = false;
 let currentZoom = parseFloat(localStorage.getItem('agencyOffice:zoomLevel') ?? '0.8');
 currentZoom = (isNaN(currentZoom) || currentZoom < 0.5 || currentZoom > 2.0) ? 0.8 : currentZoom;
+const RESIZE_DEBOUNCE_MS = 200;
 
 /** Log only when debug mode is active */
 function debugLog(...args: unknown[]): void {
@@ -144,6 +146,71 @@ terminalPanel.style.cssText = `
   position: relative;
 `;
 mainContent.appendChild(terminalPanel);
+
+let currentResponsiveLayout: ResponsiveLayoutKey = 'default';
+let resizeDebounceTimer: number | null = null;
+
+function isMobileModeActive(): boolean {
+  return currentResponsiveLayout === 'portrait-dashboard';
+}
+
+function applyMobileTopBarVisibility(): void {
+  const hidden = isMobileModeActive();
+  const ids = ['zoom-bar', 'sprite-customizer-btn', 'debug-toggle-btn'];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.style.display = hidden ? 'none' : '';
+  }
+}
+
+function applyResponsiveLayout(layoutKey: ResponsiveLayoutKey): void {
+  if (layoutKey === currentResponsiveLayout) return;
+  currentResponsiveLayout = layoutKey;
+
+  if (layoutKey === 'portrait-dashboard') {
+    officePanel.style.display = 'none';
+    terminalPanel.style.width = '100%';
+    terminalPanel.style.borderLeft = 'none';
+  } else {
+    officePanel.style.display = '';
+    terminalPanel.style.width = '50%';
+    terminalPanel.style.borderLeft = '2px solid #333';
+  }
+
+  if (phaserGameRef) {
+    phaserGameRef.events.emit('layout:change', { layoutKey });
+
+    if (layoutKey === 'default') {
+      const width = officePanel.clientWidth || window.innerWidth / 2;
+      const height = officePanel.clientHeight || window.innerHeight;
+      phaserGameRef.scale.resize(width, height);
+    }
+  }
+
+  applyMobileTopBarVisibility();
+}
+
+function onWindowResize(): void {
+  if (resizeDebounceTimer !== null) {
+    window.clearTimeout(resizeDebounceTimer);
+  }
+  resizeDebounceTimer = window.setTimeout(() => {
+    const next = computeResponsiveLayout(window.innerWidth, window.innerHeight);
+    applyResponsiveLayout(next);
+    if (phaserGameRef && currentResponsiveLayout === 'default') {
+      const width = officePanel.clientWidth || window.innerWidth / 2;
+      const height = officePanel.clientHeight || window.innerHeight;
+      phaserGameRef.scale.resize(width, height);
+    }
+  }, RESIZE_DEBOUNCE_MS);
+}
+
+applyResponsiveLayout(computeResponsiveLayout(window.innerWidth, window.innerHeight));
+window.addEventListener('resize', onWindowResize);
+if (typeof window !== 'undefined') {
+  window.__copilotOfficeMobileModeActive = isMobileModeActive;
+}
 
 // ── Office Tabs ─────────────────────────────────────────────────
 
@@ -304,7 +371,9 @@ function renderOfficeTabs() {
     phaserGame?.events.emit('debug:toggle', debugMode);
     renderOfficeTabs();
     // Return focus to the game so player movement isn't interrupted
-    phaserGame?.events.emit('game:panel:clicked');
+    if (!isMobileModeActive()) {
+      phaserGame?.events.emit('game:panel:clicked');
+    }
     console.log(`[Debug] Debug mode ${debugMode ? 'ON' : 'OFF'}`);
   });
 
@@ -340,6 +409,7 @@ function renderOfficeTabs() {
     }
   });
 
+  applyMobileTopBarVisibility();
 }
 
 function switchToOffice(officeId: string) {
@@ -1389,6 +1459,7 @@ officePanel.addEventListener('click', () => {
 
 // Clicking the game panel should blur the terminal (DOM-level, bypasses Phaser input)
 officePanel.addEventListener('mousedown', () => {
+  if (isMobileModeActive()) return;
   console.log('[main] game panel mousedown — emitting game:panel:clicked');
   phaserGame?.events.emit('game:panel:clicked');
 });
@@ -1396,6 +1467,7 @@ officePanel.addEventListener('mousedown', () => {
 // Once Phaser boots and textures are ready, draw sprites for the overview cards
 phaserGame.events.once('ready', () => {
   drawOverviewSprites();
+  phaserGame.events.emit('layout:change', { layoutKey: currentResponsiveLayout });
 });
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.

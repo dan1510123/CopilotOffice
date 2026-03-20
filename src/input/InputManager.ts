@@ -96,6 +96,28 @@ export class InputManager {
   }
 
   /**
+   * Switch focus to a neutral dashboard mode.
+   * - Deactivates Phaser keyboard
+   * - Deactivates terminal shortcut intercepts
+   * - Leaves global listener in 'none' mode
+   */
+  switchToNone(reason: string): void {
+    console.log(
+      `[InputManager] ── switchToNone() ──────────────────────────────────────\n` +
+      `  reason  : "${reason}"\n` +
+      `  from    : "${this.currentFocus}"\n` +
+      `  time    : ${Date.now()}`
+    );
+
+    this.terminal.deactivateShortcuts();
+    this.game.deactivate(reason);
+    this.global.setMode('none');
+    this.currentFocus = 'none';
+
+    console.log('[InputManager] ── switchToNone() complete ───────────────────────────');
+  }
+
+  /**
    * Install the F10-to-close handler.  Should be called whenever a terminal
    * becomes visible (regardless of which side has keyboard focus — F10 always
    * closes the terminal).

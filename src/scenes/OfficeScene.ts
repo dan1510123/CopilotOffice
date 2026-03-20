@@ -97,6 +97,7 @@ export class OfficeScene extends Phaser.Scene {
   private walkInTimers: Phaser.Time.TimerEvent[] = [];
   private walkInAgents: { npc: NPC; finalX: number; finalY: number; agentId: string }[] = [];
   private skipButton: HTMLButtonElement | null = null;
+  private isPortraitDashboardMode: boolean = false;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -105,6 +106,29 @@ export class OfficeScene extends Phaser.Scene {
   private setAnimating(value: boolean): void {
     this.animating = value;
     this.game.registry.set('animating', value);
+  }
+
+  private handleLayoutChange(payload: { layoutKey?: string } | undefined): void {
+    const next = payload?.layoutKey === 'portrait-dashboard';
+    if (next === this.isPortraitDashboardMode) return;
+    this.isPortraitDashboardMode = next;
+
+    if (next) {
+      this.player.disableMovement();
+      this.playerMovementEnabled = false;
+      this.inputManager.switchToNone('layout:portrait-dashboard');
+      this.physics.world.pause();
+      this.anims.pauseAll();
+      return;
+    }
+
+    this.physics.world.resume();
+    this.anims.resumeAll();
+    if (!this.terminalOverlay.getIsVisible() && this.playerInScene) {
+      this.player.enableMovement();
+      this.playerMovementEnabled = true;
+      this.inputManager.switchToGame('layout:default');
+    }
   }
 
   create(): void {
@@ -487,6 +511,10 @@ export class OfficeScene extends Phaser.Scene {
 
     // DOM-level click on the game panel — guaranteed to fire even when Phaser input is inactive
     this.game.events.on('game:panel:clicked', () => {
+      if (this.isPortraitDashboardMode) {
+        this.inputManager.switchToNone('game:panel:clicked mobile lock');
+        return;
+      }
       debugLog(this, `game:panel:clicked — blurring terminal`);
       this.terminalOverlay.blurTerminal();
       if (this.playerInScene) {
@@ -509,6 +537,8 @@ export class OfficeScene extends Phaser.Scene {
         this.playerMovementEnabled = true;
       }
     }, this);
+
+    this.game.events.on('layout:change', this.handleLayoutChange, this);
 
     // Click on NPC → open / switch conversation immediately.
     // Click on empty stool → spawn reserve agent.
@@ -611,6 +641,7 @@ export class OfficeScene extends Phaser.Scene {
       this.bgMusic?.stop();
       this.game.events.off('bgm:volume');
       this.game.events.off('bgm:mute');
+      this.game.events.off('layout:change', this.handleLayoutChange, this);
       this.disposeFleetPipeline();
       this.game.events.off('zoom:change');
       this.cameraDrag?.destroy();
@@ -2065,6 +2096,10 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   update(): void {
+    if (this.isPortraitDashboardMode) {
+      return;
+    }
+
     // Don't update if player hasn't entered, pong game, basketball game, or terminal overlay is active
     if (!this.playerInScene || this.basketballGame.getIsVisible() || this.galaxianGame.getIsVisible() || !this.playerMovementEnabled) {
       return;

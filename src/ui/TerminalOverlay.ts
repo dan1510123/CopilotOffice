@@ -876,6 +876,13 @@ export class TerminalOverlay {
 
   /** Toggle between half-width and full-width terminal panel. */
   private toggleFullWidth(): void {
+    if (window.__copilotOfficeMobileModeActive?.() === true) {
+      this.isFullWidth = true;
+      this.applyPanelLayout();
+      this.updateFullscreenButton();
+      this.debouncedRefit();
+      return;
+    }
     this.isFullWidth = !this.isFullWidth;
     localStorage.setItem(TerminalOverlay.STORAGE_KEY, String(this.isFullWidth));
     console.log(`[TerminalOverlay] toggleFullWidth() — now ${this.isFullWidth ? 'full' : 'half'}`);
@@ -890,6 +897,13 @@ export class TerminalOverlay {
     const terminalPanel = document.getElementById('terminal-panel');
     if (!officePanel || !terminalPanel) return;
 
+    if (window.__copilotOfficeMobileModeActive?.() === true) {
+      officePanel.style.display = 'none';
+      terminalPanel.style.width = '100%';
+      terminalPanel.style.borderLeft = 'none';
+      return;
+    }
+
     if (this.isFullWidth) {
       officePanel.style.display = 'none';
       terminalPanel.style.width = '100%';
@@ -902,6 +916,7 @@ export class TerminalOverlay {
 
   /** Restore half-width layout (used when hiding terminal). */
   private restorePanelLayout(): void {
+    if (window.__copilotOfficeMobileModeActive?.() === true) return;
     const officePanel = document.getElementById('office-panel');
     const terminalPanel = document.getElementById('terminal-panel');
     if (!officePanel || !terminalPanel) return;
@@ -943,7 +958,13 @@ export class TerminalOverlay {
   /** Update the fullscreen toggle button label. */
   private updateFullscreenButton(): void {
     if (this.fullscreenBtn) {
+      if (window.__copilotOfficeMobileModeActive?.() === true) {
+        this.fullscreenBtn.textContent = '⛶ Locked';
+        this.fullscreenBtn.title = 'Fullscreen is locked in mobile mode';
+        return;
+      }
       this.fullscreenBtn.textContent = this.isFullWidth ? '⛶ Half' : '⛶ Fullscreen';
+      this.fullscreenBtn.title = '';
     }
   }
 
@@ -976,7 +997,12 @@ export class TerminalOverlay {
   /** Give keyboard focus back to the game canvas. Safe to call when already blurred. */
   blurTerminal(): void {
     console.log('[TerminalOverlay] blurTerminal() — delegating to InputManager');
-    this.inputManager.switchToGame('TerminalOverlay.blurTerminal()');
+    const mobileLocked = window.__copilotOfficeMobileModeActive?.() === true;
+    if (mobileLocked) {
+      this.inputManager.switchToNone('TerminalOverlay.blurTerminal() mobile lock');
+    } else {
+      this.inputManager.switchToGame('TerminalOverlay.blurTerminal()');
+    }
     this.inputManager.blurTerminalXterm(this.terminal);
     if (this.currentAgentId) {
       const officeId = this.attachedOfficeId ?? this.getOfficeId();
@@ -1056,8 +1082,10 @@ export class TerminalOverlay {
       this.onCloseCallback();
     }
 
-    // Return keyboard focus to the game canvas
-    this.scene.game.canvas.focus();
+    // Return focus only when game scene is allowed to receive input
+    if (window.__copilotOfficeMobileModeActive?.() !== true) {
+      this.scene.game.canvas.focus();
+    }
   }
 
   getIsVisible(): boolean {
