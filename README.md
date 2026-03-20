@@ -2,19 +2,20 @@
 
 A 2D pixel-art RPG-style game where you walk around a virtual office and interact with AI agents. Each NPC runs a real Copilot CLI session with full coding capabilities — plan tasks, debug code, and orchestrate multi-agent workflows from inside a game.
 
+![Agency Office](assets/game-screenshot.png)
+
 ## Features
 
 - **Pixel-art office environment** — all sprites procedurally generated in code, no external image assets
-- **4 active NPC agents**, each with specialized capabilities:
+- **3 active NPC agents**, each with specialized capabilities:
   - **Gene** (Generalist) — general-purpose coding, debugging, and research
-  - **Arthur** (Architect) — orchestrates plans and spins up agents for complex tasks
   - **Dan** (Debugger) — bug investigation and root cause analysis
   - **Alice** (Admin) — has direct access to edit this game's UI code (`workingDir: '.'`)
-- **6 reserve agent slots** — Azure, Val, Rex, Doc, Scout, and Penny have pre-generated sprites ready to activate
+- **7+ reserve agent slots** — Arthur, Azure, Val, Rex, Doc, Scout, and Penny have pre-generated sprites ready to activate
 - **Real terminal integration** via xterm.js — agents run actual Copilot CLI sessions through node-pty
 - **Multi-office management** — switch between projects with independent agent state per office
-- **Meeting Mode** — meet with Arthur in a private meeting room to plan and decompose complex tasks into structured subtasks
-- **Fleet execution** — parallel agent spawning for approved task plans
+- **Meeting Mode** — private meeting room for planning and decomposing complex tasks into structured subtasks
+- **Fleet execution** — parallel agent spawning in dedicated v-team offices for approved task plans
 - **Real-time status badges** — agent states (thinking, waiting, ready, slacking) with animated indicators
 - **Toast & OS notifications** — configurable per-event notifications for agent activity
 - **Session persistence** — terminal sessions and history survive restarts
