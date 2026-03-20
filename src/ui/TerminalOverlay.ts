@@ -196,6 +196,7 @@ export class TerminalOverlay {
     if (this.spriteCardElement) {
       this.spriteCardElement.style.display = 'flex';
     }
+    this.applySpriteCardResponsiveStyles();
     this.updateMobileKeyboardButtonVisibility();
 
     // Apply panel layout based on persisted fullscreen preference
@@ -892,6 +893,7 @@ export class TerminalOverlay {
     // Handle resize — store reference for cleanup in destroy()
     this.resizeHandler = () => {
       if (this.isVisible) {
+        this.applySpriteCardResponsiveStyles();
         this.updateMobileKeyboardButtonVisibility();
         this.debouncedRefit();
       }
@@ -901,6 +903,7 @@ export class TerminalOverlay {
     // ResizeObserver catches CSS-driven panel resizes that window.resize misses
     this.resizeObserver = new ResizeObserver(() => {
       if (this.isVisible) {
+        this.applySpriteCardResponsiveStyles();
         this.updateMobileKeyboardButtonVisibility();
         this.debouncedRefit();
       }
@@ -1004,10 +1007,23 @@ export class TerminalOverlay {
     }
   }
 
+  private applySpriteCardResponsiveStyles(): void {
+    if (!this.spriteCardElement) return;
+    const isMobile = window.__copilotOfficeMobileModeActive?.() === true;
+
+    if (isMobile) {
+      this.spriteCardElement.style.minHeight = '320px';
+      this.spriteCardElement.style.padding = '30px';
+      return;
+    }
+
+    this.spriteCardElement.style.minHeight = '';
+    this.spriteCardElement.style.padding = '15px 30px';
+  }
+
   private updateMobileKeyboardButtonVisibility(): void {
     if (!this.mobileKeyboardBtn) return;
-    const isMobile = window.__copilotOfficeMobileModeActive?.() === true;
-    this.mobileKeyboardBtn.style.display = isMobile ? 'block' : 'none';
+    this.mobileKeyboardBtn.style.display = 'none';
   }
 
   /** Give keyboard focus to the terminal. Safe to call when already focused. */
@@ -1018,6 +1034,11 @@ export class TerminalOverlay {
       () => this.handleNewSession(),
       () => this.toggleFullWidth()
     );
+    // Mobile browsers often require focus during the direct tap gesture to open
+    // the virtual keyboard. Keep this synchronous, then let InputManager retry.
+    if (window.__copilotOfficeMobileModeActive?.() === true) {
+      this.terminal?.focus();
+    }
     this.inputManager.focusTerminalXterm(this.terminal);
 
     // Restore NPC highlight for the active agent
