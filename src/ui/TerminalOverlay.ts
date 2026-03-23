@@ -1012,8 +1012,8 @@ export class TerminalOverlay {
     const isMobile = window.__copilotOfficeMobileModeActive?.() === true;
 
     if (isMobile) {
-      this.spriteCardElement.style.minHeight = '320px';
-      this.spriteCardElement.style.padding = '30px';
+      this.spriteCardElement.style.minHeight = '416px';
+      this.spriteCardElement.style.padding = '39px';
       return;
     }
 
