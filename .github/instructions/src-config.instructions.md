@@ -21,7 +21,8 @@ Exports the `AgentConfig` interface and `AGENTS` array. Each agent has:
 - `greeting` — message shown on interaction, `description` — short role label
 - `workingDir` — optional custom working directory for the CLI session
 
-**Active agents (4):** Gene (generalist, blue), Arthur (architect, dark), Dan (debugger, green), Alice (admin, pink).
+**Active agents by default (3):** Gene (generalist, blue), Dan (debugger, green), Alice (admin, pink).
+**Arthur (architect):** Fleet-vteam seat occupant by default (and optionally toggleable into default office via config).
 **Reserve agents (6):** Azure, Validator, Deployer, Doctor, Scout, Accountant — sprites already generated in BootScene; just add an entry to `AGENTS` to activate.
 
 When adding an agent: pick a unique color, choose a non-overlapping grid position,

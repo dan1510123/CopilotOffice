@@ -41,7 +41,7 @@ Phaser ↔ DOM coordination uses `game.events`. Key events: `agent:interact`, `t
 `officeManager.ts` manages multiple offices with per-agent status tracking. Each `OfficeConfig` includes a `layout: OfficeLayout` field (`'default' | 'fleet-vteam'`). Persisted to `.data/copilot-offices.json`. Pure data — never renders.
 
 ### Feature Flags
-Top of `OfficeScene.ts`: `ENABLE_PING_PONG`, `ENABLE_DECORATIONS`, `ENABLE_BASKETBALL`, `ENABLE_ZOOM_BAR`.
+Top of `OfficeScene.ts`: `ENABLE_DECORATIONS`, `ENABLE_BASKETBALL`, `ENABLE_GALAXIAN`, `ENABLE_ZOOM_BAR`.
 
 ### Procedural Sprites
 All sprites generated in code (BootScene + SpriteGenerator) — no external image assets. 4-direction walk animations via DirectionalSprite.
@@ -57,11 +57,10 @@ Two mutually exclusive states: `game` and `terminal`. All transitions through `I
 | ID | Name | Skill | Position | Purpose |
 |----|------|-------|----------|---------|
 | `generalist` | Gene | general | (4, 3) | General-purpose assistant |
-| `architect` | Arthur | general | (2, 9) | Architect — orchestrates plans and agents |
 | `debugger` | Dan | general | (13, 3) | Debugger — investigates and fixes issues |
 | `admin` | Alice | general | (17, 9) | Office Admin — edits this game directly (`workingDir: '.'`) |
 
-6 reserve agents (Azure, Validator, Deployer, Doctor, Scout, Accountant) have pre-generated sprites ready to activate. Status badges track: slacking → starting → ready ↔ waiting/thinking → slacking.
+Arthur appears in fleet-vteam offices at (10, 8) by default (and can be toggled into the default office via config). 6 reserve agents (Azure, Validator, Deployer, Doctor, Scout, Accountant) have pre-generated sprites ready to activate. Status badges track: slacking → starting → ready ↔ waiting/thinking → slacking.
 
 ## Active Feature Plans
 

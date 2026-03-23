@@ -35,9 +35,9 @@ Phaser scenes follow `preload()` → `create()` → `update()`:
 - **Tile grid**: 20×12 tiles, 64px default tile size (scales 48–64px based on screen).
 - **Feature flags** at top of file control optional content:
   ```ts
-  const ENABLE_PING_PONG = false;
   const ENABLE_DECORATIONS = false;
   const ENABLE_BASKETBALL = false;
+  const ENABLE_GALAXIAN = true;
   const ENABLE_ZOOM_BAR = true;
   ```
 - **Layout system**: `rebuildLayout(layout)` switches between `'default'` and `'fleet-vteam'` layouts by calling `getLayout()` from `src/layouts/index.ts`. Each layout defines its own agent roster, dashboard component, and click handler. The `currentLayout` is derived from the active office's `layout` field.

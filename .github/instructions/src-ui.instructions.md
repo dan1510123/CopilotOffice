@@ -28,15 +28,15 @@ The main interaction surface. An xterm.js-based terminal for agent conversations
 
 ## Mini-Game Overlay Pattern
 
-`PongGame.ts` and `BasketballGame.ts` follow the same pattern:
+`BasketballGame.ts`, `GalaxianGame.ts`, and `PongGame.ts` follow the same pattern:
 
 - **Phaser Container** — rendered as Phaser GameObjects inside a `Phaser.GameObjects.Container`,
-  not DOM elements. Use Phaser depth (`Depths.MINIGAME` = 200), not CSS z-index.
+  not DOM elements. Use Phaser depth (`Depths.MINI_GAMES` = 200), not CSS z-index.
 - **show() / hide()** — toggle visibility; `hide()` fires `onClose` callback.
 - **Escape to close** — listen for `ESC` key to exit.
 - **Self-contained game loop** — register an `update` handler on the scene; remove it on hide.
-- **Feature flags** — gated by constants at the top of `OfficeScene.ts`
-  (`ENABLE_PING_PONG`, `ENABLE_BASKETBALL`). Do not enable without checking flag state.
+- **Feature flags** — `OfficeScene.ts` currently gates `BasketballGame`/`GalaxianGame` via
+  `ENABLE_BASKETBALL` and `ENABLE_GALAXIAN`. `PongGame` exists but is not currently wired into `OfficeScene`.
 
 ## Notification System
 

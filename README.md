@@ -7,11 +7,12 @@ A 2D pixel-art RPG-style game where you walk around a virtual office and interac
 ## Features
 
 - **Pixel-art office environment** — all sprites procedurally generated in code, no external image assets
-- **3 active NPC agents**, each with specialized capabilities:
+- **3 active NPC agents by default**, each with specialized capabilities:
   - **Gene** (Generalist) — general-purpose coding, debugging, and research
   - **Dan** (Debugger) — bug investigation and root cause analysis
   - **Alice** (Admin) — has direct access to edit this game's UI code (`workingDir: '.'`)
-- **7+ reserve agent slots** — Arthur, Azure, Val, Rex, Doc, Scout, and Penny have pre-generated sprites ready to activate
+- **6 reserve agent slots** — Azure, Val, Rex, Doc, Scout, and Penny have pre-generated sprites ready to activate
+- **Arthur (Architect)** appears in fleet v-team offices (and can be toggled into the default office in config)
 - **Real terminal integration** via xterm.js — agents run actual Copilot CLI sessions through node-pty
 - **Multi-office management** — switch between projects with independent agent state per office
 - **Meeting Mode** — private meeting room for planning and decomposing complex tasks into structured subtasks
