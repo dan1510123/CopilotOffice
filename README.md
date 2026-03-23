@@ -2,7 +2,7 @@
 
 A 2D pixel-art RPG-style game where you walk around a virtual office and interact with AI agents. Each NPC runs a real Copilot CLI session with full coding capabilities — plan tasks, debug code, and orchestrate multi-agent workflows from inside a game.
 
-![Agency Office](assets/game-screenshot.png)
+![Agency Office](https://raw.githubusercontent.com/dan1510123/CopilotOffice/main/assets/game-screenshot.png)
 
 ## Features
 
