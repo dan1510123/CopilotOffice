@@ -6,7 +6,7 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout } from './office/officeManager';
-import { AGENTS, swapActiveAgents } from './config/agents';
+import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
@@ -34,6 +34,16 @@ function getCurrentAgentTools(): Map<string, { toolId: string; name: string; sta
   return officeManager.currentOffice?.agentTools || new Map();
 }
 
+function syncActiveRosterForCurrentOffice(): void {
+  const office = officeManager.currentOffice;
+  if (!office) return;
+
+  swapActiveAgents(office.config);
+  if (office.config.layout === 'default') {
+    restoreSeatedReserveAgents(officeManager.getSeatedAgents(office.config.id));
+  }
+}
+
 function normalizeToolName(toolName: string | null | undefined): string {
   return (toolName ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
@@ -58,6 +68,7 @@ const RESIZE_DEBOUNCE_MS = 200;
 type AppMode = 'game' | 'serious';
 const APP_MODE_STORAGE_KEY = 'agencyOffice:appMode';
 const SESSION_META_CACHE_STORAGE_KEY = 'agencyOffice:sessionMetaCacheByOffice';
+const OVERVIEW_SPRITE_CACHE_STORAGE_KEY = 'agencyOffice:overviewSpriteCache';
 const PC_TERMINAL_ID = 'pc-terminal';
 
 function sanitizeAppMode(value: string | null | undefined): AppMode {
@@ -106,6 +117,27 @@ function setSessionMetaCacheForOffice(officeId: string, meta: Record<string, { t
   saveSessionMetaCacheByOffice(all);
 }
 
+type OverviewSpriteCache = Record<string, string>;
+
+function loadOverviewSpriteCache(): OverviewSpriteCache {
+  try {
+    const raw = localStorage.getItem(OVERVIEW_SPRITE_CACHE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as OverviewSpriteCache;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveOverviewSpriteCache(cache: OverviewSpriteCache): void {
+  try {
+    localStorage.setItem(OVERVIEW_SPRITE_CACHE_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore storage failures
+  }
+}
+
 /** Log only when debug mode is active */
 function debugLog(...args: unknown[]): void {
   if (debugMode) console.log('[Debug]', ...args);
@@ -120,6 +152,8 @@ let pendingTerminalContentUpdate = false;
 const OVERVIEW_SPRITE_MAX_RETRY_ATTEMPTS = 5;
 const OVERVIEW_SPRITE_RETRY_DELAY_MS = 120;
 let overviewSpriteRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let overviewSpriteCache = loadOverviewSpriteCache();
+const overviewSpriteImageCache: Map<string, HTMLImageElement> = new Map();
 
 function scheduleUiUpdateWithFallback(callback: () => void): void {
   let done = false;
@@ -605,8 +639,7 @@ function switchToOffice(officeId: string) {
   cachedSessionMeta = getSessionMetaCacheForOffice(officeId);
 
   // Swap global agent roster before rendering dashboard
-  const office = officeManager.currentOffice;
-  if (office) swapActiveAgents(office.config);
+  syncActiveRosterForCurrentOffice();
 
   phaserGameRef?.events.emit('office:switch', officeId, officeManager.currentOffice?.config.workingDirectory);
 
@@ -1150,6 +1183,7 @@ function updateTerminalContent() {
 }
 
 function updateTerminalContentNow() {
+  syncActiveRosterForCurrentOffice();
   const agentTools = getCurrentAgentTools();
   const office = officeManager.currentOffice;
 
@@ -1186,6 +1220,9 @@ function updateTerminalContentNow() {
     overviewContent.innerHTML = html;
   }
   drawOverviewSprites();
+  if (appMode === 'serious') {
+    seriousTerminalController?.refreshCardFromOverview();
+  }
 }
 
 function updateStatusBar() {
@@ -1199,12 +1236,63 @@ function clearOverviewSpriteRetry(): void {
   }
 }
 
+function drawCachedOverviewSprite(canvas: HTMLCanvasElement, textureKey: string): boolean {
+  const dataUrl = overviewSpriteCache[textureKey];
+  if (!dataUrl) return false;
+
+  let img = overviewSpriteImageCache.get(textureKey);
+  if (!img || img.src !== dataUrl) {
+    img = new Image();
+    img.src = dataUrl;
+    overviewSpriteImageCache.set(textureKey, img);
+  }
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return true;
+
+  const drawNow = () => {
+    if (!img) return;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  };
+
+  if (!img.complete || img.naturalWidth === 0) {
+    img.onload = () => drawNow();
+    return true;
+  }
+
+  drawNow();
+  return true;
+}
+
+function updateOverviewSpriteCacheFromCanvas(canvas: HTMLCanvasElement, textureKey: string): void {
+  try {
+    const dataUrl = canvas.toDataURL('image/png');
+    if (overviewSpriteCache[textureKey] !== dataUrl) {
+      overviewSpriteCache = { ...overviewSpriteCache, [textureKey]: dataUrl };
+      saveOverviewSpriteCache(overviewSpriteCache);
+      const img = new Image();
+      img.src = dataUrl;
+      overviewSpriteImageCache.set(textureKey, img);
+    }
+  } catch {
+    // ignore cache write failures
+  }
+}
+
 function drawTextureToOverviewCanvas(canvas: HTMLCanvasElement, textureKey: string): boolean {
-  if (!phaserGameRef) return false;
+  if (!phaserGameRef) {
+    return drawCachedOverviewSprite(canvas, textureKey);
+  }
   const texture = phaserGameRef.textures.get(textureKey);
-  if (!texture || texture.key === '__MISSING') return false;
+  if (!texture || texture.key === '__MISSING') {
+    return drawCachedOverviewSprite(canvas, textureKey);
+  }
   const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement | undefined;
-  if (!source) return false;
+  if (!source) {
+    return drawCachedOverviewSprite(canvas, textureKey);
+  }
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return true;
@@ -1224,6 +1312,7 @@ function drawTextureToOverviewCanvas(canvas: HTMLCanvasElement, textureKey: stri
   } else {
     ctx.drawImage(source, 0, 0);
   }
+  updateOverviewSpriteCacheFromCanvas(canvas, textureKey);
   return true;
 }
 
@@ -1231,7 +1320,6 @@ function drawOverviewSprites(attempt = 0): void {
   clearOverviewSpriteRetry();
 
   requestAnimationFrame(() => {
-    if (!phaserGameRef) return;
     let missingTexture = false;
 
     for (const agent of getCurrentAgents()) {
@@ -1247,7 +1335,7 @@ function drawOverviewSprites(attempt = 0): void {
       if (!drawn) missingTexture = true;
     }
 
-    if (missingTexture && attempt < OVERVIEW_SPRITE_MAX_RETRY_ATTEMPTS) {
+    if (missingTexture && phaserGameRef && attempt < OVERVIEW_SPRITE_MAX_RETRY_ATTEMPTS) {
       overviewSpriteRetryTimer = setTimeout(() => {
         drawOverviewSprites(attempt + 1);
       }, OVERVIEW_SPRITE_RETRY_DELAY_MS);
@@ -1787,6 +1875,7 @@ setInterval(() => {
 // ── Status Bar ────────────────────────────────────────────────────
 
 function updateStatusBarNow() {
+  syncActiveRosterForCurrentOffice();
   const office = officeManager.currentOffice;
   const agents = office ? Array.from(office.agents.values()) : [];
   const officeName = officeManager.currentOffice?.config.name || 'No Office';
@@ -2034,5 +2123,6 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+syncActiveRosterForCurrentOffice();
 applyAppMode(appMode, { force: true, refreshTabs: false });
 fetchSessionMeta();

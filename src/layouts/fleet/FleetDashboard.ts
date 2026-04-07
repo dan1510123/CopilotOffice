@@ -109,7 +109,7 @@ export const fleetDashboard: DashboardRenderer = {
           background: ${bgColor};
           border: 1.5px solid ${borderColor};
           border-radius: 10px;
-          padding: 14px 16px;
+          padding: 18px 16px;
           margin-bottom: 8px;
           cursor: ${cursor};
           transition: border-color 0.15s;
@@ -117,6 +117,7 @@ export const fleetDashboard: DashboardRenderer = {
           align-items: flex-start;
           gap: 12px;
           position: relative;
+          min-height: 124px;
         ">
           <div style="
             flex-shrink: 0;

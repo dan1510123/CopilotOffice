@@ -23,6 +23,7 @@ export const defaultDashboard: DashboardRenderer = {
         display: flex;
         align-items: center;
         gap: 12px;
+        min-height: 108px;
       ">
         <div style="
           width: 64px;
@@ -239,7 +240,7 @@ export const defaultDashboard: DashboardRenderer = {
           align-items: flex-start;
           gap: 14px;
           position: relative;
-          min-height: 200px;
+          min-height: 236px;
         ">
           ${badgeHtml}
           <div style="flex-shrink: 0; width: 96px; display: flex; flex-direction: column; align-items: stretch; gap: 10px;">
