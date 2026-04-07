@@ -106,6 +106,7 @@ function createWindow(): void {
       preload: path.join(__dirname, 'terminal', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
 
