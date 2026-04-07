@@ -1,3 +1,6 @@
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+
 type SeriousTerminalOpenOptions = {
   officeId: string;
   agentId: string;
@@ -22,9 +25,13 @@ export class SeriousTerminalController {
   private readonly titleEl: HTMLDivElement;
   private readonly subtitleEl: HTMLDivElement;
   private readonly statusEl: HTMLDivElement;
-  private readonly outputEl: HTMLPreElement;
-  private readonly inputEl: HTMLTextAreaElement;
-  private readonly sendBtn: HTMLButtonElement;
+  private readonly terminalOuterEl: HTMLDivElement;
+  private readonly terminalDivEl: HTMLDivElement;
+  private terminal: Terminal | null = null;
+  private fitAddon: FitAddon | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private resizeHandler: (() => void) | null = null;
+  private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private activeOfficeId: string | null = null;
   private activeAgentId: string | null = null;
   private visible = false;
@@ -92,78 +99,34 @@ export class SeriousTerminalController {
     header.appendChild(leftHeader);
     header.appendChild(rightHeader);
 
-    this.outputEl = document.createElement('pre');
-    this.outputEl.style.cssText = `
-      margin: 0;
-      padding: 12px;
+    this.terminalOuterEl = document.createElement('div');
+    this.terminalOuterEl.style.cssText = `
       flex: 1;
       min-height: 0;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 12px;
-      line-height: 1.35;
-      color: #d4dbf9;
+      overflow: hidden;
       background: #0d111b;
-    `;
-
-    const inputWrap = document.createElement('div');
-    inputWrap.style.cssText = `
-      display: flex;
-      gap: 8px;
       padding: 10px;
-      border-top: 1px solid #27314e;
-      background: #15192a;
-      flex-shrink: 0;
+      box-sizing: border-box;
     `;
+    this.terminalDivEl = document.createElement('div');
+    this.terminalDivEl.style.cssText = 'width: 100%; height: 100%; overflow: hidden;';
+    this.terminalOuterEl.appendChild(this.terminalDivEl);
+    this.terminalOuterEl.addEventListener('mousedown', () => this.terminal?.focus());
 
-    this.inputEl = document.createElement('textarea');
-    this.inputEl.rows = 2;
-    this.inputEl.placeholder = 'Type command and press Enter (Shift+Enter for newline)';
-    this.inputEl.style.cssText = `
-      flex: 1;
-      resize: vertical;
-      min-height: 40px;
-      max-height: 180px;
-      background: #0d111b;
-      border: 1px solid #334166;
-      border-radius: 6px;
-      color: #d4dbf9;
-      padding: 8px;
-      font-family: inherit;
-      font-size: 12px;
-      outline: none;
-    `;
-    this.inputEl.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        void this.sendInput();
-      }
-    });
-
-    this.sendBtn = document.createElement('button');
-    this.sendBtn.textContent = 'Send';
-    this.sendBtn.style.cssText = this.buttonCss('#23345f', '#7db0ff');
-    this.sendBtn.addEventListener('click', () => {
-      void this.sendInput();
-    });
-
-    inputWrap.appendChild(this.inputEl);
-    inputWrap.appendChild(this.sendBtn);
-
+    this.ensureXtermStyles();
     this.container.appendChild(header);
-    this.container.appendChild(this.outputEl);
-    this.container.appendChild(inputWrap);
+    this.container.appendChild(this.terminalOuterEl);
     this.host.appendChild(this.container);
+    this.createTerminal();
 
     if (window.copilotBridge) {
       window.copilotBridge.onTerminalData((agentId, data) => {
         if (!this.visible || this.activeAgentId !== agentId) return;
-        this.appendOutput(data);
+        this.terminal?.write(data);
       });
       window.copilotBridge.onTerminalExit((agentId, exitCode) => {
         if (!this.visible || this.activeAgentId !== agentId) return;
-        this.appendOutput(`\n[terminal exited with code ${exitCode}]\n`);
+        this.terminal?.writeln(`\r\n[terminal exited with code ${exitCode}]`);
         this.setStatus('Exited');
       });
     }
@@ -174,11 +137,10 @@ export class SeriousTerminalController {
   }
 
   async openAgentTerminal(options: SeriousTerminalOpenOptions): Promise<void> {
-    if (!window.copilotBridge) return;
+    if (!window.copilotBridge || !this.terminal) return;
     const switchingTarget = this.activeOfficeId !== options.officeId || this.activeAgentId !== options.agentId;
     if (switchingTarget) {
       await this.closeView({ detach: true, silent: true });
-      this.outputEl.textContent = '';
     }
 
     this.activeOfficeId = options.officeId;
@@ -186,48 +148,48 @@ export class SeriousTerminalController {
     this.visible = true;
     this.openedAt = Date.now();
     this.container.style.display = 'flex';
+    this.terminal.clear();
     this.titleEl.textContent = `${options.name} (${options.agentId})`;
     this.subtitleEl.textContent = options.description;
     this.setStatus('Opening...');
-    this.enableInput(true);
+    this.refitAndResize(options.officeId, options.agentId);
 
     try {
       const exists = await window.copilotBridge.terminalExists(options.officeId, options.agentId);
       if (!exists) {
+        const dims = this.fitAddon?.proposeDimensions();
         const startResult = await window.copilotBridge.terminalStart(
           options.officeId,
           options.agentId,
           options.workingDir,
-          undefined,
-          undefined,
+          dims?.cols,
+          dims?.rows,
           undefined,
           options.launchMode || 'copilot',
         );
         if (!startResult.success) {
-          this.appendOutput(`Failed to start terminal: ${startResult.error || 'unknown error'}\n`);
+          this.terminal.writeln(`\r\nFailed to start terminal: ${startResult.error || 'unknown error'}`);
           this.setStatus('Start failed');
-          this.enableInput(false);
           return;
         }
       }
 
       const attachResult = await window.copilotBridge.terminalAttach(options.officeId, options.agentId);
       if (!attachResult.success) {
-        this.appendOutput('Failed to attach terminal session.\n');
+        this.terminal.writeln('\r\nFailed to attach terminal session.');
         this.setStatus('Attach failed');
-        this.enableInput(false);
         return;
       }
 
       if (attachResult.scrollback) {
-        this.appendOutput(attachResult.scrollback);
+        this.terminal.write(attachResult.scrollback);
       }
       this.setStatus(`Attached · ${this.formatElapsed(this.openedAt)}`);
-      this.inputEl.focus();
+      this.terminal.focus();
+      this.debouncedRefit(options.officeId, options.agentId);
     } catch (error) {
-      this.appendOutput(`Terminal error: ${(error as Error)?.message || String(error)}\n`);
+      this.terminal.writeln(`\r\nTerminal error: ${(error as Error)?.message || String(error)}`);
       this.setStatus('Error');
-      this.enableInput(false);
     }
   }
 
@@ -246,46 +208,103 @@ export class SeriousTerminalController {
     this.activeOfficeId = null;
     this.activeAgentId = null;
     this.setStatus('');
+    this.clearRefitTimers();
 
     if (!silent) {
       this.onClose?.();
     }
   }
 
-  private async sendInput(): Promise<void> {
-    if (!window.copilotBridge || !this.activeOfficeId || !this.activeAgentId) return;
-    const value = this.inputEl.value;
-    const text = value.trim();
-    if (!text) return;
-
-    this.enableInput(false);
-    try {
-      const outbound = value.endsWith('\n') || value.endsWith('\r') ? value : `${value}\r`;
-      const result = await window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, outbound);
-      if (!result.success) {
-        this.appendOutput(`\n[write failed: ${result.error || 'unknown error'}]\n`);
-      }
-      this.inputEl.value = '';
-    } finally {
-      this.enableInput(true);
-      this.inputEl.focus();
-    }
-  }
-
-  private appendOutput(data: string): void {
-    this.outputEl.textContent += data;
-    this.outputEl.scrollTop = this.outputEl.scrollHeight;
-  }
-
   private setStatus(text: string): void {
     this.statusEl.textContent = text;
   }
 
-  private enableInput(enabled: boolean): void {
-    this.inputEl.disabled = !enabled;
-    this.sendBtn.disabled = !enabled;
-    this.sendBtn.style.opacity = enabled ? '1' : '0.6';
-    this.sendBtn.style.cursor = enabled ? 'pointer' : 'default';
+  private ensureXtermStyles(): void {
+    if (document.getElementById('xterm-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'xterm-styles';
+    style.textContent = `
+      .xterm { height: 100%; }
+      .xterm-viewport { overflow-y: auto !important; }
+      #serious-terminal-container .xterm { height: 100%; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  private createTerminal(): void {
+    this.terminal = new Terminal({
+      theme: {
+        background: '#0d111b',
+        foreground: '#e0e0e0',
+        cursor: '#00ff88',
+        cursorAccent: '#0d111b',
+        selectionBackground: '#3a5a8a',
+      },
+      fontFamily: 'Cascadia Code, Consolas, Monaco, monospace',
+      fontSize: 16,
+      lineHeight: 1.2,
+      cursorBlink: true,
+      cursorStyle: 'block',
+      scrollback: 10000,
+      allowProposedApi: true,
+    });
+    this.fitAddon = new FitAddon();
+    this.terminal.loadAddon(this.fitAddon);
+    this.terminalDivEl.id = 'serious-terminal-container';
+    this.terminal.open(this.terminalDivEl);
+
+    this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v' && event.type === 'keydown') {
+        event.preventDefault();
+        event.stopPropagation();
+        navigator.clipboard.readText().then((text) => {
+          if (text) this.terminal?.paste(text);
+        }).catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
+    this.terminal.onData((data: string) => {
+      if (!window.copilotBridge || !this.activeOfficeId || !this.activeAgentId) return;
+      void window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, data);
+    });
+
+    this.resizeHandler = () => {
+      if (!this.visible || !this.activeOfficeId || !this.activeAgentId) return;
+      this.debouncedRefit(this.activeOfficeId, this.activeAgentId);
+    };
+    window.addEventListener('resize', this.resizeHandler);
+
+    this.resizeObserver = new ResizeObserver(() => {
+      if (!this.visible || !this.activeOfficeId || !this.activeAgentId) return;
+      this.debouncedRefit(this.activeOfficeId, this.activeAgentId);
+    });
+    this.resizeObserver.observe(this.terminalDivEl);
+  }
+
+  private refitAndResize(officeId: string, agentId: string): void {
+    if (!this.fitAddon || !window.copilotBridge) return;
+    this.fitAddon.fit();
+    const dims = this.fitAddon.proposeDimensions();
+    if (!dims) return;
+    void window.copilotBridge.terminalResize(officeId, agentId, dims.cols, dims.rows);
+  }
+
+  private debouncedRefit(officeId: string, agentId: string): void {
+    this.clearRefitTimers();
+    requestAnimationFrame(() => {
+      this.refitAndResize(officeId, agentId);
+      this.refitTimers.push(setTimeout(() => {
+        this.refitAndResize(officeId, agentId);
+        this.refitTimers.push(setTimeout(() => this.refitAndResize(officeId, agentId), 200));
+      }, 150));
+    });
+  }
+
+  private clearRefitTimers(): void {
+    for (const timer of this.refitTimers) clearTimeout(timer);
+    this.refitTimers.length = 0;
   }
 
   private formatElapsed(startTime: number): string {
