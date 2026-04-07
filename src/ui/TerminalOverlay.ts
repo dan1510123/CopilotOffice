@@ -58,6 +58,8 @@ export class TerminalOverlay {
   private awaitingSessionIdRefresh: boolean = false;
   private sessionRefreshCommandTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionRefreshExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+  private currentSessionTitle: string | null = null;
+  private isEditingSessionTitle: boolean = false;
   private readonly instanceId: string;
 
   private static nextInstanceId = 0;
@@ -228,15 +230,102 @@ export class TerminalOverlay {
   }
 
   private updateSessionTitleDisplay(title: string | null): void {
+    this.currentSessionTitle = title && title.trim().length > 0 ? title : null;
+    if (this.isEditingSessionTitle) return;
+
     const el = this.spriteCardElement?.querySelector('.session-title-display') as HTMLSpanElement | null;
     if (!el) return;
-    if (title && title.trim().length > 0) {
-      el.textContent = `Title: ${title}`;
-      el.title = title;
+    if (this.currentSessionTitle) {
+      el.textContent = this.currentSessionTitle;
+      el.title = this.currentSessionTitle;
+      el.style.color = '#c8d4ff';
       return;
     }
-    el.textContent = 'Title: (none)';
-    el.title = 'Session title appears after your first message';
+    el.textContent = 'Untitled session (click to rename)';
+    el.title = 'Click to set a title';
+    el.style.color = '#8899bb';
+  }
+
+  private async startSessionTitleEdit(): Promise<void> {
+    if (
+      this.isReadOnly ||
+      !this.currentAgentId ||
+      this.isEditingSessionTitle ||
+      !this.spriteCardElement ||
+      !window.copilotBridge?.setSessionMeta
+    ) return;
+
+    const titleEl = this.spriteCardElement.querySelector('.session-title-display') as HTMLSpanElement | null;
+    if (!titleEl) return;
+
+    this.isEditingSessionTitle = true;
+    const previousTitle = this.currentSessionTitle || '';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = previousTitle;
+    input.maxLength = 120;
+    input.className = 'session-title-input';
+    input.style.cssText = `
+      width: min(680px, 68vw);
+      max-width: 100%;
+      background: #0f162e;
+      color: #dbe6ff;
+      border: 1px solid #5d79b5;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 22px;
+      font-weight: 700;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      line-height: 1.15;
+      outline: none;
+    `;
+
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const agentId = this.currentAgentId;
+    let finalized = false;
+    const finalize = async (save: boolean): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      const nextTitle = save ? input.value.trim() : previousTitle;
+
+      if (save) {
+        try {
+          await withTimeout(
+            window.copilotBridge.setSessionMeta(this.getActiveOfficeId(), agentId, { title: nextTitle }),
+            IPC_TIMEOUT,
+            'setSessionMeta',
+          );
+        } catch (error) {
+          console.warn('[TerminalOverlay] Failed to save session title', error);
+        }
+      }
+
+      this.isEditingSessionTitle = false;
+      this.currentSessionTitle = nextTitle || null;
+      if (!input.isConnected || !this.spriteCardElement) {
+        this.updateSessionTitleDisplay(this.currentSessionTitle);
+        return;
+      }
+
+      input.replaceWith(titleEl);
+      this.updateSessionTitleDisplay(this.currentSessionTitle);
+    };
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        void finalize(true);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        void finalize(false);
+      }
+    });
+    input.addEventListener('blur', () => {
+      void finalize(true);
+    });
   }
 
   async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean; launchMode?: TerminalLaunchMode }): Promise<void> {
@@ -615,11 +704,25 @@ export class TerminalOverlay {
       <canvas class="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 160px; height: 170px; border-radius: 8px;"></canvas>
       <div style="display: flex; flex-direction: column; gap: 5px;">
         <span class="agent-name-display" style="font-weight: bold; font-size: 28px;"></span>
-        <span class="session-title-display" style="color: #aab; font-size: 12px;">Title: (none)</span>
+        <span class="session-title-display" style="color: #c8d4ff; font-size: 22px; font-weight: 700; line-height: 1.15; cursor: text; max-width: min(680px, 68vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Untitled session (click to rename)</span>
         <span style="color: #666; font-size: 12px;">Session ID: <span class="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
       </div>
     `;
     this.spriteCardElement.appendChild(agentDisplay);
+
+    const sessionTitleDisplay = this.spriteCardElement.querySelector('.session-title-display') as HTMLSpanElement | null;
+    if (sessionTitleDisplay) {
+      sessionTitleDisplay.onclick = () => { void this.startSessionTitleEdit(); };
+      sessionTitleDisplay.onkeydown = (event: KeyboardEvent) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          void this.startSessionTitleEdit();
+        }
+      };
+      sessionTitleDisplay.tabIndex = 0;
+      sessionTitleDisplay.setAttribute('role', 'button');
+      sessionTitleDisplay.setAttribute('aria-label', 'Edit session title');
+    }
 
     // Right side: controls (mobile keyboard CTA + button grid)
     const controlsColumn = document.createElement('div');

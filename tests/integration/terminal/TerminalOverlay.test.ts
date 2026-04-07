@@ -334,9 +334,47 @@ describe('integration/TerminalOverlay', () => {
     expect(sessionDisplay.textContent).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
 
     const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
-    expect(titleDisplay.textContent).toBe('Title: (none)');
+    expect(titleDisplay.textContent).toBe('Untitled session (click to rename)');
     onSessionMetaUpdatedCb?.('generalist', { title: 'New title from first message' });
-    expect(titleDisplay.textContent).toBe('Title: New title from first message');
+    expect(titleDisplay.textContent).toBe('New title from first message');
+  });
+
+  it('supports inline session title editing from the sprite card', async () => {
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-title' }),
+      getSessionMeta: vi.fn().mockResolvedValue({ title: 'Initial title' }),
+      setSessionMeta: vi.fn().mockResolvedValue({ success: true }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
+    expect(titleDisplay.textContent).toBe('Initial title');
+    titleDisplay.click();
+
+    const titleInput = document.querySelector('.session-title-input') as HTMLInputElement;
+    expect(titleInput).toBeTruthy();
+    titleInput.value = 'Renamed from sprite card';
+    titleInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(bridge.setSessionMeta).toHaveBeenCalledWith('office-0', 'generalist', {
+      title: 'Renamed from sprite card',
+    });
+    expect((document.querySelector('.session-title-display') as HTMLElement).textContent).toBe('Renamed from sprite card');
   });
 });
 
