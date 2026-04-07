@@ -123,14 +123,12 @@ export const defaultDashboard: DashboardRenderer = {
           box-shadow: 0 1px 4px rgba(0,0,0,0.4);
         ">${unread}</div>` : '';
 
-      // Elapsed time display
-      const elapsedHtml = elapsed ? `<span data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: ${t.elapsed}; margin-left: 8px;">⏱ ${elapsed}</span>` : '';
-
-      // Tool queue badge
-      const queueHtml = toolCount > 1 ? `<span style="
+      // Elapsed and queued tools are shown inside the status panel under the sprite.
+      const elapsedHtml = elapsed ? `<div data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: ${t.elapsed}; margin-top: 4px;">⏱ ${elapsed}</div>` : '';
+      const queueHtml = toolCount > 1 ? `<div style="
         background: #334; color: #aac; font-size: ${t.queue};
-        padding: 1px 6px; border-radius: 8px; margin-left: 6px;
-      ">${toolCount} tools</span>` : '';
+        padding: 2px 8px; border-radius: 8px; margin-top: 4px;
+      ">${toolCount} tools queued</div>` : '';
 
       // ── Tool Pipeline Section ──
       let toolPipelineHtml = '';
@@ -194,12 +192,19 @@ export const defaultDashboard: DashboardRenderer = {
         ">
           <div style="font-size: ${t.sessionLabel}; color: #3a3a5a; text-transform: uppercase; letter-spacing: 0.5px;">Session Info</div>
           <div class="session-title-display" data-agent="${agent.id}" style="
-            font-weight: bold; color: ${metaTitle ? '#ccd' : '#444'}; font-size: ${t.sessionTitle};
+            font-weight: bold; color: ${metaTitle ? '#ccd' : '#444'}; font-size: ${t.sessionTitleLg};
             cursor: text; min-height: 18px; line-height: 1.4;
             overflow: hidden; text-overflow: ellipsis;
             display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
           " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set title'}">${metaTitle || 'Untitled session'}</div>
-          <div style="display: flex; justify-content: flex-end; margin-top: 2px;">
+          <button class="session-new-btn" data-agent="${agent.id}" style="
+            margin-top: 2px;
+            align-self: flex-start;
+            background: #2a3a4a; border: 1px solid #4a5a6a; color: #a9cff7;
+            font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
+            cursor: pointer; transition: background 0.15s, border-color 0.15s;
+          " title="Start a new session for this agent">🔄 New Session</button>
+          <div style="display: flex; justify-content: flex-end;">
             <button class="session-edit-btn" data-agent="${agent.id}" style="
               background: none; border: 1px solid #333; color: #667;
               font-size: ${t.sessionButton}; padding: 2px 8px; border-radius: 4px;
@@ -237,43 +242,57 @@ export const defaultDashboard: DashboardRenderer = {
           min-height: 200px;
         ">
           ${badgeHtml}
-          <div style="
-            flex-shrink: 0;
-            width: 72px;
-            background: ${colorHex}22;
-            border: 1px solid ${colorHex}44;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-            align-self: flex-start;
-            margin-top: 4px;
-          ">
-            <canvas
-              id="overview-sprite-${agent.id}"
-              width="32" height="34"
-              style="image-rendering: pixelated; width: 64px; height: 68px; display: block;"
-            ></canvas>
+          <div style="flex-shrink: 0; width: 96px; display: flex; flex-direction: column; align-items: stretch; gap: 10px;">
+            <div style="
+              width: 96px;
+              background: ${colorHex}22;
+              border: 1px solid ${colorHex}44;
+              border-radius: 10px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              overflow: hidden;
+              align-self: flex-start;
+              padding: 6px 0;
+            ">
+              <canvas
+                id="overview-sprite-${agent.id}"
+                width="32" height="34"
+                style="image-rendering: pixelated; width: 72px; height: 76px; display: block;"
+              ></canvas>
+            </div>
+            <div style="
+              border: 1px solid ${statusDot}66;
+              background: ${statusDot}22;
+              border-radius: 10px;
+              padding: 8px 6px;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              text-align: center;
+              min-height: 96px;
+              justify-content: center;
+            ">
+              <div style="font-size: ${t.statusPanelIcon}; line-height: 1;">${statusIcon}</div>
+              <div style="
+                margin-top: 6px;
+                font-size: ${t.statusPanelText};
+                color: ${statusDot};
+                line-height: 1.15;
+                font-weight: 700;
+                white-space: normal;
+                word-break: break-word;
+              ">${statusLabel}</div>
+              ${elapsedHtml}
+              ${queueHtml}
+            </div>
           </div>
           <div style="flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
             <div>
-              <div style="font-weight: bold; color: #dde; font-size: ${t.cardTitle};">${agent.name}</div>
+              <div style="font-weight: bold; color: #dde; font-size: ${t.cardTitleLg};">${agent.name}</div>
               <div style="color: #778; font-size: ${t.cardDescription}; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
             </div>
             <div>
-              <div style="display: flex; align-items: center; flex-wrap: wrap; margin-top: 4px;">
-                <div style="
-                  font-size: ${t.statusText};
-                  color: ${statusDot};
-                  display: flex; align-items: center; gap: 4px;
-                ">
-                  <span style="font-size: ${t.statusDot};">●</span>
-                  <span>${statusIcon} ${statusLabel}</span>
-                </div>
-                ${elapsedHtml}
-                ${queueHtml}
-              </div>
               ${taskSummaryHtml}
             </div>
             ${toolPipelineHtml}

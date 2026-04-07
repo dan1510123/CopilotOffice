@@ -28,6 +28,7 @@ export interface CardClickHandler {
 
   handleMetaPanelClick(target: HTMLElement, agentId: string, context: {
     startSessionMetaEdit: (agentId: string) => void;
+    startNewSession: (agentId: string) => void;
   }): void;
 }
 
@@ -40,8 +41,11 @@ export interface LayoutDefinition {
 
 export interface DashboardTypography {
   cardTitle: string;
+  cardTitleLg: string;
   cardDescription: string;
   statusText: string;
+  statusPanelText: string;
+  statusPanelIcon: string;
   statusDot: string;
   elapsed: string;
   badge: string;
@@ -52,6 +56,7 @@ export interface DashboardTypography {
   taskSummary: string;
   sessionLabel: string;
   sessionTitle: string;
+  sessionTitleLg: string;
   sessionButton: string;
   emptyState: string;
   arthurHint: string;
@@ -59,8 +64,11 @@ export interface DashboardTypography {
 
 const DESKTOP_DASHBOARD_TYPOGRAPHY: DashboardTypography = {
   cardTitle: '15px',
+  cardTitleLg: '18px',
   cardDescription: '11px',
   statusText: '11px',
+  statusPanelText: '13px',
+  statusPanelIcon: '26px',
   statusDot: '8px',
   elapsed: '10px',
   badge: '10px',
@@ -71,6 +79,7 @@ const DESKTOP_DASHBOARD_TYPOGRAPHY: DashboardTypography = {
   taskSummary: '10px',
   sessionLabel: '9px',
   sessionTitle: '13px',
+  sessionTitleLg: '15px',
   sessionButton: '11px',
   emptyState: '11px',
   arthurHint: '10px',
@@ -78,8 +87,11 @@ const DESKTOP_DASHBOARD_TYPOGRAPHY: DashboardTypography = {
 
 const MOBILE_DASHBOARD_TYPOGRAPHY: DashboardTypography = {
   cardTitle: '19px',
+  cardTitleLg: '24px',
   cardDescription: '15px',
   statusText: '16px',
+  statusPanelText: '18px',
+  statusPanelIcon: '34px',
   statusDot: '11px',
   elapsed: '14px',
   badge: '13px',
@@ -90,6 +102,7 @@ const MOBILE_DASHBOARD_TYPOGRAPHY: DashboardTypography = {
   taskSummary: '14px',
   sessionLabel: '13px',
   sessionTitle: '17px',
+  sessionTitleLg: '20px',
   sessionButton: '14px',
   emptyState: '14px',
   arthurHint: '14px',

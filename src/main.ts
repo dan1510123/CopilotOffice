@@ -117,6 +117,9 @@ const agentPreloadStatus: Map<string, 'preloading' | 'ready' | 'failed'> = new M
 // ── Debounced Updates ────────────────────────────────────────────
 let pendingStatusBarUpdate = false;
 let pendingTerminalContentUpdate = false;
+const OVERVIEW_SPRITE_MAX_RETRY_ATTEMPTS = 5;
+const OVERVIEW_SPRITE_RETRY_DELAY_MS = 120;
+let overviewSpriteRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleUiUpdateWithFallback(callback: () => void): void {
   let done = false;
@@ -1181,46 +1184,75 @@ function updateTerminalContentNow() {
   if (html !== lastTerminalContentHtml) {
     lastTerminalContentHtml = html;
     overviewContent.innerHTML = html;
-    drawOverviewSprites();
   }
+  drawOverviewSprites();
 }
 
 function updateStatusBar() {
   scheduleStatusBarUpdate();
 }
 
-function drawOverviewSprites() {
-  setTimeout(() => {
+function clearOverviewSpriteRetry(): void {
+  if (overviewSpriteRetryTimer) {
+    clearTimeout(overviewSpriteRetryTimer);
+    overviewSpriteRetryTimer = null;
+  }
+}
+
+function drawTextureToOverviewCanvas(canvas: HTMLCanvasElement, textureKey: string): boolean {
+  if (!phaserGameRef) return false;
+  const texture = phaserGameRef.textures.get(textureKey);
+  if (!texture || texture.key === '__MISSING') return false;
+  const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement | undefined;
+  if (!source) return false;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return true;
+
+  const sourceWidth = source instanceof HTMLImageElement
+    ? (source.naturalWidth || source.width)
+    : source.width;
+  const sourceHeight = source instanceof HTMLImageElement
+    ? (source.naturalHeight || source.height)
+    : source.height;
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (sourceWidth > canvas.width || sourceHeight > canvas.height) {
+    // Sprite textures are sheets; crop the top-left frame to avoid tiny full-sheet downscales.
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.drawImage(source, 0, 0);
+  }
+  return true;
+}
+
+function drawOverviewSprites(attempt = 0): void {
+  clearOverviewSpriteRetry();
+
+  requestAnimationFrame(() => {
     if (!phaserGameRef) return;
+    let missingTexture = false;
+
     for (const agent of getCurrentAgents()) {
       const canvas = document.getElementById(`overview-sprite-${agent.id}`) as HTMLCanvasElement | null;
       if (!canvas) continue;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) continue;
-      const texture = phaserGameRef.textures.get(agent.sprite);
-      if (!texture || texture.key === '__MISSING') continue;
-      const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement;
-      if (source) {
-        ctx.imageSmoothingEnabled = false;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(source, 0, 0);
-      }
+      const drawn = drawTextureToOverviewCanvas(canvas, agent.sprite);
+      if (!drawn) missingTexture = true;
     }
 
     const pcCanvas = document.getElementById('overview-sprite-pc-terminal') as HTMLCanvasElement | null;
     if (pcCanvas) {
-      const ctx = pcCanvas.getContext('2d');
-      if (!ctx) return;
-      const texture = phaserGameRef.textures.get('desktop_pc');
-      if (!texture || texture.key === '__MISSING') return;
-      const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement;
-      if (source) {
-        ctx.imageSmoothingEnabled = false;
-        ctx.clearRect(0, 0, pcCanvas.width, pcCanvas.height);
-        ctx.drawImage(source, 0, 0);
-      }
+      const drawn = drawTextureToOverviewCanvas(pcCanvas, 'desktop_pc');
+      if (!drawn) missingTexture = true;
     }
-  }, 50);
+
+    if (missingTexture && attempt < OVERVIEW_SPRITE_MAX_RETRY_ATTEMPTS) {
+      overviewSpriteRetryTimer = setTimeout(() => {
+        drawOverviewSprites(attempt + 1);
+      }, OVERVIEW_SPRITE_RETRY_DELAY_MS);
+    }
+  });
 }
 
 function setupTerminalClickHandler() {
@@ -1236,6 +1268,7 @@ function setupTerminalClickHandler() {
       if (!agentId) return;
       layout.clickHandler.handleMetaPanelClick(target, agentId, {
         startSessionMetaEdit,
+        startNewSession: (id) => { void startSessionFromOverview(id); },
       });
       return;
     }
@@ -1255,6 +1288,45 @@ function setupTerminalClickHandler() {
       });
     }
   });
+}
+
+async function startSessionFromOverview(agentId: string): Promise<void> {
+  if (!window.copilotBridge) return;
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  const launchConfig = getSeriousLaunchConfig(agentId);
+  if (!launchConfig) return;
+
+  cachedSessionMeta[agentId] = { title: '' };
+  setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
+  updateTerminalContent();
+
+  try {
+    if (appMode === 'serious' && seriousTerminalController) {
+      await seriousTerminalController.startNewSession({
+        officeId,
+        agentId,
+        ...launchConfig,
+      });
+    } else {
+      await window.copilotBridge.resetSession(officeId, agentId);
+      await window.copilotBridge.terminalStart(
+        officeId,
+        agentId,
+        launchConfig.workingDir,
+        undefined,
+        undefined,
+        undefined,
+        launchConfig.launchMode,
+      );
+    }
+  } catch (error) {
+    console.warn(`[Office] Failed to start new session from overview for ${agentId}:`, error);
+  }
+
+  officeManager.setAgentStarting(officeId, agentId);
+  phaserGameRef?.events.emit('agent:status:changed', agentId);
+  updateStatusBar();
+  updateTerminalContent();
 }
 
 function startSessionMetaEdit(agentId: string) {
@@ -1654,6 +1726,7 @@ function catchUpStatusViews(reason: string): void {
   pendingTerminalContentUpdate = false;
   updateStatusBarNow();
   updateTerminalContentNow();
+  drawOverviewSprites();
   phaserGameRef?.events.emit('agent:status:changed');
   void reconnectAgentStatuses();
 }

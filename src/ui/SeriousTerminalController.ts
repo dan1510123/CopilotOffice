@@ -272,6 +272,41 @@ export class SeriousTerminalController {
     }
   }
 
+  async startNewSession(options: SeriousTerminalOpenOptions): Promise<void> {
+    if (!window.copilotBridge) return;
+
+    try {
+      await window.copilotBridge.resetSession(options.officeId, options.agentId);
+    } catch {
+      // Keep going to start a fresh session even if reset fails.
+    }
+
+    const isCurrentView =
+      this.visible &&
+      this.activeOfficeId === options.officeId &&
+      this.activeAgentId === options.agentId;
+    if (isCurrentView) {
+      await this.openAgentTerminal(options);
+      return;
+    }
+
+    const startResult = await window.copilotBridge.terminalStart(
+      options.officeId,
+      options.agentId,
+      options.workingDir,
+      undefined,
+      undefined,
+      undefined,
+      options.launchMode || 'copilot',
+    );
+
+    if (!startResult.success) {
+      console.warn(
+        `[SeriousTerminalController] Failed to start new session for ${options.agentId}: ${startResult.error || 'unknown error'}`
+      );
+    }
+  }
+
   async closeView(options: { detach?: boolean; silent?: boolean } = {}): Promise<void> {
     const { detach = true, silent = false } = options;
     if (detach && this.activeOfficeId && this.activeAgentId && window.copilotBridge) {
