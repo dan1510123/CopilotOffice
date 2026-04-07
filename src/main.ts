@@ -1237,11 +1237,24 @@ if (window.copilotBridge) {
 
 /** Reconcile officeManager state with actual terminal server state. */
 let syncInProgress = false;
+let syncStartedAt = 0;
+const SYNC_LOCK_TIMEOUT_MS = 15_000;
+const STALE_IN_TURN_THINKING_TIMEOUT_MS = 90_000;
 async function syncAgentStatuses(): Promise<void> {
-  if (!window.copilotBridge || syncInProgress) return;
+  if (!window.copilotBridge) return;
+  if (syncInProgress) {
+    // Safety net: if the lock has been held too long, force-release it.
+    if (syncStartedAt && (Date.now() - syncStartedAt) > SYNC_LOCK_TIMEOUT_MS) {
+      console.warn(`[Office] syncAgentStatuses lock held for >${SYNC_LOCK_TIMEOUT_MS / 1000}s — force-releasing`);
+      syncInProgress = false;
+    } else {
+      return;
+    }
+  }
   const officeId = officeManager.currentOfficeId;
   if (!officeId) return;
   syncInProgress = true;
+  syncStartedAt = Date.now();
   try {
     const statuses = await window.copilotBridge.queryAgentStatuses(officeId);
 
@@ -1254,6 +1267,13 @@ async function syncAgentStatuses(): Promise<void> {
       const current = officeManager.getAgentStatus(officeId, agent.id);
       const activeTools = getCurrentAgentTools().get(agent.id) || [];
       const waitingToolActive = activeTools.some(t => isAskUserTool(t.name, t.status));
+      const thinkingSince = current?.subState === 'thinking' ? current.activityStartTime : null;
+      const staleInTurnThinking = Boolean(
+        current?.subState === 'thinking'
+        && thinkingSince
+        && (now - thinkingSince) > STALE_IN_TURN_THINKING_TIMEOUT_MS
+        && activeTools.length === 0
+      );
 
       // Timeout: if agent has been in 'starting' for too long, transition to error
       if (current?.subState === 'starting' && current.activityStartTime
@@ -1275,7 +1295,13 @@ async function syncAgentStatuses(): Promise<void> {
           } else if (serverStatus.inTurn) {
             // Catch-up path for missed turn_start events while unfocused/backgrounded.
             // Preserve waiting state while a turn is open; don't force it back to thinking.
-            if (!current || (current.subState !== 'thinking' && current.subState !== 'waiting')) {
+            if (staleInTurnThinking) {
+              // Recovery path: if server inTurn is stale and there are no active tools for a long time,
+              // clear the stuck thinking state so dashboard/status bar can recover.
+              console.warn(`[Office] Agent ${agent.id} stale inTurn for >${STALE_IN_TURN_THINKING_TIMEOUT_MS / 1000}s — resetting to ready`);
+              officeManager.setAgentReady(officeId, agent.id);
+              changed = true;
+            } else if (!current || (current.subState !== 'thinking' && current.subState !== 'waiting')) {
               officeManager.setTaskSummary(officeId, agent.id, 'Processing...');
               officeManager.setAgentThinking(officeId, agent.id, 'Processing...');
               changed = true;
@@ -1342,7 +1368,29 @@ function catchUpStatusViews(reason: string): void {
   updateStatusBarNow();
   updateTerminalContentNow();
   phaserGameRef?.events.emit('agent:status:changed');
-  void syncAgentStatuses();
+  void reconnectAgentStatuses();
+}
+
+/**
+ * Re-register all alive agents with the server so events flow again,
+ * then reconcile renderer state. Call this after sleep/hibernate or
+ * when statuses appear stale.
+ */
+async function reconnectAgentStatuses(): Promise<void> {
+  if (!window.copilotBridge) return;
+  const officeId = officeManager.currentOfficeId;
+  if (!officeId) return;
+  try {
+    const statuses = await window.copilotBridge.queryAgentStatuses(officeId);
+    for (const [agentId, info] of Object.entries(statuses)) {
+      if (info.alive) {
+        await window.copilotBridge.terminalAttach(officeId, agentId).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn('[Office] Failed to reconnect agent viewers:', e);
+  }
+  await syncAgentStatuses();
 }
 
 // ── Elapsed Time Ticker ─────────────────────────────────────────────
@@ -1413,6 +1461,17 @@ function updateStatusBarNow() {
       cursor: pointer;
       margin-right: 24px;
     ">⟳ Reset All Sessions</button>
+    <button id="reconnect-statuses-btn" style="
+      background: #1a2a2a;
+      border: 1px solid #4a8;
+      color: #8f8;
+      font-family: monospace;
+      font-size: 14px;
+      padding: 4px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 24px;
+    ">🔌 Re-connect Statuses</button>
     <span style="color: #666; font-size: 10px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
   `;
 
@@ -1426,6 +1485,13 @@ function updateStatusBarNow() {
         await window.copilotBridge.resetAllSessions(officeManager.currentOfficeId || 'office-0');
       }
       if (btn) { btn.disabled = false; btn.textContent = '⟳ Reset All Sessions'; }
+    });
+    document.getElementById('reconnect-statuses-btn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('reconnect-statuses-btn') as HTMLButtonElement;
+      if (btn) { btn.disabled = true; btn.textContent = '🔌 Reconnecting...'; }
+      syncInProgress = false;
+      await reconnectAgentStatuses();
+      if (btn) { btn.disabled = false; btn.textContent = '🔌 Re-connect Statuses'; }
     });
   }
 }
