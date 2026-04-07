@@ -181,7 +181,6 @@ const terminalHost = document.createElement('div');
 terminalHost.id = 'terminal-host';
 terminalHost.style.cssText = 'display: none; flex: 1; min-height: 0;';
 terminalPanel.appendChild(terminalHost);
-let seriousOverviewPickerVisible = false;
 
 const seriousPlaceholder = document.createElement('div');
 seriousPlaceholder.id = 'serious-terminal-placeholder';
@@ -202,29 +201,11 @@ seriousPlaceholder.innerHTML = `
     <div style="font-size: 34px; margin-bottom: 10px;">💻</div>
     <div style="font-size: 18px; color: #c7d7ff; font-weight: 700; margin-bottom: 8px;">No terminal selected</div>
     <div style="font-size: 12px; line-height: 1.45; color: #8fa3d6;">
-      Select an agent or office PC from the overview to open a command line session.
+      Select an agent or office PC from the overview on the left to open a command line session.
     </div>
-    <button id="serious-open-overview-btn" style="
-      margin-top: 14px;
-      background: #263356;
-      border: 1px solid #5f7fc6;
-      border-radius: 6px;
-      color: #d7e4ff;
-      font-family: inherit;
-      font-size: 12px;
-      cursor: pointer;
-      padding: 7px 12px;
-    ">Choose from overview</button>
   </div>
 `;
 terminalHost.appendChild(seriousPlaceholder);
-
-const seriousOpenOverviewBtn = seriousPlaceholder.querySelector('#serious-open-overview-btn') as HTMLButtonElement | null;
-seriousOpenOverviewBtn?.addEventListener('click', () => {
-  seriousOverviewPickerVisible = true;
-  refreshRightPanelMode();
-  updateTerminalContent();
-});
 
 let currentResponsiveLayout: ResponsiveLayoutKey = 'default';
 let resizeDebounceTimer: number | null = null;
@@ -244,15 +225,17 @@ function applyMobileTopBarVisibility(): void {
 }
 
 function syncMainPanelLayout(): void {
-  const hideOfficePanel = appMode === 'serious' || currentResponsiveLayout === 'portrait-dashboard';
+  const hideOfficePanel = currentResponsiveLayout === 'portrait-dashboard';
   if (hideOfficePanel) {
     officePanel.style.display = 'none';
+    officePanel.style.flexDirection = '';
     terminalPanel.style.width = '100%';
     terminalPanel.style.borderLeft = 'none';
     return;
   }
 
-  officePanel.style.display = '';
+  officePanel.style.display = appMode === 'serious' ? 'flex' : '';
+  officePanel.style.flexDirection = appMode === 'serious' ? 'column' : '';
   terminalPanel.style.width = '50%';
   terminalPanel.style.borderLeft = '2px solid #333';
 }
@@ -262,6 +245,7 @@ function applyResponsiveLayout(layoutKey: ResponsiveLayoutKey): void {
   currentResponsiveLayout = layoutKey;
 
   syncMainPanelLayout();
+  refreshRightPanelMode();
 
   if (phaserGameRef && appMode === 'game') {
     phaserGameRef.events.emit('layout:change', { layoutKey });
@@ -309,13 +293,9 @@ function applyAppMode(nextMode: AppMode, options: ApplyAppModeOptions = {}): voi
     void seriousTerminalController?.closeView({ detach: true, silent: true });
   }
   if (appMode === 'serious') {
-    seriousOverviewPickerVisible = false;
-  }
-
-  if (appMode === 'game') {
-    ensurePhaserGame();
-  } else {
     teardownPhaserGame();
+  } else {
+    ensurePhaserGame();
   }
 
   container.dataset.appMode = appMode;
@@ -972,26 +952,31 @@ function getSeriousLaunchConfig(agentId: string): {
 }
 
 function refreshRightPanelMode(): void {
+  const seriousDesktop = appMode === 'serious' && currentResponsiveLayout === 'default';
+  const desiredOverviewParent = seriousDesktop ? officePanel : terminalPanel;
+  if (overviewHost.parentElement !== desiredOverviewParent) {
+    desiredOverviewParent.appendChild(overviewHost);
+  }
+
   if (appMode === 'serious') {
     const seriousVisible = !!seriousTerminalController?.isVisible();
+    if (seriousDesktop) {
+      overviewHost.style.display = 'flex';
+      terminalHost.style.display = 'flex';
+      seriousPlaceholder.style.display = seriousVisible ? 'none' : 'flex';
+      return;
+    }
+
     if (seriousVisible) {
-      seriousOverviewPickerVisible = false;
       overviewHost.style.display = 'none';
       terminalHost.style.display = 'flex';
       seriousPlaceholder.style.display = 'none';
       return;
     }
 
-    if (seriousOverviewPickerVisible) {
-      overviewHost.style.display = 'flex';
-      terminalHost.style.display = 'none';
-      seriousPlaceholder.style.display = 'none';
-      return;
-    }
-
-    overviewHost.style.display = 'none';
-    terminalHost.style.display = 'flex';
-    seriousPlaceholder.style.display = 'flex';
+    overviewHost.style.display = 'flex';
+    terminalHost.style.display = 'none';
+    seriousPlaceholder.style.display = 'none';
     return;
   }
 
@@ -1029,7 +1014,6 @@ async function openAgentTerminal(agentId: string): Promise<void> {
 seriousTerminalController = new SeriousTerminalController(terminalHost, {
   onClose: () => {
     selectedAgentId = null;
-    seriousOverviewPickerVisible = false;
     refreshRightPanelMode();
     updateStatusBar();
     updateTerminalContent();
