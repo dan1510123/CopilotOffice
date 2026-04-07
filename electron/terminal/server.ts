@@ -662,6 +662,29 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       break;
     }
 
+    case 'set-session-id': {
+      const normalized = msg.sessionId.trim().toLowerCase();
+      const officeData = getOfficeSession(msg.officeId);
+      const current = officeData.sessionIds.get(msg.agentId);
+      const changed = !!normalized && current !== normalized;
+
+      if (changed) {
+        archiveSessionId(msg.officeId, msg.agentId);
+        officeData.sessionIds.set(msg.agentId, normalized);
+        await saveOfficeSessionFile(msg.officeId);
+        console.log(`[TermServer] Updated session ID for ${compositeKey(msg.officeId, msg.agentId)}: ${current ?? '(none)'} -> ${normalized}`);
+      }
+
+      const key = getTerminalKey(msg.officeId, msg.agentId);
+      const proc = key ? ptyProcesses.get(key) : null;
+      if (proc && changed) {
+        proc.sessionId = normalized;
+      }
+
+      send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
     case 'pop-out': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       const officeData = getOfficeSession(msg.officeId);

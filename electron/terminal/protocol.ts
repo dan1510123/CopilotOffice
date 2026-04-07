@@ -67,6 +67,14 @@ export interface MsgGetSessionId {
   agentId: string;
 }
 
+export interface MsgSetSessionId {
+  type: 'set-session-id';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  sessionId: string;
+}
+
 export interface MsgPopOut {
   type: 'pop-out';
   requestId: string;
@@ -166,6 +174,7 @@ export type MainToServer =
   | MsgDetach
   | MsgExists
   | MsgGetSessionId
+  | MsgSetSessionId
   | MsgPopOut
   | MsgShutdown
   | MsgResetAllSessions

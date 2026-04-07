@@ -41,6 +41,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   getSessionId: (officeId: string, agentId: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-session-id', officeId, agentId);
   },
+  setSessionId: (officeId: string, agentId: string, sessionId: string): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('set-session-id', officeId, agentId, sessionId);
+  },
   resetAllSessions: (officeId: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('reset-all-sessions', officeId);
   },
@@ -173,6 +176,7 @@ declare global {
       terminalDetach: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       terminalPopOut: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       getSessionId: (officeId: string, agentId: string) => Promise<string | null>;
+      setSessionId: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       resetAllSessions: (officeId: string) => Promise<{ success: boolean }>;
       resetSession: (officeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
       getSessionHistory: (officeId: string, agentId: string) => Promise<string[]>;

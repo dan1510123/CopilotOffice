@@ -16,6 +16,8 @@ export class TerminalRelay {
   private shuttingDown = false;
   /** Requests that arrived while the server was not connected. Flushed on ready. */
   private queuedRequests: Array<{ msg: MainToServer & { requestId: string }; resolve: (v: unknown) => void }> = [];
+  /** Timeout for IPC request/response round-trips (ms). */
+  private static readonly REQUEST_TIMEOUT_MS = 10_000;
 
   constructor(getWindow: () => BrowserWindow | null) {
     this.getWindow = getWindow;
@@ -147,7 +149,17 @@ export class TerminalRelay {
       });
     }
     return new Promise((resolve) => {
-      this.pendingRequests.set(msg.requestId, resolve);
+      const timeout = setTimeout(() => {
+        if (this.pendingRequests.delete(msg.requestId)) {
+          console.warn(`[Relay] Request ${msg.type} (${msg.requestId}) timed out after ${TerminalRelay.REQUEST_TIMEOUT_MS}ms`);
+          resolve({ success: false, error: 'Request timed out' });
+        }
+      }, TerminalRelay.REQUEST_TIMEOUT_MS);
+
+      this.pendingRequests.set(msg.requestId, (result) => {
+        clearTimeout(timeout);
+        resolve(result);
+      });
       this.send(msg);
     });
   }
@@ -268,6 +280,10 @@ export class TerminalRelay {
 
     ipcMain.handle('get-session-id', (_event, officeId: string, agentId: string) =>
       this.request({ type: 'get-session-id', requestId: this.id(), officeId, agentId })
+    );
+
+    ipcMain.handle('set-session-id', (_event, officeId: string, agentId: string, sessionId: string) =>
+      this.request({ type: 'set-session-id', requestId: this.id(), officeId, agentId, sessionId })
     );
 
     ipcMain.handle('reset-all-sessions', (_event, officeId: string) =>
