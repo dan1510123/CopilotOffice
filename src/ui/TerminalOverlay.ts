@@ -241,9 +241,9 @@ export class TerminalOverlay {
       el.style.color = '#c8d4ff';
       return;
     }
-    el.textContent = 'Untitled session (click to rename)';
-    el.title = 'Click to set a title';
-    el.style.color = '#8899bb';
+    el.textContent = 'Untitled session';
+    el.title = 'Click to set title';
+    el.style.color = '#77839f';
   }
 
   private async startSessionTitleEdit(): Promise<void> {
@@ -266,17 +266,17 @@ export class TerminalOverlay {
     input.maxLength = 120;
     input.className = 'session-title-input';
     input.style.cssText = `
-      width: min(680px, 68vw);
+      width: min(520px, 52vw);
       max-width: 100%;
-      background: #0f162e;
+      background: #101629;
       color: #dbe6ff;
-      border: 1px solid #5d79b5;
+      border: 1px solid #3f5c92;
       border-radius: 6px;
-      padding: 8px 10px;
-      font-size: 22px;
+      padding: 6px 10px;
+      font-size: 15px;
       font-weight: 700;
       font-family: 'Cascadia Code', Consolas, monospace;
-      line-height: 1.15;
+      line-height: 1.25;
       outline: none;
     `;
 
@@ -419,6 +419,10 @@ export class TerminalOverlay {
     if (agentNameDisplay) {
       agentNameDisplay.textContent = agent.name;
       agentNameDisplay.style.color = colorHex;
+    }
+    const agentDescriptionDisplay = this.spriteCardElement?.querySelector('.agent-description-display') as HTMLElement | null;
+    if (agentDescriptionDisplay) {
+      agentDescriptionDisplay.textContent = agent.description;
     }
     this.updateSessionTitleDisplay(sessionTitle);
     
@@ -677,8 +681,8 @@ export class TerminalOverlay {
     this.spriteCardElement.id = 'sprite-card';
     this.spriteCardElement.style.cssText = `
       width: 100%;
-      background: #1a1a2e;
-      border-top: 1px solid #3a5a8a;
+      background: #13131f;
+      border-top: 1px solid #252540;
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 14px;
       color: #888;
@@ -686,7 +690,7 @@ export class TerminalOverlay {
       flex-shrink: 0;
       justify-content: space-between;
       align-items: center;
-      padding: 15px 30px;
+      padding: 16px 24px;
       box-sizing: border-box;
       position: relative;
       z-index: 10001;
@@ -701,11 +705,14 @@ export class TerminalOverlay {
       gap: 20px;
     `;
     agentDisplay.innerHTML = `
-      <canvas class="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 160px; height: 170px; border-radius: 8px;"></canvas>
-      <div style="display: flex; flex-direction: column; gap: 5px;">
-        <span class="agent-name-display" style="font-weight: bold; font-size: 28px;"></span>
-        <span class="session-title-display" style="color: #c8d4ff; font-size: 22px; font-weight: 700; line-height: 1.15; cursor: text; max-width: min(680px, 68vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Untitled session (click to rename)</span>
-        <span style="color: #666; font-size: 12px;">Session ID: <span class="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
+      <div style="width: 72px; background: #2a2a40; border: 1px solid #3a3a58; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0;">
+        <canvas class="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 64px; height: 68px; display: block;"></canvas>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0;">
+        <span class="agent-name-display" style="font-weight: 700; font-size: 18px; color: #dde;"></span>
+        <span class="agent-description-display" style="color: #778; font-size: 13px; line-height: 1.25;"></span>
+        <span class="session-title-display" style="color: #c8d4ff; font-size: 14px; font-weight: 700; line-height: 1.25; cursor: text; max-width: min(520px, 52vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Untitled session</span>
+        <span style="color: #666; font-size: 11px;">Session ID: <span class="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
       </div>
     `;
     this.spriteCardElement.appendChild(agentDisplay);
@@ -753,7 +760,7 @@ export class TerminalOverlay {
     `;
 
     const historyBtn = document.createElement('button');
-    historyBtn.textContent = '📜 Session History';
+    historyBtn.textContent = 'Session History';
     historyBtn.style.cssText = btnStyle;
     historyBtn.onmouseover = () => historyBtn.style.background = '#3a4a5a';
     historyBtn.onmouseout = () => historyBtn.style.background = '#2a3a4a';
@@ -761,7 +768,7 @@ export class TerminalOverlay {
     buttonGrid.appendChild(historyBtn);
 
     const newSessionBtn = document.createElement('button');
-    newSessionBtn.textContent = '🔄 New Session';
+    newSessionBtn.textContent = 'New Session';
     newSessionBtn.style.cssText = btnStyle;
     newSessionBtn.onmouseover = () => newSessionBtn.style.background = '#3a4a5a';
     newSessionBtn.onmouseout = () => newSessionBtn.style.background = '#2a3a4a';
@@ -769,7 +776,7 @@ export class TerminalOverlay {
     buttonGrid.appendChild(newSessionBtn);
 
     const clearHistoryBtn = document.createElement('button');
-    clearHistoryBtn.textContent = '🗑️ Clear History';
+    clearHistoryBtn.textContent = 'Clear History';
     clearHistoryBtn.style.cssText = btnStyle;
     clearHistoryBtn.onmouseover = () => clearHistoryBtn.style.background = '#3a4a5a';
     clearHistoryBtn.onmouseout = () => clearHistoryBtn.style.background = '#2a3a4a';
@@ -777,7 +784,7 @@ export class TerminalOverlay {
     buttonGrid.appendChild(clearHistoryBtn);
 
     const closeSessionBtn = document.createElement('button');
-    closeSessionBtn.textContent = '⏹ Close Session';
+    closeSessionBtn.textContent = 'Close Session';
     closeSessionBtn.style.cssText = btnStyle + 'color: #ff8888;';
     closeSessionBtn.onmouseover = () => { closeSessionBtn.style.background = '#4a2a2a'; };
     closeSessionBtn.onmouseout = () => { closeSessionBtn.style.background = '#2a3a4a'; };
@@ -785,7 +792,7 @@ export class TerminalOverlay {
     buttonGrid.appendChild(closeSessionBtn);
 
     this.fullscreenBtn = document.createElement('button');
-    this.fullscreenBtn.textContent = this.isFullWidth ? '⛶ Half' : '⛶ Fullscreen';
+    this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';
     this.fullscreenBtn.style.cssText = btnStyle + 'color: #88ccff;';
     this.fullscreenBtn.onmouseover = () => { if (this.fullscreenBtn) this.fullscreenBtn.style.background = '#2a3a5a'; };
     this.fullscreenBtn.onmouseout = () => { if (this.fullscreenBtn) this.fullscreenBtn.style.background = '#2a3a4a'; };
@@ -794,7 +801,7 @@ export class TerminalOverlay {
     buttonGrid.appendChild(this.fullscreenBtn);
 
     const refreshFocusBtn = document.createElement('button');
-    refreshFocusBtn.textContent = '🎯 Refresh Focus';
+    refreshFocusBtn.textContent = 'Refresh Focus';
     refreshFocusBtn.style.cssText = btnStyle + 'color: #88ffaa;';
     refreshFocusBtn.onmouseover = () => { refreshFocusBtn.style.background = '#2a4a3a'; };
     refreshFocusBtn.onmouseout = () => { refreshFocusBtn.style.background = '#2a3a4a'; };
@@ -1286,16 +1293,8 @@ export class TerminalOverlay {
 
   private applySpriteCardResponsiveStyles(): void {
     if (!this.spriteCardElement) return;
-    const isMobile = window.__copilotOfficeMobileModeActive?.() === true;
-
-    if (isMobile) {
-      this.spriteCardElement.style.minHeight = '416px';
-      this.spriteCardElement.style.padding = '39px';
-      return;
-    }
-
     this.spriteCardElement.style.minHeight = '';
-    this.spriteCardElement.style.padding = '15px 30px';
+    this.spriteCardElement.style.padding = '16px 24px';
   }
 
   private updateMobileKeyboardButtonVisibility(): void {
@@ -1367,8 +1366,8 @@ export class TerminalOverlay {
   private setTerminalFocusVisual(focused: boolean): void {
     this.isFocused = focused;
     if (this.spriteCardElement && this.spriteCardElement.style.display !== 'none') {
-      this.spriteCardElement.style.background = focused ? '#1a1a2e' : '#111118';
-      this.spriteCardElement.style.borderTopColor = focused ? '#3a5a8a' : '#2a2a3a';
+      this.spriteCardElement.style.background = focused ? '#13131f' : '#101019';
+      this.spriteCardElement.style.borderTopColor = focused ? '#252540' : '#1c1c2f';
     }
   }
 
