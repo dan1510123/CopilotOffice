@@ -647,8 +647,9 @@ function switchToOffice(officeId: string) {
   updateTerminalContent();
   updateStatusBar();
 
-  // Re-sync agent statuses for the new office
-  syncAgentStatuses();
+  // Re-link active viewers and re-sync statuses for the new office.
+  // This recovers event flow if the previous office switch detached viewers.
+  void reconnectAgentStatuses();
   fetchSessionMeta();
 
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
