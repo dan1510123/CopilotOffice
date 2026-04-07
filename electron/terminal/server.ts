@@ -444,23 +444,26 @@ async function startTerminalForAgent(
           console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
           send({ type: 'copilot-user-message', agentId });
 
-          // Auto-set session title from first user message if no title exists
-          if (!hasAutoTitled.has(ck)) {
+          // Auto-set session title from first non-empty user message while title is empty.
+          const existing = officeData.sessionMeta.get(agentId);
+          const existingTitle = typeof existing?.title === 'string' ? existing.title.trim() : '';
+          if (existingTitle) {
             hasAutoTitled.add(ck);
-            const existing = officeData.sessionMeta.get(agentId);
-            if (!existing?.title) {
-              const d = event.data as Record<string, unknown>;
-              const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
-              const raw = String(msgText).trim();
-              if (raw) {
-                const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
-                const meta = existing || { title: '' };
-                meta.title = title;
-                officeData.sessionMeta.set(agentId, meta);
-                saveOfficeSessionFile(officeId);
-                console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
-                send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
-              }
+          } else {
+            const d = event.data as Record<string, unknown>;
+            const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
+            const raw = String(msgText).trim();
+            if (raw) {
+              const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
+              const meta = existing || { title: '' };
+              meta.title = title;
+              officeData.sessionMeta.set(agentId, meta);
+              saveOfficeSessionFile(officeId);
+              hasAutoTitled.add(ck);
+              console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
+              send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
+            } else {
+              hasAutoTitled.delete(ck);
             }
           }
         } else if (event.type === 'subagent.started') {
@@ -807,6 +810,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const officeData = getOfficeSession(officeId);
       const existing = officeData.sessionMeta.get(agentId) || { title: '' };
       if (meta.title !== undefined) existing.title = meta.title;
+      const ck = compositeKey(officeId, agentId);
+      if ((existing.title || '').trim()) {
+        hasAutoTitled.add(ck);
+      } else {
+        hasAutoTitled.delete(ck);
+      }
       officeData.sessionMeta.set(agentId, existing);
       await saveOfficeSessionFile(officeId);
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
