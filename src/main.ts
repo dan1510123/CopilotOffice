@@ -57,6 +57,7 @@ currentZoom = (isNaN(currentZoom) || currentZoom < 0.5 || currentZoom > 2.0) ? 0
 const RESIZE_DEBOUNCE_MS = 200;
 type AppMode = 'game' | 'serious';
 const APP_MODE_STORAGE_KEY = 'agencyOffice:appMode';
+const SESSION_META_CACHE_STORAGE_KEY = 'agencyOffice:sessionMetaCacheByOffice';
 const PC_TERMINAL_ID = 'pc-terminal';
 
 function sanitizeAppMode(value: string | null | undefined): AppMode {
@@ -71,6 +72,38 @@ function persistAppMode(mode: AppMode): void {
   } catch {
     // ignore storage failures
   }
+}
+
+type SessionMetaCacheByOffice = Record<string, Record<string, { title: string }>>;
+
+function loadSessionMetaCacheByOffice(): SessionMetaCacheByOffice {
+  try {
+    const raw = localStorage.getItem(SESSION_META_CACHE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as SessionMetaCacheByOffice;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionMetaCacheByOffice(cache: SessionMetaCacheByOffice): void {
+  try {
+    localStorage.setItem(SESSION_META_CACHE_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function getSessionMetaCacheForOffice(officeId: string): Record<string, { title: string }> {
+  const all = loadSessionMetaCacheByOffice();
+  return all[officeId] || {};
+}
+
+function setSessionMetaCacheForOffice(officeId: string, meta: Record<string, { title: string }>): void {
+  const all = loadSessionMetaCacheByOffice();
+  all[officeId] = meta;
+  saveSessionMetaCacheByOffice(all);
 }
 
 /** Log only when debug mode is active */
@@ -566,6 +599,7 @@ function switchToOffice(officeId: string) {
   void seriousTerminalController?.closeView({ detach: true });
 
   officeManager.switchOffice(officeId);
+  cachedSessionMeta = getSessionMetaCacheForOffice(officeId);
 
   // Swap global agent roster before rendering dashboard
   const office = officeManager.currentOffice;
@@ -1091,9 +1125,16 @@ let cachedSessionMeta: Record<string, { title: string }> = {};
 
 // Fetch session meta from backend (fire-and-forget, updates cache + UI)
 function fetchSessionMeta() {
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  const cached = getSessionMetaCacheForOffice(officeId);
+  if (Object.keys(cached).length > 0) {
+    cachedSessionMeta = cached;
+    updateTerminalContent();
+  }
   if (!window.copilotBridge?.getAllSessionMeta) return;
-  window.copilotBridge.getAllSessionMeta(officeManager.currentOfficeId || 'office-0').then(meta => {
+  window.copilotBridge.getAllSessionMeta(officeId).then(meta => {
     cachedSessionMeta = meta || {};
+    setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
     updateTerminalContent();
   }).catch(() => {});
 }
@@ -1222,8 +1263,10 @@ function startSessionMetaEdit(agentId: string) {
 
   if (titleEl) {
     replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
-      await window.copilotBridge.setSessionMeta(officeManager.currentOfficeId || 'office-0', agentId, { title: value });
+      const officeId = officeManager.currentOfficeId || 'office-0';
+      await window.copilotBridge.setSessionMeta(officeId, agentId, { title: value });
       cachedSessionMeta[agentId] = { title: value };
+      setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
       updateTerminalContent();
     });
   }
@@ -1434,7 +1477,9 @@ if (window.copilotBridge) {
 
   window.copilotBridge.onSessionMetaUpdated((agentId, meta) => {
     console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"`);
+    const officeId = officeManager.currentOfficeId || 'office-0';
     cachedSessionMeta[agentId] = meta;
+    setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
     updateTerminalContent();
   });
 
