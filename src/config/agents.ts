@@ -380,3 +380,28 @@ export function swapActiveAgents(officeConfig: {
   CORE_AGENT_IDS.clear();
   for (const a of AGENTS) CORE_AGENT_IDS.add(a.id);
 }
+
+export interface SeatedAgentRecord {
+  deskId: string;
+  agentId: string;
+}
+
+/**
+ * Restore reserve agents that were seated in this office.
+ * Returns only valid desk/agent mappings (desk exists and still matches the saved agent ID).
+ */
+export function restoreSeatedReserveAgents(seatedAgents: ReadonlyArray<SeatedAgentRecord>): SeatedAgentRecord[] {
+  const valid: SeatedAgentRecord[] = [];
+
+  for (const seated of seatedAgents) {
+    const reserveConfig = RESERVE_AGENTS[seated.deskId];
+    if (!reserveConfig || reserveConfig.id !== seated.agentId) continue;
+
+    valid.push(seated);
+    if (!AGENTS.find(a => a.id === seated.agentId)) {
+      AGENTS.push(reserveConfig);
+    }
+  }
+
+  return valid;
+}

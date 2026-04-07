@@ -4,7 +4,7 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
-import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, swapActiveAgents } from '../config/agents';
+import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
@@ -2047,13 +2047,8 @@ export class OfficeScene extends Phaser.Scene {
     if (this.currentLayout === 'default') {
       const officeId = officeManager.currentOfficeId;
       if (officeId) {
-        const seatedAgents = officeManager.getSeatedAgents(officeId);
-        for (const { deskId, agentId } of seatedAgents) {
-          const reserveConfig = RESERVE_AGENTS[deskId];
-          if (!reserveConfig || reserveConfig.id !== agentId) continue;
-          // Skip if already in AGENTS (e.g. from a previous restore)
-          if (AGENTS.find(a => a.id === agentId)) continue;
-          AGENTS.push(reserveConfig);
+        const restoredSeatedAgents = restoreSeatedReserveAgents(officeManager.getSeatedAgents(officeId));
+        for (const { deskId, agentId } of restoredSeatedAgents) {
           // Mark the desk as occupied
           const desk = this.desks.find(d => d.agentId === deskId);
           if (desk) {
