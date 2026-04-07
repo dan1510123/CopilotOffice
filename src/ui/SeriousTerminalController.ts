@@ -6,6 +6,7 @@ type SeriousTerminalOpenOptions = {
   agentId: string;
   name: string;
   description: string;
+  color?: number;
   workingDir?: string;
   launchMode?: 'copilot' | 'shell';
 };
@@ -27,6 +28,11 @@ export class SeriousTerminalController {
   private readonly statusEl: HTMLDivElement;
   private readonly terminalOuterEl: HTMLDivElement;
   private readonly terminalDivEl: HTMLDivElement;
+  private readonly spriteCardEl: HTMLDivElement;
+  private readonly spriteCanvasEl: HTMLCanvasElement;
+  private readonly spriteNameEl: HTMLSpanElement;
+  private readonly spriteSubtitleEl: HTMLSpanElement;
+  private readonly sessionIdEl: HTMLSpanElement;
   private terminal: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -36,6 +42,7 @@ export class SeriousTerminalController {
   private activeAgentId: string | null = null;
   private visible = false;
   private openedAt = 0;
+  private sessionId: string | null = null;
 
   constructor(host: HTMLElement, options: SeriousTerminalControllerOptions = {}) {
     this.host = host;
@@ -113,9 +120,69 @@ export class SeriousTerminalController {
     this.terminalOuterEl.appendChild(this.terminalDivEl);
     this.terminalOuterEl.addEventListener('mousedown', () => this.terminal?.focus());
 
+    this.spriteCardEl = document.createElement('div');
+    this.spriteCardEl.style.cssText = `
+      width: 100%;
+      background: #1a1a2e;
+      border-top: 1px solid #3a5a8a;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      color: #c8d4ff;
+      display: flex;
+      flex-shrink: 0;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 18px;
+      box-sizing: border-box;
+    `;
+
+    const spriteCardLeft = document.createElement('div');
+    spriteCardLeft.style.cssText = 'display: flex; align-items: center; gap: 14px; min-width: 0;';
+
+    this.spriteCanvasEl = document.createElement('canvas');
+    this.spriteCanvasEl.width = 32;
+    this.spriteCanvasEl.height = 34;
+    this.spriteCanvasEl.style.cssText = `
+      image-rendering: pixelated;
+      width: 96px;
+      height: 102px;
+      border-radius: 6px;
+      border: 1px solid #42507a;
+      background: #121729;
+      flex-shrink: 0;
+    `;
+
+    const spriteCardText = document.createElement('div');
+    spriteCardText.style.cssText = 'display: flex; flex-direction: column; gap: 3px; min-width: 0;';
+    this.spriteNameEl = document.createElement('span');
+    this.spriteNameEl.style.cssText = 'font-size: 19px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+    this.spriteSubtitleEl = document.createElement('span');
+    this.spriteSubtitleEl.style.cssText = 'font-size: 12px; color: #95a7d7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+    spriteCardText.appendChild(this.spriteNameEl);
+    spriteCardText.appendChild(this.spriteSubtitleEl);
+    spriteCardLeft.appendChild(this.spriteCanvasEl);
+    spriteCardLeft.appendChild(spriteCardText);
+
+    const spriteCardRight = document.createElement('div');
+    spriteCardRight.style.cssText = 'display: flex; flex-direction: column; align-items: flex-end; gap: 4px;';
+    const sessionLabel = document.createElement('span');
+    sessionLabel.textContent = 'Session ID';
+    sessionLabel.style.cssText = 'font-size: 11px; color: #6f7fa9;';
+    this.sessionIdEl = document.createElement('span');
+    this.sessionIdEl.textContent = '--';
+    this.sessionIdEl.style.cssText = 'font-size: 12px; color: #8ec3ff; cursor: pointer;';
+    this.sessionIdEl.title = 'Copy session ID';
+    this.sessionIdEl.onclick = () => this.copySessionId();
+    spriteCardRight.appendChild(sessionLabel);
+    spriteCardRight.appendChild(this.sessionIdEl);
+
+    this.spriteCardEl.appendChild(spriteCardLeft);
+    this.spriteCardEl.appendChild(spriteCardRight);
+
     this.ensureXtermStyles();
     this.container.appendChild(header);
     this.container.appendChild(this.terminalOuterEl);
+    this.container.appendChild(this.spriteCardEl);
     this.host.appendChild(this.container);
     this.createTerminal();
 
@@ -147,10 +214,13 @@ export class SeriousTerminalController {
     this.activeAgentId = options.agentId;
     this.visible = true;
     this.openedAt = Date.now();
+    this.sessionId = null;
     this.container.style.display = 'flex';
     this.terminal.clear();
     this.titleEl.textContent = `${options.name} (${options.agentId})`;
     this.subtitleEl.textContent = options.description;
+    this.updateSpriteCard(options);
+    this.updateSessionIdDisplay();
     this.setStatus('Opening...');
     this.refitAndResize(options.officeId, options.agentId);
 
@@ -172,6 +242,10 @@ export class SeriousTerminalController {
           this.setStatus('Start failed');
           return;
         }
+        if (startResult.sessionId) {
+          this.sessionId = startResult.sessionId;
+          this.updateSessionIdDisplay();
+        }
       }
 
       const attachResult = await window.copilotBridge.terminalAttach(options.officeId, options.agentId);
@@ -183,6 +257,11 @@ export class SeriousTerminalController {
 
       if (attachResult.scrollback) {
         this.terminal.write(attachResult.scrollback);
+      }
+      const attachedSessionId = await window.copilotBridge.getSessionId(options.officeId, options.agentId);
+      if (attachedSessionId) {
+        this.sessionId = attachedSessionId;
+        this.updateSessionIdDisplay();
       }
       this.setStatus(`Attached · ${this.formatElapsed(this.openedAt)}`);
       this.terminal.focus();
@@ -207,6 +286,8 @@ export class SeriousTerminalController {
     this.container.style.display = 'none';
     this.activeOfficeId = null;
     this.activeAgentId = null;
+    this.sessionId = null;
+    this.updateSessionIdDisplay();
     this.setStatus('');
     this.clearRefitTimers();
 
@@ -217,6 +298,75 @@ export class SeriousTerminalController {
 
   private setStatus(text: string): void {
     this.statusEl.textContent = text;
+  }
+
+  private updateSpriteCard(options: SeriousTerminalOpenOptions): void {
+    this.spriteNameEl.textContent = options.name;
+    this.spriteSubtitleEl.textContent = options.description;
+    const colorHex = `#${(options.color ?? 0x6f8ed8).toString(16).padStart(6, '0')}`;
+    this.spriteNameEl.style.color = colorHex;
+    this.renderAgentSprite(options.agentId, options.color ?? 0x6f8ed8);
+  }
+
+  private updateSessionIdDisplay(): void {
+    this.sessionIdEl.textContent = this.sessionId || '--';
+  }
+
+  private copySessionId(): void {
+    if (!this.sessionId) return;
+    navigator.clipboard.writeText(this.sessionId).then(() => {
+      const original = this.sessionIdEl.textContent;
+      this.sessionIdEl.textContent = 'Copied!';
+      this.sessionIdEl.style.color = '#61d394';
+      setTimeout(() => {
+        this.sessionIdEl.textContent = original;
+        this.sessionIdEl.style.color = '#8ec3ff';
+      }, 900);
+    }).catch(() => {});
+  }
+
+  private renderAgentSprite(seed: string, baseColor: number): void {
+    const ctx = this.spriteCanvasEl.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, 32, 34);
+    ctx.imageSmoothingEnabled = false;
+
+    const color = this.toHex(baseColor);
+    const shade = this.toHex(this.scaleColor(baseColor, 0.72));
+    const accent = this.toHex(this.scaleColor(baseColor, 1.22));
+    const skin = '#f3cfa7';
+
+    ctx.fillStyle = '#0f1425';
+    ctx.fillRect(0, 0, 32, 34);
+
+    ctx.fillStyle = shade;
+    ctx.fillRect(8, 16, 16, 14);
+    ctx.fillStyle = color;
+    ctx.fillRect(9, 16, 14, 13);
+
+    ctx.fillStyle = skin;
+    ctx.fillRect(10, 8, 12, 9);
+    ctx.fillStyle = accent;
+    ctx.fillRect(10, 5, 12, 4);
+    ctx.fillStyle = '#182033';
+    ctx.fillRect(13, 11, 2, 2);
+    ctx.fillRect(17, 11, 2, 2);
+
+    const seedValue = [...seed].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const badgeX = seedValue % 2 === 0 ? 5 : 24;
+    ctx.fillStyle = accent;
+    ctx.fillRect(badgeX, 19, 3, 3);
+  }
+
+  private toHex(color: number): string {
+    return `#${color.toString(16).padStart(6, '0')}`;
+  }
+
+  private scaleColor(color: number, multiplier: number): number {
+    const r = Math.min(255, Math.max(0, Math.round(((color >> 16) & 0xff) * multiplier)));
+    const g = Math.min(255, Math.max(0, Math.round(((color >> 8) & 0xff) * multiplier)));
+    const b = Math.min(255, Math.max(0, Math.round((color & 0xff) * multiplier)));
+    return (r << 16) | (g << 8) | b;
   }
 
   private ensureXtermStyles(): void {

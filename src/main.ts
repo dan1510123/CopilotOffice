@@ -964,6 +964,7 @@ let seriousTerminalController: SeriousTerminalController | null = null;
 function getSeriousLaunchConfig(agentId: string): {
   name: string;
   description: string;
+  color?: number;
   workingDir?: string;
   launchMode?: 'copilot' | 'shell';
 } | null {
@@ -971,6 +972,7 @@ function getSeriousLaunchConfig(agentId: string): {
     return {
       name: 'PC TERMINAL',
       description: 'Local Shell',
+      color: 0x6f8ed8,
       workingDir: officeManager.getCurrentWorkingDirectory(),
       launchMode: 'shell',
     };
@@ -980,6 +982,7 @@ function getSeriousLaunchConfig(agentId: string): {
   return {
     name: agent.name,
     description: agent.description,
+    color: agent.color,
     workingDir: agent.workingDir || officeManager.getCurrentWorkingDirectory(),
     launchMode: 'copilot',
   };
