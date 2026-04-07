@@ -13,6 +13,7 @@ import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
+import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 
 // ── State ────────────────────────────────────────────────────
@@ -54,6 +55,23 @@ let debugMode = false;
 let currentZoom = parseFloat(localStorage.getItem('agencyOffice:zoomLevel') ?? '0.8');
 currentZoom = (isNaN(currentZoom) || currentZoom < 0.5 || currentZoom > 2.0) ? 0.8 : currentZoom;
 const RESIZE_DEBOUNCE_MS = 200;
+type AppMode = 'game' | 'serious';
+const APP_MODE_STORAGE_KEY = 'agencyOffice:appMode';
+const PC_TERMINAL_ID = 'pc-terminal';
+
+function sanitizeAppMode(value: string | null | undefined): AppMode {
+  return value === 'serious' ? 'serious' : 'game';
+}
+
+let appMode: AppMode = sanitizeAppMode(localStorage.getItem(APP_MODE_STORAGE_KEY));
+
+function persistAppMode(mode: AppMode): void {
+  try {
+    localStorage.setItem(APP_MODE_STORAGE_KEY, mode);
+  } catch {
+    // ignore storage failures
+  }
+}
 
 /** Log only when debug mode is active */
 function debugLog(...args: unknown[]): void {
@@ -147,6 +165,67 @@ terminalPanel.style.cssText = `
 `;
 mainContent.appendChild(terminalPanel);
 
+// Explicit hosts inside the right panel (mode-dependent composition)
+const overviewHost = document.createElement('div');
+overviewHost.id = 'overview-host';
+overviewHost.style.cssText = `
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+`;
+terminalPanel.appendChild(overviewHost);
+
+const terminalHost = document.createElement('div');
+terminalHost.id = 'terminal-host';
+terminalHost.style.cssText = 'display: none; flex: 1; min-height: 0;';
+terminalPanel.appendChild(terminalHost);
+let seriousOverviewPickerVisible = false;
+
+const seriousPlaceholder = document.createElement('div');
+seriousPlaceholder.id = 'serious-terminal-placeholder';
+seriousPlaceholder.style.cssText = `
+  display: none;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  text-align: center;
+  color: #95a7d7;
+  background: radial-gradient(circle at top, #222846 0%, #171c2f 50%, #13192a 100%);
+`;
+seriousPlaceholder.innerHTML = `
+  <div style="max-width: 380px;">
+    <div style="font-size: 34px; margin-bottom: 10px;">💻</div>
+    <div style="font-size: 18px; color: #c7d7ff; font-weight: 700; margin-bottom: 8px;">No terminal selected</div>
+    <div style="font-size: 12px; line-height: 1.45; color: #8fa3d6;">
+      Select an agent or office PC from the overview to open a command line session.
+    </div>
+    <button id="serious-open-overview-btn" style="
+      margin-top: 14px;
+      background: #263356;
+      border: 1px solid #5f7fc6;
+      border-radius: 6px;
+      color: #d7e4ff;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 7px 12px;
+    ">Choose from overview</button>
+  </div>
+`;
+terminalHost.appendChild(seriousPlaceholder);
+
+const seriousOpenOverviewBtn = seriousPlaceholder.querySelector('#serious-open-overview-btn') as HTMLButtonElement | null;
+seriousOpenOverviewBtn?.addEventListener('click', () => {
+  seriousOverviewPickerVisible = true;
+  refreshRightPanelMode();
+  updateTerminalContent();
+});
+
 let currentResponsiveLayout: ResponsiveLayoutKey = 'default';
 let resizeDebounceTimer: number | null = null;
 
@@ -164,21 +243,27 @@ function applyMobileTopBarVisibility(): void {
   }
 }
 
+function syncMainPanelLayout(): void {
+  const hideOfficePanel = appMode === 'serious' || currentResponsiveLayout === 'portrait-dashboard';
+  if (hideOfficePanel) {
+    officePanel.style.display = 'none';
+    terminalPanel.style.width = '100%';
+    terminalPanel.style.borderLeft = 'none';
+    return;
+  }
+
+  officePanel.style.display = '';
+  terminalPanel.style.width = '50%';
+  terminalPanel.style.borderLeft = '2px solid #333';
+}
+
 function applyResponsiveLayout(layoutKey: ResponsiveLayoutKey): void {
   if (layoutKey === currentResponsiveLayout) return;
   currentResponsiveLayout = layoutKey;
 
-  if (layoutKey === 'portrait-dashboard') {
-    officePanel.style.display = 'none';
-    terminalPanel.style.width = '100%';
-    terminalPanel.style.borderLeft = 'none';
-  } else {
-    officePanel.style.display = '';
-    terminalPanel.style.width = '50%';
-    terminalPanel.style.borderLeft = '2px solid #333';
-  }
+  syncMainPanelLayout();
 
-  if (phaserGameRef) {
+  if (phaserGameRef && appMode === 'game') {
     phaserGameRef.events.emit('layout:change', { layoutKey });
 
     if (layoutKey === 'default') {
@@ -198,12 +283,71 @@ function onWindowResize(): void {
   resizeDebounceTimer = window.setTimeout(() => {
     const next = computeResponsiveLayout(window.innerWidth, window.innerHeight);
     applyResponsiveLayout(next);
-    if (phaserGameRef && currentResponsiveLayout === 'default') {
+    if (phaserGameRef && appMode === 'game' && currentResponsiveLayout === 'default') {
       const width = officePanel.clientWidth || window.innerWidth / 2;
       const height = officePanel.clientHeight || window.innerHeight;
       phaserGameRef.scale.resize(width, height);
     }
   }, RESIZE_DEBOUNCE_MS);
+}
+
+type ApplyAppModeOptions = {
+  persist?: boolean;
+  refreshTabs?: boolean;
+  force?: boolean;
+};
+
+function applyAppMode(nextMode: AppMode, options: ApplyAppModeOptions = {}): void {
+  const { persist = false, refreshTabs = true, force = false } = options;
+  if (!force && nextMode === appMode) return;
+
+  const previousMode = appMode;
+  appMode = nextMode;
+  const selectedAgentBeforeModeSwitch = selectedAgentId;
+
+  if (previousMode === 'serious' && appMode === 'game') {
+    void seriousTerminalController?.closeView({ detach: true, silent: true });
+  }
+  if (appMode === 'serious') {
+    seriousOverviewPickerVisible = false;
+  }
+
+  if (appMode === 'game') {
+    ensurePhaserGame();
+  } else {
+    teardownPhaserGame();
+  }
+
+  container.dataset.appMode = appMode;
+  tabsBar.dataset.appMode = appMode;
+  mainContent.dataset.appMode = appMode;
+  officePanel.dataset.appMode = appMode;
+  terminalPanel.dataset.appMode = appMode;
+  overviewHost.dataset.appMode = appMode;
+  terminalHost.dataset.appMode = appMode;
+  syncMainPanelLayout();
+  if (phaserGameRef && appMode === 'game' && currentResponsiveLayout === 'default') {
+    const width = officePanel.clientWidth || window.innerWidth / 2;
+    const height = officePanel.clientHeight || window.innerHeight;
+    phaserGameRef.scale.resize(width, height);
+  }
+
+  if (persist) persistAppMode(appMode);
+  if (refreshTabs) renderOfficeTabs();
+  refreshRightPanelMode();
+
+  updateTerminalContent();
+  updateStatusBar();
+  phaserGameRef?.events.emit('app:mode:changed', { mode: appMode, previousMode });
+
+  if (appMode === 'serious' && selectedAgentBeforeModeSwitch && getSeriousLaunchConfig(selectedAgentBeforeModeSwitch)) {
+    void openAgentTerminal(selectedAgentBeforeModeSwitch);
+  }
+}
+
+function toggleAppMode(): void {
+  const nextMode: AppMode = appMode === 'game' ? 'serious' : 'game';
+  applyAppMode(nextMode, { persist: true, refreshTabs: true });
 }
 
 applyResponsiveLayout(computeResponsiveLayout(window.innerWidth, window.innerHeight));
@@ -262,6 +406,21 @@ function renderOfficeTabs() {
       color: #4a4;
     ">+ New Office</div>
     <div style="flex: 1;"></div>
+    <div id="app-mode-toggle-btn" style="
+      padding: 8px 14px;
+      background: ${appMode === 'serious' ? '#2f2638' : '#252538'};
+      border: 2px solid ${appMode === 'serious' ? '#a66be0' : '#444'};
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: monospace;
+      color: ${appMode === 'serious' ? '#d4b6ff' : '#8fb7ff'};
+      font-size: 14px;
+      user-select: none;
+      transition: all 0.2s;
+      margin-right: 8px;
+    " title="Toggle app mode (game/serious)">
+      ${appMode === 'serious' ? '🧠 Serious Mode' : '🎮 Game Mode'}
+    </div>
     <div id="sprite-customizer-btn" style="
       padding: 8px 16px;
       background: #252538;
@@ -365,14 +524,18 @@ function renderOfficeTabs() {
   });
 
   document.getElementById('new-office-btn')?.addEventListener('click', showNewOfficeDialog);
+  document.getElementById('app-mode-toggle-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleAppMode();
+  });
 
   document.getElementById('debug-toggle-btn')?.addEventListener('click', () => {
     debugMode = !debugMode;
-    phaserGame?.events.emit('debug:toggle', debugMode);
+    phaserGameRef?.events.emit('debug:toggle', debugMode);
     renderOfficeTabs();
     // Return focus to the game so player movement isn't interrupted
     if (!isMobileModeActive()) {
-      phaserGame?.events.emit('game:panel:clicked');
+      phaserGameRef?.events.emit('game:panel:clicked');
     }
     console.log(`[Debug] Debug mode ${debugMode ? 'ON' : 'OFF'}`);
   });
@@ -414,12 +577,13 @@ function renderOfficeTabs() {
 
 function switchToOffice(officeId: string) {
   // Block switching while scene animations are in progress
-  if (phaserGame?.registry.get('animating')) {
+  if (phaserGameRef?.registry.get('animating')) {
     console.log('[Office] Blocked: animation in progress');
     return;
   }
 
   selectedAgentId = null;
+  void seriousTerminalController?.closeView({ detach: true });
 
   officeManager.switchOffice(officeId);
 
@@ -427,7 +591,7 @@ function switchToOffice(officeId: string) {
   const office = officeManager.currentOffice;
   if (office) swapActiveAgents(office.config);
 
-  phaserGame?.events.emit('office:switch', officeId, officeManager.currentOffice?.config.workingDirectory);
+  phaserGameRef?.events.emit('office:switch', officeId, officeManager.currentOffice?.config.workingDirectory);
 
   renderOfficeTabs();
   updateTerminalContent();
@@ -665,9 +829,9 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
 
 renderOfficeTabs();
 
-// Terminal header
-const terminalHeader = document.createElement('div');
-terminalHeader.style.cssText = `
+// Overview header
+const overviewHeader = document.createElement('div');
+overviewHeader.style.cssText = `
   padding: 14px 20px;
   background: #141424;
   border-bottom: 2px solid #2a2a4a;
@@ -677,7 +841,7 @@ terminalHeader.style.cssText = `
   justify-content: space-between;
   align-items: center;
 `;
-terminalHeader.innerHTML = `
+overviewHeader.innerHTML = `
   <div>
     <div id="terminal-title" style="font-size: 18px; font-weight: bold; color: #8af; margin-bottom: 4px;">🏢 Office Overview</div>
     <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
@@ -695,7 +859,7 @@ terminalHeader.innerHTML = `
     white-space: nowrap;
   ">✕ Close Office</button>
 `;
-terminalPanel.appendChild(terminalHeader);
+overviewHost.appendChild(overviewHeader);
 
 // Close Office button handler
 document.getElementById('close-office-btn')!.addEventListener('click', () => {
@@ -708,10 +872,10 @@ document.getElementById('close-office-btn')!.addEventListener('click', () => {
   }
 });
 
-// Terminal content area
-const terminalContent = document.createElement('div');
-terminalContent.id = 'terminal-content';
-terminalContent.style.cssText = `
+// Overview content area
+const overviewContent = document.createElement('div');
+overviewContent.id = 'terminal-content';
+overviewContent.style.cssText = `
   flex: 1;
   padding: 16px;
   overflow-y: auto;
@@ -720,7 +884,7 @@ terminalContent.style.cssText = `
   color: #ccc;
   position: relative;
 `;
-terminalPanel.appendChild(terminalContent);
+overviewHost.appendChild(overviewContent);
 
 // Status bar
 const statusBar = document.createElement('div');
@@ -781,6 +945,97 @@ function getAgentConfig(agentId: string) {
   return getCurrentAgents().find(a => a.id === agentId) || AGENTS.find(a => a.id === agentId);
 }
 
+let seriousTerminalController: SeriousTerminalController | null = null;
+
+function getSeriousLaunchConfig(agentId: string): {
+  name: string;
+  description: string;
+  workingDir?: string;
+  launchMode?: 'copilot' | 'shell';
+} | null {
+  if (agentId === PC_TERMINAL_ID) {
+    return {
+      name: 'PC TERMINAL',
+      description: 'Local Shell',
+      workingDir: officeManager.getCurrentWorkingDirectory(),
+      launchMode: 'shell',
+    };
+  }
+  const agent = getAgentConfig(agentId);
+  if (!agent) return null;
+  return {
+    name: agent.name,
+    description: agent.description,
+    workingDir: agent.workingDir || officeManager.getCurrentWorkingDirectory(),
+    launchMode: 'copilot',
+  };
+}
+
+function refreshRightPanelMode(): void {
+  if (appMode === 'serious') {
+    const seriousVisible = !!seriousTerminalController?.isVisible();
+    if (seriousVisible) {
+      seriousOverviewPickerVisible = false;
+      overviewHost.style.display = 'none';
+      terminalHost.style.display = 'flex';
+      seriousPlaceholder.style.display = 'none';
+      return;
+    }
+
+    if (seriousOverviewPickerVisible) {
+      overviewHost.style.display = 'flex';
+      terminalHost.style.display = 'none';
+      seriousPlaceholder.style.display = 'none';
+      return;
+    }
+
+    overviewHost.style.display = 'none';
+    terminalHost.style.display = 'flex';
+    seriousPlaceholder.style.display = 'flex';
+    return;
+  }
+
+  overviewHost.style.display = 'flex';
+  terminalHost.style.display = 'none';
+  seriousPlaceholder.style.display = 'none';
+}
+
+async function openAgentTerminal(agentId: string): Promise<void> {
+  if (appMode === 'game') {
+    phaserGameRef?.events.emit('open:agent:terminal', agentId);
+    return;
+  }
+
+  const launchConfig = getSeriousLaunchConfig(agentId);
+  if (!launchConfig || !window.copilotBridge) return;
+
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  const officeStatus = officeManager.getAgentStatus(officeId, agentId);
+  if (officeStatus?.state === 'slacking') {
+    officeManager.setAgentStarting(officeId, agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
+    updateStatusBar();
+    updateTerminalContent();
+  }
+
+  await seriousTerminalController?.openAgentTerminal({
+    officeId,
+    agentId,
+    ...launchConfig,
+  });
+  refreshRightPanelMode();
+}
+
+seriousTerminalController = new SeriousTerminalController(terminalHost, {
+  onClose: () => {
+    selectedAgentId = null;
+    seriousOverviewPickerVisible = false;
+    refreshRightPanelMode();
+    updateStatusBar();
+    updateTerminalContent();
+  },
+});
+
 const notificationService = new NotificationService(
   toastManager,
   (agentId) => {
@@ -793,7 +1048,7 @@ const notificationService = new NotificationService(
     const oId = officeManager.currentOfficeId;
     if (oId) officeManager.clearUnread(oId, agentId);
     updateTerminalContent();
-    phaserGame?.events.emit('open:agent:terminal', agentId);
+    void openAgentTerminal(agentId);
   },
 );
 
@@ -897,7 +1152,7 @@ function updateTerminalContentNow() {
 
   if (html !== lastTerminalContentHtml) {
     lastTerminalContentHtml = html;
-    terminalContent.innerHTML = html;
+    overviewContent.innerHTML = html;
     drawOverviewSprites();
   }
 }
@@ -941,7 +1196,7 @@ function drawOverviewSprites() {
 }
 
 function setupTerminalClickHandler() {
-  terminalContent.addEventListener('click', (e) => {
+  overviewHost.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
     const layout = getLayout(getCurrentLayout());
 
@@ -968,14 +1223,14 @@ function setupTerminalClickHandler() {
           if (officeId) officeManager.clearUnread(officeId, id);
         },
         updateContent: updateTerminalContent,
-        emitOpenTerminal: (id) => { phaserGame?.events.emit('open:agent:terminal', id); },
+        emitOpenTerminal: (id) => { void openAgentTerminal(id); },
       });
     }
   });
 }
 
 function startSessionMetaEdit(agentId: string) {
-  const panel = terminalContent.querySelector(`.session-meta-panel[data-agent="${agentId}"]`);
+  const panel = overviewHost.querySelector(`.session-meta-panel[data-agent="${agentId}"]`);
   if (!panel) return;
 
   const meta = cachedSessionMeta[agentId] || { title: '' };
@@ -1089,7 +1344,7 @@ if (window.copilotBridge) {
       notifyAgent(agentId, 'toolStart', { toolName });
     }
 
-    phaserGame?.events.emit('agent:tool:start', agentId, toolName, status);
+    phaserGameRef?.events.emit('agent:tool:start', agentId, toolName, status);
 
     updateTerminalContent();
     updateStatusBar();
@@ -1127,7 +1382,7 @@ if (window.copilotBridge) {
       }
     }
 
-    phaserGame?.events.emit('agent:status:changed', agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
   });
@@ -1152,7 +1407,7 @@ if (window.copilotBridge) {
       }
       notifyAgent(agentId, 'turnEnd');
     }
-    phaserGame?.events.emit('agent:status:changed', agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
   });
@@ -1172,7 +1427,7 @@ if (window.copilotBridge) {
     officeManager.setAgentThinking(officeId, agentId, 'Processing...');
     console.log(`[Office] Status: ${agentId} → thinking (turn start)`);
     notifyAgent(agentId, 'turnStart');
-    phaserGame?.events.emit('agent:status:changed', agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
   });
@@ -1189,7 +1444,7 @@ if (window.copilotBridge) {
     }
     officeManager.setAgentThinking(officeId, agentId, 'Processing...');
     console.log(`[Office] Status: ${agentId} → thinking (user message)`);
-    phaserGame?.events.emit('agent:status:changed', agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
   });
 
@@ -1226,7 +1481,7 @@ if (window.copilotBridge) {
       }
     }
 
-    phaserGame?.events.emit('agent:status:changed', agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateStatusBar();
     updateTerminalContent();
   });
@@ -1342,7 +1597,7 @@ async function syncAgentStatuses(): Promise<void> {
 
     if (changed) {
       for (const agent of getCurrentAgents()) {
-        phaserGame?.events.emit('agent:status:changed', agent.id);
+        phaserGameRef?.events.emit('agent:status:changed', agent.id);
       }
       updateTerminalContent();
       updateStatusBar();
@@ -1496,82 +1751,30 @@ function updateStatusBarNow() {
   }
 }
 
-updateStatusBar();
-
 setupTerminalClickHandler();
 
-updateTerminalContent();
-fetchSessionMeta();
+type FleetDeployRequest = { officeName: string; prompt: string; sourceOfficeId: string; resolve?: () => void };
+type FleetStatusSummary = { total: number; completed: number; failed: number; active: number };
 
-// ── Phaser Game ────────────────────────────────────────────────────
-
-const phaserGame = new Phaser.Game({
-  type: Phaser.AUTO,
-  parent: officePanel,
-  width: officePanel.clientWidth || window.innerWidth / 2,
-  height: officePanel.clientHeight || window.innerHeight,
-  backgroundColor: '#1a1a2e',
-  physics: { default: 'arcade', arcade: { debug: false } },
-  scene: [BootScene, OfficeScene, MeetingScene],
-});
-
-phaserGameRef = phaserGame;
-
-// Focus the Phaser canvas when clicking the game pane so keyboard input works
-officePanel.addEventListener('click', () => {
-  const canvas = officePanel.querySelector('canvas');
-  canvas?.focus();
-});
-
-// Clicking the game panel should blur the terminal (DOM-level, bypasses Phaser input)
-officePanel.addEventListener('mousedown', () => {
-  if (isMobileModeActive()) return;
-  console.log('[main] game panel mousedown — emitting game:panel:clicked');
-  phaserGame?.events.emit('game:panel:clicked');
-});
-
-// Once Phaser boots and textures are ready, draw sprites for the overview cards
-phaserGame.events.once('ready', () => {
-  drawOverviewSprites();
-  phaserGame.events.emit('layout:change', { layoutKey: currentResponsiveLayout });
-});
-
-// Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
-window.addEventListener('focus', () => {
-  catchUpStatusViews('window focus');
-});
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    catchUpStatusViews('document visible');
-  }
-});
-
-// When a session is closed via the Close Session button, set agent to slacking
-phaserGame.events.on('agent:session:closed', (agentId: string) => {
+function onAgentSessionClosed(agentId: string): void {
   const officeId = officeManager.currentOfficeId;
   if (officeId) officeManager.setAgentSlacking(officeId, agentId);
-  phaserGame?.events.emit('agent:status:changed', agentId);
+  phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateTerminalContent();
   updateStatusBar();
-});
+}
 
-// Sync status bar whenever any agent status changes (e.g. Starting set by OfficeScene)
-phaserGame.events.on('agent:status:changed', () => {
+function onAgentStatusChanged(): void {
   updateTerminalContent();
   updateStatusBar();
-});
+}
 
-// When a terminal is reattached, sync the agent's status from the server
-phaserGame.events.on('agent:reattached', (agentId: string) => {
+function onAgentReattached(agentId: string): void {
   console.log(`[Office] Agent reattached: ${agentId}`);
-  syncAgentStatuses();
-});
+  void syncAgentStatuses();
+}
 
-// Sync background music UI when music starts
-phaserGame.events.on('bgm:started', onBgmStarted);
-
-// When a Fleet V-Team office is created from a meeting, transfer Arthur's session and switch
-phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOfficeId?: string) => {
+async function onFleetOfficeCreated(officeId: string, sourceOfficeId?: string): Promise<void> {
   console.log(`[Office] Fleet V-Team office created: ${officeId} (source: ${sourceOfficeId ?? 'none'})`);
 
   // Transfer Arthur's meeting session to the fleet office so it's accessible there
@@ -1586,14 +1789,13 @@ phaserGame.events.on('fleet:office:created', async (officeId: string, sourceOffi
 
   // Tell OfficeScene the source office for FleetTracker attach
   if (sourceOfficeId) {
-    phaserGame?.events.emit('fleet:source-office', { sourceOfficeId });
+    phaserGameRef?.events.emit('fleet:source-office', { sourceOfficeId });
   }
 
   switchToOffice(officeId);
-});
+}
 
-// When fleet deploy is requested from the meeting room dialog
-phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string; prompt: string; sourceOfficeId: string; resolve?: () => void }) => {
+async function onFleetDeployRequested(data: FleetDeployRequest): Promise<void> {
   console.log(`[Fleet] Deploy requested: "${data.officeName}" from office ${data.sourceOfficeId}`);
 
   // 1. Create a new fleet-vteam office
@@ -1619,27 +1821,113 @@ phaserGame.events.on('fleet:deploy-requested', async (data: { officeName: string
   // 4. Tell OfficeScene the source office and fleet prompt.
   //    The /fleet command will be sent from OfficeScene.initFleetPipeline() AFTER
   //    the terminal viewer is attached — avoids the race with session transfer.
-  phaserGame?.events.emit('fleet:source-office', { sourceOfficeId: data.sourceOfficeId, prompt: data.prompt });
+  phaserGameRef?.events.emit('fleet:source-office', { sourceOfficeId: data.sourceOfficeId, prompt: data.prompt });
 
   // 5. Switch to the new fleet office (triggers OfficeScene rebuildLayout)
   switchToOffice(officeId);
-});
+}
 
-// Fleet status updates — update right panel dashboard
-phaserGame.events.on('fleet:status', (status: { total: number; completed: number; failed: number; active: number }) => {
+function onFleetStatus(status: FleetStatusSummary): void {
   const subtitle = document.getElementById('terminal-subtitle');
   if (subtitle && officeManager.currentOffice?.config.layout === 'fleet-vteam') {
     subtitle.textContent = `Fleet: ${status.active} active · ${status.completed} done · ${status.failed} failed / ${status.total} total`;
   }
   updateTerminalContent();
-});
+}
 
-// Fleet complete — show summary in dashboard header
-phaserGame.events.on('fleet:complete', () => {
+function onFleetComplete(): void {
   console.log('[Fleet] All sub-agents complete');
   const subtitle = document.getElementById('terminal-subtitle');
   if (subtitle) {
     subtitle.textContent = '✅ Fleet complete!';
   }
   updateTerminalContent();
+}
+
+let officePanelListenersBound = false;
+
+function bindOfficePanelListeners(): void {
+  if (officePanelListenersBound) return;
+  officePanelListenersBound = true;
+
+  // Focus the Phaser canvas when clicking the game pane so keyboard input works
+  officePanel.addEventListener('click', () => {
+    const canvas = officePanel.querySelector('canvas');
+    canvas?.focus();
+  });
+
+  // Clicking the game panel should blur the terminal (DOM-level, bypasses Phaser input)
+  officePanel.addEventListener('mousedown', () => {
+    if (isMobileModeActive()) return;
+    console.log('[main] game panel mousedown — emitting game:panel:clicked');
+    phaserGameRef?.events.emit('game:panel:clicked');
+  });
+}
+
+function getPhaserDimensions(): { width: number; height: number } {
+  return {
+    width: officePanel.clientWidth || window.innerWidth / 2,
+    height: officePanel.clientHeight || window.innerHeight,
+  };
+}
+
+function bindPhaserEventListeners(game: Phaser.Game): void {
+  // Once Phaser boots and textures are ready, draw sprites for the overview cards
+  game.events.once('ready', () => {
+    drawOverviewSprites();
+    game.events.emit('layout:change', { layoutKey: currentResponsiveLayout });
+  });
+
+  game.events.on('agent:session:closed', onAgentSessionClosed);
+  game.events.on('agent:status:changed', onAgentStatusChanged);
+  game.events.on('agent:reattached', onAgentReattached);
+  game.events.on('bgm:started', onBgmStarted);
+  game.events.on('fleet:office:created', onFleetOfficeCreated);
+  game.events.on('fleet:deploy-requested', onFleetDeployRequested);
+  game.events.on('fleet:status', onFleetStatus);
+  game.events.on('fleet:complete', onFleetComplete);
+}
+
+function ensurePhaserGame(): void {
+  if (phaserGameRef) return;
+
+  const { width, height } = getPhaserDimensions();
+  const game = new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: officePanel,
+    width,
+    height,
+    backgroundColor: '#1a1a2e',
+    physics: { default: 'arcade', arcade: { debug: false } },
+    scene: [BootScene, OfficeScene, MeetingScene],
+  });
+  phaserGameRef = game;
+  bindPhaserEventListeners(game);
+}
+
+function teardownPhaserGame(): void {
+  if (!phaserGameRef) return;
+  const game = phaserGameRef;
+  phaserGameRef = undefined;
+  try {
+    game.destroy(true);
+  } catch (error) {
+    console.warn('[main] Failed to destroy Phaser game cleanly:', error);
+  }
+  officePanel.innerHTML = '';
+}
+
+bindOfficePanelListeners();
+
+// Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
+window.addEventListener('focus', () => {
+  catchUpStatusViews('window focus');
 });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    catchUpStatusViews('document visible');
+  }
+});
+
+applyAppMode(appMode, { force: true, refreshTabs: false });
+fetchSessionMeta();
