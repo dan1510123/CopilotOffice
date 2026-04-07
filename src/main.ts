@@ -363,6 +363,7 @@ function applyAppMode(nextMode: AppMode, options: ApplyAppModeOptions = {}): voi
     void seriousTerminalController?.closeView({ detach: true, silent: true });
   }
   if (appMode === 'serious') {
+    prewarmOverviewSpriteCacheFromTextures();
     teardownPhaserGame();
   } else {
     ensurePhaserGame();
@@ -1315,6 +1316,42 @@ function drawTextureToOverviewCanvas(canvas: HTMLCanvasElement, textureKey: stri
   }
   updateOverviewSpriteCacheFromCanvas(canvas, textureKey);
   return true;
+}
+
+function prewarmOverviewSpriteCacheFromTextures(): void {
+  if (!phaserGameRef) return;
+
+  const textureKeys = getCurrentAgents().map(agent => agent.sprite);
+  if (!textureKeys.includes('desktop_pc')) textureKeys.push('desktop_pc');
+
+  for (const textureKey of textureKeys) {
+    const texture = phaserGameRef.textures.get(textureKey);
+    if (!texture || texture.key === '__MISSING') continue;
+    const source = texture.getSourceImage() as HTMLImageElement | HTMLCanvasElement | undefined;
+    if (!source) continue;
+
+    const scratch = document.createElement('canvas');
+    scratch.width = textureKey === 'desktop_pc' ? 32 : 32;
+    scratch.height = textureKey === 'desktop_pc' ? 32 : 34;
+    const ctx = scratch.getContext('2d');
+    if (!ctx) continue;
+
+    const sourceWidth = source instanceof HTMLImageElement
+      ? (source.naturalWidth || source.width)
+      : source.width;
+    const sourceHeight = source instanceof HTMLImageElement
+      ? (source.naturalHeight || source.height)
+      : source.height;
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, scratch.width, scratch.height);
+    if (sourceWidth > scratch.width || sourceHeight > scratch.height) {
+      ctx.drawImage(source, 0, 0, scratch.width, scratch.height, 0, 0, scratch.width, scratch.height);
+    } else {
+      ctx.drawImage(source, 0, 0);
+    }
+    updateOverviewSpriteCacheFromCanvas(scratch, textureKey);
+  }
 }
 
 function drawOverviewSprites(attempt = 0): void {
