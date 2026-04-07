@@ -162,5 +162,181 @@ describe('integration/TerminalOverlay', () => {
     expect((document.getElementById('office-panel') as HTMLElement).style.display).toBe('none');
     expect((document.getElementById('terminal-panel') as HTMLElement).style.width).toBe('100%');
   });
+
+  it('fits and resizes before attaching an existing session', async () => {
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(true),
+      terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: '' }),
+      getSessionId: vi.fn().mockResolvedValue('sess-existing'),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist');
+    expect(bridge.terminalResize).toHaveBeenCalled();
+
+    const resizeOrder = (bridge.terminalResize as any).mock.invocationCallOrder[0] as number | undefined;
+    const attachOrder = (bridge.terminalAttach as any).mock.invocationCallOrder[0] as number | undefined;
+    expect(resizeOrder).toBeDefined();
+    expect(attachOrder).toBeDefined();
+    expect((resizeOrder as number) < (attachOrder as number)).toBe(true);
+  });
+
+  it('handles Ctrl+V once by suppressing default paste path', async () => {
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-paste' }),
+    });
+
+    const readText = vi.fn().mockResolvedValue('hello');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { readText },
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean)
+      | undefined;
+
+    expect(keyHandler).toBeTypeOf('function');
+
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    const result = keyHandler?.({
+      ctrlKey: true,
+      metaKey: false,
+      key: 'v',
+      type: 'keydown',
+      preventDefault,
+      stopPropagation,
+    } as unknown as KeyboardEvent);
+
+    await Promise.resolve();
+
+    expect(result).toBe(false);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(terminal.paste).toHaveBeenCalledTimes(1);
+    expect(terminal.paste).toHaveBeenCalledWith('hello');
+  });
+
+  it('runs a geometry self-heal when Refresh Focus is clicked', async () => {
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-focus' }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const resizeCallsBefore = (bridge.terminalResize as any).mock.calls.length as number;
+    const refreshCallsBefore = terminal.refresh.mock.calls.length;
+    const switchCallsBefore = inputManager.switchToTerminal.mock.calls.length;
+
+    const refreshBtn = Array.from(document.querySelectorAll('button')).find(
+      (btn) => btn.textContent?.includes('Refresh Focus')
+    ) as HTMLButtonElement | undefined;
+    expect(refreshBtn).toBeTruthy();
+    refreshBtn?.click();
+
+    expect(terminal.refresh.mock.calls.length).toBeGreaterThan(refreshCallsBefore);
+    expect((bridge.terminalResize as any).mock.calls.length).toBeGreaterThan(resizeCallsBefore);
+    expect(inputManager.switchToTerminal.mock.calls.length).toBeGreaterThan(switchCallsBefore);
+  });
+
+  it('intercepts /new and starts a tracked new session', async () => {
+    let terminalDataCb: ((agentId: string, data: string) => void) | undefined;
+    let onSessionMetaUpdatedCb: ((agentId: string, meta: { title: string }) => void) | undefined;
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-initial' }),
+      getSessionMeta: vi.fn().mockResolvedValue({ title: 'Old title' }),
+      onTerminalData: vi.fn((cb) => {
+        terminalDataCb = cb;
+      }),
+      onSessionMetaUpdated: vi.fn((cb) => {
+        onSessionMetaUpdatedCb = cb;
+      }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const onData = terminal.onData.mock.calls[0]?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTypeOf('function');
+
+    onData?.('/new');
+    onData?.('\r');
+    await Promise.resolve();
+    await Promise.resolve();
+    terminalDataCb?.('generalist', 'Session ID: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    await Promise.resolve();
+
+    expect(bridge.resetSession).not.toHaveBeenCalled();
+    expect(bridge.terminalStart).toHaveBeenCalledTimes(1);
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/new\r');
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/session\r');
+    expect(bridge.setSessionId).toHaveBeenCalledWith(
+      'office-0',
+      'generalist',
+      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    );
+
+    const sessionDisplay = document.querySelector('.session-id-display') as HTMLElement;
+    expect(sessionDisplay.textContent).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+
+    const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
+    expect(titleDisplay.textContent).toBe('Title: (none)');
+    onSessionMetaUpdatedCb?.('generalist', { title: 'New title from first message' });
+    expect(titleDisplay.textContent).toBe('Title: New title from first message');
+  });
 });
 

@@ -48,11 +48,16 @@ export class TerminalOverlay {
   private resizeHandler: (() => void) | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
+  private refitGeneration: number = 0;
   private getOfficeId: () => string;
   private attachedOfficeId: string | null = null;
   private isReadOnly: boolean = false;
   private isReplaying: boolean = false;
   private launchMode: TerminalLaunchMode = 'copilot';
+  private pendingInputLine: string = '';
+  private awaitingSessionIdRefresh: boolean = false;
+  private sessionRefreshCommandTimer: ReturnType<typeof setTimeout> | null = null;
+  private sessionRefreshExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly instanceId: string;
 
   private static nextInstanceId = 0;
@@ -84,6 +89,12 @@ export class TerminalOverlay {
           this.terminal.writeln(`\r\n[Process exited with code ${exitCode}]`);
         }
       });
+
+      window.copilotBridge.onSessionMetaUpdated((agentId: string, meta: { title: string }) => {
+        if (agentId === this.currentAgentId) {
+          this.updateSessionTitleDisplay(meta?.title || null);
+        }
+      });
     }
   }
 
@@ -98,13 +109,105 @@ export class TerminalOverlay {
     console.log('[TerminalOverlay] Re-attached terminal IPC listeners');
   }
 
-  private parseSessionId(_data: string): void {
-    // No-op: Session IDs are now exclusively managed by the terminal server.
-    // Previously this parsed UUIDs from CLI output and overwrote the server's
-    // session mapping via saveSessionId(), causing cross-agent contamination
-    // (e.g. generalist and architect sharing the same UUID).
-    // The server is the single source of truth — see startNewSession() and
-    // the show() reattach path which read the session ID from the server.
+  private clearSessionRefreshTimers(): void {
+    if (this.sessionRefreshCommandTimer) {
+      clearTimeout(this.sessionRefreshCommandTimer);
+      this.sessionRefreshCommandTimer = null;
+    }
+    if (this.sessionRefreshExpiryTimer) {
+      clearTimeout(this.sessionRefreshExpiryTimer);
+      this.sessionRefreshExpiryTimer = null;
+    }
+  }
+
+  private scheduleSessionIdRefresh(agentId: string): void {
+    if (!window.copilotBridge) return;
+    const officeId = this.getActiveOfficeId();
+    this.awaitingSessionIdRefresh = true;
+    this.clearSessionRefreshTimers();
+
+    const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
+    if (el) {
+      el.textContent = 'syncing...';
+    }
+
+    this.sessionRefreshCommandTimer = setTimeout(() => {
+      this.sessionRefreshCommandTimer = null;
+      void window.copilotBridge.terminalWrite(officeId, agentId, '/session\r').catch(() => {});
+    }, 400);
+
+    // Don't keep parsing forever if /session output never arrives.
+    this.sessionRefreshExpiryTimer = setTimeout(() => {
+      this.sessionRefreshExpiryTimer = null;
+      this.awaitingSessionIdRefresh = false;
+      this.updateSessionDisplay();
+    }, 12_000);
+  }
+
+  private parseSessionId(data: string): void {
+    if (!this.awaitingSessionIdRefresh || !this.currentAgentId || !window.copilotBridge) return;
+
+    const match = data.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if (!match) return;
+
+    const nextSessionId = match[0].toLowerCase();
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
+
+    this.sessionId = nextSessionId;
+    this.updateSessionDisplay();
+    const officeId = this.getActiveOfficeId();
+    void window.copilotBridge.setSessionId(officeId, this.currentAgentId, nextSessionId).catch(() => {});
+  }
+
+  private getActiveOfficeId(): string {
+    return this.attachedOfficeId ?? this.getOfficeId();
+  }
+
+  private clearRefitTimers(): void {
+    for (const timer of this.refitTimers) {
+      clearTimeout(timer);
+    }
+    this.refitTimers.length = 0;
+  }
+
+  private resolveTerminalDimensions(): { cols: number; rows: number } | null {
+    if (!this.terminal || !this.fitAddon) return null;
+
+    this.fitAddon.fit();
+    const proposed = this.fitAddon.proposeDimensions();
+    const fallbackCols = this.terminal.cols || 80;
+    const fallbackRows = this.terminal.rows || 24;
+    const colsRaw = proposed?.cols ?? fallbackCols;
+    const rowsRaw = proposed?.rows ?? fallbackRows;
+    if (!Number.isFinite(colsRaw) || !Number.isFinite(rowsRaw)) return null;
+
+    const cols = Math.max(2, Math.floor(colsRaw));
+    const rows = Math.max(1, Math.floor(rowsRaw));
+    return { cols, rows };
+  }
+
+  private fitAndResizeTerminal(options?: {
+    officeId?: string;
+    agentId?: string;
+    refreshVisibleRows?: boolean;
+  }): { cols: number; rows: number } | null {
+    if (!this.terminal || !this.fitAddon) return null;
+
+    const dims = this.resolveTerminalDimensions();
+    if (!dims) return null;
+
+    const agentId = options?.agentId ?? this.currentAgentId;
+    if (!agentId || !window.copilotBridge) return dims;
+
+    const officeId = options?.officeId ?? this.getActiveOfficeId();
+    void window.copilotBridge.terminalResize(officeId, agentId, dims.cols, dims.rows).catch(() => {});
+
+    if (options?.refreshVisibleRows) {
+      this.terminal.refresh(0, Math.max(0, dims.rows - 1));
+    }
+
+    return dims;
   }
 
   private acknowledgeCompletedWork(officeId: string, agentId: string): void {
@@ -124,6 +227,18 @@ export class TerminalOverlay {
     }
   }
 
+  private updateSessionTitleDisplay(title: string | null): void {
+    const el = this.spriteCardElement?.querySelector('.session-title-display') as HTMLSpanElement | null;
+    if (!el) return;
+    if (title && title.trim().length > 0) {
+      el.textContent = `Title: ${title}`;
+      el.title = title;
+      return;
+    }
+    el.textContent = 'Title: (none)';
+    el.title = 'Session title appears after your first message';
+  }
+
   async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean; launchMode?: TerminalLaunchMode }): Promise<void> {
     const previousAgentId = this.currentAgentId;
     const previousOfficeId = this.attachedOfficeId ?? this.getOfficeId();
@@ -139,6 +254,7 @@ export class TerminalOverlay {
     // Snapshot the office ID at attach time so hide() detaches from the correct
     // office even if switchToOffice() changes currentOfficeId before hide() runs.
     this.attachedOfficeId = this.getOfficeId();
+    const officeId = this.getActiveOfficeId();
 
     // Store current agent for workingDir access
     this.currentAgent = agent;
@@ -150,21 +266,24 @@ export class TerminalOverlay {
 
     // Update header with inception indicator for admin
     const inceptionBadge = agent.id === 'admin' ? ' 🎭 INCEPTION MODE' : '';
-    // Fetch session title for header
-    let sessionTitleHtml = '';
+    // Fetch session title for header and sprite card
+    let sessionTitle: string | null = null;
     if (window.copilotBridge?.getSessionMeta) {
       try {
-        const meta = await window.copilotBridge.getSessionMeta(this.getOfficeId(), agent.id);
+        const meta = await window.copilotBridge.getSessionMeta(officeId, agent.id);
         if (meta?.title) {
-          sessionTitleHtml = ` <span style="color: #aab; font-size: 15px;">— ${meta.title.replace(/</g, '&lt;')}</span>`;
+          sessionTitle = meta.title;
         }
       } catch (_) { /* ignore */ }
     }
+    const sessionTitleHtml = sessionTitle
+      ? ` <span style="color: #aab; font-size: 15px;">— ${sessionTitle.replace(/</g, '&lt;')}</span>`
+      : '';
     if (this.headerElement) {
       const readOnlyBadge = this.isReadOnly ? ' <span style="color: #ffb86c; font-size: 12px; background: #332200; padding: 2px 8px; border-radius: 4px;">🔒 READ-ONLY</span>' : '';
       const shortcutsText = this.isReadOnly
         ? '[F10] Close  [Ctrl+F] Fullscreen'
-        : '[F10] Close  [Ctrl+Shift+N] New Session  [Ctrl+F] Fullscreen';
+        : '[F10] Close  [/new or Ctrl+Shift+N] New Session  [Ctrl+F] Fullscreen';
       const headerLabel = this.isReadOnly ? `📜 Meeting with ${agent.name}` : `💬 Talking to ${agent.name}`;
       this.headerElement.innerHTML = `
         <div style="display: flex; align-items: center; gap: 15px;">
@@ -191,6 +310,8 @@ export class TerminalOverlay {
     if (this.container) {
       this.container.style.display = 'flex';
     }
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
 
     // Show the SpriteCard
     if (this.spriteCardElement) {
@@ -210,16 +331,25 @@ export class TerminalOverlay {
       agentNameDisplay.textContent = agent.name;
       agentNameDisplay.style.color = colorHex;
     }
+    this.updateSessionTitleDisplay(sessionTitle);
     
     // Draw agent sprite
     this.drawAgentSprite(agent);
+
+    this.pendingInputLine = '';
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
+    this.clearRefitTimers();
+    this.refitGeneration += 1;
 
     // Create or reuse terminal
     if (!this.terminal) {
       this.createTerminal();
     } else {
-      // Reusing existing terminal for a returning session — clear screen but preserve state
+      // Reusing existing terminal for a returning session — reset renderer state so
+      // row/cursor geometry from a previous session does not leak across switches.
       this.isReplaying = true;
+      this.terminal.reset();
       this.terminal.clear();
     }
 
@@ -230,18 +360,19 @@ export class TerminalOverlay {
     if (window.copilotBridge) {
       try {
         const exists = await withTimeout(
-          window.copilotBridge.terminalExists(this.getOfficeId(), agent.id),
+          window.copilotBridge.terminalExists(officeId, agent.id),
           IPC_TIMEOUT, 'terminalExists'
         );
         if (!exists) {
           this.isReplaying = false;
-          await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory());
+          await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory(), officeId);
         } else {
+          this.fitAndResizeTerminal({ officeId, agentId: agent.id });
           // Session exists - reattach and replay scrollback to sync xterm with PTY state.
           // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
           // at the same position as the live PTY.
           const attachResult = await withTimeout(
-            window.copilotBridge.terminalAttach(this.getOfficeId(), agent.id),
+            window.copilotBridge.terminalAttach(officeId, agent.id),
             IPC_TIMEOUT, 'terminalAttach'
           );
 
@@ -259,7 +390,7 @@ export class TerminalOverlay {
 
           // Try to get saved session ID
           const savedId = await withTimeout(
-            window.copilotBridge.getSessionId(this.getOfficeId(), agent.id),
+            window.copilotBridge.getSessionId(officeId, agent.id),
             IPC_TIMEOUT, 'getSessionId'
           );
           if (savedId) {
@@ -320,7 +451,9 @@ export class TerminalOverlay {
     }, 50);
   }
 
-  private async startNewSession(agentId: string, workingDir?: string): Promise<void> {
+  private async startNewSession(agentId: string, workingDir?: string, officeId?: string): Promise<void> {
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
     this.sessionId = null;
     this.updateSessionDisplay();
     
@@ -329,14 +462,13 @@ export class TerminalOverlay {
       el.textContent = 'starting...';
     }
 
-    // Fit xterm first so we know the real dimensions to spawn the PTY at
-    this.fitAddon?.fit();
-    const dims = this.fitAddon?.proposeDimensions();
+    const targetOfficeId = officeId ?? this.getActiveOfficeId();
+    const dims = this.fitAndResizeTerminal({ officeId: targetOfficeId, agentId });
 
     const result = await withTimeout(
       this.launchMode === 'shell'
         ? window.copilotBridge.terminalStart(
-            this.getOfficeId(),
+            targetOfficeId,
             agentId,
             workingDir,
             dims?.cols,
@@ -345,7 +477,7 @@ export class TerminalOverlay {
             'shell',
           )
         : window.copilotBridge.terminalStart(
-            this.getOfficeId(),
+            targetOfficeId,
             agentId,
             workingDir,
             dims?.cols,
@@ -363,17 +495,7 @@ export class TerminalOverlay {
   }
 
   private fetchSessionId(agentId: string): void {
-    // Send /session command to get session ID from copilot
-    if (window.copilotBridge && !this.sessionId) {
-      const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
-      if (el) {
-        el.textContent = 'fetching...';
-      }
-      // Send the /session command with carriage return to submit
-      setTimeout(() => {
-        window.copilotBridge.terminalWrite(this.getOfficeId(), agentId, '/session\r');
-      }, 200);
-    }
+    this.scheduleSessionIdRefresh(agentId);
   }
 
   private createContainer(): void {
@@ -493,6 +615,7 @@ export class TerminalOverlay {
       <canvas class="agent-sprite-canvas" width="32" height="34" style="image-rendering: pixelated; width: 160px; height: 170px; border-radius: 8px;"></canvas>
       <div style="display: flex; flex-direction: column; gap: 5px;">
         <span class="agent-name-display" style="font-weight: bold; font-size: 28px;"></span>
+        <span class="session-title-display" style="color: #aab; font-size: 12px;">Title: (none)</span>
         <span style="color: #666; font-size: 12px;">Session ID: <span class="session-id-display" style="color: #4a9eff; cursor: pointer;">--</span></span>
       </div>
     `;
@@ -572,8 +695,8 @@ export class TerminalOverlay {
     refreshFocusBtn.style.cssText = btnStyle + 'color: #88ffaa;';
     refreshFocusBtn.onmouseover = () => { refreshFocusBtn.style.background = '#2a4a3a'; };
     refreshFocusBtn.onmouseout = () => { refreshFocusBtn.style.background = '#2a3a4a'; };
-    refreshFocusBtn.onclick = () => this.focusTerminal();
-    refreshFocusBtn.title = 'Re-focus terminal input when typing stops working';
+    refreshFocusBtn.onclick = () => this.refreshFocusAndGeometry();
+    refreshFocusBtn.title = 'Re-focus terminal and force geometry self-heal';
     buttonGrid.appendChild(refreshFocusBtn);
 
     this.mobileKeyboardBtn = document.createElement('button');
@@ -632,13 +755,18 @@ export class TerminalOverlay {
 
   private async handleNewSession(): Promise<void> {
     if (!this.currentAgentId || !this.currentAgent || this.isReadOnly) return;
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
     
     // Snapshot office ID now — getOfficeId() returns the CURRENT office which may
     // change during async operations (e.g. fleet deploy switches office mid-await).
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
     console.log(`[TerminalOverlay] handleNewSession: agent=${this.currentAgentId}, office=${officeId}`);
+    this.clearRefitTimers();
+    this.refitGeneration += 1;
 
     // Clear terminal
+    this.pendingInputLine = '';
     this.terminal?.clear();
     this.terminal?.writeln('\x1b[33m[Starting new session...]\x1b[0m\r\n');
     
@@ -654,8 +782,8 @@ export class TerminalOverlay {
     if (el) el.textContent = 'starting...';
     this.sessionId = null;
     this.updateSessionDisplay();
-    this.fitAddon?.fit();
-    const dims = this.fitAddon?.proposeDimensions();
+    this.updateSessionTitleDisplay(null);
+    const dims = this.fitAndResizeTerminal({ officeId, agentId: this.currentAgentId });
     const result = await withTimeout(
       this.launchMode === 'shell'
         ? window.copilotBridge.terminalStart(
@@ -699,6 +827,7 @@ export class TerminalOverlay {
       if (result.success && result.sessionId) {
         this.sessionId = result.sessionId;
         this.updateSessionDisplay();
+        this.updateSessionTitleDisplay(null);
       }
     } catch { /* ignore */ }
 
@@ -816,9 +945,6 @@ export class TerminalOverlay {
       .xterm-viewport {
         background-color: #0a0a14 !important;
       }
-      .xterm-screen {
-        height: 100%;
-      }
       #terminal-container .xterm {
         height: 100%;
       }
@@ -866,12 +992,19 @@ export class TerminalOverlay {
     this.terminal.loadAddon(this.fitAddon);
 
     this.terminal.open(this.terminalDiv);
-    this.fitAddon.fit();
+    this.fitAndResizeTerminal();
 
     // Enable Ctrl+V / Ctrl+Shift+V paste in Electron
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key === 'v' && event.type === 'keydown') {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === 'v' &&
+        event.type === 'keydown'
+      ) {
         if (this.isReadOnly) return false;
+        // Prevent the browser/xterm default paste path so we don't paste twice.
+        event.preventDefault();
+        event.stopPropagation();
         navigator.clipboard.readText().then((text) => {
           if (text) this.terminal!.paste(text);
         }).catch((err) => {
@@ -885,8 +1018,40 @@ export class TerminalOverlay {
     // Handle terminal input (blocked in read-only mode)
     this.terminal.onData((data: string) => {
       if (this.isReadOnly) return;
-      if (this.currentAgentId && window.copilotBridge) {
-        window.copilotBridge.terminalWrite(this.getOfficeId(), this.currentAgentId, data);
+      if (!this.currentAgentId || !window.copilotBridge) return;
+
+      let outbound = '';
+      let shouldStartSlashNewSession = false;
+
+      for (const ch of data) {
+        if (ch === '\r' || ch === '\n') {
+          const command = this.pendingInputLine.trim();
+          this.pendingInputLine = '';
+          if (command === '/new') {
+            shouldStartSlashNewSession = true;
+          }
+          outbound += ch;
+          continue;
+        }
+
+        if (ch === '\x7f') {
+          this.pendingInputLine = this.pendingInputLine.slice(0, -1);
+          outbound += ch;
+          continue;
+        }
+
+        if (ch >= ' ') {
+          this.pendingInputLine += ch;
+        }
+        outbound += ch;
+      }
+
+      if (outbound.length > 0) {
+        window.copilotBridge.terminalWrite(this.getOfficeId(), this.currentAgentId, outbound);
+      }
+
+      if (shouldStartSlashNewSession) {
+        this.fetchSessionId(this.currentAgentId);
       }
     });
 
@@ -965,21 +1130,30 @@ export class TerminalOverlay {
     terminalPanel.style.width = '50%';
   }
 
+  private refreshFocusAndGeometry(): void {
+    this.clearRefitTimers();
+    this.refitGeneration += 1;
+    this.fitAndResizeTerminal({ refreshVisibleRows: true });
+    this.focusTerminal();
+    this.debouncedRefit();
+  }
+
   /** Re-fit xterm after panel resize and notify PTY of new dimensions.
    *  Multi-stage: immediate → 150ms → 350ms to catch late layout shifts. */
   private debouncedRefit(): void {
     if (!this.fitAddon || !this.terminal || !this.currentAgentId) return;
 
-    // Cancel any pending refit timers
-    for (const t of this.refitTimers) clearTimeout(t);
-    this.refitTimers.length = 0;
+    const generation = ++this.refitGeneration;
+    const agentId = this.currentAgentId;
+    const officeId = this.getActiveOfficeId();
+    this.clearRefitTimers();
 
     const doFit = () => {
-      this.fitAddon?.fit();
-      const dims = this.fitAddon?.proposeDimensions();
-      if (dims && window.copilotBridge && this.currentAgentId) {
-        window.copilotBridge.terminalResize(this.getOfficeId(), this.currentAgentId, dims.cols, dims.rows);
-      }
+      if (!this.isVisible) return;
+      if (generation !== this.refitGeneration) return;
+      if (this.currentAgentId !== agentId) return;
+      if (this.getActiveOfficeId() !== officeId) return;
+      this.fitAndResizeTerminal({ officeId, agentId });
     };
 
     // Stage 1: immediate (next frame)
@@ -1111,6 +1285,9 @@ export class TerminalOverlay {
     this.updateMobileKeyboardButtonVisibility();
     this.isVisible = false;
     this.isReadOnly = false;
+    this.pendingInputLine = '';
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
     this.closeHistoryPopover();
 
     // Always restore half-width so the game is visible
@@ -1168,9 +1345,9 @@ export class TerminalOverlay {
   }
 
   destroy(): void {
-    // Cancel pending refit timers
-    for (const t of this.refitTimers) clearTimeout(t);
-    this.refitTimers.length = 0;
+    this.clearRefitTimers();
+    this.awaitingSessionIdRefresh = false;
+    this.clearSessionRefreshTimers();
     // Remove window resize listener
     if (this.resizeHandler) {
       window.removeEventListener('resize', this.resizeHandler);
