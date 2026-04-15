@@ -1600,7 +1600,13 @@ if (window.copilotBridge) {
 
       // Update status based on remaining tools
       if (remaining.length === 0) {
-        officeManager.setAgentReady(officeId, agentId);
+        // Keep thinking while a turn is still settling; turn_end/sync will mark ready.
+        const currentStatus = officeManager.getAgentStatus(officeId, agentId);
+        if (currentStatus?.subState === 'thinking') {
+          officeManager.setAgentThinking(officeId, agentId, currentStatus.thinkingDetail ?? 'Processing...');
+        } else {
+          officeManager.setAgentReady(officeId, agentId);
+        }
       } else if (remaining.some(t => isAskUserTool(t.name, t.status))) {
         // ask_user is still active — preserve waiting state even if other tools completed
         officeManager.setAgentWaiting(officeId, agentId);
@@ -1725,15 +1731,33 @@ let syncInProgress = false;
 let syncStartedAt = 0;
 const SYNC_LOCK_TIMEOUT_MS = 15_000;
 const STALE_IN_TURN_THINKING_TIMEOUT_MS = 90_000;
-async function syncAgentStatuses(): Promise<void> {
+const THINKING_TO_READY_GRACE_MS = 7_000;
+const SYNC_WAIT_POLL_MS = 50;
+
+async function waitForSyncIdle(timeoutMs: number = SYNC_LOCK_TIMEOUT_MS): Promise<void> {
+  const startedAt = Date.now();
+  while (syncInProgress && (Date.now() - startedAt) < timeoutMs) {
+    await new Promise<void>((resolve) => setTimeout(resolve, SYNC_WAIT_POLL_MS));
+  }
+}
+
+async function syncAgentStatuses(force = false): Promise<void> {
   if (!window.copilotBridge) return;
   if (syncInProgress) {
-    // Safety net: if the lock has been held too long, force-release it.
-    if (syncStartedAt && (Date.now() - syncStartedAt) > SYNC_LOCK_TIMEOUT_MS) {
-      console.warn(`[Office] syncAgentStatuses lock held for >${SYNC_LOCK_TIMEOUT_MS / 1000}s — force-releasing`);
-      syncInProgress = false;
+    if (force) {
+      await waitForSyncIdle();
+      if (syncInProgress) {
+        console.warn(`[Office] syncAgentStatuses lock held for >${SYNC_LOCK_TIMEOUT_MS / 1000}s during forced sync — force-releasing`);
+        syncInProgress = false;
+      }
     } else {
-      return;
+      // Safety net: if the lock has been held too long, force-release it.
+      if (syncStartedAt && (Date.now() - syncStartedAt) > SYNC_LOCK_TIMEOUT_MS) {
+        console.warn(`[Office] syncAgentStatuses lock held for >${SYNC_LOCK_TIMEOUT_MS / 1000}s — force-releasing`);
+        syncInProgress = false;
+      } else {
+        return;
+      }
     }
   }
   const officeId = officeManager.currentOfficeId;
@@ -1753,6 +1777,7 @@ async function syncAgentStatuses(): Promise<void> {
       const activeTools = getCurrentAgentTools().get(agent.id) || [];
       const waitingToolActive = activeTools.some(t => isAskUserTool(t.name, t.status));
       const thinkingSince = current?.subState === 'thinking' ? current.activityStartTime : null;
+      const thinkingAgeMs = thinkingSince ? (now - thinkingSince) : null;
       const staleInTurnThinking = Boolean(
         current?.subState === 'thinking'
         && thinkingSince
@@ -1799,8 +1824,12 @@ async function syncAgentStatuses(): Promise<void> {
             officeManager.setAgentReady(officeId, agent.id);
             changed = true;
           } else if (current.subState === 'thinking' && !serverStatus.inTurn) {
-            // Server says agent is idle (not in a turn) but renderer shows thinking —
-            // recover from stuck thinking state (e.g. missed turn_end event)
+            // Avoid brief ready↔thinking flapping while turn/inTurn state propagates.
+            if (thinkingAgeMs !== null && thinkingAgeMs < THINKING_TO_READY_GRACE_MS) {
+              continue;
+            }
+            // Server says agent is idle (not in a turn) and grace elapsed:
+            // recover from stuck thinking state (e.g. missed turn_end event).
             console.warn(`[Office] Agent ${agent.id} stuck in thinking but server reports idle — resetting to ready`);
             const agentTools = getCurrentAgentTools();
             if (agentTools.has(agent.id)) {
@@ -1866,6 +1895,7 @@ async function reconnectAgentStatuses(): Promise<void> {
   if (!window.copilotBridge) return;
   const officeId = officeManager.currentOfficeId;
   if (!officeId) return;
+  await waitForSyncIdle();
   try {
     const statuses = await window.copilotBridge.queryAgentStatuses(officeId);
     for (const [agentId, info] of Object.entries(statuses)) {
@@ -1876,7 +1906,7 @@ async function reconnectAgentStatuses(): Promise<void> {
   } catch (e) {
     console.warn('[Office] Failed to reconnect agent viewers:', e);
   }
-  await syncAgentStatuses();
+  await syncAgentStatuses(true);
 }
 
 // ── Elapsed Time Ticker ─────────────────────────────────────────────
@@ -1976,7 +2006,6 @@ function updateStatusBarNow() {
     document.getElementById('reconnect-statuses-btn')?.addEventListener('click', async () => {
       const btn = document.getElementById('reconnect-statuses-btn') as HTMLButtonElement;
       if (btn) { btn.disabled = true; btn.textContent = '🔌 Reconnecting...'; }
-      syncInProgress = false;
       await reconnectAgentStatuses();
       if (btn) { btn.disabled = false; btn.textContent = '🔌 Re-connect Statuses'; }
     });
