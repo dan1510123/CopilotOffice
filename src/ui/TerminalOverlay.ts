@@ -1104,13 +1104,27 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAndResizeTerminal();
 
-    // Enable Ctrl+V / Ctrl+Shift+V paste in Electron
+    // Enable clipboard shortcuts in Electron terminal view.
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
-      if (
-        (event.ctrlKey || event.metaKey) &&
-        event.key.toLowerCase() === 'v' &&
-        event.type === 'keydown'
-      ) {
+      const isModifierPressed = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (event.type !== 'keydown' || !isModifierPressed) return true;
+
+      if (key === 'c') {
+        const selectedText = this.terminal?.hasSelection() ? this.terminal.getSelection() : '';
+        if (!selectedText) {
+          // No selection: allow default terminal behavior (e.g. SIGINT).
+          return true;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        navigator.clipboard.writeText(selectedText).catch((err) => {
+          console.warn('[Terminal] Clipboard write failed:', err);
+        });
+        return false;
+      }
+
+      if (key === 'v') {
         if (this.isReadOnly) return false;
         // Prevent the browser/xterm default paste path so we don't paste twice.
         event.preventDefault();
