@@ -689,6 +689,12 @@ export class SeriousTerminalController {
         }).catch(() => {});
         return false;
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f' && event.type === 'keydown') {
+        event.preventDefault();
+        event.stopPropagation();
+        this.toggleFullWidth();
+        return false;
+      }
       return true;
     });
 

@@ -124,6 +124,15 @@ Testing notes:
 - Phaser depth layers via `Depths.*` constants in `src/config/depths.ts` — use `ySortDepth()` for y-sorted objects
 - Feature flags for optional content (top of `OfficeScene.ts`)
 
+## Regression-Prone Pitfalls (from recent history)
+
+- **Do not hardcode agent IDs in scene/layout logic.** Office rosters can be dynamic; use config-driven lists, seat/index mappings, or position-based lookups.
+- **Guard status transitions against concurrent tool events.** In `src/main.ts`, treat `ask_user` as a waiting-state signal even when other tools complete in the same tick.
+- **Preserve and restore focus around overlays/popovers.** Settings/terminal UI changes must keep `InputManager` and DOM focus in sync on open/close.
+- **Do not gate fleet lifecycle events on active terminal viewers.** In `electron/terminal/server.ts`, sub-agent lifecycle forwarding must continue through scene transitions/detaches.
+- **For terminal backend/SDK changes, keep protocol + preload + server compatible in the same change.** Path resolution and PATH sanitization are required to avoid selecting broken local binaries.
+- **After large UI mode/layout changes, run parity checks for split-pane behavior and dashboard card rendering.** Watch for sprite/session metadata persistence regressions across default and serious/fleet views.
+
 ## Known Limitations
 
 ### Fleet V-Team: activeAgentViewers key mismatch after session transfer
