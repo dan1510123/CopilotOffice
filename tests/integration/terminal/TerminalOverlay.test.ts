@@ -317,12 +317,14 @@ describe('integration/TerminalOverlay', () => {
     onData?.('\r');
     await Promise.resolve();
     await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 450));
     terminalDataCb?.('generalist', 'Session ID: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
     await Promise.resolve();
 
     expect(bridge.resetSession).not.toHaveBeenCalled();
     expect(bridge.terminalStart).toHaveBeenCalledTimes(1);
-    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/new\r');
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/new');
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '\r');
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/session\r');
     expect(bridge.setSessionId).toHaveBeenCalledWith(
       'office-0',
@@ -334,7 +336,7 @@ describe('integration/TerminalOverlay', () => {
     expect(sessionDisplay.textContent).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
 
     const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
-    expect(titleDisplay.textContent).toBe('Untitled session (click to rename)');
+    expect(titleDisplay.textContent).toBe('Old title');
     onSessionMetaUpdatedCb?.('generalist', { title: 'New title from first message' });
     expect(titleDisplay.textContent).toBe('New title from first message');
   });

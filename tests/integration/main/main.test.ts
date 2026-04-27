@@ -43,6 +43,7 @@ function setupPhaserMock(): void {
   class MockGame {
     events = new MockPhaserEventEmitter();
     registry = { get: vi.fn(() => false) };
+    scale = { resize: vi.fn() };
     textures = {
       get: vi.fn(() => ({ key: '__MISSING' })),
       getBase64: vi.fn(() => 'data:image/png;base64,'),
