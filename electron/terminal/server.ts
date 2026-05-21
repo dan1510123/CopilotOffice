@@ -545,8 +545,8 @@ async function startTerminalForAgent(
     if (!shellOnlyMode && terminalBackend.name === 'node-pty') {
       // Start copilot CLI
       setTimeout(() => {
-        console.log(`[TermServer] Starting copilot --resume for ${ck}: ${sessionId}`);
-        proc.write(`copilot --resume ${sessionId}\r`);
+        console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}`);
+        proc.write(`copilot --session-id ${sessionId}\r`);
       }, 500);
     }
 
@@ -704,7 +704,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         } catch { /* use default */ }
       }
       try {
-        spawn('wt', ['-d', cwd, 'copilot', '--resume', sid], { detached: true, stdio: 'ignore' }).unref();
+        spawn('wt', ['-d', cwd, 'copilot', '--session-id', sid], { detached: true, stdio: 'ignore' }).unref();
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } catch (error) {
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });

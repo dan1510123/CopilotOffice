@@ -224,7 +224,7 @@ export class TerminalOverlay {
     const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLSpanElement;
     if (el && this.sessionId) {
       el.textContent = this.sessionId;
-      el.title = `Click to copy. Resume with: copilot --resume ${this.sessionId}`;
+      el.title = `Click to copy. Resume with: copilot --session-id ${this.sessionId}`;
       el.onclick = () => this.copySessionId();
     }
   }

@@ -50,11 +50,13 @@ terminalStart(agentId, wd)  →     startTerminalForAgent()
                                     pty.spawn('powershell.exe', ...)
                                     new EventsWatcher(sessionId)
                                     setTimeout(500ms):
-                                      proc.write('copilot --resume <sessionId>\r')
+                                      proc.write('copilot --session-id <sessionId>\r')
                             ←     { success: true, pid, sessionId }
 ```
 
-**Note:** `--resume` with a never-before-seen UUID is equivalent to starting fresh — the Copilot CLI creates a new session directory.
+**Note:** `--session-id` supports both flows with a UUID:
+- New UUID: starts a fresh session
+- Existing UUID: resumes that session's state
 
 ### 2. Reattach (Terminal Still Alive)
 
@@ -97,7 +99,7 @@ terminalKill(agentId)       →     killPtyProcess(proc)          ← PTY DIES
 startNewSession(agentId)    →     [same as Flow 1 — new UUID generated]
 ```
 
-**Result:** Old UUID archived. New UUID generated. Fresh `copilot --resume <newUUID>` starts a clean session.
+**Result:** Old UUID archived. New UUID generated. Fresh `copilot --session-id <newUUID>` starts a clean session.
 
 ### 4. Close Session (⏹ Button)
 
@@ -164,7 +166,7 @@ STARTUP:
   → startNewSession()
   → agentSessionIds.get(agentId) → "uuid-from-before-restart" (FOUND)
   → REUSES existing UUID                              ← ⚠️ THIS IS THE RESUME
-  → copilot --resume <uuid-from-before-restart>
+  → copilot --session-id <uuid-from-before-restart>
   → Copilot CLI loads session state from ~/.copilot/session-state/{uuid}/
   → Previous conversation and tool calls resume
 ```
@@ -177,7 +179,7 @@ The server reloads the persisted UUID from `.data/{officeId}.sessions.json` and 
 **Path:** `terminalPopOut()`
 
 ```
-Server spawns: wt -d <cwd> copilot --resume <sessionId>
+Server spawns: wt -d <cwd> copilot --session-id <sessionId>
 ```
 
 Opens Windows Terminal with the same session UUID. Both the in-game terminal and the external terminal share the session.
@@ -219,7 +221,7 @@ Opens Windows Terminal with the same session UUID. Both the in-game terminal and
           ▼           ▼                      ▼
     ┌─────────────────────────────────────────────┐
     │              Active (PTY alive)              │
-    │  copilot --resume <uuid> running in PTY     │
+    │  copilot --session-id <uuid> running in PTY │
     └─────────────────────────────────────────────┘
 ```
 
@@ -234,7 +236,7 @@ Opens Windows Terminal with the same session UUID. Both the in-game terminal and
 | UUID generation | `crypto.randomUUID()` | Standard v4 UUID |
 | Archive old UUID | `archiveSessionId()` | Pushes to `history[agentId][]` |
 | PTY spawn | `pty.spawn('powershell.exe', [...])` | With tagged env vars |
-| CLI start command | `copilot --resume <sessionId>` | Always uses `--resume` flag |
+| CLI start command | `copilot --session-id <sessionId>` | Uses explicit session UUID |
 | CLI start delay | `setTimeout(500ms)` | Waits for shell to initialize |
 | Ready detection | `assistant.turn_end` or `user.message` event (+ `"Environment loaded"` in PTY output) | Triggers `preload-status: ready` |
 | Event streaming | `EventsWatcher` → `events.jsonl` | File watcher with polling fallback |
@@ -242,11 +244,11 @@ Opens Windows Terminal with the same session UUID. Both the in-game terminal and
 
 ---
 
-## The `--resume` Flag
+## The `--session-id` Flag
 
-Every terminal start uses `copilot --resume <sessionId>`, regardless of whether the session is new or existing.
+Every terminal start uses `copilot --session-id <sessionId>`.
 
 - **New UUID** (no prior `~/.copilot/session-state/{uuid}/`): Copilot CLI initializes a fresh session
 - **Existing UUID** (session state directory exists): Copilot CLI loads prior conversation history and may resume incomplete tasks
 
-There is no separate "start fresh" command path. The distinction is purely whether session state files exist on disk for the given UUID.
+`--resume` remains appropriate for selecting existing sessions (including by name/prefix), but this app uses persisted UUIDs directly, so `--session-id` is the correct explicit launch flag.
