@@ -515,10 +515,16 @@ async function startTerminalForAgent(
 
     proc.onData((data: string) => {
       appendToScrollback(ck, data);
-      // Primary ready signal: "Environment loaded" in PTY output
-      if (!shellOnlyMode && terminalBackend?.name === 'node-pty' && !hasSignalledReady && data.includes('Environment loaded')) {
-        console.log(`[TermServer] Primary ready signal for ${ck}: "Environment loaded" detected`);
-        signalReady();
+      // Ready signal from PTY output. Newer CLI builds do not always emit the old
+      // "Environment loaded" marker, so accept either the legacy marker or the
+      // interactive help footer that appears once startup finishes.
+      if (!shellOnlyMode && terminalBackend?.name === 'node-pty' && !hasSignalledReady) {
+        const hasLegacyReadyMarker = data.includes('Environment loaded');
+        const hasInteractiveFooter = data.includes('/ commands') || data.includes('? help');
+        if (hasLegacyReadyMarker || hasInteractiveFooter) {
+          console.log(`[TermServer] Ready signal for ${ck}: PTY marker detected`);
+          signalReady();
+        }
       }
       if (!hasActiveViewer(ck)) return;
       pendingData += data;
@@ -546,7 +552,7 @@ async function startTerminalForAgent(
       // Start copilot CLI
       setTimeout(() => {
         console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}`);
-        proc.write(`copilot --session-id ${sessionId}\r`);
+        proc.write(`copilot --session-id=${sessionId}\r`);
       }, 500);
     }
 
