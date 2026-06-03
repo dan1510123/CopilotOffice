@@ -246,6 +246,82 @@ describe('integration/TerminalOverlay', () => {
     expect(terminal.paste).toHaveBeenCalledWith('hello');
   });
 
+  it('uses native copy path for selection and keeps Ctrl+C pass-through without selection', async () => {
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-copy' }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean)
+      | undefined;
+    expect(keyHandler).toBeTypeOf('function');
+
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('selected text');
+
+    const preventDefaultWithSelection = vi.fn();
+    const stopPropagationWithSelection = vi.fn();
+    const copyWithSelection = keyHandler?.({
+      ctrlKey: true,
+      metaKey: false,
+      key: 'c',
+      type: 'keydown',
+      preventDefault: preventDefaultWithSelection,
+      stopPropagation: stopPropagationWithSelection,
+    } as unknown as KeyboardEvent);
+
+    expect(copyWithSelection).toBe(true);
+    expect(preventDefaultWithSelection).not.toHaveBeenCalled();
+    expect(stopPropagationWithSelection).not.toHaveBeenCalled();
+
+    const setData = vi.fn();
+    const copyEvent = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
+    Object.defineProperty(copyEvent, 'clipboardData', {
+      configurable: true,
+      value: { setData },
+    });
+    ((overlay as any).terminalDiv as HTMLDivElement).dispatchEvent(copyEvent);
+
+    expect(setData).toHaveBeenCalledWith('text/plain', 'selected text');
+    expect(copyEvent.defaultPrevented).toBe(true);
+
+    terminal.hasSelection.mockReturnValue(false);
+    const preventDefaultNoSelection = vi.fn();
+    const stopPropagationNoSelection = vi.fn();
+    const copyWithoutSelection = keyHandler?.({
+      ctrlKey: true,
+      metaKey: false,
+      key: 'c',
+      type: 'keydown',
+      preventDefault: preventDefaultNoSelection,
+      stopPropagation: stopPropagationNoSelection,
+    } as unknown as KeyboardEvent);
+
+    expect(copyWithoutSelection).toBe(true);
+    expect(preventDefaultNoSelection).not.toHaveBeenCalled();
+    expect(stopPropagationNoSelection).not.toHaveBeenCalled();
+
+    const terminalDiv = (overlay as any).terminalDiv as HTMLDivElement;
+    const removeListenerSpy = vi.spyOn(terminalDiv, 'removeEventListener');
+    overlay.hide();
+    expect(removeListenerSpy).toHaveBeenCalledWith('copy', expect.any(Function));
+  });
+
   it('runs a geometry self-heal when Refresh Focus is clicked', async () => {
     const bridge = installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
@@ -379,4 +455,3 @@ describe('integration/TerminalOverlay', () => {
     expect((document.querySelector('.session-title-display') as HTMLElement).textContent).toBe('Renamed from sprite card');
   });
 });
-

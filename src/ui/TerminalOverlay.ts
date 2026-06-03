@@ -60,6 +60,7 @@ export class TerminalOverlay {
   private sessionRefreshExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   private currentSessionTitle: string | null = null;
   private isEditingSessionTitle: boolean = false;
+  private terminalCopyHandler: ((event: ClipboardEvent) => void) | null = null;
   private readonly instanceId: string;
 
   private static nextInstanceId = 0;
@@ -171,6 +172,39 @@ export class TerminalOverlay {
       clearTimeout(timer);
     }
     this.refitTimers.length = 0;
+  }
+
+  private attachTerminalCopyListener(): void {
+    if (!this.terminalDiv || this.terminalCopyHandler) return;
+
+    this.terminalCopyHandler = (event: ClipboardEvent) => {
+      if (!this.isVisible || !this.terminal) return;
+
+      const target = event.target;
+      if (target instanceof Node && !this.terminalDiv?.contains(target)) return;
+
+      const selectedText = this.terminal.hasSelection() ? this.terminal.getSelection() : '';
+      if (!selectedText) return;
+
+      if (event.clipboardData) {
+        event.clipboardData.setData('text/plain', selectedText);
+        event.preventDefault();
+        return;
+      }
+
+      event.preventDefault();
+      void this.writeClipboardText(selectedText).then((success) => {
+        if (!success) console.warn('[Terminal] Clipboard write failed');
+      });
+    };
+
+    this.terminalDiv.addEventListener('copy', this.terminalCopyHandler);
+  }
+
+  private detachTerminalCopyListener(): void {
+    if (!this.terminalDiv || !this.terminalCopyHandler) return;
+    this.terminalDiv.removeEventListener('copy', this.terminalCopyHandler);
+    this.terminalCopyHandler = null;
   }
 
   private resolveTerminalDimensions(): { cols: number; rows: number } | null {
@@ -445,6 +479,7 @@ export class TerminalOverlay {
       this.terminal.reset();
       this.terminal.clear();
     }
+    this.attachTerminalCopyListener();
 
     // Reset session ID for this agent
     this.sessionId = null;
@@ -847,19 +882,41 @@ export class TerminalOverlay {
 
   private copySessionId(): void {
     if (this.sessionId) {
-      navigator.clipboard.writeText(this.sessionId).then(() => {
-        if (this.sessionIdElement) {
-          const original = this.sessionIdElement.textContent;
-          this.sessionIdElement.textContent = 'Copied!';
-          this.sessionIdElement.style.color = '#50fa7b';
-          setTimeout(() => {
-            if (this.sessionIdElement) {
-              this.sessionIdElement.textContent = original;
-              this.sessionIdElement.style.color = '#4a9eff';
-            }
-          }, 1000);
-        }
+      void this.writeClipboardText(this.sessionId).then((success) => {
+        if (!this.sessionIdElement) return;
+        const original = this.sessionIdElement.textContent;
+        this.sessionIdElement.textContent = success ? 'Copied!' : 'Copy failed';
+        this.sessionIdElement.style.color = success ? '#50fa7b' : '#ff6b6b';
+        setTimeout(() => {
+          if (this.sessionIdElement) {
+            this.sessionIdElement.textContent = original;
+            this.sessionIdElement.style.color = '#4a9eff';
+          }
+        }, 1000);
       });
+    }
+  }
+
+  private async writeClipboardText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall back for Electron contexts where navigator.clipboard may be unavailable/blocked.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'true');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return copied;
     }
   }
 
@@ -1111,17 +1168,9 @@ export class TerminalOverlay {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        const selectedText = this.terminal?.hasSelection() ? this.terminal.getSelection() : '';
-        if (!selectedText) {
-          // No selection: allow default terminal behavior (e.g. SIGINT).
-          return true;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        navigator.clipboard.writeText(selectedText).catch((err) => {
-          console.warn('[Terminal] Clipboard write failed:', err);
-        });
-        return false;
+        // Selection: allow native copy shortcut path (handled by copy event listener).
+        // No selection: allow default terminal behavior (e.g. SIGINT).
+        return true;
       }
 
       if (key === 'v') {
@@ -1391,6 +1440,7 @@ export class TerminalOverlay {
   }
 
   hide(): void {
+    this.detachTerminalCopyListener();
     if (this.container) {
       this.container.style.display = 'none';
     }
@@ -1461,6 +1511,7 @@ export class TerminalOverlay {
   }
 
   destroy(): void {
+    this.detachTerminalCopyListener();
     this.clearRefitTimers();
     this.awaitingSessionIdRefresh = false;
     this.clearSessionRefreshTimers();

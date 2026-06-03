@@ -49,6 +49,7 @@ export class SeriousTerminalController {
   private sessionId: string | null = null;
   private activeOptions: SeriousTerminalOpenOptions | null = null;
   private isFullWidth = false;
+  private terminalCopyHandler: ((event: ClipboardEvent) => void) | null = null;
 
   constructor(host: HTMLElement, options: SeriousTerminalControllerOptions = {}) {
     this.host = host;
@@ -303,6 +304,7 @@ export class SeriousTerminalController {
     this.openedAt = Date.now();
     this.sessionId = null;
     this.container.style.display = 'flex';
+    this.attachTerminalCopyListener();
     this.terminal.clear();
     this.titleEl.textContent = `${options.name} (${options.agentId})`;
     this.subtitleEl.textContent = options.description;
@@ -410,6 +412,7 @@ export class SeriousTerminalController {
 
     this.visible = false;
     this.container.style.display = 'none';
+    this.detachTerminalCopyListener();
     this.activeOfficeId = null;
     this.activeAgentId = null;
     this.activeOptions = null;
@@ -591,15 +594,73 @@ export class SeriousTerminalController {
 
   private copySessionId(): void {
     if (!this.sessionId) return;
-    navigator.clipboard.writeText(this.sessionId).then(() => {
+    void this.writeClipboardText(this.sessionId).then((success) => {
       const original = this.sessionIdEl.textContent;
-      this.sessionIdEl.textContent = 'Copied!';
-      this.sessionIdEl.style.color = '#61d394';
+      this.sessionIdEl.textContent = success ? 'Copied!' : 'Copy failed';
+      this.sessionIdEl.style.color = success ? '#61d394' : '#ff6b6b';
       setTimeout(() => {
         this.sessionIdEl.textContent = original;
         this.sessionIdEl.style.color = '#8ec3ff';
       }, 900);
-    }).catch(() => {});
+    });
+  }
+
+  private attachTerminalCopyListener(): void {
+    if (this.terminalCopyHandler) return;
+
+    this.terminalCopyHandler = (event: ClipboardEvent) => {
+      if (!this.visible || !this.terminal) return;
+
+      const target = event.target;
+      if (target instanceof Node && !this.terminalDivEl.contains(target)) return;
+
+      const selectedText = this.terminal.hasSelection() ? this.terminal.getSelection() : '';
+      if (!selectedText) return;
+
+      if (event.clipboardData) {
+        event.clipboardData.setData('text/plain', selectedText);
+        event.preventDefault();
+        return;
+      }
+
+      event.preventDefault();
+      void this.writeClipboardText(selectedText).then((success) => {
+        if (!success) {
+          this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
+        }
+      });
+    };
+
+    this.terminalDivEl.addEventListener('copy', this.terminalCopyHandler);
+  }
+
+  private detachTerminalCopyListener(): void {
+    if (!this.terminalCopyHandler) return;
+    this.terminalDivEl.removeEventListener('copy', this.terminalCopyHandler);
+    this.terminalCopyHandler = null;
+  }
+
+  private async writeClipboardText(text: string): Promise<boolean> {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall back for Electron contexts where navigator.clipboard may be unavailable/blocked.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', 'true');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return copied;
+    }
   }
 
   private renderAgentSprite(seed: string, baseColor: number): void {
@@ -679,6 +740,7 @@ export class SeriousTerminalController {
     this.terminal.loadAddon(this.fitAddon);
     this.terminalDivEl.id = 'serious-terminal-container';
     this.terminal.open(this.terminalDivEl);
+    this.attachTerminalCopyListener();
 
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
@@ -686,15 +748,9 @@ export class SeriousTerminalController {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        const selectedText = this.terminal?.hasSelection() ? this.terminal.getSelection() : '';
-        if (!selectedText) {
-          // No selection: allow default terminal behavior (e.g. SIGINT).
-          return true;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        navigator.clipboard.writeText(selectedText).catch(() => {});
-        return false;
+        // Selection: allow native copy shortcut path (handled by copy event listener).
+        // No selection: allow default terminal behavior (e.g. SIGINT).
+        return true;
       }
 
       if (key === 'v') {

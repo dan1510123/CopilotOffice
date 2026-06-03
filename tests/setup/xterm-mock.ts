@@ -14,6 +14,8 @@ export class MockTerminal {
   open = vi.fn();
   loadAddon = vi.fn();
   paste = vi.fn();
+  hasSelection = vi.fn(() => false);
+  getSelection = vi.fn(() => '');
   attachCustomKeyEventHandler = vi.fn();
   onData = vi.fn();
   dispose = vi.fn();
@@ -23,4 +25,3 @@ export class MockFitAddon {
   fit = vi.fn();
   proposeDimensions = vi.fn(() => ({ cols: 80, rows: 24 }));
 }
-
