@@ -13,6 +13,17 @@ Seeded from `data-model.md` lifecycle states. Update as slices move through phas
   against the shared gated keyboard. Updated `slices/S1-A-input-focus.md` acceptance criteria to
   match. A wholesale centralization would be `behavior_altering` and require an ApprovalRecord —
   it is NOT proposed by default.
+- **2026-06-03 cowork pattern #5 adoption**: post-S1-C+S1-D follow-up adopted
+  `agency-cowork-notes.md` pattern #5 (structured lifecycle telemetry) without breaking
+  existing behavior. Added `src/util/lifecycleLog.ts` with subscriber registry and
+  greppable `[lifecycle] agent=… office=… from→to reason=… detail=…` log lines; wired
+  emission into every `OfficeManager.setAgent*` mutation. Reason strings (`ask_user`,
+  `ask_user_race_guard`, `tool_start`, `tool_complete`, `turn_end`, `preload_ready`,
+  `preload_failed`, `session_closed`) are passed at the high-signal call sites in
+  `src/main.ts`. Existing ad-hoc `[Office] Status: …` logs left intact. Additive
+  only — no signature breakage; all new params optional. Covered by 6 new tests in
+  `tests/unit/util/lifecycleLog.test.ts` (subscriber fan-out, self-transition
+  suppression, error isolation, integration with `OfficeManager.setAgent*`).
 
 ## Slice Status Table
 

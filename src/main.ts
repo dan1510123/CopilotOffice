@@ -1561,11 +1561,11 @@ if (window.copilotBridge) {
 
     // Update agent status based on tool type
     if (isAskUserTool(toolName, status)) {
-      officeManager.setAgentWaiting(officeId, agentId);
+      officeManager.setAgentWaiting(officeId, agentId, 'ask_user');
       console.log(`[Office] Status: ${agentId} → waiting (ask_user)`);
       notifyAgent(agentId, 'askUser');
     } else {
-      officeManager.setAgentThinking(officeId, agentId, `${toolName}`);
+      officeManager.setAgentThinking(officeId, agentId, `${toolName}`, 'tool_start');
       console.log(`[Office] Status: ${agentId} → thinking (${toolName})`);
       notifyAgent(agentId, 'toolStart', { toolName });
     }
@@ -1603,15 +1603,15 @@ if (window.copilotBridge) {
         // Keep thinking while a turn is still settling; turn_end/sync will mark ready.
         const currentStatus = officeManager.getAgentStatus(officeId, agentId);
         if (currentStatus?.subState === 'thinking') {
-          officeManager.setAgentThinking(officeId, agentId, currentStatus.thinkingDetail ?? 'Processing...');
+          officeManager.setAgentThinking(officeId, agentId, currentStatus.thinkingDetail ?? 'Processing...', 'tool_complete_settling');
         } else {
-          officeManager.setAgentReady(officeId, agentId);
+          officeManager.setAgentReady(officeId, agentId, 'tool_complete');
         }
       } else if (next.kind === 'waiting') {
         // ask_user is still active — preserve waiting state even if other tools completed
-        officeManager.setAgentWaiting(officeId, agentId);
+        officeManager.setAgentWaiting(officeId, agentId, 'ask_user_race_guard');
       } else {
-        officeManager.setAgentThinking(officeId, agentId, next.detail);
+        officeManager.setAgentThinking(officeId, agentId, next.detail, 'tool_complete');
       }
     }
 
@@ -1633,10 +1633,10 @@ if (window.copilotBridge) {
         agentTools.set(agentId, []);
       }
       if (waitingToolActive) {
-        officeManager.setAgentWaiting(officeId, agentId);
+        officeManager.setAgentWaiting(officeId, agentId, 'turn_end_ask_user_active');
       } else {
         // Turn finished and no wait tool active: mark response done until user acknowledges.
-        officeManager.setAgentDonePendingAck(officeId, agentId);
+        officeManager.setAgentDonePendingAck(officeId, agentId, 'turn_end');
       }
       notifyAgent(agentId, 'turnEnd');
     }
@@ -1698,11 +1698,11 @@ if (window.copilotBridge) {
       const current = officeManager.getAgentStatus(officeId, agentId);
       if (status === 'preloading') {
         if (!current || current.state === 'slacking') {
-          officeManager.setAgentStarting(officeId, agentId);
+          officeManager.setAgentStarting(officeId, agentId, 'preload');
         }
       } else if (status === 'ready') {
         // This is the ONLY path allowed to transition out of starting state
-        officeManager.setAgentReady(officeId, agentId);
+        officeManager.setAgentReady(officeId, agentId, 'preload_ready');
         // Clear any stale tool state accumulated from historical events during startup
         const agentTools = getCurrentAgentTools();
         if (agentTools.has(agentId)) {
@@ -1711,7 +1711,7 @@ if (window.copilotBridge) {
         notifyAgent(agentId, 'sessionReady');
       } else if (status === 'failed') {
         console.warn(`[Office] Preload FAILED for ${agentId}`);
-        officeManager.setAgentError(officeId, agentId, 'Preload failed');
+        officeManager.setAgentError(officeId, agentId, 'Preload failed', 'preload_failed');
         notifyAgent(agentId, 'sessionError');
       }
     }
@@ -2018,7 +2018,7 @@ type FleetStatusSummary = { total: number; completed: number; failed: number; ac
 
 function onAgentSessionClosed(agentId: string): void {
   const officeId = officeManager.currentOfficeId;
-  if (officeId) officeManager.setAgentSlacking(officeId, agentId);
+  if (officeId) officeManager.setAgentSlacking(officeId, agentId, 'session_closed');
   phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateTerminalContent();
   updateStatusBar();

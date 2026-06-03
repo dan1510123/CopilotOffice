@@ -3,6 +3,7 @@
 
 import type { AgentConfig } from '../config/agents';
 import { generateRandomOfficeAgents } from '../config/agents';
+import { logLifecycleTransition, type LifecycleState } from '../util/lifecycleLog';
 
 export type OfficeLayout = 'default' | 'fleet-vteam';
 
@@ -382,9 +383,35 @@ export class OfficeManager {
     }
   }
 
-  setAgentSlacking(officeId: string, agentId: string): void {
+  /**
+   * Emit a structured lifecycle telemetry entry for a transition that has
+   * already been applied to `status`. Callers pass the pre-mutation effective
+   * state captured before mutating. Safe additive observability — never mutates
+   * state and self-transitions are suppressed by the helper.
+   */
+  private emitLifecycleTransition(
+    officeId: string,
+    agentId: string,
+    status: AgentStatus,
+    from: EffectiveState,
+    reason?: string,
+    detail?: string,
+  ): void {
+    const to = this.getEffectiveState(status);
+    logLifecycleTransition({
+      agentId,
+      officeId,
+      from: from as LifecycleState,
+      to: to as LifecycleState,
+      reason,
+      detail,
+    });
+  }
+
+  setAgentSlacking(officeId: string, agentId: string, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'slacking');
     status.state = 'slacking';
     status.subState = null;
@@ -394,12 +421,14 @@ export class OfficeManager {
     status.activityStartTime = null;
     status.recentActions = [];
     status.taskSummary = null;
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason);
   }
 
-  setAgentStarting(officeId: string, agentId: string): void {
+  setAgentStarting(officeId: string, agentId: string, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
     if (status.subState === 'starting') return; // already starting — dedup
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'starting');
     status.state = 'active';
     status.subState = 'starting';
@@ -407,11 +436,13 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     status.activityStartTime = Date.now();
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason);
   }
 
-  setAgentReady(officeId: string, agentId: string): void {
+  setAgentReady(officeId: string, agentId: string, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'ready');
     status.state = 'active';
     status.subState = 'ready';
@@ -419,11 +450,13 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     status.activityStartTime = null;
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason);
   }
 
-  setAgentDonePendingAck(officeId: string, agentId: string): void {
+  setAgentDonePendingAck(officeId: string, agentId: string, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'ready');
     status.state = 'active';
     status.subState = 'ready';
@@ -431,6 +464,7 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = true;
     status.activityStartTime = null;
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason ?? 'done_pending_ack');
   }
 
   acknowledgeAgentCompletion(officeId: string, agentId: string): boolean {
@@ -440,9 +474,10 @@ export class OfficeManager {
     return true;
   }
 
-  setAgentWaiting(officeId: string, agentId: string): void {
+  setAgentWaiting(officeId: string, agentId: string, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'waiting');
     status.state = 'active';
     status.subState = 'waiting';
@@ -450,11 +485,13 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason);
   }
 
-  setAgentThinking(officeId: string, agentId: string, detail: string | null): void {
+  setAgentThinking(officeId: string, agentId: string, detail: string | null, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'thinking');
     status.state = 'active';
     status.subState = 'thinking';
@@ -465,6 +502,7 @@ export class OfficeManager {
     status.currentTool = tools?.length ? tools[tools.length - 1].name : null;
     status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason, detail ?? undefined);
   }
 
   clearAgentThinkingDetail(officeId: string, agentId: string): void {
@@ -489,9 +527,10 @@ export class OfficeManager {
     status.lastEvent = null;
   }
 
-  setAgentError(officeId: string, agentId: string, detail: string | null = null): void {
+  setAgentError(officeId: string, agentId: string, detail: string | null = null, reason?: string): void {
     const status = this.getOrCreateStatus(officeId, agentId);
     if (!status) return;
+    const from = this.getEffectiveState(status);
     this.validateTransition(agentId, status, 'error');
     status.state = 'active';
     status.subState = 'error';
@@ -499,6 +538,7 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     status.activityStartTime = null;
+    this.emitLifecycleTransition(officeId, agentId, status, from, reason, detail ?? undefined);
   }
 
   setLastCompletedAction(officeId: string, agentId: string, action: string): void {
