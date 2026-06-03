@@ -1156,6 +1156,14 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
       spriteCustomizerPanel.updatePreview(base64);
     }
   },
+  // Route focus through InputManager: reuse the settings:open / settings:close
+  // bus that OfficeScene already wires to suspendGameInput / resumeGameInput.
+  onOpen: () => {
+    phaserGameRef?.events.emit('settings:open');
+  },
+  onClose: () => {
+    phaserGameRef?.events.emit('settings:close');
+  },
 });
 
 // ── Terminal Content Updates ────────────────────────────────────

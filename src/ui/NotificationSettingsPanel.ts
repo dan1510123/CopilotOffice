@@ -1,4 +1,11 @@
 // NotificationSettingsPanel — DOM-based settings UI for notification preferences
+//
+// Focus contract (slice S1-A, baseline BL-008): this is a DOM-modal overlay.
+// If/when it is wired into the app, the owner MUST call
+// `InputManager.suspendGameInput()` on open and `resumeGameInput()` on close
+// (e.g. via the existing `settings:open` / `settings:close` event bus) so prior
+// focus is saved and restored. The panel currently has no instantiation site;
+// add `onOpen` / `onClose` callbacks at that time mirroring `SettingsPanel`.
 
 import {
   type NotificationEventType,

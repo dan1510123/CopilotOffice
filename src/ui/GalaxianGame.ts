@@ -1,6 +1,14 @@
 import Phaser from 'phaser';
 import { Depths } from '../config/depths';
 
+// Focus contract (slice S1-A, baseline BL-008): mini-games stay in the `game`
+// focus state. The Phaser keyboard remains enabled so the game's own keys
+// (registered below via `addKey`) work alongside the gated focus model.
+// Player movement is gated separately via `Player.disableMovement()` and the
+// scene-level visibility check in `OfficeScene.update()`. Do NOT call
+// `InputManager.suspendGameInput()` here — it would disable the mini-game's
+// own keys.
+
 interface Bullet {
   sprite: Phaser.GameObjects.Rectangle;
   active: boolean;

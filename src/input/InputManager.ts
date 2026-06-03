@@ -7,6 +7,30 @@ export type FocusTarget = 'game' | 'terminal';
 export type FocusFull = FocusTarget | 'none';
 
 /**
+ * Focus-gating contract (slice S1-A, baseline BL-008):
+ *
+ *   Switching focus toggles `scene.input.keyboard.enabled`; consumers register
+ *   their own keys against the same gated instance.
+ *
+ * Practical consequences:
+ *   - `GameInputListener` is the SOLE place that flips `scene.input.keyboard.enabled`
+ *     and adds/clears Phaser keyboard captures. Do not toggle the enabled flag
+ *     elsewhere (see `.github/instructions/src-input.instructions.md`).
+ *   - Per-component `scene.input.keyboard.addKey(...)` calls are permitted
+ *     (Player WASD, OfficeScene E/F, mini-game ESC/SPACE, DialogBox). All such
+ *     keys are gated wholesale by the InputManager's enabled-flag toggle.
+ *   - Two mutually exclusive focus states exist: `game` and `terminal`. `none`
+ *     is a transient bootstrap/shutdown state and not a third user-facing mode.
+ *   - DOM-modal overlays (settings, sprite customizer, notification settings)
+ *     MUST call `suspendGameInput()` on open and `resumeGameInput()` on close
+ *     so prior focus is saved and restored. Phaser-canvas mini-games
+ *     (Basketball, Galaxian) stay in `game` focus and gate their own state
+ *     via scene-level visibility flags.
+ *   - The terminal overlay routes through `switchToTerminal()` / `switchToGame()`
+ *     and uses `activateTerminalF10()` for the always-visible F10 close handler.
+ */
+
+/**
  * InputManager — central orchestrator for all keyboard focus transitions.
  *
  * Owns one instance each of:

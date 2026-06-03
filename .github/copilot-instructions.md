@@ -137,3 +137,9 @@ Testing notes:
 
 ### Fleet V-Team: activeAgentViewers key mismatch after session transfer
 When Arthur's terminal is transferred from the source office to a fleet office (via `transferSession`), the server's PTY data callback and `EventsWatcher` callback closures capture the **original** composite key (`office-0:architect`). The `copilot-event` channel, `terminal-data` forwarding, and PTY output are only sent when `activeAgentViewers.has(ck)` — but the client attaches with the **new** fleet office key. **Fix in server:** The `attach` handler now also adds the original terminal key (via `agentToTerminal` lookup) to `activeAgentViewers`, so both keys are marked active. The `detach` handler cleans up both. **Additional workaround:** FleetTracker also attaches using the `sourceOfficeId` as a belt-and-suspenders approach. If either fix is removed, terminal output and/or copilot-event data may silently stop flowing in fleet offices.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+at specs/001-repo-wide-refactor/plan.md
+<!-- SPECKIT END -->
