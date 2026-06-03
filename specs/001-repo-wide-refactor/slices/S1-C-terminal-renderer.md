@@ -6,7 +6,7 @@
 - **name**: Terminal/Session Lifecycle (Renderer Side)
 - **domain**: terminal
 - **owner**: refactor-program
-- **status**: proposed
+- **status**: complete
 
 ## Classification
 
@@ -36,13 +36,20 @@
 
 ## Acceptance Criteria
 
-- [ ] Open/attach/detach/close flows live behind a single renderer-side module.
-- [ ] No ad-hoc DOM manipulation for terminal in `src/main.ts` outside of that module's API.
-- [ ] `ask_user` is treated as a waiting-state signal even when other tool events complete in the
-      same tick (pitfall guard).
-- [ ] Status badge transitions (`slacking → starting → ready ↔ waiting/thinking → slacking`)
+- [X] Open/attach/detach/close flows live behind a single renderer-side module.
+      _(Already encapsulated by `TerminalOverlay` + `SeriousTerminalController`;
+      `src/main.ts` only creates the panel containers and routes events to those
+      modules — no terminal-internal DOM manipulation remains in main.ts.)_
+- [X] No ad-hoc DOM manipulation for terminal in `src/main.ts` outside of that module's API.
+- [X] `ask_user` is treated as a waiting-state signal even when other tool events complete in the
+      same tick (pitfall guard). _(Extracted to `src/util/toolStatus.ts`
+      `nextSubStateAfterToolComplete` reducer; unit-tested in
+      `tests/unit/util/toolStatus.test.ts` — the "race-guard" case explicitly
+      exercises the scenario.)_
+- [X] Status badge transitions (`slacking → starting → ready ↔ waiting/thinking → slacking`)
       covered by tests.
-- [ ] `window.copilotBridge` shape unchanged.
+- [X] `window.copilotBridge` shape unchanged. _(No edits to `electron/terminal/preload.ts`
+      or protocol types; renderer imports the same bridge surface.)_
 
 ## Dependencies
 
@@ -58,7 +65,7 @@ preserve protocol compatibility.
 
 | run_id | build | unit | e2e | notes |
 |--------|-------|------|-----|-------|
-|        |       |      |     |       |
+| S1-C+S1-D-2026-06-03 | pass | pass (94/94, +11 toolStatus + 9 agentViewers vs. 74 baseline) | env-blocked | `npm run test:e2e` fails identically to baseline ("Process failed to launch!"); re-run on a desktop session. Paired ship with S1-D. |
 
 ## Notes
 

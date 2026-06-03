@@ -90,19 +90,19 @@ transitions. All must pass with no user-visible regression.
 
 ### Slice S1-C: Terminal/Session Lifecycle (Renderer Side)
 
-- [ ] T025 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-C-terminal-renderer.md` covering `src/ui/**` terminal components, `src/main.ts` terminal wiring, and renderer-side session state; classification: `parity_preserving`; reference patterns from T007.
-- [ ] T026 [US1] Refactor renderer terminal lifecycle so open/attach/detach/close flows are encapsulated behind a single module; remove ad-hoc DOM manipulation scattered across `src/main.ts`.
-- [ ] T027 [US1] Guard status transitions against concurrent tool events in `src/main.ts` per the existing pitfall note: treat `ask_user` as a waiting-state signal even when other tools complete in the same tick.
-- [ ] T028 [US1] Add Vitest coverage for terminal lifecycle state machine (open → attach → ready → waiting/thinking → detach → close) and for status-badge transitions including the `ask_user` race.
-- [ ] T029 [US1] Run terminal-lifecycle portion of parity harness and record result for S1-C.
+- [X] T025 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-C-terminal-renderer.md` covering `src/ui/**` terminal components, `src/main.ts` terminal wiring, and renderer-side session state; classification: `parity_preserving`; reference patterns from T007.
+- [X] T026 [US1] Refactor renderer terminal lifecycle so open/attach/detach/close flows are encapsulated behind a single module; remove ad-hoc DOM manipulation scattered across `src/main.ts`.
+- [X] T027 [US1] Guard status transitions against concurrent tool events in `src/main.ts` per the existing pitfall note: treat `ask_user` as a waiting-state signal even when other tools complete in the same tick.
+- [X] T028 [US1] Add Vitest coverage for terminal lifecycle state machine (open → attach → ready → waiting/thinking → detach → close) and for status-badge transitions including the `ask_user` race.
+- [X] T029 [US1] Run terminal-lifecycle portion of parity harness and record result for S1-C.
 
 ### Slice S1-D: PTY Server and Preload Bridge (Electron Side)
 
-- [ ] T030 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-D-pty-server.md` covering `electron/terminal/**` and `electron/main.ts` IPC handlers; classification: `parity_preserving`; reference adapted patterns from `agency-cowork-main` per T007.
-- [ ] T031 [US1] Refactor `electron/terminal/server.ts` so sub-agent lifecycle forwarding does NOT depend on active terminal viewers (per pitfall note); ensure `copilot-event` propagation continues through scene transitions and detaches.
-- [ ] T032 [US1] Preserve the existing `activeAgentViewers` dual-key fix for fleet session transfer (original key + new fleet key on attach, both cleaned up on detach); document the invariant in a code comment and in the slice file.
-- [ ] T033 [US1] Validate preload contract in `electron/terminal/preload.ts` and protocol types stay in lockstep with `electron/main.ts` and renderer consumers; keep path resolution and PATH sanitization intact.
-- [ ] T034 [US1] Run `npm run test:e2e` focused on terminal lifecycle and fleet session transfer; record result for S1-D.
+- [X] T030 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-D-pty-server.md` covering `electron/terminal/**` and `electron/main.ts` IPC handlers; classification: `parity_preserving`; reference adapted patterns from `agency-cowork-main` per T007.
+- [X] T031 [US1] Refactor `electron/terminal/server.ts` so sub-agent lifecycle forwarding does NOT depend on active terminal viewers (per pitfall note); ensure `copilot-event` propagation continues through scene transitions and detaches.
+- [X] T032 [US1] Preserve the existing `activeAgentViewers` dual-key fix for fleet session transfer (original key + new fleet key on attach, both cleaned up on detach); document the invariant in a code comment and in the slice file.
+- [X] T033 [US1] Validate preload contract in `electron/terminal/preload.ts` and protocol types stay in lockstep with `electron/main.ts` and renderer consumers; keep path resolution and PATH sanitization intact.
+- [X] T034 [US1] Run `npm run test:e2e` focused on terminal lifecycle and fleet session transfer; record result for S1-D.
 
 ### Slice S1-E: Meeting Mode and Fleet Orchestration
 

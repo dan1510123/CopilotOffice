@@ -15,6 +15,7 @@ import { SettingsPanel } from './ui/SettingsPanel';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
+import { isAskUserTool, nextSubStateAfterToolComplete } from './util/toolStatus';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -42,17 +43,6 @@ function syncActiveRosterForCurrentOffice(): void {
   if (office.config.layout === 'default') {
     restoreSeatedReserveAgents(officeManager.getSeatedAgents(office.config.id));
   }
-}
-
-function normalizeToolName(toolName: string | null | undefined): string {
-  return (toolName ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-}
-
-function isAskUserTool(toolName: string | null | undefined, status: string | null | undefined): boolean {
-  const normalized = normalizeToolName(toolName);
-  if (normalized === 'ask_user' || normalized === 'askuser') return true;
-  const statusText = (status ?? '').toLowerCase();
-  return statusText.includes('waiting for your answer') || statusText.includes('waiting on user input');
 }
 
 function isDonePendingAck(status: { completionPendingAck?: boolean } | null | undefined): boolean {
@@ -1606,8 +1596,10 @@ if (window.copilotBridge) {
       officeManager.pushRecentAction(officeId, agentId, completedToolName, 'completed');
       notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
 
-      // Update status based on remaining tools
-      if (remaining.length === 0) {
+      // Update status based on remaining tools. Uses `nextSubStateAfterToolComplete`
+      // to centralize the ask_user race-guard — see src/util/toolStatus.ts.
+      const next = nextSubStateAfterToolComplete(remaining);
+      if (next.kind === 'idle') {
         // Keep thinking while a turn is still settling; turn_end/sync will mark ready.
         const currentStatus = officeManager.getAgentStatus(officeId, agentId);
         if (currentStatus?.subState === 'thinking') {
@@ -1615,12 +1607,11 @@ if (window.copilotBridge) {
         } else {
           officeManager.setAgentReady(officeId, agentId);
         }
-      } else if (remaining.some(t => isAskUserTool(t.name, t.status))) {
+      } else if (next.kind === 'waiting') {
         // ask_user is still active — preserve waiting state even if other tools completed
         officeManager.setAgentWaiting(officeId, agentId);
       } else {
-        const last = remaining[remaining.length - 1];
-        officeManager.setAgentThinking(officeId, agentId, `${last.name}`);
+        officeManager.setAgentThinking(officeId, agentId, next.detail);
       }
     }
 

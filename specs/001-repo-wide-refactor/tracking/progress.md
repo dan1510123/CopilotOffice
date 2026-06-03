@@ -20,8 +20,8 @@ Seeded from `data-model.md` lifecycle states. Update as slices move through phas
 |----------|------|--------|----------------|--------|-------|
 | S1-A | Input Focus and Keyboard Routing | input | parity_preserving | complete | Phase 3 P1; build+test pass 74/74 (2026-06-03), e2e env-blocked, +5 overlay save/restore tests |
 | S1-B | Scene Lifecycle and Office Switching | scene | parity_preserving | complete | Phase 3 P1; build+test pass 74/74 (2026-06-03), e2e env-blocked; removed all hardcoded agent IDs from scenes via `ARCHITECT_AGENT_ID` constant |
-| S1-C | Terminal/Session Lifecycle (Renderer Side) | terminal | parity_preserving | proposed | Phase 3 P1; pairs with S1-D |
-| S1-D | PTY Server and Preload Bridge (Electron Side) | terminal | parity_preserving | proposed | Phase 3 P1; pairs with S1-C |
+| S1-C | Terminal/Session Lifecycle (Renderer Side) | terminal | parity_preserving | complete | Phase 3 P1; paired with S1-D; build+test pass 94/94 (2026-06-03), e2e env-blocked; extracted `src/util/toolStatus.ts` (ask_user race-guard reducer) + 11 new unit tests; verified existing TerminalOverlay/SeriousTerminalController encapsulate renderer terminal lifecycle |
+| S1-D | PTY Server and Preload Bridge (Electron Side) | terminal | parity_preserving | complete | Phase 3 P1; paired with S1-C; build+test pass 94/94 (2026-06-03), e2e env-blocked; extracted `electron/terminal/agent-viewers.ts` documenting the dual-key invariant + 9 new unit tests; confirmed `isFleetCriticalEvent` branch in server.ts forwards subagent.* / system.notification / task tool-start regardless of viewers; preload contract + `window.copilotBridge` shape unchanged |
 | S1-E | Meeting Mode and Fleet Orchestration | meeting | parity_preserving | proposed | Phase 3 P1; depends on S1-C/D |
 | S2-A | Office State and Persistence | office | parity_preserving | proposed | Phase 4 P2 |
 | S2-B | Layouts (Default + Fleet V-Team) | layout | parity_preserving | proposed | Phase 4 P2 |

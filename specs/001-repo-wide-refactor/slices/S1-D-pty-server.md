@@ -6,7 +6,7 @@
 - **name**: PTY Server and Preload Bridge
 - **domain**: terminal
 - **owner**: refactor-program
-- **status**: proposed
+- **status**: complete
 
 ## Classification
 
@@ -24,6 +24,7 @@
 - `electron/terminal/events-watcher.ts`
 - `electron/terminal/ipc-relay.ts`
 - `electron/terminal/terminal-backend.ts`
+- `electron/terminal/agent-viewers.ts` _(NEW — extracted dual-key invariant)_
 - Terminal-related IPC handlers in `electron/main.ts`
 
 ### scope_out
@@ -40,13 +41,24 @@
 
 ## Acceptance Criteria
 
-- [ ] Sub-agent lifecycle forwarding does NOT depend on active terminal viewers (pitfall guard
-      remains intact).
-- [ ] Dual-key `activeAgentViewers` invariant is preserved (original key + new fleet key on
+- [X] Sub-agent lifecycle forwarding does NOT depend on active terminal viewers (pitfall guard
+      remains intact). _(server.ts `isFleetCriticalEvent` branch forwards
+      `subagent.*`, `system.notification`, and `tool.execution_start` for the
+      `task` tool regardless of `hasActiveViewer`; comment explains the
+      FleetTracker detach race.)_
+- [X] Dual-key `activeAgentViewers` invariant is preserved (original key + new fleet key on
       attach; both cleaned up on detach); invariant documented in code comment.
-- [ ] PATH sanitization and explicit `copilot` binary resolution remain protected and documented.
-- [ ] Preload + protocol + server stay in lockstep (single coordinated change with S1-C).
-- [ ] `window.copilotBridge` shape unchanged.
+      _(Extracted to `electron/terminal/agent-viewers.ts` with named
+      `addAgentViewer` / `removeAgentViewer` / `hasActiveViewer` and a header
+      comment block; attach/detach IPC handlers route through it; behaviour
+      covered by `tests/unit/terminal/agentViewers.test.ts`.)_
+- [X] PATH sanitization and explicit `copilot` binary resolution remain protected and documented.
+      _(No edits to `resolveCopilotCliPath` / `sanitizeCopilotPath` in
+      `terminal-backend.ts`; still imported by server.ts.)_
+- [X] Preload + protocol + server stay in lockstep (single coordinated change with S1-C).
+      _(No protocol or preload edits in this slice; build passes for both
+      `preload.ts` and `server.ts` in the same `npm run build:electron` run.)_
+- [X] `window.copilotBridge` shape unchanged.
 
 ## Dependencies
 
@@ -62,7 +74,7 @@ Coordinate with S1-C rollback to keep renderer/server protocol aligned.
 
 | run_id | build | unit | e2e | notes |
 |--------|-------|------|-----|-------|
-|        |       |      |     |       |
+| S1-C+S1-D-2026-06-03 | pass | pass (94/94, +9 agentViewers + 11 toolStatus vs. 74 baseline) | env-blocked | `npm run test:e2e` fails identically to baseline ("Process failed to launch!"); re-run on a desktop session. Paired ship with S1-C. FleetTracker `sourceOfficeId`-driven silent attach in `src/meeting/fleetTracker.ts` confirmed still present (out of scope for this slice; will be re-evaluated in S1-E). |
 
 ## Notes
 
