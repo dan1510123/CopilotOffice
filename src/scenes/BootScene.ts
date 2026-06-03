@@ -3,6 +3,19 @@ import { generatePlayerSpritesheet, generateHeroSpritesheet } from '../sprites/S
 import { loadPlayerColors } from '../config/playerCustomization';
 import { RANDOM_POOL_CONFIGS } from '../config/agents';
 
+/**
+ * BootScene — first scene in the lifecycle (Boot → Office → Meeting).
+ *
+ * Responsibilities:
+ *   - Procedurally generate every sprite/spritesheet used by gameplay
+ *     (player, all named NPCs, fleet pool, random pool). No external
+ *     image assets — see `src/sprites/SpriteGenerator.ts`.
+ *   - Load the background music asset.
+ *   - Show a loading bar while assets are being prepared.
+ *   - Hand off to `OfficeScene` via `scene.start('OfficeScene')`.
+ *
+ * DOM-overlay dependencies: none. BootScene only draws Phaser primitives.
+ */
 export class BootScene extends Phaser.Scene {
   constructor() {
     super({ key: 'BootScene' });

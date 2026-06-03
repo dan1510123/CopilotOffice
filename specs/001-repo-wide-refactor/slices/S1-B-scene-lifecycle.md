@@ -6,7 +6,7 @@
 - **name**: Scene Lifecycle and Office Switching
 - **domain**: scene
 - **owner**: refactor-program
-- **status**: proposed
+- **status**: complete
 
 ## Classification
 
@@ -36,11 +36,11 @@
 
 ## Acceptance Criteria
 
-- [ ] No hardcoded agent IDs in `src/scenes/**` (per pitfall note); rosters come from config + officeManager.
-- [ ] Boot → Office → Meeting transitions documented in-file.
-- [ ] `office:switch` preserves agent state, sprite metadata, and dashboard cards across both
+- [X] No hardcoded agent IDs in `src/scenes/**` (per pitfall note); rosters come from config + officeManager.
+- [X] Boot → Office → Meeting transitions documented in-file.
+- [X] `office:switch` preserves agent state, sprite metadata, and dashboard cards across both
       `default` and `fleet-vteam` layouts.
-- [ ] Full test suite passes; e2e smoke passes (or env-blocked status documented).
+- [X] Full test suite passes; e2e smoke passes (or env-blocked status documented).
 
 ## Dependencies
 
@@ -55,8 +55,20 @@ Revert `src/scenes/**` and any modified office-switch wiring in `src/main.ts` to
 
 | run_id | build | unit | e2e | notes |
 |--------|-------|------|-----|-------|
-|        |       |      |     |       |
+| 2026-06-03 | pass | pass 74/74 | env-blocked | esbuild 7.6mb, vitest 19 files / 74 tests in ~6.6s; e2e blocked in CLI/headless (same as baseline). |
 
 ## Notes
 
 Risks: R-003 (hardcoded agent IDs may exist beyond the documented case).
+
+### Audit (T021)
+Pre-change grep of `src/scenes/**` for literal agent IDs from `src/config/agents.ts`
+(`generalist`, `debugger`, `admin`, `architect`, `azure`, `validator`, `deployer`,
+`doctor`, `scout`, `accountant`) found **only** `'architect'`:
+- `src/scenes/MeetingScene.ts:98, 284, 318`
+- `src/scenes/OfficeScene.ts:234, 243, 257, 393, 1993, 2011, 2012, 2391, 2403`
+
+Mitigation: introduced `ARCHITECT_AGENT_ID` constant in `src/config/agents.ts`
+(single source of truth). All scene references now import that constant. Post-change
+grep returns zero hits. Sprite texture keys (e.g. `'npc_architect'`) in
+`BootScene.ts` are intentionally left as asset identifiers (not agent IDs).

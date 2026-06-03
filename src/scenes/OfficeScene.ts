@@ -4,7 +4,7 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay } from '../ui/TerminalOverlay';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
-import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
+import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, ARCHITECT_AGENT_ID, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { InputManager } from '../input/InputManager';
@@ -47,6 +47,30 @@ const ENABLE_GALAXIAN = true;
 const ENABLE_ZOOM_BAR = true;
 const PC_TERMINAL_ID = 'pc-terminal';
 
+/**
+ * OfficeScene — main gameplay scene (second in Boot → Office → Meeting).
+ *
+ * Responsibilities:
+ *   - Build the 20×12 tile office world from the active layout
+ *     (`'default'` or `'fleet-vteam'`), driven by `officeManager.currentOffice.config.layout`.
+ *   - Instantiate the Player and NPCs (rosters come from `src/config/agents.ts`
+ *     via `src/layouts/index.ts` — never hardcoded in this file).
+ *   - Drive movement, proximity detection, y-depth sorting, and the
+ *     interaction key (E) to start conversations.
+ *   - Bridge to `MeetingScene` when the player interacts with the Architect
+ *     (see `ARCHITECT_AGENT_ID` from `src/config/agents.ts`).
+ *   - Manage the fleet pipeline (FleetTracker + FleetVisualizer) when the
+ *     office layout is `'fleet-vteam'`.
+ *   - Handle `office:switch` (via `rebuildLayout`) so agent state, sprite
+ *     metadata, and dashboard cards survive switching between offices.
+ *
+ * DOM-overlay dependencies:
+ *   - `TerminalOverlay` (`src/ui/TerminalOverlay.ts`) — agent terminals.
+ *   - `BasketballGame`, `GalaxianGame` (`src/ui/`) — mini-game overlays.
+ *   - Skip / instruction buttons are created directly in this file.
+ *   - Focus transitions go through `InputManager` only; never touch the
+ *     Phaser keyboard plugin directly (see `.github/copilot-instructions.md`).
+ */
 export class OfficeScene extends Phaser.Scene {
   private player!: Player;
   private npcs: NPC[] = [];
@@ -231,7 +255,7 @@ export class OfficeScene extends Phaser.Scene {
         }
         
         // Update Arthur's NPC badge back to normal
-        const arthurNPC = this.npcs.find(n => n.config.id === 'architect');
+        const arthurNPC = this.npcs.find(n => n.config.id === ARCHITECT_AGENT_ID);
         if (arthurNPC) {
           arthurNPC.updateAgentStatus(undefined); // Reset to slacking
         }
@@ -240,7 +264,7 @@ export class OfficeScene extends Phaser.Scene {
         // Hide all badges until Arthur is seated.
         const seatedNpcs: NPC[] = [];
         for (const agent of AGENTS) {
-          if (agent.id === 'architect') continue;
+          if (agent.id === ARCHITECT_AGENT_ID) continue;
           const npc = this.npcs.find(n => n.config.id === agent.id);
           if (!npc) continue;
           const deskX = npc.config.position.x * this.tileSize + this.tileSize / 2;
@@ -254,7 +278,7 @@ export class OfficeScene extends Phaser.Scene {
         const showAllBadges = () => {
           seatedNpcs.forEach(n => n.setBadgeVisible(true));
         };
-        this.triggerAgentWalkIn(['architect'], showAllBadges);
+        this.triggerAgentWalkIn([ARCHITECT_AGENT_ID], showAllBadges);
       }
     });
 
@@ -390,7 +414,7 @@ export class OfficeScene extends Phaser.Scene {
         this.openPlayerPcTerminal();
         return;
       }
-      if (this.currentLayout === 'fleet-vteam' && agentId !== 'architect') return;
+      if (this.currentLayout === 'fleet-vteam' && agentId !== ARCHITECT_AGENT_ID) return;
       const agents = getLayout(this.currentLayout).agents;
       const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
@@ -1990,7 +2014,7 @@ export class OfficeScene extends Phaser.Scene {
     const isReEntry = !this.fleetPrompt;
     console.log(`[OfficeScene] initFleetPipeline: attachOfficeId=${attachOfficeId}, sourceOfficeId=${this.fleetSourceOfficeId}, currentOfficeId=${officeManager.currentOfficeId}, isReEntry=${isReEntry}`);
     try {
-      this.fleetTracker = new FleetTracker('architect', attachOfficeId);
+      this.fleetTracker = new FleetTracker(ARCHITECT_AGENT_ID, attachOfficeId);
       await this.fleetTracker.startTracking();
 
       this.fleetVisualizer = new FleetVisualizer(
@@ -2008,8 +2032,8 @@ export class OfficeScene extends Phaser.Scene {
         const fleetOfficeId = officeManager.currentOfficeId;
         if (fleetOfficeId && window.copilotBridge?.terminalWrite) {
           const fleetCmd = `/fleet ${this.fleetPrompt}\r`;
-          console.log(`[OfficeScene] Sending /fleet to ${fleetOfficeId}:architect (${fleetCmd.length} chars)`);
-          const result = await window.copilotBridge.terminalWrite(fleetOfficeId, 'architect', fleetCmd);
+          console.log(`[OfficeScene] Sending /fleet to ${fleetOfficeId}:${ARCHITECT_AGENT_ID} (${fleetCmd.length} chars)`);
+          const result = await window.copilotBridge.terminalWrite(fleetOfficeId, ARCHITECT_AGENT_ID, fleetCmd);
           console.log(`[OfficeScene] /fleet command result:`, result);
         } else {
           console.warn('[OfficeScene] Cannot send /fleet — no officeId or copilotBridge');
@@ -2388,7 +2412,7 @@ export class OfficeScene extends Phaser.Scene {
   private startConversation(agent: AgentConfig): void {
     // Fleet v-team: only Arthur can open a terminal (writable so user can type commands)
     if (this.currentLayout === 'fleet-vteam') {
-      if (agent.id !== 'architect') return;
+      if (agent.id !== ARCHITECT_AGENT_ID) return;
       this.game.events.emit('agent:interact', agent.id);
       this.terminalOverlay.show(
         agent,
@@ -2400,7 +2424,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Arthur triggers meeting mode instead of normal terminal
-    if (agent.id === 'architect') {
+    if (agent.id === ARCHITECT_AGENT_ID) {
       this.enterMeeting();
       return;
     }

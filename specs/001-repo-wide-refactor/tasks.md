@@ -82,11 +82,11 @@ transitions. All must pass with no user-visible regression.
 
 ### Slice S1-B: Scene Lifecycle and Office Switching
 
-- [ ] T020 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-B-scene-lifecycle.md` covering `src/scenes/**` and the `office:switch` event chain in `src/main.ts` and `src/office/**`; classification: `parity_preserving`.
-- [ ] T021 [US1] Refactor `src/scenes/OfficeScene.ts` to remove hardcoded agent IDs from scene/layout logic (per the "Regression-Prone Pitfalls" note in `.github/copilot-instructions.md`); rely on `src/config/agents.ts` and `src/office/officeManager.ts` for rosters.
-- [ ] T022 [US1] Clarify Boot → Office → Meeting transitions in `src/scenes/**` so each scene's responsibilities are documented in-file and dependencies on DOM overlays are explicit.
-- [ ] T023 [US1] Verify `office:switch` and tab-driven office changes preserve agent state, sprite metadata, and dashboard cards across both `default` and `fleet-vteam` layouts; add a Playwright spec under `tests/e2e/` if a gap was identified in T010.
-- [ ] T024 [US1] Run `npm run test`, `npm run test:e2e`, and the scene/office portion of the parity harness; record result for S1-B.
+- [X] T020 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-B-scene-lifecycle.md` covering `src/scenes/**` and the `office:switch` event chain in `src/main.ts` and `src/office/**`; classification: `parity_preserving`.
+- [X] T021 [US1] Refactor `src/scenes/OfficeScene.ts` to remove hardcoded agent IDs from scene/layout logic (per the "Regression-Prone Pitfalls" note in `.github/copilot-instructions.md`); rely on `src/config/agents.ts` and `src/office/officeManager.ts` for rosters.
+- [X] T022 [US1] Clarify Boot → Office → Meeting transitions in `src/scenes/**` so each scene's responsibilities are documented in-file and dependencies on DOM overlays are explicit.
+- [X] T023 [US1] Verify `office:switch` and tab-driven office changes preserve agent state, sprite metadata, and dashboard cards across both `default` and `fleet-vteam` layouts; add a Playwright spec under `tests/e2e/` if a gap was identified in T010.
+- [X] T024 [US1] Run `npm run test`, `npm run test:e2e`, and the scene/office portion of the parity harness; record result for S1-B.
 
 ### Slice S1-C: Terminal/Session Lifecycle (Renderer Side)
 

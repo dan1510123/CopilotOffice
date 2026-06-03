@@ -12,6 +12,17 @@ export interface AgentConfig {
 
 import type { HeroConfig } from '../sprites/SpriteGenerator';
 
+/**
+ * Canonical agent ID for "the Architect" (Arthur).
+ *
+ * This is the single source of truth for the architect role identifier.
+ * Scene/layout code MUST import this constant rather than using the literal
+ * string `'architect'`, so the role can be reassigned in one place if needed.
+ * See `.github/copilot-instructions.md` → "Regression-Prone Pitfalls"
+ * (hardcoded agent IDs).
+ */
+export const ARCHITECT_AGENT_ID = 'architect';
+
 // Pool of common first names for agents
 export const FLEET_NAMES = [
   'Liam', 'Emma', 'Noah', 'Olivia', 'James', 'Ava', 'Ethan', 'Sophia',
@@ -68,7 +79,7 @@ const ARTHUR_FLEET_SEAT_INDEX = 7; // {x: 10, y: 8}
 export const FLEET_AGENTS: AgentConfig[] = FLEET_SEAT_POSITIONS.map((pos, i) => {
   if (i === ARTHUR_FLEET_SEAT_INDEX) {
     return {
-      id: 'architect',
+      id: ARCHITECT_AGENT_ID,
       name: 'Arthur',
       skill: 'general',
       sprite: 'npc_architect',
@@ -165,7 +176,7 @@ const SHOW_ARCHITECT_IN_DEFAULT_OFFICE = false;
 // Core agent IDs that cannot be dismissed
 export const CORE_AGENT_IDS = new Set([
   'generalist',
-  ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? ['architect'] : []),
+  ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? [ARCHITECT_AGENT_ID] : []),
   'debugger',
   'admin',
 ]);
@@ -186,7 +197,7 @@ export const AGENTS: AgentConfig[] = [
     description: 'the Generalist',
   },
   ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? [{
-    id: 'architect',
+    id: ARCHITECT_AGENT_ID,
     name: 'Arthur',
     skill: 'general',
     sprite: 'npc_architect',
