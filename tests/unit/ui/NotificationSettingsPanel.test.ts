@@ -59,5 +59,39 @@ describe('ui/NotificationSettingsPanel', () => {
     expect(service.updateSettings).toHaveBeenCalled();
     expect(panel.isOpen()).toBe(true);
   });
+
+  it('fires onOpen / onClose hooks for InputManager wiring (S2-C)', () => {
+    const settings = getDefaultSettings();
+    const service = {
+      getSettings: vi.fn(() => settings),
+      updateSettings: vi.fn(),
+      notify: vi.fn(),
+    };
+    const onOpen = vi.fn();
+    const onClose = vi.fn();
+    const panel = new NotificationSettingsPanel(service as any, { onOpen, onClose });
+
+    panel.open();
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    panel.close();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    // toggle() also routes through open/close so hooks must fire there too.
+    panel.toggle();
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    panel.toggle();
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not fire onClose when close() is a no-op on an unopened panel (S2-C)', () => {
+    const settings = getDefaultSettings();
+    const service = { getSettings: vi.fn(() => settings), updateSettings: vi.fn(), notify: vi.fn() };
+    const onClose = vi.fn();
+    const panel = new NotificationSettingsPanel(service as any, { onClose });
+    panel.close();
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 

@@ -8,7 +8,7 @@ Schema matches `data-model.md` → `DependencyRisk` entity.
 | R-002 | S1-E | Fleet session transfer relies on dual-key `activeAgentViewers` invariant in `electron/terminal/server.ts`. | high | Invariant extracted into `electron/terminal/agent-viewers.ts` with documented `addAgentViewer` / `removeAgentViewer` / `hasActiveViewer` contract; covered by `tests/unit/terminal/agentViewers.test.ts` (9 cases incl. attach/detach round-trip and alias forward lookup). | mitigated |
 | R-003 | S1-B | Hardcoded agent IDs in scene/layout logic may exist beyond the documented pitfall. | medium | T021 audit must grep `src/scenes/**` and `src/layouts/**` for literal agent IDs. | mitigated |
 | R-004 | S1-A | Direct Phaser keyboard manipulation may exist outside `src/input/**`. | medium | T016 audit must search renderer for `keyboard.on`/`addKey` outside InputManager. | open |
-| R-005 | S2-C | Overlay focus restoration is the recurring regression source per pitfall note. | medium | T050 must add explicit focus-restore tests for every overlay surface. | open |
+| R-005 | S2-C | Overlay focus restoration is the recurring regression source per pitfall note. | medium | NotificationSettingsPanel now exposes onOpen/onClose hooks mirroring SettingsPanel + SpriteCustomizerPanel; OverlayFocusRestore.test.ts covers Settings + SpriteCustomizer + NotificationSettings surfaces. | mitigated |
 | R-006 | All | Worktree `.specify/` missing `extensions.yml` — hook automation skipped silently. | low | Document in handoff; optionally sync extensions config later. | accepted |
 
 ## Severity Definitions

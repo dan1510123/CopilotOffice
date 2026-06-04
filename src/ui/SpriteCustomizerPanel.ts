@@ -15,6 +15,7 @@ import {
   loadPlayerColors,
   resetPlayerColors,
 } from '../config/playerCustomization';
+import { ZIndex } from '../config/zIndex';
 
 function hexToCSS(hex: number): string {
   return '#' + hex.toString(16).padStart(6, '0');
@@ -54,7 +55,7 @@ export class SpriteCustomizerPanel {
     this.container = document.createElement('div');
     this.container.style.cssText = `
       position: fixed;
-      z-index: 15000;
+      z-index: ${ZIndex.SPRITE_CUSTOMIZER};
       width: 320px;
       background: #1a1a2e;
       border: 2px solid #333;

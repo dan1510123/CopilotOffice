@@ -140,11 +140,11 @@ bounded blast radius.
 
 ### Slice S2-C: UI Overlays (Terminal Panel, Dashboards, Mini-Games)
 
-- [ ] T048 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-C-ui-overlays.md` covering `src/ui/**` (excluding terminal lifecycle already refactored in S1-C); classification: `parity_preserving`.
-- [ ] T049 [P] [US2] Refactor agent Overview Dashboard, status bar, settings popover, and notification surfaces to honor the documented DOM z-index layering (status bar 100, terminal overlay 10000, sprite card 10001).
-- [ ] T050 [US2] Preserve and restore focus around overlays/popovers per pitfall note: keep `InputManager` and DOM focus in sync on open/close.
-- [ ] T051 [US2] Add Vitest coverage for overlay open/close focus contract; add a Playwright spec for dashboard ↔ terminal panel switching parity.
-- [ ] T052 [US2] Run UI overlay portion of parity harness and record result.
+- [X] T048 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-C-ui-overlays.md` covering `src/ui/**` (excluding terminal lifecycle already refactored in S1-C); classification: `parity_preserving`.
+- [X] T049 [P] [US2] Refactor agent Overview Dashboard, status bar, settings popover, and notification surfaces to honor the documented DOM z-index layering (status bar 100, terminal overlay 10000, sprite card 10001).
+- [X] T050 [US2] Preserve and restore focus around overlays/popovers per pitfall note: keep `InputManager` and DOM focus in sync on open/close.
+- [X] T051 [US2] Add Vitest coverage for overlay open/close focus contract; add a Playwright spec for dashboard ↔ terminal panel switching parity.
+- [X] T052 [US2] Run UI overlay portion of parity harness and record result.
 
 ### Slice S2-D: Sprites and Entities
 

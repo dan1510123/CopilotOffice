@@ -7,6 +7,7 @@ import { GalaxianGame } from '../ui/GalaxianGame';
 import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, ARCHITECT_AGENT_ID, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
+import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager, OfficeLayout } from '../office/officeManager';
 import { MeetingPlan } from '../meeting/types';
@@ -1846,7 +1847,7 @@ export class OfficeScene extends Phaser.Scene {
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 16px;
       font-weight: bold;
-      z-index: 150;
+      z-index: ${ZIndex.OFFICE_SCENE_OVERLAY};
       transition: background 0.15s;
     `;
     btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(0, 255, 136, 0.2)'; });

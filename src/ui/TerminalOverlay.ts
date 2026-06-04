@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AgentConfig } from '../config/agents';
+import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 
@@ -640,7 +641,7 @@ export class TerminalOverlay {
       border-radius: 0;
       display: none;
       flex-direction: column;
-      z-index: 10000;
+      z-index: ${ZIndex.TERMINAL_OVERLAY};
     `;
 
     // Header
@@ -728,7 +729,7 @@ export class TerminalOverlay {
       padding: 16px 24px;
       box-sizing: border-box;
       position: relative;
-      z-index: 10001;
+      z-index: ${ZIndex.TERMINAL_SPRITE_CARD};
     `;
 
     // Left side: Agent sprite and name
@@ -1033,7 +1034,7 @@ export class TerminalOverlay {
       min-width: 320px;
       max-height: 250px;
       overflow-y: auto;
-      z-index: 10001;
+      z-index: ${ZIndex.TERMINAL_SPRITE_CARD};
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 12px;
       box-shadow: 0 -4px 12px rgba(0,0,0,0.5);

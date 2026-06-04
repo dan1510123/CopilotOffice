@@ -8,6 +8,7 @@ import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout } from './office/officeManager';
 import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
+import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
@@ -653,7 +654,7 @@ function showNewOfficeDialog() {
   const overlay = document.createElement('div');
   overlay.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.7); z-index: 99999;
+    background: rgba(0,0,0,0.7); z-index: ${ZIndex.MODAL_DIALOG};
     display: flex; align-items: center; justify-content: center;
   `;
 
@@ -780,7 +781,7 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
     min-width: 280px;
     font-family: 'Cascadia Code', Consolas, monospace;
     color: #eee;
-    z-index: 100000;
+    z-index: ${ZIndex.TOP_MODAL};
     box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   `;
 
@@ -945,7 +946,7 @@ statusBar.style.cssText = `
   font-family: monospace;
   font-size: 16px;
   color: #888;
-  z-index: 100;
+  z-index: ${ZIndex.STATUS_BAR};
 `;
 document.body.appendChild(statusBar);
 

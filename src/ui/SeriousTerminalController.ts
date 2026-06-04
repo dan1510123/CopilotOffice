@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { ZIndex } from '../config/zIndex';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -553,7 +554,7 @@ export class SeriousTerminalController {
       border-radius: 8px;
       box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
       padding: 10px 12px;
-      z-index: 10003;
+      z-index: ${ZIndex.SERIOUS_TERMINAL};
       color: #c8d4ff;
       font-size: 12px;
       white-space: pre-wrap;

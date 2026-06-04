@@ -5,6 +5,7 @@ import {
   NOTIFICATION_EVENT_LABELS,
   resetNotificationSettings,
 } from '../config/notifications';
+import { ZIndex } from '../config/zIndex';
 import { type NotificationService } from './NotificationService';
 
 const ALL_EVENT_TYPES: NotificationEventType[] = [
@@ -66,7 +67,7 @@ export class SettingsPanel {
       position: fixed;
       inset: 0;
       background: rgba(0,0,0,0.6);
-      z-index: 20000;
+      z-index: ${ZIndex.SETTINGS};
       display: flex;
       align-items: center;
       justify-content: center;
