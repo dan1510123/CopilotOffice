@@ -78,11 +78,11 @@ Coverage thresholds in `vitest.config.ts` (lines 70 / functions 70 / branches 55
 
 ## Final Validation
 
-> Populated by T076 after all slices complete.
+> Populated by T076 from the final program run.
 
 | command | result | date | notes |
 |---------|--------|------|-------|
-| `npm run build` | pending | — | — |
-| `npm run test` | pending | — | — |
-| `npm run test:coverage` | pending | — | — |
-| `npm run test:e2e` | pending | — | — |
+| `npm run build` | pass | 2026-06-04 | game bundle 7.6mb, electron outputs generated |
+| `npm run test` | pass | 2026-06-04 | 29 files / 175 tests passed in ~9s (was 18/69 at baseline; +11 files / +106 tests) |
+| `npm run test:coverage` | pass | 2026-06-04 | 78.85% stmts / 64.26% branches / 79.6% funcs / 82.57% lines — all above thresholds (70/55/70/70) |
+| `npm run test:e2e` | env-blocked | 2026-06-04 | Same baseline `Process failed to launch!` for both `electron-smoke.e2e.ts` and `meeting-fleet.e2e.ts`. Environment-level restriction in current CLI/headless context, not a code regression. Re-run on a desktop session before merge. |

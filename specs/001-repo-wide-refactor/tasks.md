@@ -202,11 +202,11 @@ alone.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T076 [P] Run full `npm run build`, `npm run test`, `npm run test:coverage`, and `npm run test:e2e` from a clean checkout and record the final results in `specs/001-repo-wide-refactor/tracking/progress.md` under a `Final Validation` section.
-- [ ] T077 [P] Audit `specs/001-repo-wide-refactor/slices/` to confirm every slice is `complete` or `rolled_back`; no `in_progress` or `blocked` entries remain.
-- [ ] T078 Reconcile `specs/001-repo-wide-refactor/tracking/approvals.md`: every `behavior_altering` slice has an `approved` record; otherwise flip the slice classification or revert.
-- [ ] T079 Close any open entries in `specs/001-repo-wide-refactor/tracking/risks.md`; document accepted residual risks.
-- [ ] T080 Produce a refactor retrospective `specs/001-repo-wide-refactor/governance/retrospective.md` covering what worked, what to repeat, and what to avoid.
+- [X] T076 [P] Run full `npm run build`, `npm run test`, `npm run test:coverage`, and `npm run test:e2e` from a clean checkout and record the final results in `specs/001-repo-wide-refactor/tracking/progress.md` under a `Final Validation` section.
+- [X] T077 [P] Audit `specs/001-repo-wide-refactor/slices/` to confirm every slice is `complete` or `rolled_back`; no `in_progress` or `blocked` entries remain.
+- [X] T078 Reconcile `specs/001-repo-wide-refactor/tracking/approvals.md`: every `behavior_altering` slice has an `approved` record; otherwise flip the slice classification or revert.
+- [X] T079 Close any open entries in `specs/001-repo-wide-refactor/tracking/risks.md`; document accepted residual risks.
+- [X] T080 Produce a refactor retrospective `specs/001-repo-wide-refactor/governance/retrospective.md` covering what worked, what to repeat, and what to avoid.
 
 ---
 
