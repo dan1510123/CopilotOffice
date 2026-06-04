@@ -4,6 +4,12 @@
 import type { AgentConfig } from '../config/agents';
 import { generateRandomOfficeAgents } from '../config/agents';
 import { logLifecycleTransition, type LifecycleState } from '../util/lifecycleLog';
+import {
+  createBridgePersistencePort,
+  deserializeOffices,
+  serializeOffices,
+  type OfficePersistencePort,
+} from './officePersistence';
 
 export type OfficeLayout = 'default' | 'fleet-vteam';
 
@@ -76,12 +82,14 @@ export class OfficeManager {
   private offices: Map<string, OfficeData> = new Map();
   private sessionToOffice: Map<string, string> = new Map(); // sessionId → officeId
   private _currentOfficeId: string | null = null;
-  
+  private readonly persistence: OfficePersistencePort;
+
   // Callbacks for UI updates
   onOfficeChanged: ((officeId: string) => void) | null = null;
   onOfficesUpdated: (() => void) | null = null;
-  
-  constructor() {
+
+  constructor(persistence: OfficePersistencePort = createBridgePersistencePort()) {
+    this.persistence = persistence;
     this.loadFromStorage();
   }
   
@@ -138,12 +146,8 @@ export class OfficeManager {
     
     this.saveToStorage();
 
-    // Create per-office session file eagerly
-    if (typeof window !== 'undefined' && (window as any).copilotBridge?.createOfficeSession) {
-      (window as any).copilotBridge.createOfficeSession(id).catch((e: unknown) => {
-        console.warn('[OfficeManager] Failed to create session file:', e);
-      });
-    }
+    // Create per-office session file eagerly via the persistence port.
+    void this.persistence.createOfficeSession(id);
 
     this.onOfficesUpdated?.();
     
@@ -168,13 +172,9 @@ export class OfficeManager {
     }
     
     this.offices.delete(officeId);
-    
-    // Delete per-office session file
-    if (typeof window !== 'undefined' && (window as any).copilotBridge?.deleteOfficeSession) {
-      (window as any).copilotBridge.deleteOfficeSession(officeId).catch((e: unknown) => {
-        console.warn('[OfficeManager] Failed to delete session file:', e);
-      });
-    }
+
+    // Delete per-office session file via the persistence port.
+    void this.persistence.deleteOfficeSession(officeId);
 
     // If we deleted the current office, switch to another
     if (this._currentOfficeId === officeId) {
@@ -264,14 +264,12 @@ export class OfficeManager {
     return office?.config.seatedAgents ?? [];
   }
   
-  // Persistence — saves to both localStorage (fast) and .data/copilot-offices.json (durable)
+  // Persistence — saves to both localStorage (fast) and durable file via port.
   private saveToStorage(): void {
-    const data = {
+    const json = serializeOffices({
       currentOfficeId: this._currentOfficeId,
-      offices: Array.from(this.offices.values()).map(o => o.config),
-    };
-    
-    const json = JSON.stringify(data, null, 2);
+      offices: Array.from(this.offices.values()).map((o) => o.config),
+    });
 
     try {
       localStorage.setItem('copilot-offices', json);
@@ -279,76 +277,48 @@ export class OfficeManager {
       console.warn('[OfficeManager] Failed to save to localStorage:', e);
     }
 
-    // Persist to file via copilotBridge (async, fire-and-forget)
-    if (typeof window !== 'undefined' && (window as any).copilotBridge?.saveOffices) {
-      (window as any).copilotBridge.saveOffices(json).catch((e: unknown) => {
-        console.warn('[OfficeManager] Failed to save to file:', e);
-      });
-    }
+    // Fire-and-forget durable write via the persistence port.
+    void this.persistence.saveDurable(json);
   }
-  
-  private loadFromStorage(): void {
-    // Load from localStorage first (synchronous, always available)
-    this.loadFromJson(localStorage.getItem('copilot-offices'));
 
-    // Also kick off an async file load — if the file has newer data, it will override
-    if (typeof window !== 'undefined' && (window as any).copilotBridge?.loadOffices) {
-      (window as any).copilotBridge.loadOffices().then((result: { success: boolean; data: string | null }) => {
-        if (result.success && result.data) {
-          console.log('[OfficeManager] Loaded offices from .data/copilot-offices.json');
-          this.loadFromJson(result.data);
+  private loadFromStorage(): void {
+    // Load from localStorage first (synchronous, always available).
+    this.applyStoredState(localStorage.getItem('copilot-offices'));
+
+    // Then kick off an async durable load via the port — newer data overrides.
+    void this.persistence
+      .loadDurable()
+      .then((data) => {
+        if (data) {
+          console.log('[OfficeManager] Loaded offices from durable persistence');
+          this.applyStoredState(data);
           this.onOfficesUpdated?.();
         }
-      }).catch((e: unknown) => {
-        console.warn('[OfficeManager] Failed to load from file:', e);
+      })
+      .catch((e: unknown) => {
+        console.warn('[OfficeManager] Failed to load from durable persistence:', e);
       });
-    }
   }
 
-  private loadFromJson(stored: string | null): void {
-    if (!stored) return;
+  private applyStoredState(stored: string | null): void {
+    const { currentOfficeId, offices } = deserializeOffices(stored);
+    if (offices.length === 0 && currentOfficeId === null) return;
 
-    try {
-      const data = JSON.parse(stored);
-      
-      // Restore offices
-      if (Array.isArray(data.offices)) {
-        for (let i = 0; i < data.offices.length; i++) {
-          const config = data.offices[i];
-          // Backfill layout for offices saved before this field existed
-          if (!config.layout) config.layout = 'default';
-          // Backfill seatedAgents for offices saved before this field existed
-          if (!Array.isArray(config.seatedAgents)) config.seatedAgents = [];
-          // Derive id from array position (replaces legacy UUID-style ids)
-          config.id = `office-${i}`;
-          // Drop legacy index field if present
-          delete config.index;
+    for (const config of offices) {
+      // Preserve existing runtime state (agents, tools) if office already loaded.
+      const existing = this.offices.get(config.id);
+      const officeData: OfficeData = {
+        config,
+        agents: existing?.agents ?? new Map(),
+        agentTools: existing?.agentTools ?? new Map(),
+      };
+      this.offices.set(config.id, officeData);
+    }
 
-          const id = config.id;
-          // Preserve existing runtime state (agents, tools) if office already loaded
-          const existing = this.offices.get(id);
-          const officeData: OfficeData = {
-            config,
-            agents: existing?.agents ?? new Map(),
-            agentTools: existing?.agentTools ?? new Map(),
-          };
-          this.offices.set(id, officeData);
-        }
-      }
-      
-      // Restore current office
-      let currentId: string | null = null;
-      if (data.currentOfficeId !== undefined && data.currentOfficeId !== null) {
-        currentId = String(data.currentOfficeId);
-      }
-
-      if (currentId && this.offices.has(currentId)) {
-        this._currentOfficeId = currentId;
-      } else if (this.offices.size > 0) {
-        this._currentOfficeId = this.offices.keys().next().value;
-      }
-    } catch (e) {
-      console.warn('[OfficeManager] Failed to parse office data:', e);
+    if (currentOfficeId && this.offices.has(currentOfficeId)) {
+      this._currentOfficeId = currentOfficeId;
+    } else if (this.offices.size > 0) {
+      this._currentOfficeId = this.offices.keys().next().value;
     }
   }
   

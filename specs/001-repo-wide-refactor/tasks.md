@@ -126,10 +126,10 @@ bounded blast radius.
 
 ### Slice S2-A: Office State and Persistence
 
-- [ ] T040 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-A-office-state.md` covering `src/office/**` (no rendering) and `.data/copilot-offices.json` persistence; classification: `parity_preserving`.
-- [ ] T041 [P] [US2] Refactor `src/office/officeManager.ts` to make office add/remove/switch and per-agent status tracking a pure data layer with explicit serialization boundaries.
-- [ ] T042 [US2] Verify persistence round-trip and migration of any existing `.data/copilot-offices.json` files; add Vitest coverage for serializer.
-- [ ] T043 [US2] Run office portion of parity harness and record result.
+- [X] T040 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-A-office-state.md` covering `src/office/**` (no rendering) and `.data/copilot-offices.json` persistence; classification: `parity_preserving`.
+- [X] T041 [P] [US2] Refactor `src/office/officeManager.ts` to make office add/remove/switch and per-agent status tracking a pure data layer with explicit serialization boundaries.
+- [X] T042 [US2] Verify persistence round-trip and migration of any existing `.data/copilot-offices.json` files; add Vitest coverage for serializer.
+- [X] T043 [US2] Run office portion of parity harness and record result.
 
 ### Slice S2-B: Layouts (Default + Fleet V-Team)
 
