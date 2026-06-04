@@ -9,7 +9,7 @@ Schema matches `data-model.md` → `DependencyRisk` entity.
 | R-003 | S1-B | Hardcoded agent IDs in scene/layout logic may exist beyond the documented pitfall. | medium | T021 audit must grep `src/scenes/**` and `src/layouts/**` for literal agent IDs. | mitigated |
 | R-004 | S1-A | Direct Phaser keyboard manipulation may exist outside `src/input/**`. | medium | T016 audit partially performed; renderer entities/scenes use the gated keyboard contract for their own key registrations. Residual risk: untested combinations. Deferred to a follow-up audit. | open |
 | R-005 | S2-C | Overlay focus restoration is the recurring regression source per pitfall note. | medium | NotificationSettingsPanel now exposes onOpen/onClose hooks mirroring SettingsPanel + SpriteCustomizerPanel; OverlayFocusRestore.test.ts covers Settings + SpriteCustomizer + NotificationSettings surfaces. | mitigated |
-| R-006 | All | Worktree `.specify/` missing `extensions.yml` — hook automation skipped silently. | low | Document in handoff; optionally sync extensions config later. | accepted |
+| R-006 | All | Worktree `.specify/` missing `extensions.yml` — hook automation skipped silently. | low | Copied `extensions.yml` and the `extensions/` directory from the main repo's `.specify/` into the worktree on 2026-06-04. `/speckit.implement` hook checks now resolve. | mitigated |
 
 ## Severity Definitions
 
