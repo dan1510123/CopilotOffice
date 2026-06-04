@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { AgentConfig } from '../config/agents';
+import { AgentConfig, ADMIN_AGENT_ID } from '../config/agents';
 import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
@@ -389,7 +389,7 @@ export class TerminalOverlay {
     }
 
     // Update header with inception indicator for admin
-    const inceptionBadge = agent.id === 'admin' ? ' 🎭 INCEPTION MODE' : '';
+    const inceptionBadge = agent.id === ADMIN_AGENT_ID ? ' 🎭 INCEPTION MODE' : '';
     // Fetch session title for header and sprite card
     let sessionTitle: string | null = null;
     if (window.copilotBridge?.getSessionMeta) {

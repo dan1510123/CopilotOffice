@@ -6,7 +6,7 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout } from './office/officeManager';
-import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents } from './config/agents';
+import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
@@ -2041,7 +2041,7 @@ async function onFleetOfficeCreated(officeId: string, sourceOfficeId?: string): 
   // Transfer Arthur's meeting session to the fleet office so it's accessible there
   if (sourceOfficeId && window.copilotBridge?.transferSession) {
     try {
-      const result = await window.copilotBridge.transferSession(sourceOfficeId, officeId, 'architect');
+      const result = await window.copilotBridge.transferSession(sourceOfficeId, officeId, ARCHITECT_AGENT_ID);
       console.log(`[Office] Arthur session transfer: ${result.success ? 'OK' : result.error ?? 'failed'}`);
     } catch (e) {
       console.warn('[Office] Failed to transfer Arthur session:', e);
@@ -2067,7 +2067,7 @@ async function onFleetDeployRequested(data: FleetDeployRequest): Promise<void> {
   // 2. Transfer Arthur's session from the source office to the fleet office
   if (window.copilotBridge?.transferSession) {
     try {
-      const result = await window.copilotBridge.transferSession(data.sourceOfficeId, officeId, 'architect');
+      const result = await window.copilotBridge.transferSession(data.sourceOfficeId, officeId, ARCHITECT_AGENT_ID);
       console.log(`[Fleet] Arthur session transfer: ${result.success ? 'OK' : 'failed'}`, result);
     } catch (e) {
       console.warn('[Fleet] Failed to transfer Arthur session:', e);

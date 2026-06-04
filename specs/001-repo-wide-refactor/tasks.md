@@ -156,10 +156,10 @@ bounded blast radius.
 
 ### Slice S2-E: Configuration Surface
 
-- [ ] T058 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-E-config.md` covering `src/config/**` (agents, depths, notifications, player customization); classification: `parity_preserving`.
-- [ ] T059 [P] [US2] Audit `src/config/` for fields consumed via hardcoded constants elsewhere; migrate those callers to read from config (constitution requirement).
-- [ ] T060 [US2] Verify `Depths.*` usage in `src/config/depths.ts` and y-sorted objects using `ySortDepth()` remain consistent across scenes.
-- [ ] T061 [US2] Run config-impact portion of parity harness and record result.
+- [X] T058 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-E-config.md` covering `src/config/**` (agents, depths, notifications, player customization); classification: `parity_preserving`.
+- [X] T059 [P] [US2] Audit `src/config/` for fields consumed via hardcoded constants elsewhere; migrate those callers to read from config (constitution requirement).
+- [X] T060 [US2] Verify `Depths.*` usage in `src/config/depths.ts` and y-sorted objects using `ySortDepth()` remain consistent across scenes.
+- [X] T061 [US2] Run config-impact portion of parity harness and record result.
 
 ### Slice S2-F: Electron Main Process (Non-Terminal)
 

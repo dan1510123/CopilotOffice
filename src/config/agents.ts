@@ -23,6 +23,26 @@ import type { HeroConfig } from '../sprites/SpriteGenerator';
  */
 export const ARCHITECT_AGENT_ID = 'architect';
 
+/**
+ * Named ids for the other always-present default-office agents. Use these
+ * instead of raw string literals so any future rename ripples through every
+ * dashboard / click handler / parser. The string values match the entries
+ * in `AGENTS` below — keep in sync.
+ */
+export const GENERALIST_AGENT_ID = 'generalist';
+export const DEBUGGER_AGENT_ID = 'debugger';
+export const ADMIN_AGENT_ID = 'admin';
+
+/**
+ * Canonical valid agent ids accepted by the meeting plan parser. Re-exported
+ * so `src/meeting/planParser.ts` doesn't duplicate the list literal.
+ */
+export const DEFAULT_PLAN_AGENT_IDS: readonly string[] = [
+  GENERALIST_AGENT_ID,
+  DEBUGGER_AGENT_ID,
+  ADMIN_AGENT_ID,
+];
+
 // Pool of common first names for agents
 export const FLEET_NAMES = [
   'Liam', 'Emma', 'Noah', 'Olivia', 'James', 'Ava', 'Ethan', 'Sophia',
@@ -175,10 +195,10 @@ const SHOW_ARCHITECT_IN_DEFAULT_OFFICE = false;
 
 // Core agent IDs that cannot be dismissed
 export const CORE_AGENT_IDS = new Set([
-  'generalist',
+  GENERALIST_AGENT_ID,
   ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? [ARCHITECT_AGENT_ID] : []),
-  'debugger',
-  'admin',
+  DEBUGGER_AGENT_ID,
+  ADMIN_AGENT_ID,
 ]);
 
 // Reverse lookup: agentId → deskId (for dismiss/restore flows)

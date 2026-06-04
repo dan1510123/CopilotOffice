@@ -1,6 +1,7 @@
 import { MeetingPlan, TaskAssignment } from './types';
+import { DEFAULT_PLAN_AGENT_IDS } from '../config/agents';
 
-const DEFAULT_VALID_AGENT_IDS = ['generalist', 'debugger', 'admin'];
+const DEFAULT_VALID_AGENT_IDS = DEFAULT_PLAN_AGENT_IDS;
 
 /** Remove ANSI escape codes from terminal output. */
 export function stripAnsi(text: string): string {

@@ -38,7 +38,7 @@ Seeded from `data-model.md` lifecycle states. Update as slices move through phas
 | S2-B | Layouts (Default + Fleet V-Team) | layout | parity_preserving | complete | Phase 4 P2; build+test pass 144/144 (2026-06-04), e2e env-blocked; added `LayoutBehaviors` capability flags + migrated 3 scene branches; +6 layout tests |
 | S2-C | UI Overlays (Terminal Panel, Dashboards, Mini-Games) | ui | parity_preserving | complete | Phase 4 P2; build+test pass 153/153 (2026-06-04), e2e env-blocked; centralized `src/config/zIndex.ts` registry (11 layers, 12 migrated sites); NotificationSettingsPanel gained onOpen/onClose hooks; R-005 mitigation; +9 tests (7 zIndex + 2 hooks) |
 | S2-D | Sprites and Entities | scene | parity_preserving | complete | Phase 4 P2; build+test pass 158/158 (2026-06-04), e2e env-blocked; extracted `nextWalkAction` pure reducer; Player consumes it; NPC tween-walk left as-is (no duplication); +5 reducer tests |
-| S2-E | Configuration Surface | config | parity_preserving | proposed | Phase 4 P2 |
+| S2-E | Configuration Surface | config | parity_preserving | complete | Phase 4 P2; build+test pass 162/162 (2026-06-04), e2e env-blocked; added `GENERALIST_AGENT_ID` / `DEBUGGER_AGENT_ID` / `ADMIN_AGENT_ID` / `DEFAULT_PLAN_AGENT_IDS` to agents.ts; migrated 7 hardcoded literal sites; Depths usage audit clean (all setDepth uses constants); +4 constant tests |
 | S2-F | Electron Main Process (Non-Terminal) | terminal | parity_preserving | proposed | Phase 4 P2 |
 | S2-G | Test Harness Hygiene | test | parity_preserving | proposed | Phase 4 P2 |
 
