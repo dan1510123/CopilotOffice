@@ -3,7 +3,7 @@ import { Depths, ySortDepth } from '../config/depths';
 import { Direction, getStandFrame } from '../sprites/DirectionalSprite';
 import { MeetingPlan } from '../meeting/types';
 import { InputManager } from '../input/InputManager';
-import { TerminalOverlay } from '../ui/TerminalOverlay';
+import { TerminalOverlay, DEBUG_SPRITE_SERIOUS } from '../ui/TerminalOverlay';
 import { PlanApprovalOverlay } from '../meeting/planApproval';
 import { parsePlanFromOutput } from '../meeting/planParser';
 import { officeManager } from '../office/officeManager';
@@ -508,6 +508,15 @@ export class MeetingScene extends Phaser.Scene {
       this.terminalOverlay?.hide();
     }
     this.inputManager?.destroy();
+    // Spec 003 V10: tear down the TerminalOverlay so its #sprite-card DOM
+    // node does not leak into #game-container after leaving the meeting
+    // room (e.g. exit button or non-fleet leave path).
+    if (DEBUG_SPRITE_SERIOUS) {
+      console.log('[MeetingScene] shutdown destroying terminalOverlay');
+    }
+    try { this.terminalOverlay?.destroy(); } catch (e) {
+      console.warn('[MeetingScene] shutdown overlay destroy failed', e);
+    }
     this.meetingPlan = null;
     this.terminalOutputBuffer = '';
     this.isExiting = false;

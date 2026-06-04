@@ -241,13 +241,10 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     expect(btn?.textContent?.toLowerCase(), 'boot in serious mode when localStorage says so').toContain('serious');
   }, 15000);
 
-  it.fails('SM-F BUG: openAgentTerminal should not silently fail when sprite rendering throws', async () => {
-    // Reproduces the spec-003 finding: SeriousTerminalController.openAgentTerminal
-    // wraps only the network attach phase in try/catch. If updateSpriteCard
-    // throws (e.g. canvas context unavailable, sprite data corrupted), the open
-    // flow aborts silently — no error surface, no fallback, terminal never
-    // attached. EXPECTED behavior: surface the error in the terminal status
-    // and still attempt to attach the PTY so the operator can recover.
+  it('SM-F: openAgentTerminal surfaces sprite-render failure and still attempts attach (V12, C8)', async () => {
+    // Spec 003 fix: the synchronous render phase is wrapped in try/catch so
+    // a canvas/sprite failure surfaces in status + xterm and the IPC
+    // attach STILL fires for the requested ids.
     canvasContextSpy?.mockRestore();
     canvasContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => {
       throw new Error('simulated canvas failure');
@@ -255,10 +252,109 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     const { bridge } = await bootstrapMain();
     clickAppModeToggle();
     await flushUi();
-    // First open will throw inside updateSpriteCard; we expect terminalAttach
-    // STILL to have been called (resilient flow).
     clickAgentCard('generalist');
     await flushUi();
+    expect(
+      bridge.terminalAttach,
+      'V12 violated: render failure aborted the open flow before terminalAttach',
+    ).toHaveBeenCalledWith('office-0', 'generalist');
+  }, 15000);
+
+  it('SM-001 single sprite-card across game-mode + serious-mode toggles (V8/V9/V10, C6/C7)', async () => {
+    await bootstrapMain();
+    // game mode boot — at most one sprite-card
+    expect(
+      document.querySelectorAll('#sprite-card').length,
+      'V8 violated: sprite-card stacked on boot',
+    ).toBeLessThanOrEqual(1);
+
+    // Toggle serious -> game -> serious -> game several times. The DOM must
+    // never accumulate more than one #sprite-card across transitions.
+    for (let i = 0; i < 5; i++) {
+      clickAppModeToggle();
+      await flushUi();
+      expect(
+        document.querySelectorAll('#sprite-card').length,
+        `V8 violated: sprite-card stacked after toggle #${i + 1}`,
+      ).toBeLessThanOrEqual(1);
+    }
+  }, 15000);
+
+  it('SM-002 serious-mode open surfaces synchronous render failures and still attaches (V12, C8)', async () => {
+    canvasContextSpy?.mockRestore();
+    canvasContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => {
+      throw new Error('forced render failure');
+    });
+    const { bridge } = await bootstrapMain();
+    clickAppModeToggle();
+    await flushUi();
+    clickAgentCard('generalist');
+    await flushUi();
+
+    // (3) terminalStart was invoked with the requested ids
+    const startCalls = (bridge.terminalStart as ReturnType<typeof vi.fn>).mock.calls;
+    expect(
+      startCalls.some((c) => c[0] === 'office-0' && c[1] === 'generalist'),
+      'V12 violated: terminalStart never called for office-0/generalist after render throw',
+    ).toBe(true);
+    // (4) terminalAttach was invoked with the requested ids
+    expect(
+      bridge.terminalAttach,
+      'V12 violated: terminalAttach never called after render throw',
+    ).toHaveBeenCalledWith('office-0', 'generalist');
+  }, 15000);
+
+  it('SM-002.a serious-mode open happy path unchanged by resilience handler (V12.a, C8.a)', async () => {
+    const { bridge } = await bootstrapMain();
+    clickAppModeToggle();
+    await flushUi();
+    clickAgentCard('generalist');
+    await flushUi();
+
+    // Happy path attaches normally.
     expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist');
+    // No render-error status leaked into the terminal output.
+    // (We can only inspect the rendered status element; if the resilience
+    // handler fired, the status would contain "[render error" — it must not.)
+    const statusEls = document.querySelectorAll('[data-app-mode="serious"]');
+    let combined = '';
+    statusEls.forEach((el) => { combined += el.textContent || ''; });
+    expect(
+      combined,
+      'V12.a violated: render-error message leaked into happy-path status',
+    ).not.toContain('[render error');
+    expect(
+      combined,
+      'V12.a violated: serious-mode open failed during render message leaked into happy path',
+    ).not.toContain('serious-mode open failed during render');
+  }, 15000);
+
+  it('SM-003 serious-mode onData routes to agent bound at registration, not live activeAgentId (V13/V14, C9)', async () => {
+    const { bridge } = await bootstrapMain();
+    clickAppModeToggle();
+    await flushUi();
+    clickAgentCard('generalist');
+    await flushUi();
+
+    // Switch to debugger — the previous onData binding for generalist must
+    // be disposed; the new binding routes to debugger.
+    clickAgentCard('debugger');
+    await flushUi();
+
+    // After switching, terminalAttach for debugger fired and detach for the
+    // previous (generalist) happened.
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger');
+    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+
+    // Sanity: the dashboard click-driven open path issued an attach for the
+    // *currently visible* agent, not the previously-active one. (Direct
+    // onData routing is exercised by the unit-level controller test; here
+    // we verify the integrated handler chain at least attaches correctly.)
+    const lastAttachCall = (bridge.terminalAttach as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+    expect(
+      lastAttachCall,
+      'V13 violated: no terminalAttach calls recorded',
+    ).toBeTruthy();
+    expect(lastAttachCall?.[1], 'V13 violated: last attach not bound to clicked agent').toBe('debugger');
   }, 15000);
 });

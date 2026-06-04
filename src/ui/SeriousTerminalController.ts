@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
+import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -51,6 +52,12 @@ export class SeriousTerminalController {
   private activeOptions: SeriousTerminalOpenOptions | null = null;
   private isFullWidth = false;
   private terminalCopyHandler: ((event: ClipboardEvent) => void) | null = null;
+  // Spec 003 V13/V14: the onData callback registered on the xterm closes
+  // over the office/agent ids captured at openAgentTerminal time, not the
+  // live this.activeOfficeId/this.activeAgentId. Holding the disposable
+  // here lets the next open() drop the previous binding before installing
+  // a new one — exactly one live onData per controller at any moment.
+  private onDataDisposable: { dispose(): void } | null = null;
 
   constructor(host: HTMLElement, options: SeriousTerminalControllerOptions = {}) {
     this.host = host;
@@ -306,15 +313,52 @@ export class SeriousTerminalController {
     this.sessionId = null;
     this.container.style.display = 'flex';
     this.attachTerminalCopyListener();
-    this.terminal.clear();
-    this.titleEl.textContent = `${options.name} (${options.agentId})`;
-    this.subtitleEl.textContent = options.description;
-    this.updateSpriteCard(options);
-    void this.updateSessionTitle(options.officeId, options.agentId);
-    this.updateSessionIdDisplay();
-    this.setStatus('Opening...');
-    this.applyPanelLayout();
-    this.refitAndResize(options.officeId, options.agentId);
+
+    // Spec 003 V12/V12.a, C8: the synchronous render phase (sprite, title,
+    // refit) MUST NOT silently abort the entire open. Wrap in try/catch; on
+    // throw, surface a status update + visible terminal warning, then STILL
+    // proceed to the IPC attach phase using the requested ids so the PTY
+    // session is reachable for the operator.
+    try {
+      this.terminal.clear();
+      this.titleEl.textContent = `${options.name} (${options.agentId})`;
+      this.subtitleEl.textContent = options.description;
+      this.updateSpriteCard(options);
+      void this.updateSessionTitle(options.officeId, options.agentId);
+      this.updateSessionIdDisplay();
+      this.setStatus('Opening...');
+      this.applyPanelLayout();
+      this.refitAndResize(options.officeId, options.agentId);
+    } catch (err) {
+      const message = `serious-mode open failed during render: ${(err as Error)?.message || String(err)}`;
+      try { this.setStatus(message); } catch { /* ignore */ }
+      try { this.terminal.writeln(`\r\n[render error: ${message}]\r\n`); } catch { /* ignore */ }
+      if (DEBUG_SPRITE_SERIOUS) {
+        console.log(
+          `[SeriousTerminalController] openAgentTerminal render failure (officeId=${options.officeId} agentId=${options.agentId}): ${message}`,
+        );
+      } else {
+        console.warn('[SeriousTerminalController] openAgentTerminal render failure', err);
+      }
+      // Fall through to attach — do NOT return.
+    }
+
+    // Spec 003 V13/V14, C9: bind the onData callback to local copies of
+    // office/agent so subsequent activeOfficeId/activeAgentId mutations
+    // cannot misroute keystrokes. Pattern lifted from spec 002 V6
+    // TerminalOverlay.registerOnDataHandler.
+    const boundOfficeId = options.officeId;
+    const boundAgentId = options.agentId;
+    try { this.onDataDisposable?.dispose(); } catch { /* ignore */ }
+    this.onDataDisposable = this.terminal.onData((data: string) => {
+      if (!window.copilotBridge) return;
+      void window.copilotBridge.terminalWrite(boundOfficeId, boundAgentId, data);
+    });
+    if (DEBUG_SPRITE_SERIOUS) {
+      console.log(
+        `[SeriousTerminalController] onData rebound officeId=${boundOfficeId} agentId=${boundAgentId}`,
+      );
+    }
 
     try {
       const exists = await window.copilotBridge.terminalExists(options.officeId, options.agentId);
@@ -414,6 +458,10 @@ export class SeriousTerminalController {
     this.visible = false;
     this.container.style.display = 'none';
     this.detachTerminalCopyListener();
+    // Spec 003 V14: drop the per-agent onData binding so a close-without-
+    // reopen leaves no live handler bound to a stale agent.
+    try { this.onDataDisposable?.dispose(); } catch { /* ignore */ }
+    this.onDataDisposable = null;
     this.activeOfficeId = null;
     this.activeAgentId = null;
     this.activeOptions = null;
@@ -836,9 +884,13 @@ export class SeriousTerminalController {
       return true;
     });
 
-    this.terminal.onData((data: string) => {
-      if (!window.copilotBridge || !this.activeOfficeId || !this.activeAgentId) return;
-      void window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, data);
+    this.terminal.onData((_data: string) => {
+      // Spec 003 V13/V14, C9: the active onData binding is installed per
+      // openAgentTerminal call with locals captured into closure (see
+      // openAgentTerminal). This handler is a no-op kept only so the xterm
+      // has at least one onData listener wired up before the first open.
+      // The real per-agent handler is owned by this.onDataDisposable.
+      // C10 audited 2026-06-04 — closeView is IPC-only, no unguarded render.
     });
 
     this.resizeHandler = () => {

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { Player } from '../entities/Player';
 import { NPC } from '../entities/NPC';
-import { TerminalOverlay } from '../ui/TerminalOverlay';
+import { TerminalOverlay, DEBUG_SPRITE_SERIOUS } from '../ui/TerminalOverlay';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
 import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, ARCHITECT_AGENT_ID, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
@@ -681,6 +681,15 @@ export class OfficeScene extends Phaser.Scene {
       this.game.events.off('zoom:change');
       this.cameraDrag?.destroy();
       this.inputManager.destroy();
+      // Spec 003 V10: tear down the TerminalOverlay (DOM nodes, listeners,
+      // sprite-card) when the scene shuts down so multiple scene transitions
+      // cannot leak stacked sprite-cards into #game-container.
+      if (DEBUG_SPRITE_SERIOUS) {
+        console.log('[OfficeScene] shutdown destroying terminalOverlay');
+      }
+      try { this.terminalOverlay?.destroy(); } catch (e) {
+        console.warn('[OfficeScene] shutdown overlay destroy failed', e);
+      }
     }, this);
   }
 

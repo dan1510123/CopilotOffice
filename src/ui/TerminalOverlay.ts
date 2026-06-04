@@ -31,6 +31,15 @@ const DEBUG_COLD_START =
     (window as unknown as { __COPILOT_OFFICE_DEBUG_COLD_START__?: boolean })
       .__COPILOT_OFFICE_DEBUG_COLD_START__ === true) || false;
 
+// Spec 003 forensic logging. Gates the optional log lines listed in
+// specs/003-fix-sprite-and-serious-bugs/contracts/ui-contracts.md
+// (sprite-card idempotency, scene shutdown destroy, serious-mode render
+// failure, onData rebind). Default false for quiet production builds; flip
+// to true during a bisect to make sprite/serious-mode regressions cheap to
+// trace. Re-exported for use by sibling files (SeriousTerminalController,
+// OfficeScene, MeetingScene).
+export const DEBUG_SPRITE_SERIOUS = false;
+
 export class TerminalOverlay {
   private scene: Phaser.Scene;
   private container: HTMLDivElement | null = null;
@@ -768,6 +777,16 @@ export class TerminalOverlay {
 
   /** Create the SpriteCard — a full-width bottom bar showing agent sprite, info, and controls. */
   private createSpriteCard(): void {
+    // V9: defensive removal of any pre-existing #sprite-card so the DOM
+    // contains at most one at any moment, even if a prior overlay leaked
+    // (e.g. scene transition without shutdown destroy).
+    const stale = document.getElementById('sprite-card');
+    if (stale) {
+      try { stale.remove(); } catch { /* ignore */ }
+      if (DEBUG_SPRITE_SERIOUS) {
+        console.log('[TerminalOverlay] createSpriteCard removed stale #sprite-card before append');
+      }
+    }
     this.spriteCardElement = document.createElement('div');
     this.spriteCardElement.id = 'sprite-card';
     this.spriteCardElement.style.cssText = `
@@ -1688,11 +1707,23 @@ export class TerminalOverlay {
       this.terminal.dispose();
     }
     if (this.container && this.container.parentNode) {
-      this.container.parentNode.removeChild(this.container);
+      try { this.container.parentNode.removeChild(this.container); } catch { /* ignore */ }
     }
-    if (this.spriteCardElement && this.spriteCardElement.parentNode) {
-      this.spriteCardElement.parentNode.removeChild(this.spriteCardElement);
-    }
+    // V11: destroy() MUST be safe even on partial construction. Use the
+    // stored reference first, then defensively belt-and-suspenders query the
+    // DOM in case a stale node leaked via a different code path. Each
+    // removal is independently guarded so a single failure cannot leave the
+    // other DOM node behind.
+    try {
+      if (this.spriteCardElement && this.spriteCardElement.parentNode) {
+        this.spriteCardElement.parentNode.removeChild(this.spriteCardElement);
+      }
+    } catch { /* ignore */ }
+    try {
+      const fallback = document.getElementById('sprite-card');
+      if (fallback) fallback.remove();
+    } catch { /* ignore */ }
+    this.spriteCardElement = null;
     if (window.copilotBridge) {
       window.copilotBridge.removeTerminalListeners();
     }
