@@ -170,9 +170,9 @@ bounded blast radius.
 
 ### Slice S2-G: Test Harness Hygiene
 
-- [ ] T066 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-G-tests.md` covering `tests/**` and any co-located `*.test.ts`; classification: `parity_preserving`.
-- [ ] T067 [US2] Close coverage gaps identified in T010 by adding tests for previously uncovered critical flows; do NOT add a new framework — use Vitest + Playwright.
-- [ ] T068 [US2] Run `npm run test:coverage` and document coverage delta in `specs/001-repo-wide-refactor/tracking/progress.md`.
+- [X] T066 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-G-tests.md` covering `tests/**` and any co-located `*.test.ts`; classification: `parity_preserving`.
+- [X] T067 [US2] Close coverage gaps identified in T010 by adding tests for previously uncovered critical flows; do NOT add a new framework — use Vitest + Playwright.
+- [X] T068 [US2] Run `npm run test:coverage` and document coverage delta in `specs/001-repo-wide-refactor/tracking/progress.md`.
 
 **Checkpoint**: P2 complete. All supporting domains are refactored independently with parity
 preserved.
