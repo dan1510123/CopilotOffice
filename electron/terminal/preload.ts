@@ -152,6 +152,19 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   showNativeNotification: (title: string, body: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('show-native-notification', title, body);
   },
+
+  // Spec 003 follow-up: write to OS clipboard via Electron main process.
+  // Bypasses Permissions API + focus restrictions that make
+  // navigator.clipboard.writeText unreliable in xterm-focused contexts.
+  clipboardWriteText: (text: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('clipboard-write-text', text);
+  },
+
+  // Spec 004: read OS clipboard via Electron main. Renderer pairs this with
+  // terminalWrite to implement Paste in the terminal context menu.
+  clipboardReadText: (): Promise<{ success: boolean; text: string; error?: string }> => {
+    return ipcRenderer.invoke('clipboard-read-text');
+  },
 });
 
 // Type declaration for the exposed API
@@ -203,6 +216,8 @@ declare global {
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
       showNativeNotification: (title: string, body: string) => Promise<{ success: boolean }>;
+      clipboardWriteText: (text: string) => Promise<{ success: boolean; error?: string }>;
+      clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
       loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;
     };

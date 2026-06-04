@@ -51,7 +51,8 @@ export class SeriousTerminalController {
   private sessionId: string | null = null;
   private activeOptions: SeriousTerminalOpenOptions | null = null;
   private isFullWidth = false;
-  private terminalCopyHandler: ((event: ClipboardEvent) => void) | null = null;
+  private terminalContextMenu: HTMLDivElement | null = null;
+  private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
   // Spec 003 V13/V14: the onData callback registered on the xterm closes
   // over the office/agent ids captured at openAgentTerminal time, not the
   // live this.activeOfficeId/this.activeAgentId. Holding the disposable
@@ -312,7 +313,6 @@ export class SeriousTerminalController {
     this.openedAt = Date.now();
     this.sessionId = null;
     this.container.style.display = 'flex';
-    this.attachTerminalCopyListener();
 
     // Spec 003 V12/V12.a, C8: the synchronous render phase (sprite, title,
     // refit) MUST NOT silently abort the entire open. Wrap in try/catch; on
@@ -457,7 +457,7 @@ export class SeriousTerminalController {
 
     this.visible = false;
     this.container.style.display = 'none';
-    this.detachTerminalCopyListener();
+    this.hideTerminalContextMenu();
     // Spec 003 V14: drop the per-agent onData binding so a close-without-
     // reopen leaves no live handler bound to a stale agent.
     try { this.onDataDisposable?.dispose(); } catch { /* ignore */ }
@@ -643,7 +643,7 @@ export class SeriousTerminalController {
 
   private copySessionId(): void {
     if (!this.sessionId) return;
-    void this.writeClipboardText(this.sessionId).then((success) => {
+    void this.copyToClipboard(this.sessionId).then((success) => {
       const original = this.sessionIdEl.textContent;
       this.sessionIdEl.textContent = success ? 'Copied!' : 'Copy failed';
       this.sessionIdEl.style.color = success ? '#61d394' : '#ff6b6b';
@@ -654,113 +654,133 @@ export class SeriousTerminalController {
     });
   }
 
-  /**
-   * Feature 002 (US3, T021): hook up a small floating Copy button on
-   * non-empty selections. Mirrors `TerminalOverlay.installCopySelectionButton`.
-   */
-  private installCopySelectionButton(): void {
-    if (!this.terminal || !this.terminalDivEl) return;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = '📋 Copy';
-    btn.setAttribute('aria-label', 'Copy terminal selection');
-    btn.style.cssText = `
-      position: absolute;
-      right: 16px;
-      bottom: 12px;
-      z-index: 5;
-      display: none;
-      padding: 6px 12px;
-      background: #2a4a8a;
-      color: #fff;
-      border: 1px solid #4a6aaa;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: 'Cascadia Code', Consolas, monospace;
-      font-size: 13px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-    `;
-    btn.addEventListener('mousedown', (e) => e.stopPropagation());
-    btn.addEventListener('click', () => {
-      if (!this.terminal?.hasSelection()) return;
-      const selection = this.terminal.getSelection();
-      if (!selection) return;
-      void this.writeClipboardText(selection).then((success) => {
-        if (!success) this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
-      });
-    });
-    const host = this.terminalDivEl.parentElement ?? this.terminalDivEl;
-    if (getComputedStyle(host as HTMLElement).position === 'static') {
-      (host as HTMLElement).style.position = 'relative';
-    }
-    host.appendChild(btn);
-
-    if (this.terminal.onSelectionChange) {
-      this.terminal.onSelectionChange(() => {
-        const has =
-          this.terminal?.hasSelection() === true &&
-          (this.terminal?.getSelection() ?? '').length > 0;
-        btn.style.display = has ? 'block' : 'none';
-      });
-    }
-  }
-
-  private attachTerminalCopyListener(): void {
-    if (this.terminalCopyHandler) return;
-
-    this.terminalCopyHandler = (event: ClipboardEvent) => {
-      if (!this.visible || !this.terminal) return;
-
-      const target = event.target;
-      if (target instanceof Node && !this.terminalDivEl.contains(target)) return;
-
-      const selectedText = this.terminal.hasSelection() ? this.terminal.getSelection() : '';
-      if (!selectedText) return;
-
-      if (event.clipboardData) {
-        event.clipboardData.setData('text/plain', selectedText);
-        event.preventDefault();
-        return;
+  // Spec 004: single canonical clipboard write path via Electron main.
+  private async copyToClipboard(text: string): Promise<boolean> {
+    if (!text) return false;
+    try {
+      const bridge = window.copilotBridge;
+      if (bridge?.clipboardWriteText) {
+        const r = await bridge.clipboardWriteText(text);
+        return r?.success === true;
       }
-
-      event.preventDefault();
-      void this.writeClipboardText(selectedText).then((success) => {
-        if (!success) {
-          this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
-        }
-      });
-    };
-
-    this.terminalDivEl.addEventListener('copy', this.terminalCopyHandler);
-  }
-
-  private detachTerminalCopyListener(): void {
-    if (!this.terminalCopyHandler) return;
-    this.terminalDivEl.removeEventListener('copy', this.terminalCopyHandler);
-    this.terminalCopyHandler = null;
-  }
-
-  private async writeClipboardText(text: string): Promise<boolean> {
+    } catch (e) {
+      console.warn('[SeriousTerminalController] clipboardWriteText failed', e);
+    }
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Fall back for Electron contexts where navigator.clipboard may be unavailable/blocked.
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', 'true');
-      ta.style.position = 'fixed';
-      ta.style.left = '-9999px';
-      ta.style.top = '0';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      ta.setSelectionRange(0, ta.value.length);
-      const copied = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return copied;
+      return false;
     }
+  }
+
+  // Spec 004: read OS clipboard via Electron main, forward to PTY.
+  private async pasteFromClipboardToTerminal(): Promise<void> {
+    if (!this.activeOfficeId || !this.activeAgentId || !window.copilotBridge) return;
+    let text = '';
+    try {
+      const bridge = window.copilotBridge;
+      if (bridge?.clipboardReadText) {
+        const r = await bridge.clipboardReadText();
+        if (r?.success) text = r.text || '';
+      } else if (navigator.clipboard?.readText) {
+        text = await navigator.clipboard.readText();
+      }
+    } catch (e) {
+      console.warn('[SeriousTerminalController] clipboardReadText failed', e);
+      return;
+    }
+    if (!text) return;
+    try {
+      await window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, text);
+    } catch (e) {
+      console.warn('[SeriousTerminalController] paste terminalWrite failed', e);
+    }
+  }
+
+  /**
+   * Spec 004: terminal right-click context menu (Copy / Paste). Built once
+   * during attachTerminal, reused per right-click. Dismissed on outside
+   * mousedown or Escape.
+   */
+  private installTerminalContextMenu(): void {
+    if (!this.terminal || !this.terminalDivEl) return;
+    const menu = document.createElement('div');
+    menu.id = 'serious-terminal-context-menu';
+    menu.style.cssText = `
+      position: fixed;
+      display: none;
+      z-index: ${ZIndex.TERMINAL_SPRITE_CARD + 10};
+      min-width: 160px;
+      background: #1c1c2a;
+      border: 1px solid #3a3a55;
+      border-radius: 6px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+      padding: 4px 0;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 13px;
+      color: #cfd0e0;
+      user-select: none;
+    `;
+    const makeItem = (label: string, onClick: () => void): HTMLDivElement => {
+      const item = document.createElement('div');
+      item.textContent = label;
+      item.style.cssText = `padding: 6px 14px; cursor: pointer;`;
+      item.dataset.enabled = 'true';
+      item.addEventListener('mouseenter', () => {
+        if (item.dataset.enabled === 'true') item.style.background = '#2a2a45';
+      });
+      item.addEventListener('mouseleave', () => { item.style.background = ''; });
+      item.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+      item.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (item.dataset.enabled !== 'true') return;
+        this.hideTerminalContextMenu();
+        onClick();
+      });
+      return item;
+    };
+    const copyItem = makeItem('Copy', () => {
+      const selection = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      if (selection) void this.copyToClipboard(selection);
+    });
+    const pasteItem = makeItem('Paste', () => {
+      void this.pasteFromClipboardToTerminal();
+    });
+    menu.appendChild(copyItem);
+    menu.appendChild(pasteItem);
+    document.body.appendChild(menu);
+    this.terminalContextMenu = menu;
+
+    this.terminalDivEl.addEventListener('contextmenu', (event: MouseEvent) => {
+      if (!this.visible) return;
+      event.preventDefault();
+      const hasSelection =
+        this.terminal?.hasSelection() === true && (this.terminal?.getSelection() ?? '').length > 0;
+      copyItem.dataset.enabled = hasSelection ? 'true' : 'false';
+      copyItem.style.color = hasSelection ? '#cfd0e0' : '#55576a';
+      copyItem.style.cursor = hasSelection ? 'pointer' : 'default';
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      menu.style.display = 'block';
+      const rect = menu.getBoundingClientRect();
+      const left = Math.min(event.clientX, vw - rect.width - 4);
+      const top = Math.min(event.clientY, vh - rect.height - 4);
+      menu.style.left = `${Math.max(0, left)}px`;
+      menu.style.top = `${Math.max(0, top)}px`;
+    });
+
+    this.terminalContextMenuDismiss = (e: Event) => {
+      if (!this.terminalContextMenu || this.terminalContextMenu.style.display === 'none') return;
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return;
+      this.hideTerminalContextMenu();
+    };
+    document.addEventListener('mousedown', this.terminalContextMenuDismiss, true);
+    document.addEventListener('keydown', this.terminalContextMenuDismiss, true);
+  }
+
+  private hideTerminalContextMenu(): void {
+    if (this.terminalContextMenu) this.terminalContextMenu.style.display = 'none';
   }
 
   private renderAgentSprite(seed: string, baseColor: number): void {
@@ -840,9 +860,8 @@ export class SeriousTerminalController {
     this.terminal.loadAddon(this.fitAddon);
     this.terminalDivEl.id = 'serious-terminal-container';
     this.terminal.open(this.terminalDivEl);
-    this.attachTerminalCopyListener();
-    // Feature 002 (US3, T021): floating context-menu copy button (parity with TerminalOverlay).
-    this.installCopySelectionButton();
+    // Spec 004: terminal right-click → context menu (Copy / Paste).
+    this.installTerminalContextMenu();
 
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
@@ -850,19 +869,14 @@ export class SeriousTerminalController {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Feature 002 (US3, C5): see TerminalOverlay for the rationale —
-        // xterm's selection is not always a DOM Selection, so the browser's
-        // native `copy` event is unreliable. Actively copy when a selection
-        // exists; fall through to SIGINT otherwise.
-        if (!this.terminal || !this.terminal.hasSelection()) return true;
-        const selection = this.terminal.getSelection();
+        // Spec 004: Ctrl+C copies the xterm selection. Copilot CLI doesn't
+        // use Ctrl+C as SIGINT, so suppressing it for copy is safe.
+        const selection = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
         if (!selection) return true;
         event.preventDefault();
         event.stopPropagation();
-        void this.writeClipboardText(selection).then((success) => {
-          if (!success) {
-            this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
-          }
+        void this.copyToClipboard(selection).then((success) => {
+          if (!success) console.warn('[SeriousTerminalController] copy failed');
         });
         return false;
       }
@@ -870,9 +884,7 @@ export class SeriousTerminalController {
       if (key === 'v') {
         event.preventDefault();
         event.stopPropagation();
-        navigator.clipboard.readText().then((text) => {
-          if (text) this.terminal?.paste(text);
-        }).catch(() => {});
+        void this.pasteFromClipboardToTerminal();
         return false;
       }
       if (key === 'f') {

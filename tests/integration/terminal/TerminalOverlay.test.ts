@@ -193,16 +193,13 @@ describe('integration/TerminalOverlay', () => {
     expect((resizeOrder as number) < (attachOrder as number)).toBe(true);
   });
 
-  it('handles Ctrl+V once by suppressing default paste path', async () => {
+  it('Ctrl+V: spec 004 — reads clipboard via bridge and forwards text to PTY via terminalWrite', async () => {
+    const terminalWriteSpy = vi.fn().mockResolvedValue({ success: true });
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-paste' }),
-    });
-
-    const readText = vi.fn().mockResolvedValue('hello');
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { readText },
+      terminalWrite: terminalWriteSpy,
+      clipboardReadText: vi.fn().mockResolvedValue({ success: true, text: 'hello' }),
     });
 
     const scene = createSceneStub();
@@ -222,7 +219,6 @@ describe('integration/TerminalOverlay', () => {
     const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
       | ((e: KeyboardEvent) => boolean)
       | undefined;
-
     expect(keyHandler).toBeTypeOf('function');
 
     const preventDefault = vi.fn();
@@ -236,26 +232,21 @@ describe('integration/TerminalOverlay', () => {
       stopPropagation,
     } as unknown as KeyboardEvent);
 
-    await Promise.resolve();
-
     expect(result).toBe(false);
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(stopPropagation).toHaveBeenCalledTimes(1);
-    expect(readText).toHaveBeenCalledTimes(1);
-    expect(terminal.paste).toHaveBeenCalledTimes(1);
-    expect(terminal.paste).toHaveBeenCalledWith('hello');
+
+    // Allow the pasteFromClipboardToTerminal microtask chain to settle.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(terminalWriteSpy).toHaveBeenCalledWith('office-0', expect.any(String), 'hello');
   });
 
-  it('US3 C5: Ctrl+C with non-empty selection writes to clipboard and suppresses SIGINT', async () => {
+  it('Ctrl+C (spec 004): non-empty selection writes to clipboard via bridge; empty selection passes through', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({ success: true });
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-copy' }),
-    });
-
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
+      clipboardWriteText: clipboardWrite,
     });
 
     const scene = createSceneStub();
@@ -277,51 +268,36 @@ describe('integration/TerminalOverlay', () => {
       | undefined;
     expect(keyHandler).toBeTypeOf('function');
 
-    // ── With selection: actively copy via navigator.clipboard, suppress xterm/SIGINT ──
+    // ── With selection: bridge writes, key event suppressed ──
     terminal.hasSelection.mockReturnValue(true);
     terminal.getSelection.mockReturnValue('selected text');
 
-    const preventDefaultWithSelection = vi.fn();
-    const stopPropagationWithSelection = vi.fn();
-    const resultWithSelection = keyHandler?.({
-      ctrlKey: true,
-      metaKey: false,
-      key: 'c',
-      type: 'keydown',
-      preventDefault: preventDefaultWithSelection,
-      stopPropagation: stopPropagationWithSelection,
+    const pdWith = vi.fn();
+    const spWith = vi.fn();
+    const r1 = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: pdWith, stopPropagation: spWith,
     } as unknown as KeyboardEvent);
 
-    expect(resultWithSelection).toBe(false);
-    expect(preventDefaultWithSelection).toHaveBeenCalledTimes(1);
-    expect(stopPropagationWithSelection).toHaveBeenCalledTimes(1);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(writeText).toHaveBeenCalledWith('selected text');
+    expect(r1).toBe(false);
+    expect(pdWith).toHaveBeenCalledTimes(1);
+    expect(spWith).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('selected text');
 
-    // ── Without selection: defer to xterm's default SIGINT path ──
+    // ── Without selection: pass through, do not preventDefault ──
     terminal.hasSelection.mockReturnValue(false);
-    const preventDefaultNoSelection = vi.fn();
-    const stopPropagationNoSelection = vi.fn();
-    const resultNoSelection = keyHandler?.({
-      ctrlKey: true,
-      metaKey: false,
-      key: 'c',
-      type: 'keydown',
-      preventDefault: preventDefaultNoSelection,
-      stopPropagation: stopPropagationNoSelection,
+    terminal.getSelection.mockReturnValue('');
+    const pdNo = vi.fn();
+    const spNo = vi.fn();
+    const r2 = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: pdNo, stopPropagation: spNo,
     } as unknown as KeyboardEvent);
 
-    expect(resultNoSelection).toBe(true);
-    expect(preventDefaultNoSelection).not.toHaveBeenCalled();
-    expect(stopPropagationNoSelection).not.toHaveBeenCalled();
-
-    // The native browser `copy` event listener is still installed as a fallback,
-    // and the cleanup path detaches it on hide().
-    const terminalDiv = (overlay as any).terminalDiv as HTMLDivElement;
-    const removeListenerSpy = vi.spyOn(terminalDiv, 'removeEventListener');
-    overlay.hide();
-    expect(removeListenerSpy).toHaveBeenCalledWith('copy', expect.any(Function));
+    expect(r2).toBe(true);
+    expect(pdNo).not.toHaveBeenCalled();
+    expect(spNo).not.toHaveBeenCalled();
   });
 
   it('runs a geometry self-heal when Refresh Focus is clicked', async () => {

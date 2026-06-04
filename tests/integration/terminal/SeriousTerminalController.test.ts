@@ -110,7 +110,7 @@ describe('integration/SeriousTerminalController', () => {
     expect(stopPropagationNoSelection).not.toHaveBeenCalled();
   });
 
-  it('removes copy listener when view closes', async () => {
+  it('spec 004: context menu element is created during openAgentTerminal', async () => {
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-serious-2' }),
@@ -132,8 +132,10 @@ describe('integration/SeriousTerminalController', () => {
       launchMode: 'copilot',
     });
 
-    await controller.closeView({ detach: true });
-
-    expect((controller as any).terminalCopyHandler).toBeNull();
+    // Spec 004: the right-click context menu element is appended to the
+    // document body once the terminal is attached.
+    const menu = document.getElementById('serious-terminal-context-menu');
+    expect(menu, 'context menu should be installed after openAgentTerminal').toBeTruthy();
+    expect((controller as any).terminalContextMenu).toBe(menu);
   });
 });

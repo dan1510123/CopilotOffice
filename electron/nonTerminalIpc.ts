@@ -9,7 +9,7 @@
 // `OfficePersistencePort` (S2-A) and the `window.copilotBridge` surface
 // already expect. No protocol changes.
 
-import { BrowserWindow, ipcMain, Notification } from 'electron';
+import { BrowserWindow, clipboard, ipcMain, Notification } from 'electron';
 import type { OfficeFileStore } from './officeFileStore';
 
 export interface NonTerminalIpcHooks {
@@ -54,5 +54,40 @@ export function registerNonTerminalIpc(hooks: NonTerminalIpcHooks): void {
 
   ipcMain.handle('load-offices', () => {
     return hooks.officeStore.load();
+  });
+
+  // Spec 003 follow-up: clipboard.writeText via Electron main process.
+  //
+  // navigator.clipboard.writeText in the renderer is fragile in Electron —
+  // it requires the Permissions API to grant `clipboard-write` AND the
+  // document to currently have focus. When xterm's <textarea> has focus,
+  // the renderer-side write is silently rejected on many Windows builds.
+  // The document.execCommand('copy') fallback also fails because xterm
+  // intercepts selection events.
+  //
+  // The Electron main-process clipboard module talks directly to the OS
+  // clipboard API and has no permission/focus restrictions. This handler
+  // is the canonical copy path; renderer code calls it first.
+  ipcMain.handle('clipboard-write-text', (_event, text: string) => {
+    try {
+      if (typeof text !== 'string') {
+        return { success: false, error: 'text must be a string' };
+      }
+      clipboard.writeText(text);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: (e as Error)?.message || String(e) };
+    }
+  });
+
+  // Spec 004: read OS clipboard via Electron main process. Used by the
+  // terminal right-click Paste action — the renderer reads here, then
+  // forwards the text to the PTY via the existing terminalWrite IPC.
+  ipcMain.handle('clipboard-read-text', () => {
+    try {
+      return { success: true, text: clipboard.readText() };
+    } catch (e) {
+      return { success: false, text: '', error: (e as Error)?.message || String(e) };
+    }
   });
 }
