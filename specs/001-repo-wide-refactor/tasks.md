@@ -148,11 +148,11 @@ bounded blast radius.
 
 ### Slice S2-D: Sprites and Entities
 
-- [ ] T053 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-D-sprites-entities.md` covering `src/sprites/**` and `src/entities/**`; classification: `parity_preserving`.
-- [ ] T054 [P] [US2] Refactor `src/sprites/SpriteGenerator.ts` and `DirectionalSprite` so procedural generation and animation helpers have clear separation; keep procedural-only constraint (no external sprite files).
-- [ ] T055 [US2] Refactor `src/entities/` (Player, NPC) to consume sprite helpers via a single API; remove duplicated direction-handling logic if present.
-- [ ] T056 [US2] Verify 4-direction walk animations and reserve-agent sprite activation still work; add Vitest coverage where reasonable.
-- [ ] T057 [US2] Run sprite/entity portion of parity harness and record result.
+- [X] T053 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-D-sprites-entities.md` covering `src/sprites/**` and `src/entities/**`; classification: `parity_preserving`.
+- [X] T054 [P] [US2] Refactor `src/sprites/SpriteGenerator.ts` and `DirectionalSprite` so procedural generation and animation helpers have clear separation; keep procedural-only constraint (no external sprite files).
+- [X] T055 [US2] Refactor `src/entities/` (Player, NPC) to consume sprite helpers via a single API; remove duplicated direction-handling logic if present.
+- [X] T056 [US2] Verify 4-direction walk animations and reserve-agent sprite activation still work; add Vitest coverage where reasonable.
+- [X] T057 [US2] Run sprite/entity portion of parity harness and record result.
 
 ### Slice S2-E: Configuration Surface
 

@@ -64,6 +64,57 @@ export function directionFromVelocity(vx: number, vy: number): Direction | null 
   return vy < 0 ? Direction.UP : Direction.DOWN;
 }
 
+// ── Walk state reducer ──────────────────────────────────────────────────────
+//
+// Pure helper for the velocity-driven walk state machine used by entities that
+// move under continuous physics input (Player). Centralizes the "if moving →
+// play directional anim, else → stand frame at last direction" branching so
+// the entity update loop stays focused on physics + intent.
+
+export interface WalkState {
+  /** Last facing direction. Used as the idle stand-frame direction. */
+  direction: Direction;
+  /** True if a walk animation is currently playing. */
+  isWalking: boolean;
+}
+
+export type WalkAction =
+  | { kind: 'idle'; direction: Direction; standFrame: number }
+  | { kind: 'play'; direction: Direction; animKey: string; directionChanged: boolean };
+
+/**
+ * Compute the next walk action given a velocity sample and the current walk
+ * state. The caller applies the returned action to the Phaser sprite
+ * (`anims.play(animKey)` / `setFrame(standFrame)`) and updates its own state
+ * (`direction`, `isWalking`). Side-effect free.
+ *
+ * - Stationary velocity → `idle` at the previous direction's stand frame.
+ * - Moving velocity     → `play` of the appropriate directional walk anim.
+ *   `directionChanged` flags transitions so callers can avoid restarting the
+ *   anim on every tick.
+ */
+export function nextWalkAction(
+  spriteKey: string,
+  vx: number,
+  vy: number,
+  current: WalkState
+): WalkAction {
+  const newDir = directionFromVelocity(vx, vy);
+  if (newDir === null) {
+    return {
+      kind: 'idle',
+      direction: current.direction,
+      standFrame: getStandFrame(current.direction),
+    };
+  }
+  return {
+    kind: 'play',
+    direction: newDir,
+    animKey: walkAnimKey(spriteKey, newDir),
+    directionChanged: newDir !== current.direction,
+  };
+}
+
 /**
  * Register walk animations for a character in the Phaser animation manager.
  * Creates 4 animations: {spriteKey}_walk_down, _walk_left, _walk_right, _walk_up.

@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import {
-  Direction, directionFromVelocity, getStandFrame,
-  walkAnimKey, registerWalkAnimations,
+  Direction, getStandFrame, nextWalkAction,
+  registerWalkAnimations,
 } from '../sprites/DirectionalSprite';
 
 export class Player extends Phaser.Physics.Arcade.Sprite {
@@ -103,15 +103,16 @@ export class Player extends Phaser.Physics.Arcade.Sprite {
       body.velocity.normalize().scale(currentSpeed);
     }
 
-    // Update direction and walk animation
-    const newDir = directionFromVelocity(vx, vy);
-    if (newDir !== null) {
-      const dirChanged = newDir !== this.currentDirection;
-      this.currentDirection = newDir;
-
-      if (!this.isWalking || dirChanged) {
+    // Update direction and walk animation via the shared reducer.
+    const action = nextWalkAction('player', vx, vy, {
+      direction: this.currentDirection,
+      isWalking: this.isWalking,
+    });
+    if (action.kind === 'play') {
+      this.currentDirection = action.direction;
+      if (!this.isWalking || action.directionChanged) {
         this.isWalking = true;
-        this.anims.play(walkAnimKey('player', this.currentDirection), true);
+        this.anims.play(action.animKey, true);
       }
     } else {
       this.stopWalking();
