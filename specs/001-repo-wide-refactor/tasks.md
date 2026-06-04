@@ -133,10 +133,10 @@ bounded blast radius.
 
 ### Slice S2-B: Layouts (Default + Fleet V-Team)
 
-- [ ] T044 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-B-layouts.md` covering `src/layouts/**` and any scene calls into layout factories; classification: `parity_preserving`.
-- [ ] T045 [P] [US2] Refactor `src/layouts/` so each `OfficeLayout` is a fully data-driven contract; remove layout-specific branches from `src/scenes/OfficeScene.ts` when feasible.
-- [ ] T046 [US2] Verify Arthur's default position and fleet placement match current behavior across both layouts; add visual or DOM-level Playwright check if a gap was identified in T010.
-- [ ] T047 [US2] Run layout portion of parity harness and record result.
+- [X] T044 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-B-layouts.md` covering `src/layouts/**` and any scene calls into layout factories; classification: `parity_preserving`.
+- [X] T045 [P] [US2] Refactor `src/layouts/` so each `OfficeLayout` is a fully data-driven contract; remove layout-specific branches from `src/scenes/OfficeScene.ts` when feasible.
+- [X] T046 [US2] Verify Arthur's default position and fleet placement match current behavior across both layouts; add visual or DOM-level Playwright check if a gap was identified in T010.
+- [X] T047 [US2] Run layout portion of parity harness and record result.
 
 ### Slice S2-C: UI Overlays (Terminal Panel, Dashboards, Mini-Games)
 

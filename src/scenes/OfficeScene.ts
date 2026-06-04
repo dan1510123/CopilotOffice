@@ -414,7 +414,7 @@ export class OfficeScene extends Phaser.Scene {
         this.openPlayerPcTerminal();
         return;
       }
-      if (this.currentLayout === 'fleet-vteam' && agentId !== ARCHITECT_AGENT_ID) return;
+      if (getLayout(this.currentLayout).behaviors.restrictsInteractionToArchitect && agentId !== ARCHITECT_AGENT_ID) return;
       const agents = getLayout(this.currentLayout).agents;
       const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
@@ -2187,7 +2187,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Check for dismiss (F key) — only reserve agents can be dismissed
-    if (Phaser.Input.Keyboard.JustDown(this.dismissKey) && this.currentLayout === 'default') {
+    if (Phaser.Input.Keyboard.JustDown(this.dismissKey) && getLayout(this.currentLayout).behaviors.supportsReserveAgents) {
       const targetNPC = this.nearestNPC
         ?? (this.nearestDesk ? this.npcs.find(n => n.config.id === this.nearestDesk!.agentId) ?? null : null);
       if (targetNPC && !CORE_AGENT_IDS.has(targetNPC.config.id) && RESERVE_AGENT_DESK[targetNPC.config.id]) {
@@ -2464,7 +2464,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private openPlayerPcTerminal(): void {
-    if (this.currentLayout !== 'default') return;
+    if (!getLayout(this.currentLayout).behaviors.hasPlayerPcTerminal) return;
 
     const workingDir = officeManager.getCurrentWorkingDirectory();
     const pcTerminalConfig: AgentConfig = {

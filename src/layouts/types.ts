@@ -37,6 +37,25 @@ export interface LayoutDefinition {
   agents: AgentConfig[];
   dashboard: DashboardRenderer;
   clickHandler: CardClickHandler;
+  /** Static, declarative behavior flags so scene code can ask the layout what
+   * it supports instead of string-comparing layout ids. Lets new layouts opt
+   * into capabilities without modifying every `currentLayout === 'X'` check. */
+  behaviors: LayoutBehaviors;
+}
+
+/**
+ * Declarative capability flags. Default to the most restrictive value so a
+ * new layout that omits a flag won't accidentally inherit specialty behavior.
+ */
+export interface LayoutBehaviors {
+  /** Reserve agents can be seated/dismissed (default layout only). */
+  supportsReserveAgents: boolean;
+  /** Player↔E-key interaction is restricted to the architect NPC only (fleet only). */
+  restrictsInteractionToArchitect: boolean;
+  /** The clickable PC terminal node is rendered and interactable (default only). */
+  hasPlayerPcTerminal: boolean;
+  /** /fleet command is accepted from the architect and dismiss-unassigned UI runs (fleet only). */
+  supportsFleetExecution: boolean;
 }
 
 export interface DashboardTypography {
