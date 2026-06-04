@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, execSync, ChildProcess } from 'child_process';
 import { TerminalRelay } from './terminal/ipc-relay';
+import { createOfficeFileStore } from './officeFileStore';
+import { registerNonTerminalIpc } from './nonTerminalIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -151,54 +153,16 @@ app.whenReady().then(async () => {
   killOrphanedProcesses();
 
   relay.registerIpc();
-  ipcMain.handle('request-hard-reload', () => {
-    console.log('[Main] Hard reload requested by renderer');
-    pendingHardReload = true;
-    return { success: true };
+
+  // Non-terminal IPC handlers (hard reload, native notifications, office persistence).
+  // See electron/nonTerminalIpc.ts — extracted in S2-F so contracts live in one place.
+  const officeStore = createOfficeFileStore();
+  registerNonTerminalIpc({
+    getMainWindow: () => mainWindow,
+    onHardReloadRequested: () => { pendingHardReload = true; },
+    officeStore,
   });
 
-  // Native OS notification support
-  ipcMain.handle('show-native-notification', (_event, title: string, body: string) => {
-    if (!Notification.isSupported()) return { success: false };
-    const notification = new Notification({ title, body });
-    notification.on('click', () => {
-      // Bring the app window to front when notification is clicked
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.focus();
-      }
-    });
-    notification.show();
-    return { success: true };
-  });
-
-  // Office file persistence — save/load office configs to .data/copilot-offices.json
-  const dataDir = path.join(process.cwd(), '.data');
-  fs.mkdirSync(dataDir, { recursive: true });
-
-  const officesFilePath = path.join(dataDir, 'copilot-offices.json');
-
-  ipcMain.handle('save-offices', (_event, data: string) => {
-    try {
-      fs.mkdirSync(dataDir, { recursive: true });
-      fs.writeFileSync(officesFilePath, data, 'utf8');
-      return { success: true };
-    } catch (e: unknown) {
-      console.warn('[Main] Failed to save offices:', e);
-      return { success: false, error: String(e) };
-    }
-  });
-
-  ipcMain.handle('load-offices', () => {
-    try {
-      if (!fs.existsSync(officesFilePath)) return { success: true, data: null };
-      const data = fs.readFileSync(officesFilePath, 'utf8');
-      return { success: true, data };
-    } catch (e: unknown) {
-      console.warn('[Main] Failed to load offices:', e);
-      return { success: false, error: String(e), data: null };
-    }
-  });
   await relay.spawnServer(__dirname);
   if (ENABLE_FILE_WATCHER) {
     startFileWatcher();

@@ -163,10 +163,10 @@ bounded blast radius.
 
 ### Slice S2-F: Electron Main Process (Non-Terminal)
 
-- [ ] T062 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-F-electron-main.md` covering `electron/main.ts` window/IPC/hot-reload concerns excluding terminal lifecycle; classification: `parity_preserving`.
-- [ ] T063 [US2] Refactor IPC handler registration so contracts are colocated with their renderer consumers via the preload bridge; keep `window.copilotBridge` shape stable.
-- [ ] T064 [US2] Verify hot-reload, window lifecycle, and dev/prod startup parity using `npm run dev` and `npm start`.
-- [ ] T065 [US2] Run electron-main portion of parity harness and record result.
+- [X] T062 [US2] Author slice file `specs/001-repo-wide-refactor/slices/S2-F-electron-main.md` covering `electron/main.ts` window/IPC/hot-reload concerns excluding terminal lifecycle; classification: `parity_preserving`.
+- [X] T063 [US2] Refactor IPC handler registration so contracts are colocated with their renderer consumers via the preload bridge; keep `window.copilotBridge` shape stable.
+- [X] T064 [US2] Verify hot-reload, window lifecycle, and dev/prod startup parity using `npm run dev` and `npm start`.
+- [X] T065 [US2] Run electron-main portion of parity harness and record result.
 
 ### Slice S2-G: Test Harness Hygiene
 
