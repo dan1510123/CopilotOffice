@@ -188,13 +188,13 @@ architectural drift.
 maintainer can identify required boundaries, validations, and documentation updates from the rules
 alone.
 
-- [ ] T069 [US3] Update `.github/instructions/*.instructions.md` to reflect any boundary or convention changes introduced by P1/P2 slices; keep the `applyTo` frontmatter scopes accurate.
-- [ ] T070 [US3] Update `.github/copilot-instructions.md` "Regression-Prone Pitfalls" and "Known Limitations" sections to remove resolved items and add any new invariants discovered during refactor.
-- [ ] T071 [US3] Update `MeetingMode.md` so it matches the post-S1-E meeting/fleet contract.
-- [ ] T072 [US3] Create `specs/001-repo-wide-refactor/governance/handoff.md` defining: review gates, mandatory parity checks for future PRs touching critical flows, and the change-classification (parity_preserving vs behavior_altering) rule.
-- [ ] T073 [P] [US3] Create `specs/001-repo-wide-refactor/governance/boundaries.md` capturing the final ownership boundaries for scene/input/UI/terminal/office/layout/meeting/config domains.
-- [ ] T074 [P] [US3] Update `.specify/memory/constitution.md` only if refactor outcomes ratify additional invariants; otherwise leave untouched and note "no constitution amendments required" in `handoff.md`.
-- [ ] T075 [US3] Walk through `specs/001-repo-wide-refactor/quickstart.md` end-to-end against the final state to confirm the playbook is accurate.
+- [X] T069 [US3] Update `.github/instructions/*.instructions.md` to reflect any boundary or convention changes introduced by P1/P2 slices; keep the `applyTo` frontmatter scopes accurate.
+- [X] T070 [US3] Update `.github/copilot-instructions.md` "Regression-Prone Pitfalls" and "Known Limitations" sections to remove resolved items and add any new invariants discovered during refactor.
+- [X] T071 [US3] Update `MeetingMode.md` so it matches the post-S1-E meeting/fleet contract.
+- [X] T072 [US3] Create `specs/001-repo-wide-refactor/governance/handoff.md` defining: review gates, mandatory parity checks for future PRs touching critical flows, and the change-classification (parity_preserving vs behavior_altering) rule.
+- [X] T073 [P] [US3] Create `specs/001-repo-wide-refactor/governance/boundaries.md` capturing the final ownership boundaries for scene/input/UI/terminal/office/layout/meeting/config domains.
+- [X] T074 [P] [US3] Update `.specify/memory/constitution.md` only if refactor outcomes ratify additional invariants; otherwise leave untouched and note "no constitution amendments required" in `handoff.md`.
+- [X] T075 [US3] Walk through `specs/001-repo-wide-refactor/quickstart.md` end-to-end against the final state to confirm the playbook is accurate.
 
 **Checkpoint**: P3 complete. Governance handoff is documented and ready for future feature work.
 

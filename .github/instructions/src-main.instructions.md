@@ -79,3 +79,22 @@ configurable per-user via `NotificationSettingsPanel`.
 - **Focus desync** — game and terminal focus states can drift; all transitions must go through `InputManager`, never toggle Phaser keyboard directly
 - **DOM z-index conflicts** — terminal overlay is `10000`, sprite card is `10001`, status bar is `100`; new overlays must respect this stacking order
 - **Stale DOM on soft reload** — `container.innerHTML = ''` at the top prevents duplicate elements when `main.ts` re-executes during hot reload
+
+
+## Post-Refactor (S1-C / S1-D / S2-A telemetry, 2026-06-04)
+
+**Tool status reducer** lives in `src/util/toolStatus.ts`:
+
+- `normalizeToolName(name)` — lowercase + collapse whitespace/dashes
+- `isAskUserTool(name, status)` — matches canonical id + freeform CLI status text
+- `nextSubStateAfterToolComplete(remainingTools)` — race-guard reducer: when an `ask_user` tool is still pending, it MUST win over the most recent tool name. Used by the `onCopilotToolComplete` handler.
+
+**Lifecycle telemetry** lives in `src/util/lifecycleLog.ts`:
+
+- Every `OfficeManager.setAgent*` mutation emits a structured `[lifecycle] agent=X office=Y from→to reason=Z` log line via `logLifecycleTransition`.
+- Self-transitions are suppressed at the source; subscribers can't break producers (errors caught + logged).
+- High-signal call sites in `src/main.ts` pass reason strings (`ask_user`, `ask_user_race_guard`, `tool_start`, `tool_complete`, `turn_end`, `preload_ready`, `preload_failed`, `session_closed`).
+
+**Diagnostic handle**: `window.__phaserGame` exposes the live `Phaser.Game` instance for Playwright specs and devtools. Read-only — never assigned to from inside the app.
+
+**Diagnostic logs**: search `grep '[lifecycle]'` to reconstruct any agent's full state graph during incident triage.

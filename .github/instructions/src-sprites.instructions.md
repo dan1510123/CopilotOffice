@@ -81,3 +81,10 @@ Frame index = `direction * 3 + walkFrame`. Full sheet: 96×136px (3×32 wide, 4�
 2. Add agent config in `src/config/agents.ts` with matching `sprite` key and hex `color`.
 3. Six reserve sprites already exist (azure, validator, deployer, doctor, scout, accountant) — activate before creating new ones.
 4. For fleet agents, sprites are batch-generated in BootScene's fleet loop — add to the loop or increase its count.
+
+
+## Post-Refactor (S2-D, 2026-06-04)
+
+`src/sprites/DirectionalSprite.ts` now exports a pure `nextWalkAction(spriteKey, vx, vy, currentState)` reducer used by entities that move under continuous physics input (`Player`). Returns `{ kind: 'idle', direction, standFrame }` or `{ kind: 'play', direction, animKey, directionChanged }`. Callers apply the action to the Phaser sprite and update their own walk state. Side-effect free → unit-testable.
+
+NPC's tween-based `walkTo` stays one-shot (no continuous velocity loop); use the existing helpers (`walkAnimKey`, `getStandFrame`, `directionFromVelocity`) directly.

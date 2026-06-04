@@ -109,3 +109,10 @@ adding overlays to avoid elements being hidden behind existing layers.
 - **Z-index conflicts** — new overlays appearing behind the terminal or sprite card.
 - **Direct Phaser keyboard toggling** — always go through `InputManager`, never call
   `scene.input.keyboard.enabled = false` directly.
+
+
+## Post-Refactor (S2-C, 2026-06-04)
+
+**Z-index** is now centralized in `src/config/zIndex.ts` with 11 named layers and a documented invariant block. Every renderer overlay sets `style.zIndex` from a `ZIndex.X` constant — never a magic number. Adding a new overlay = adding a new named constant (do not pick an unused number ad hoc). See `tests/unit/config/zIndex.test.ts` for the asserted ordering invariants.
+
+**Focus contract**: `NotificationSettingsPanel` now exposes `onOpen` / `onClose` callbacks mirroring `SettingsPanel` and `SpriteCustomizerPanel`. Every DOM-modal overlay MUST wire these to `InputManager.suspendGameInput()` / `resumeGameInput()` (typically via the `settings:open` / `settings:close` event bus). `R-005` (overlay focus restoration regression) is now mitigated.
