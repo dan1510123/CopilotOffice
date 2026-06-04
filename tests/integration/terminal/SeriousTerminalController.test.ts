@@ -38,13 +38,19 @@ describe('integration/SeriousTerminalController', () => {
     controller = null;
   });
 
-  it('uses native copy path for selection and keeps Ctrl+C pass-through without selection', async () => {
+  it('US3 C5: Ctrl+C with non-empty selection writes to clipboard and suppresses SIGINT', async () => {
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-serious' }),
       terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: '' }),
       getSessionId: vi.fn().mockResolvedValue('sess-serious'),
       getSessionMeta: vi.fn().mockResolvedValue({ title: 'Session Title' }),
+    });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
     });
 
     const host = document.createElement('div');
@@ -80,23 +86,12 @@ describe('integration/SeriousTerminalController', () => {
       stopPropagation: stopPropagationWithSelection,
     } as unknown as KeyboardEvent);
 
-    expect(copyWithSelection).toBe(true);
-    expect(preventDefaultWithSelection).not.toHaveBeenCalled();
-    expect(stopPropagationWithSelection).not.toHaveBeenCalled();
-
-    const setData = vi.fn();
-    const preventDefault = vi.fn();
-    const terminalDiv = (controller as any).terminalDivEl as HTMLDivElement;
-    const copyHandler = (controller as any).terminalCopyHandler as ((e: ClipboardEvent) => void) | null;
-    expect(copyHandler).toBeTypeOf('function');
-    copyHandler?.({
-      clipboardData: { setData } as unknown as DataTransfer,
-      preventDefault,
-      target: terminalDiv,
-    } as unknown as ClipboardEvent);
-
-    expect(setData).toHaveBeenCalledWith('text/plain', 'serious selected text');
-    expect(preventDefault).toHaveBeenCalled();
+    expect(copyWithSelection).toBe(false);
+    expect(preventDefaultWithSelection).toHaveBeenCalledTimes(1);
+    expect(stopPropagationWithSelection).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('serious selected text');
 
     terminal.hasSelection.mockReturnValue(false);
     const preventDefaultNoSelection = vi.fn();

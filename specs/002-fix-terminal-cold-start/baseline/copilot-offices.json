@@ -1,0 +1,13 @@
+{
+  "currentOfficeId": "office-0",
+  "offices": [
+    {
+      "id": "office-0",
+      "name": "Main Office",
+      "workingDirectory": ".",
+      "createdAt": 1780607426806,
+      "layout": "default",
+      "seatedAgents": []
+    }
+  ]
+}

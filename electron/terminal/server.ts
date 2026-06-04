@@ -17,6 +17,7 @@ import {
   removeAgentViewer,
   type ViewerMaps,
 } from './agent-viewers';
+import { repairDuplicateSessionIds } from './session-repair';
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -29,6 +30,13 @@ interface PtyProcess {
 }
 
 const ptyProcesses: Map<string, PtyProcess> = new Map();
+
+// ── Feature 002 forensic logging ──
+// Set to true (or define COPILOT_OFFICE_DEBUG_COLD_START=1) to surface the
+// per-agent cold-start log lines documented in
+// `specs/002-fix-terminal-cold-start/contracts/terminal-protocol.md`.
+// Default false so production builds stay quiet.
+const DEBUG_COLD_START = process.env.COPILOT_OFFICE_DEBUG_COLD_START === '1';
 
 // Dual-key viewer bookkeeping (R-002 — see electron/terminal/agent-viewers.ts
 // for the full invariant). `agentToTerminal` maps a viewer-side composite key
@@ -146,6 +154,12 @@ async function loadOfficeSessionFile(officeId: string): Promise<void> {
         data.sessionIds = new Map(Object.entries(parsed));
         data.sessionHistory = new Map();
         data.sessionMeta = new Map();
+        await saveOfficeSessionFile(officeId);
+      }
+      // V3 (spec 002): repair duplicate sessionIds across agents in this office.
+      // First occurrence wins; subsequent duplicates get a freshly minted UUID.
+      const repaired = repairDuplicateSessionIds(officeId, data);
+      if (repaired) {
         await saveOfficeSessionFile(officeId);
       }
       console.log(`[TermServer] Loaded sessions for ${officeId}: ${data.sessionIds.size} current, ${data.sessionHistory.size} history`);

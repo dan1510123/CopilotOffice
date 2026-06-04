@@ -67,6 +67,14 @@ Key method groups:
 
 Monitors `~/.copilot/session-state/<sessionId>/events.jsonl` for structured Copilot CLI events. Uses triple-redundant file watching (fs.watch + fs.watchFile + manual poll at 500 ms). Parses JSONL lines into typed `CopilotEvent` objects. Includes `formatToolStatus()` helper for human-readable tool descriptions.
 
+## terminal/session-repair.ts — V3 invariant (spec 002)
+
+Pure helper that scans a freshly-loaded office session map for duplicate `sessionId` values across `agentId` keys. First occurrence wins; later duplicates are re-minted via `crypto.randomUUID()` and a `[TermServer] Repaired duplicate sessionId …` warning is emitted. Called from `loadOfficeSessionFile` so the V3 invariant from `specs/002-fix-terminal-cold-start/data-model.md` cannot be violated by a corrupted persisted file. Unit-tested via `tests/integration/terminal/server-cold-start.test.ts`.
+
+## Forensic debug flag
+
+Set `COPILOT_OFFICE_DEBUG_COLD_START=1` (server side) or `window.__COPILOT_OFFICE_DEBUG_COLD_START__ = true` in the renderer devtools before reload to surface the optional cold-start log lines documented in `specs/002-fix-terminal-cold-start/contracts/terminal-protocol.md` (`[OfficeScene] preStart …`, `[TerminalOverlay] switch …`). Default off so production builds stay quiet. The V3 `Repaired duplicate sessionId` warning is always logged regardless of the flag.
+
 ## cli-bridge.ts — MOCK / PLACEHOLDER
 
 **Not used at runtime.** Contains hardcoded mock responses. Do not extend or rely on this file. All real terminal spawning is handled by `server.ts` via `ipc-relay.ts`.

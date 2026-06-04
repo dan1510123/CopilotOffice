@@ -17,6 +17,7 @@ import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 import { isAskUserTool, nextSubStateAfterToolComplete } from './util/toolStatus';
+import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -1785,11 +1786,27 @@ async function syncAgentStatuses(force = false): Promise<void> {
         && activeTools.length === 0
       );
 
-      // Timeout: if agent has been in 'starting' for too long, transition to error
-      if (current?.subState === 'starting' && current.activityStartTime
-          && (now - current.activityStartTime) > STARTING_TIMEOUT_MS) {
+      // Feature 002 (US2, C4/V4): only flip to error: 'Startup timed out' when
+      // the underlying PTY is actually dead. If the PTY is alive the ready
+      // signal just hasn't landed yet — recover to ready and log it.
+      const decision = decideStartupTimeoutTransition({
+        subState: current?.subState,
+        activityStartTime: current?.activityStartTime,
+        now,
+        timeoutMs: STARTING_TIMEOUT_MS,
+        serverAlive: serverStatus?.alive,
+      });
+      if (decision.kind === 'recover-to-ready') {
+        console.warn(
+          `[Office] Agent ${agent.id} stuck in starting past timeout but PTY alive — recovering to ready`,
+        );
+        officeManager.setAgentReady(officeId, agent.id);
+        changed = true;
+        continue;
+      }
+      if (decision.kind === 'transition-to-error') {
         console.warn(`[Office] Agent ${agent.id} stuck in starting for >${STARTING_TIMEOUT_MS / 1000}s — transitioning to error`);
-        officeManager.setAgentError(officeId, agent.id, 'Startup timed out');
+        officeManager.setAgentError(officeId, agent.id, decision.reason);
         changed = true;
         continue;
       }

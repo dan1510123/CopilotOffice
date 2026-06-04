@@ -21,6 +21,16 @@ function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
   if (scene.physics.world.drawDebug) console.log('[Debug]', ...args);
 }
 
+// Feature 002 forensic logging.
+// Flip to true (or set window.__COPILOT_OFFICE_DEBUG_COLD_START__ === true in
+// devtools before reload) to surface the per-agent preStart log line documented
+// in `specs/002-fix-terminal-cold-start/contracts/terminal-protocol.md`.
+// Default false so production builds stay quiet.
+const DEBUG_COLD_START =
+  (typeof window !== 'undefined' &&
+    (window as unknown as { __COPILOT_OFFICE_DEBUG_COLD_START__?: boolean })
+      .__COPILOT_OFFICE_DEBUG_COLD_START__ === true) || false;
+
 interface DeskInfo {
   sprite: Phaser.GameObjects.Sprite;
   agentId: string;
@@ -2095,23 +2105,49 @@ export class OfficeScene extends Phaser.Scene {
     if (typeof window !== 'undefined' && window.copilotBridge) {
       const oid = officeManager.currentOfficeId || 'office-0';
 
-      const startAgent = async (agentId: string, label: string) => {
-        const agent = AGENTS.find(a => a.id === agentId);
-        const savedSessionId = await window.copilotBridge.getSessionId(oid, agentId);
+      const startAgent = async (agentConfig: AgentConfig, label: string) => {
+        const startedAt = Date.now();
+        const savedSessionId = await window.copilotBridge.getSessionId(oid, agentConfig.id);
         if (savedSessionId) {
           console.log(`[CopilotOffice] Resuming ${label} session: ${savedSessionId}`);
         } else {
           console.log(`[CopilotOffice] Starting new ${label} session (no saved session found)`);
         }
-        await window.copilotBridge.terminalStart(oid, agentId, agent?.workingDir || officeManager.getCurrentWorkingDirectory());
+        const result = await window.copilotBridge.terminalStart(
+          oid,
+          agentConfig.id,
+          agentConfig.workingDir || officeManager.getCurrentWorkingDirectory(),
+        );
         console.log(`[CopilotOffice] ${label} session ready`);
+        if (DEBUG_COLD_START) {
+          const sessionId = (result && (result as { sessionId?: string }).sessionId) ?? 'unknown';
+          const elapsedMs = Date.now() - startedAt;
+          console.log(
+            `[OfficeScene] preStart agent=${agentConfig.id} sessionId=${sessionId} elapsedMs=${elapsedMs}`,
+          );
+        }
       };
 
-      // Pre-start first 2 agents from the current roster
-      const agentsToStart = AGENTS.slice(0, 2);
-      await Promise.all(
-        agentsToStart.map(a => startAgent(a.id, `${a.name} (${a.description})`))
+      // Feature 002 (US1, C1): pre-start EVERY agent in the current roster, not
+      // just the first two. The previous `AGENTS.slice(0, 2)` left the third
+      // agent to lazy-start from TerminalOverlay.show(), where a focus race
+      // could cause the open IPC to dispatch with a stale agentId — producing
+      // the shared-sessionId / input-lock symptom.
+      // Use the layout-driven roster so layouts with different agent counts
+      // (e.g. fleet-vteam) also get full pre-start coverage.
+      const roster = getLayout(this.currentLayout).agents;
+      const agentsToStart = roster.length > 0 ? roster : AGENTS;
+      const results = await Promise.allSettled(
+        agentsToStart.map(a => startAgent(a, `${a.name} (${a.description})`)),
       );
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status === 'rejected') {
+          console.warn(
+            `[CopilotOffice] preStart failed for ${agentsToStart[i].id}: ${String(r.reason)}`,
+          );
+        }
+      }
     }
   }
 

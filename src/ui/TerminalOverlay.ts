@@ -25,6 +25,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 const IPC_TIMEOUT = 10_000;
 type TerminalLaunchMode = 'copilot' | 'shell';
 
+// Feature 002 forensic logging. See OfficeScene.ts for usage notes.
+const DEBUG_COLD_START =
+  (typeof window !== 'undefined' &&
+    (window as unknown as { __COPILOT_OFFICE_DEBUG_COLD_START__?: boolean })
+      .__COPILOT_OFFICE_DEBUG_COLD_START__ === true) || false;
+
 export class TerminalOverlay {
   private scene: Phaser.Scene;
   private container: HTMLDivElement | null = null;
@@ -62,6 +68,12 @@ export class TerminalOverlay {
   private currentSessionTitle: string | null = null;
   private isEditingSessionTitle: boolean = false;
   private terminalCopyHandler: ((event: ClipboardEvent) => void) | null = null;
+  // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
+  // so the handler's closure captures the new agent id (feature 002, C3/V6).
+  private onDataDisposable: { dispose: () => void } | null = null;
+  // Toggled while show() is awaiting detach/attach so onData cannot fire input
+  // against a half-attached agent (feature 002, V5).
+  private isSwitchingAgent: boolean = false;
   private readonly instanceId: string;
 
   private static nextInstanceId = 0;
@@ -366,8 +378,38 @@ export class TerminalOverlay {
   async show(agent: AgentConfig, onClose: () => void, options?: { readOnly?: boolean; launchMode?: TerminalLaunchMode }): Promise<void> {
     const previousAgentId = this.currentAgentId;
     const previousOfficeId = this.attachedOfficeId ?? this.getOfficeId();
+    const nextOfficeId = this.getOfficeId();
+    const isSwitchingAgent =
+      previousAgentId !== null && (previousAgentId !== agent.id || previousOfficeId !== nextOfficeId);
+
     if (previousAgentId && previousAgentId !== agent.id) {
       this.acknowledgeCompletedWork(previousOfficeId, previousAgentId);
+    }
+
+    // Feature 002 (US1, C2/V5): detach the previous agent BEFORE mutating
+    // currentAgentId. Awaiting here prevents the in-flight onData/onTerminalData
+    // race that produced input-lock and shared-session symptoms on cold start.
+    if (isSwitchingAgent && previousAgentId && window.copilotBridge) {
+      this.isSwitchingAgent = true;
+      this.onDataDisposable?.dispose();
+      this.onDataDisposable = null;
+      try {
+        const detachStartedAt = Date.now();
+        await withTimeout(
+          window.copilotBridge.terminalDetach(previousOfficeId, previousAgentId),
+          IPC_TIMEOUT,
+          'terminalDetach',
+        );
+        if (DEBUG_COLD_START) {
+          console.log(
+            `[TerminalOverlay] switch from=${previousAgentId} to=${agent.id} detachMs=${
+              Date.now() - detachStartedAt
+            }`,
+          );
+        }
+      } catch (e) {
+        console.warn(`[TerminalOverlay] terminalDetach failed for ${previousAgentId}: ${String(e)}`);
+      }
     }
 
     this.currentAgentId = agent.id;
@@ -377,7 +419,7 @@ export class TerminalOverlay {
 
     // Snapshot the office ID at attach time so hide() detaches from the correct
     // office even if switchToOffice() changes currentOfficeId before hide() runs.
-    this.attachedOfficeId = this.getOfficeId();
+    this.attachedOfficeId = nextOfficeId;
     const officeId = this.getActiveOfficeId();
 
     // Store current agent for workingDir access
@@ -544,6 +586,18 @@ export class TerminalOverlay {
 
     this.isVisible = true;
 
+    // Feature 002 (US1, C3/V6/V7): register a fresh onData closure that binds
+    // the new agentId + officeId at registration time. Clear isSwitchingAgent
+    // first so the freshly registered handler accepts input immediately.
+    const attachStartedAt = Date.now();
+    this.isSwitchingAgent = false;
+    this.registerOnDataHandler(agent.id, officeId);
+    if (DEBUG_COLD_START && isSwitchingAgent) {
+      console.log(
+        `[TerminalOverlay] switch attach complete to=${agent.id} attachMs=${Date.now() - attachStartedAt}`,
+      );
+    }
+
     // Highlight the matching NPC in the game and glow the profile canvas
     this.scene.game.events.emit('npc:highlight', agent.id);
     const spriteCanvas = this.spriteCardElement?.querySelector('.agent-sprite-canvas') as HTMLCanvasElement | null;
@@ -556,6 +610,7 @@ export class TerminalOverlay {
     // F10 always closes — active regardless of which side has keyboard focus
     this.inputManager.activateTerminalF10(() => this.hide());
 
+    // V7: focus AFTER attach has resolved and onData is bound to the new agent.
     this.focusTerminal();
   }
 
@@ -1162,6 +1217,11 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAndResizeTerminal();
 
+    // Feature 002 (US3, T021): floating context-menu copy button. Appears
+    // when xterm signals a non-empty selection; clicking copies via the
+    // same path Ctrl+C uses.
+    this.installCopySelectionButton();
+
     // Enable clipboard shortcuts in Electron terminal view.
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
@@ -1169,9 +1229,22 @@ export class TerminalOverlay {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Selection: allow native copy shortcut path (handled by copy event listener).
-        // No selection: allow default terminal behavior (e.g. SIGINT).
-        return true;
+        // Feature 002 (US3, C5): if there is a non-empty xterm selection,
+        // actively copy via navigator.clipboard. xterm's internal selection
+        // is not always a DOM Selection, so the browser's native `copy`
+        // event may not fire on Ctrl+C — relying on it leaves the operator
+        // with an empty clipboard. preventDefault here so xterm also does
+        // NOT additionally fire its SIGINT path. With no selection, fall
+        // through to the default terminal-interrupt path.
+        if (!this.terminal || !this.terminal.hasSelection()) return true;
+        const selection = this.terminal.getSelection();
+        if (!selection) return true;
+        event.preventDefault();
+        event.stopPropagation();
+        void this.writeClipboardText(selection).then((success) => {
+          if (!success) console.warn('[TerminalOverlay] clipboard write failed');
+        });
+        return false;
       }
 
       if (key === 'v') {
@@ -1189,10 +1262,48 @@ export class TerminalOverlay {
       return true;
     });
 
-    // Handle terminal input (blocked in read-only mode)
-    this.terminal.onData((data: string) => {
+    // Handle terminal input — registered fresh in registerOnDataHandler() per
+    // show() so the bound agentId/officeId stay correct across agent switches
+    // (feature 002, C3/V6). The first registration happens at the end of show().
+
+    // Handle resize — store reference for cleanup in destroy()
+    this.resizeHandler = () => {
+      if (this.isVisible) {
+        this.applySpriteCardResponsiveStyles();
+        this.updateMobileKeyboardButtonVisibility();
+        this.debouncedRefit();
+      }
+    };
+    window.addEventListener('resize', this.resizeHandler);
+
+    // ResizeObserver catches CSS-driven panel resizes that window.resize misses
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.isVisible) {
+        this.applySpriteCardResponsiveStyles();
+        this.updateMobileKeyboardButtonVisibility();
+        this.debouncedRefit();
+      }
+    });
+    if (this.terminalDiv) {
+      this.resizeObserver.observe(this.terminalDiv);
+    }
+  }
+
+  /**
+   * Re-register the xterm `onData` handler with a fresh closure that captures
+   * the bound `agentId` and `officeId` at registration time. Disposes any
+   * previous registration so stale closures cannot send user keystrokes to
+   * the wrong agent during an agent switch (feature 002, C3/V6).
+   */
+  private registerOnDataHandler(boundAgentId: string, boundOfficeId: string): void {
+    if (!this.terminal) return;
+    this.onDataDisposable?.dispose();
+    this.onDataDisposable = null;
+
+    const result = this.terminal.onData((data: string) => {
       if (this.isReadOnly) return;
-      if (!this.currentAgentId || !window.copilotBridge) return;
+      if (this.isSwitchingAgent) return; // V5: drop input mid-switch
+      if (!window.copilotBridge) return;
 
       let outbound = '';
       let shouldStartSlashNewSession = false;
@@ -1221,34 +1332,79 @@ export class TerminalOverlay {
       }
 
       if (outbound.length > 0) {
-        window.copilotBridge.terminalWrite(this.getOfficeId(), this.currentAgentId, outbound);
+        window.copilotBridge.terminalWrite(boundOfficeId, boundAgentId, outbound);
       }
 
       if (shouldStartSlashNewSession) {
-        this.fetchSessionId(this.currentAgentId);
+        this.fetchSessionId(boundAgentId);
       }
     });
 
-    // Handle resize — store reference for cleanup in destroy()
-    this.resizeHandler = () => {
-      if (this.isVisible) {
-        this.applySpriteCardResponsiveStyles();
-        this.updateMobileKeyboardButtonVisibility();
-        this.debouncedRefit();
-      }
-    };
-    window.addEventListener('resize', this.resizeHandler);
+    // xterm's onData returns an IDisposable. The mocked terminal returns
+    // undefined in tests; both shapes are tolerated.
+    this.onDataDisposable =
+      result && typeof (result as { dispose?: () => void }).dispose === 'function'
+        ? (result as { dispose: () => void })
+        : null;
+  }
 
-    // ResizeObserver catches CSS-driven panel resizes that window.resize misses
-    this.resizeObserver = new ResizeObserver(() => {
-      if (this.isVisible) {
-        this.applySpriteCardResponsiveStyles();
-        this.updateMobileKeyboardButtonVisibility();
-        this.debouncedRefit();
-      }
+  /**
+   * Feature 002 (US3, T021): hook up a small floating Copy button on
+   * non-empty selections. Visibility is driven by `terminal.onSelectionChange`,
+   * and the click handler reuses the same `writeClipboardText` path as Ctrl+C.
+   */
+  private installCopySelectionButton(): void {
+    if (!this.terminal || !this.terminalDiv) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '📋 Copy';
+    btn.setAttribute('aria-label', 'Copy terminal selection');
+    btn.style.cssText = `
+      position: absolute;
+      right: 16px;
+      bottom: 12px;
+      z-index: 5;
+      display: none;
+      padding: 6px 12px;
+      background: #2a4a8a;
+      color: #fff;
+      border: 1px solid #4a6aaa;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 13px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    `;
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('click', () => {
+      if (!this.terminal?.hasSelection()) return;
+      const selection = this.terminal.getSelection();
+      if (!selection) return;
+      void this.writeClipboardText(selection).then((success) => {
+        if (!success) console.warn('[TerminalOverlay] clipboard write failed');
+      });
     });
-    if (this.terminalDiv) {
-      this.resizeObserver.observe(this.terminalDiv);
+    // Append to terminalDiv's parent (terminal-container) so absolute positioning
+    // is anchored against the visible terminal panel; terminalDiv itself is the
+    // raw xterm host and we don't want to interfere with its layout.
+    const host = this.terminalDiv.parentElement ?? this.terminalDiv;
+    if (getComputedStyle(host as HTMLElement).position === 'static') {
+      (host as HTMLElement).style.position = 'relative';
+    }
+    host.appendChild(btn);
+
+    const onSelectionChange = this.terminal.onSelectionChange
+      ? this.terminal.onSelectionChange(() => {
+          const has =
+            this.terminal?.hasSelection() === true &&
+            (this.terminal?.getSelection() ?? '').length > 0;
+          btn.style.display = has ? 'block' : 'none';
+        })
+      : null;
+    // Store the disposable on the button for cleanup via destroy().
+    if (onSelectionChange && typeof (onSelectionChange as { dispose?: () => void }).dispose === 'function') {
+      (btn as unknown as { __disposeSelection: () => void }).__disposeSelection = () =>
+        (onSelectionChange as { dispose: () => void }).dispose();
     }
   }
 
@@ -1513,6 +1669,8 @@ export class TerminalOverlay {
 
   destroy(): void {
     this.detachTerminalCopyListener();
+    this.onDataDisposable?.dispose();
+    this.onDataDisposable = null;
     this.clearRefitTimers();
     this.awaitingSessionIdRefresh = false;
     this.clearSessionRefreshTimers();

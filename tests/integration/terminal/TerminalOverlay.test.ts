@@ -246,10 +246,16 @@ describe('integration/TerminalOverlay', () => {
     expect(terminal.paste).toHaveBeenCalledWith('hello');
   });
 
-  it('uses native copy path for selection and keeps Ctrl+C pass-through without selection', async () => {
+  it('US3 C5: Ctrl+C with non-empty selection writes to clipboard and suppresses SIGINT', async () => {
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-copy' }),
+    });
+
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
     });
 
     const scene = createSceneStub();
@@ -271,12 +277,13 @@ describe('integration/TerminalOverlay', () => {
       | undefined;
     expect(keyHandler).toBeTypeOf('function');
 
+    // ── With selection: actively copy via navigator.clipboard, suppress xterm/SIGINT ──
     terminal.hasSelection.mockReturnValue(true);
     terminal.getSelection.mockReturnValue('selected text');
 
     const preventDefaultWithSelection = vi.fn();
     const stopPropagationWithSelection = vi.fn();
-    const copyWithSelection = keyHandler?.({
+    const resultWithSelection = keyHandler?.({
       ctrlKey: true,
       metaKey: false,
       key: 'c',
@@ -285,25 +292,18 @@ describe('integration/TerminalOverlay', () => {
       stopPropagation: stopPropagationWithSelection,
     } as unknown as KeyboardEvent);
 
-    expect(copyWithSelection).toBe(true);
-    expect(preventDefaultWithSelection).not.toHaveBeenCalled();
-    expect(stopPropagationWithSelection).not.toHaveBeenCalled();
+    expect(resultWithSelection).toBe(false);
+    expect(preventDefaultWithSelection).toHaveBeenCalledTimes(1);
+    expect(stopPropagationWithSelection).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('selected text');
 
-    const setData = vi.fn();
-    const copyEvent = new Event('copy', { bubbles: true, cancelable: true }) as ClipboardEvent;
-    Object.defineProperty(copyEvent, 'clipboardData', {
-      configurable: true,
-      value: { setData },
-    });
-    ((overlay as any).terminalDiv as HTMLDivElement).dispatchEvent(copyEvent);
-
-    expect(setData).toHaveBeenCalledWith('text/plain', 'selected text');
-    expect(copyEvent.defaultPrevented).toBe(true);
-
+    // ── Without selection: defer to xterm's default SIGINT path ──
     terminal.hasSelection.mockReturnValue(false);
     const preventDefaultNoSelection = vi.fn();
     const stopPropagationNoSelection = vi.fn();
-    const copyWithoutSelection = keyHandler?.({
+    const resultNoSelection = keyHandler?.({
       ctrlKey: true,
       metaKey: false,
       key: 'c',
@@ -312,10 +312,12 @@ describe('integration/TerminalOverlay', () => {
       stopPropagation: stopPropagationNoSelection,
     } as unknown as KeyboardEvent);
 
-    expect(copyWithoutSelection).toBe(true);
+    expect(resultNoSelection).toBe(true);
     expect(preventDefaultNoSelection).not.toHaveBeenCalled();
     expect(stopPropagationNoSelection).not.toHaveBeenCalled();
 
+    // The native browser `copy` event listener is still installed as a fallback,
+    // and the cleanup path detaches it on hide().
     const terminalDiv = (overlay as any).terminalDiv as HTMLDivElement;
     const removeListenerSpy = vi.spyOn(terminalDiv, 'removeEventListener');
     overlay.hide();
@@ -415,6 +417,56 @@ describe('integration/TerminalOverlay', () => {
     expect(titleDisplay.textContent).toBe('Old title');
     onSessionMetaUpdatedCb?.('generalist', { title: 'New title from first message' });
     expect(titleDisplay.textContent).toBe('New title from first message');
+  });
+
+  it('US1 V6: routes keystrokes to the freshly-bound agent after show() switches', async () => {
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-X' }),
+      terminalDetach: vi.fn().mockResolvedValue({ success: true }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      switchToNone: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+
+    const geneAgent = createAgent({ id: 'generalist', name: 'Gene' });
+    const danAgent = createAgent({ id: 'debugger', name: 'Dan' });
+
+    await overlay.show(geneAgent, vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const onDataGene = terminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
+    expect(onDataGene).toBeTypeOf('function');
+    onDataGene?.('g');
+
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', 'g');
+
+    await overlay.show(danAgent, vi.fn());
+
+    // After switch the previous onData closure should be disposed AND a fresh
+    // closure registered with bound agentId=debugger.
+    const onDataDan = terminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
+    expect(onDataDan).toBeTypeOf('function');
+    expect(onDataDan).not.toBe(onDataGene);
+
+    // Detach was awaited for the previous agent.
+    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+
+    onDataDan?.('d');
+
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'debugger', 'd');
+    // V6: input addressed to the new agent must NEVER be routed to the previous one.
+    expect(bridge.terminalWrite).not.toHaveBeenCalledWith('office-0', 'generalist', 'd');
   });
 
   it('supports inline session title editing from the sprite card', async () => {

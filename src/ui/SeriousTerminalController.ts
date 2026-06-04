@@ -606,6 +606,57 @@ export class SeriousTerminalController {
     });
   }
 
+  /**
+   * Feature 002 (US3, T021): hook up a small floating Copy button on
+   * non-empty selections. Mirrors `TerminalOverlay.installCopySelectionButton`.
+   */
+  private installCopySelectionButton(): void {
+    if (!this.terminal || !this.terminalDivEl) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '📋 Copy';
+    btn.setAttribute('aria-label', 'Copy terminal selection');
+    btn.style.cssText = `
+      position: absolute;
+      right: 16px;
+      bottom: 12px;
+      z-index: 5;
+      display: none;
+      padding: 6px 12px;
+      background: #2a4a8a;
+      color: #fff;
+      border: 1px solid #4a6aaa;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 13px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    `;
+    btn.addEventListener('mousedown', (e) => e.stopPropagation());
+    btn.addEventListener('click', () => {
+      if (!this.terminal?.hasSelection()) return;
+      const selection = this.terminal.getSelection();
+      if (!selection) return;
+      void this.writeClipboardText(selection).then((success) => {
+        if (!success) this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
+      });
+    });
+    const host = this.terminalDivEl.parentElement ?? this.terminalDivEl;
+    if (getComputedStyle(host as HTMLElement).position === 'static') {
+      (host as HTMLElement).style.position = 'relative';
+    }
+    host.appendChild(btn);
+
+    if (this.terminal.onSelectionChange) {
+      this.terminal.onSelectionChange(() => {
+        const has =
+          this.terminal?.hasSelection() === true &&
+          (this.terminal?.getSelection() ?? '').length > 0;
+        btn.style.display = has ? 'block' : 'none';
+      });
+    }
+  }
+
   private attachTerminalCopyListener(): void {
     if (this.terminalCopyHandler) return;
 
@@ -742,6 +793,8 @@ export class SeriousTerminalController {
     this.terminalDivEl.id = 'serious-terminal-container';
     this.terminal.open(this.terminalDivEl);
     this.attachTerminalCopyListener();
+    // Feature 002 (US3, T021): floating context-menu copy button (parity with TerminalOverlay).
+    this.installCopySelectionButton();
 
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
@@ -749,9 +802,21 @@ export class SeriousTerminalController {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Selection: allow native copy shortcut path (handled by copy event listener).
-        // No selection: allow default terminal behavior (e.g. SIGINT).
-        return true;
+        // Feature 002 (US3, C5): see TerminalOverlay for the rationale —
+        // xterm's selection is not always a DOM Selection, so the browser's
+        // native `copy` event is unreliable. Actively copy when a selection
+        // exists; fall through to SIGINT otherwise.
+        if (!this.terminal || !this.terminal.hasSelection()) return true;
+        const selection = this.terminal.getSelection();
+        if (!selection) return true;
+        event.preventDefault();
+        event.stopPropagation();
+        void this.writeClipboardText(selection).then((success) => {
+          if (!success) {
+            this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
+          }
+        });
+        return false;
       }
 
       if (key === 'v') {
