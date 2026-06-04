@@ -6,7 +6,7 @@
 - **name**: Meeting Mode and Fleet Orchestration
 - **domain**: meeting
 - **owner**: refactor-program
-- **status**: proposed
+- **status**: complete
 
 ## Classification
 
@@ -39,11 +39,27 @@
 
 ## Acceptance Criteria
 
-- [ ] Spawn → track → visualize → teardown contract documented in-file for each fleet module.
-- [ ] FleetTracker `sourceOfficeId` attach (belt-and-suspenders for dual-key invariant) is
+- [X] Spawn → track → visualize → teardown contract documented in-file for each fleet module.
+      _(Header docblocks added to `fleetOrchestrator.ts`, `fleetTracker.ts`, and
+      `fleetVisualizer.ts` naming each module's phase, the inter-module
+      pipeline, and explicit boundary rules. See module headers.)_
+- [X] FleetTracker `sourceOfficeId` attach (belt-and-suspenders for dual-key invariant) is
       preserved unless replaced by an equivalent server-side guarantee in S1-D.
-- [ ] Plan parsing covered by Vitest fixtures (happy path + malformed).
-- [ ] Plan approval covered by Vitest (accept/reject paths).
+      _(Preserved by user decision (2026-06-03) — defense in depth. The
+      FleetTracker header now documents how it composes with the server-side
+      dual-key invariant from S1-D: server mirrors viewer registrations across
+      alias keys and forwards `isFleetCriticalEvent` payloads unconditionally;
+      FleetTracker adds a silent attach + 10s periodic re-attach as a renderer
+      safety net.)_
+- [X] Plan parsing covered by Vitest fixtures (happy path + malformed).
+      _(`tests/unit/meeting/planParser.test.ts` — 18 cases covering
+      `stripAnsi`, `extractJsonBlocks`, `validateMeetingPlan`, and
+      `parsePlanFromOutput` with malformed JSON, missing fields, invalid
+      agentIds, custom allowlists, and the first-valid-wins fallback.)_
+- [X] Plan approval covered by Vitest (accept/reject paths).
+      _(`tests/unit/meeting/planApproval.test.ts` — 7 cases covering DOM
+      render, approve, cancel, revise → send / back, empty feedback
+      suppression, and unknown-agent display fallback.)_
 
 ## Dependencies
 
@@ -58,9 +74,10 @@ Revert `src/meeting/**` and any MeetingScene plan/approval changes to pre-slice 
 
 | run_id | build | unit | e2e | notes |
 |--------|-------|------|-----|-------|
-|        |       |      |     |       |
+| S1-E-2026-06-03 | pass | pass (125/125, +18 planParser + 7 planApproval vs. 100 baseline) | env-blocked | `tests/e2e/meeting-fleet.e2e.ts` authored; both e2e tests fail with the same baseline "Process failed to launch!" — re-run on a desktop session. Added `window.__phaserGame` diagnostic handle so the spec can dispatch fleet:deploy-requested without screen scripting. |
 
 ## Notes
 
-MANDATORY: read `MeetingMode.md` before editing. Risk R-002 partially mitigated by FleetTracker
-belt-and-suspenders attach.
+MANDATORY: read `MeetingMode.md` before editing. Risk R-002 mitigated server-side by
+S1-D's `agent-viewers.ts` dual-key invariant; FleetTracker's silent attach +
+periodic re-attach is preserved as defense in depth (user decision 2026-06-03).

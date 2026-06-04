@@ -2162,6 +2162,11 @@ function ensurePhaserGame(): void {
     scene: [BootScene, OfficeScene, MeetingScene],
   });
   phaserGameRef = game;
+  // Diagnostic / e2e handle: exposes the Phaser.Game instance under a stable
+  // window key so Playwright specs (and devtools sessions) can dispatch
+  // `game.events` without screen coordinate scripting. Read-only consumer
+  // convention — never assigned to from inside the app.
+  (window as unknown as { __phaserGame?: Phaser.Game }).__phaserGame = game;
   bindPhaserEventListeners(game);
 }
 
@@ -2174,6 +2179,7 @@ function teardownPhaserGame(): void {
   } catch (error) {
     console.warn('[main] Failed to destroy Phaser game cleanly:', error);
   }
+  delete (window as unknown as { __phaserGame?: Phaser.Game }).__phaserGame;
   officePanel.innerHTML = '';
 }
 

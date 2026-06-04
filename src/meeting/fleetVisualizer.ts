@@ -1,8 +1,13 @@
 /**
- * FleetVisualizer — Bridge between FleetTracker (data) and OfficeScene (Phaser visuals).
+ * FleetVisualizer — **Visualize phase** of the fleet pipeline.
  *
- * Subscribes to FleetTracker state updates and emits game events that OfficeScene
- * listens to for NPC seat assignment, badge updates, walk-out animations, and fleet completion.
+ * Bridge between {@link FleetTracker} (data) and OfficeScene (Phaser visuals).
+ * Subscribes to FleetTracker state updates and emits game events that
+ * OfficeScene listens to for NPC seat assignment, badge updates, walk-out
+ * animations, and fleet completion.
+ *
+ * Pipeline position:
+ *   FleetOrchestrator (spawn) → FleetTracker (track) → **FleetVisualizer (visualize)** → Teardown
  *
  * Event contract (all prefixed with `fleet:`):
  *   fleet:assign            — batch assignment after 2s debounce (assigned seat mappings)
@@ -12,6 +17,13 @@
  *   fleet:agent:late-spawn  — single agent arriving after initial batch
  *   fleet:status            — aggregate { total, completed, failed, active }
  *   fleet:complete          — all sub-agents finished
+ *
+ * Boundaries:
+ *   - Visualizer never mutates tracker state, never talks to copilotBridge
+ *     directly, and never creates/destroys terminals. All it does is map
+ *     FleetTracker deltas onto Phaser events.
+ *   - Teardown is the caller's responsibility: dispose the FleetTracker and
+ *     unsubscribe the visualizer when the fleet completes or the scene unmounts.
  */
 
 import * as Phaser from 'phaser';

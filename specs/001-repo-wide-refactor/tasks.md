@@ -106,11 +106,11 @@ transitions. All must pass with no user-visible regression.
 
 ### Slice S1-E: Meeting Mode and Fleet Orchestration
 
-- [ ] T035 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-E-meeting-fleet.md` covering `src/meeting/**` and the fleet visualizer/tracker pair; classification: `parity_preserving`; read `MeetingMode.md` before editing.
-- [ ] T036 [US1] Refactor `src/meeting/fleetOrchestrator.ts`, `fleetTracker.ts`, and `fleetVisualizer.ts` to clarify the spawn → track → visualize → teardown contract; keep FleetTracker's `sourceOfficeId` attach (belt-and-suspenders) intact unless replaced by an equivalent server-side guarantee.
-- [ ] T037 [US1] Verify plan parsing and approval UI in `src/meeting/planParser.ts` and `planApproval.ts` against existing fixtures; preserve current approval flow behavior.
-- [ ] T038 [US1] Add Vitest coverage for plan parsing edge cases and a Playwright spec for meeting entry → plan approval → fleet spawn → fleet office terminal visibility.
-- [ ] T039 [US1] Run full parity harness for meeting/fleet flows and record result for S1-E.
+- [X] T035 [US1] Author slice file `specs/001-repo-wide-refactor/slices/S1-E-meeting-fleet.md` covering `src/meeting/**` and the fleet visualizer/tracker pair; classification: `parity_preserving`; read `MeetingMode.md` before editing.
+- [X] T036 [US1] Refactor `src/meeting/fleetOrchestrator.ts`, `fleetTracker.ts`, and `fleetVisualizer.ts` to clarify the spawn → track → visualize → teardown contract; keep FleetTracker's `sourceOfficeId` attach (belt-and-suspenders) intact unless replaced by an equivalent server-side guarantee.
+- [X] T037 [US1] Verify plan parsing and approval UI in `src/meeting/planParser.ts` and `planApproval.ts` against existing fixtures; preserve current approval flow behavior.
+- [X] T038 [US1] Add Vitest coverage for plan parsing edge cases and a Playwright spec for meeting entry → plan approval → fleet spawn → fleet office terminal visibility.
+- [X] T039 [US1] Run full parity harness for meeting/fleet flows and record result for S1-E.
 
 **Checkpoint**: P1 complete. All high-risk runtime pathways are refactored with parity preserved.
 MVP refactor is shippable.

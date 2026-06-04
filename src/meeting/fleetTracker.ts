@@ -1,11 +1,33 @@
 /**
- * FleetTracker — Renderer-side state machine for tracking sub-agent activity.
+ * FleetTracker — **Track phase** of the fleet pipeline.
  *
- * Uses ONLY existing copilotBridge APIs (onCopilotEvent, onCopilotToolStart, etc.)
- * No modifications to server.ts, protocol.ts, or preload.ts required.
+ * Renderer-side state machine for tracking sub-agent activity spawned by a
+ * parent Copilot CLI session (typically Arthur the Architect's `task` tool
+ * invocations). Uses ONLY existing copilotBridge APIs (onCopilotEvent,
+ * onCopilotToolStart, etc.) — no modifications to server.ts, protocol.ts, or
+ * preload.ts required.
+ *
+ * Pipeline position:
+ *   FleetOrchestrator (spawn) → **FleetTracker (track)** → FleetVisualizer (visualize) → Teardown
+ *
+ * **Belt-and-suspenders attach** (R-002 — defense in depth alongside S1-D):
+ *   `startTracking()` calls `terminalAttach()` even when the terminal overlay
+ *   is not visible. This is the renderer-side companion to the server-side
+ *   dual-key invariant in `electron/terminal/agent-viewers.ts`. The server
+ *   already mirrors viewer registrations across alias keys for transferred
+ *   sessions, AND forwards sub-agent lifecycle events
+ *   (`subagent.*`, `system.notification`, `tool.execution_start[task]`)
+ *   regardless of viewers via the `isFleetCriticalEvent` branch. This
+ *   tracker's silent attach + periodic re-attach (every 10s) provides an
+ *   additional safety net: if any future regression strips the alias key,
+ *   the next interval restores event flow within 10s.
+ *
+ *   **Do not remove the silent attach** without also removing or modifying
+ *   the server-side dual-key invariant. The two are deliberately redundant
+ *   and the slice file (S1-E) records the rationale.
  *
  * Usage:
- *   const tracker = new FleetTracker('architect');
+ *   const tracker = new FleetTracker('architect', 'office-0');
  *   tracker.startTracking();
  *   tracker.onUpdate((state) => updateUI(state));
  *   // ... later
