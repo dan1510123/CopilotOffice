@@ -74,19 +74,23 @@ export function registerNonTerminalIpc(hooks: NonTerminalIpcHooks): void {
         return { success: false, error: 'text must be a string' };
       }
       clipboard.writeText(text);
-      return { success: true };
+      const verify = clipboard.readText();
+      const matched = verify === text;
+      console.log(`[Main/Clipboard] writeText len=${text.length} verify-matched=${matched}`);
+      return { success: true, verified: matched };
     } catch (e) {
+      console.warn('[Main/Clipboard] writeText threw', e);
       return { success: false, error: (e as Error)?.message || String(e) };
     }
   });
 
-  // Spec 004: read OS clipboard via Electron main process. Used by the
-  // terminal right-click Paste action — the renderer reads here, then
-  // forwards the text to the PTY via the existing terminalWrite IPC.
   ipcMain.handle('clipboard-read-text', () => {
     try {
-      return { success: true, text: clipboard.readText() };
+      const text = clipboard.readText();
+      console.log(`[Main/Clipboard] readText len=${text.length}`);
+      return { success: true, text };
     } catch (e) {
+      console.warn('[Main/Clipboard] readText threw', e);
       return { success: false, text: '', error: (e as Error)?.message || String(e) };
     }
   });

@@ -53,6 +53,7 @@ export class SeriousTerminalController {
   private isFullWidth = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
+  private lastRightClickSelection: string = '';
   // Spec 003 V13/V14: the onData callback registered on the xterm closes
   // over the office/agent ids captured at openAgentTerminal time, not the
   // live this.activeOfficeId/this.activeAgentId. Holding the disposable
@@ -656,20 +657,27 @@ export class SeriousTerminalController {
 
   // Spec 004: single canonical clipboard write path via Electron main.
   private async copyToClipboard(text: string): Promise<boolean> {
-    if (!text) return false;
+    if (!text) {
+      console.warn('[Clipboard/Serious] copyToClipboard called with empty text');
+      return false;
+    }
+    const bridge = window.copilotBridge as (Window['copilotBridge'] & { clipboardWriteText?: (t: string) => Promise<{ success: boolean; error?: string }> }) | undefined;
+    console.log(`[Clipboard/Serious] copyToClipboard text.length=${text.length} bridgeAvailable=${!!bridge?.clipboardWriteText}`);
     try {
-      const bridge = window.copilotBridge;
       if (bridge?.clipboardWriteText) {
         const r = await bridge.clipboardWriteText(text);
+        console.log(`[Clipboard/Serious] bridge.clipboardWriteText result success=${r?.success} error=${r?.error ?? ''}`);
         return r?.success === true;
       }
     } catch (e) {
-      console.warn('[SeriousTerminalController] clipboardWriteText failed', e);
+      console.warn('[Clipboard/Serious] bridge.clipboardWriteText threw', e);
     }
     try {
       await navigator.clipboard.writeText(text);
+      console.log('[Clipboard/Serious] navigator.clipboard.writeText resolved (fallback)');
       return true;
-    } catch {
+    } catch (e) {
+      console.warn('[Clipboard/Serious] navigator.clipboard.writeText failed', e);
       return false;
     }
   }
@@ -741,8 +749,9 @@ export class SeriousTerminalController {
       return item;
     };
     const copyItem = makeItem('Copy', () => {
-      const selection = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
-      if (selection) void this.copyToClipboard(selection);
+      const live = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      const text = live || this.lastRightClickSelection || '';
+      if (text) void this.copyToClipboard(text);
     });
     const pasteItem = makeItem('Paste', () => {
       void this.pasteFromClipboardToTerminal();
@@ -752,11 +761,20 @@ export class SeriousTerminalController {
     document.body.appendChild(menu);
     this.terminalContextMenu = menu;
 
+    // Spec 004 fix: snapshot xterm selection on right-mousedown in CAPTURE
+    // phase, BEFORE xterm clears it.
+    this.terminalDivEl.addEventListener('mousedown', (event: MouseEvent) => {
+      if (event.button !== 2) return;
+      const sel = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      this.lastRightClickSelection = sel;
+    }, true);
+
     this.terminalDivEl.addEventListener('contextmenu', (event: MouseEvent) => {
       if (!this.visible) return;
       event.preventDefault();
-      const hasSelection =
-        this.terminal?.hasSelection() === true && (this.terminal?.getSelection() ?? '').length > 0;
+      const live = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      const text = live || this.lastRightClickSelection || '';
+      const hasSelection = text.length > 0;
       copyItem.dataset.enabled = hasSelection ? 'true' : 'false';
       copyItem.style.color = hasSelection ? '#cfd0e0' : '#55576a';
       copyItem.style.cursor = hasSelection ? 'pointer' : 'default';

@@ -78,6 +78,7 @@ export class TerminalOverlay {
   private isEditingSessionTitle: boolean = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
+  private lastRightClickSelection: string = '';
   // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
   // so the handler's closure captures the new agent id (feature 002, C3/V6).
   private onDataDisposable: { dispose: () => void } | null = null;
@@ -201,22 +202,29 @@ export class TerminalOverlay {
   // canonical path — bypasses Permissions API + document-focus restrictions
   // that make navigator.clipboard.writeText unreliable when xterm has focus.
   private async copyToClipboard(text: string): Promise<boolean> {
-    if (!text) return false;
+    if (!text) {
+      console.warn('[Clipboard] copyToClipboard called with empty text');
+      return false;
+    }
+    const bridge = window.copilotBridge as (Window['copilotBridge'] & { clipboardWriteText?: (t: string) => Promise<{ success: boolean; error?: string }> }) | undefined;
+    console.log(`[Clipboard] copyToClipboard text.length=${text.length} bridgeAvailable=${!!bridge?.clipboardWriteText}`);
     try {
-      const bridge = window.copilotBridge;
       if (bridge?.clipboardWriteText) {
         const r = await bridge.clipboardWriteText(text);
+        console.log(`[Clipboard] bridge.clipboardWriteText result success=${r?.success} error=${r?.error ?? ''}`);
         return r?.success === true;
       }
     } catch (e) {
-      console.warn('[TerminalOverlay] clipboardWriteText failed', e);
+      console.warn('[Clipboard] bridge.clipboardWriteText threw', e);
     }
     // Test environments (no bridge): fall back to browser API so unit tests
     // can still spy on clipboard writes.
     try {
       await navigator.clipboard.writeText(text);
+      console.log('[Clipboard] navigator.clipboard.writeText resolved (fallback path)');
       return true;
-    } catch {
+    } catch (e) {
+      console.warn('[Clipboard] navigator.clipboard.writeText failed', e);
       return false;
     }
   }
@@ -1397,9 +1405,12 @@ export class TerminalOverlay {
     };
 
     const copyItem = makeItem('Copy', () => {
-      const selection = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
-      if (!selection) return;
-      void this.copyToClipboard(selection);
+      // Spec 004 fix: prefer the right-click snapshot — xterm clears the
+      // selection on right-mousedown before the menu's click handler fires.
+      const live = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      const text = live || this.lastRightClickSelection || '';
+      if (!text) return;
+      void this.copyToClipboard(text);
     });
     const pasteItem = makeItem('Paste', () => {
       void this.pasteFromClipboardToTerminal();
@@ -1409,11 +1420,22 @@ export class TerminalOverlay {
     document.body.appendChild(menu);
     this.terminalContextMenu = menu;
 
+    // Spec 004 fix: snapshot the xterm selection on right-mousedown in the
+    // CAPTURE phase, BEFORE xterm's own mousedown handler clears it. The
+    // contextmenu event fires after mousedown, by which point hasSelection()
+    // is already false.
+    this.terminalDiv.addEventListener('mousedown', (event: MouseEvent) => {
+      if (event.button !== 2) return; // right button only
+      const sel = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      this.lastRightClickSelection = sel;
+    }, true);
+
     this.terminalDiv.addEventListener('contextmenu', (event: MouseEvent) => {
       if (!this.isVisible) return;
       event.preventDefault();
-      const hasSelection =
-        this.terminal?.hasSelection() === true && (this.terminal?.getSelection() ?? '').length > 0;
+      const live = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      const text = live || this.lastRightClickSelection || '';
+      const hasSelection = text.length > 0;
       copyItem.dataset.enabled = hasSelection ? 'true' : 'false';
       copyItem.style.color = hasSelection ? '#cfd0e0' : '#55576a';
       copyItem.style.cursor = hasSelection ? 'pointer' : 'default';
