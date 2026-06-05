@@ -5,6 +5,7 @@ import { AgentConfig, ADMIN_AGENT_ID } from '../config/agents';
 import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
+import { showClipboardToast } from './clipboardToast';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -78,7 +79,13 @@ export class TerminalOverlay {
   private isEditingSessionTitle: boolean = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
-  private lastRightClickSelection: string = '';
+  // Spec 005 Bug B fix: cache the xterm selection via onSelectionChange.
+  // Reading hasSelection()/getSelection() synchronously from event handlers
+  // races with xterm's internal mouse/focus side effects and can observe a
+  // stale or already-cleared selection. The cache is the single source of
+  // truth for copy paths.
+  private cachedSelection: string = '';
+  private selectionDisposable: { dispose: () => void } | null = null;
   // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
   // so the handler's closure captures the new agent id (feature 002, C3/V6).
   private onDataDisposable: { dispose: () => void } | null = null;
@@ -198,39 +205,43 @@ export class TerminalOverlay {
     this.refitTimers.length = 0;
   }
 
-  // Spec 004: write text to OS clipboard via Electron main process. Single
-  // canonical path — bypasses Permissions API + document-focus restrictions
-  // that make navigator.clipboard.writeText unreliable when xterm has focus.
+  // Spec 005: write text to OS clipboard via Electron main process. Single
+  // canonical path. Honors the IPC handler's `verified` field — earlier specs
+  // toasted "copied" even when verify-readback failed, so the app silently
+  // lied. Surfaces a user-visible toast for every outcome.
   private async copyToClipboard(text: string): Promise<boolean> {
     if (!text) {
-      console.warn('[Clipboard] copyToClipboard called with empty text');
+      showClipboardToast('Nothing selected to copy', 'info');
       return false;
     }
-    const bridge = window.copilotBridge as (Window['copilotBridge'] & { clipboardWriteText?: (t: string) => Promise<{ success: boolean; error?: string }> }) | undefined;
-    console.log(`[Clipboard] copyToClipboard text.length=${text.length} bridgeAvailable=${!!bridge?.clipboardWriteText}`);
+    const bridge = window.copilotBridge as Window['copilotBridge'] | undefined;
     try {
       if (bridge?.clipboardWriteText) {
         const r = await bridge.clipboardWriteText(text);
-        console.log(`[Clipboard] bridge.clipboardWriteText result success=${r?.success} error=${r?.error ?? ''}`);
-        return r?.success === true;
+        if (r?.success === true) {
+          showClipboardToast(`Copied ${text.length} char${text.length === 1 ? '' : 's'}`, 'success');
+          return true;
+        }
+        const reason = r?.error || (r?.verified === false ? 'clipboard verification mismatch' : 'unknown');
+        showClipboardToast(`Copy failed: ${reason}`, 'error');
+        return false;
       }
     } catch (e) {
-      console.warn('[Clipboard] bridge.clipboardWriteText threw', e);
+      showClipboardToast(`Copy failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
+      return false;
     }
-    // Test environments (no bridge): fall back to browser API so unit tests
-    // can still spy on clipboard writes.
+    // Test/non-Electron fallback so unit tests can spy on clipboard writes.
     try {
       await navigator.clipboard.writeText(text);
-      console.log('[Clipboard] navigator.clipboard.writeText resolved (fallback path)');
+      showClipboardToast(`Copied ${text.length} chars`, 'success');
       return true;
-    } catch (e) {
-      console.warn('[Clipboard] navigator.clipboard.writeText failed', e);
+    } catch {
+      showClipboardToast('Copy failed: clipboard bridge unavailable', 'error');
       return false;
     }
   }
 
-  // Spec 004: read text from OS clipboard via Electron main process, then
-  // forward to the PTY using the existing terminalWrite IPC.
+  // Spec 005: read OS clipboard via Electron main, forward to PTY.
   private async pasteFromClipboardToTerminal(): Promise<void> {
     if (!this.currentAgentId || !window.copilotBridge) return;
     let text = '';
@@ -243,15 +254,19 @@ export class TerminalOverlay {
         text = await navigator.clipboard.readText();
       }
     } catch (e) {
-      console.warn('[TerminalOverlay] clipboardReadText failed', e);
+      showClipboardToast(`Paste failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
       return;
     }
-    if (!text) return;
+    if (!text) {
+      showClipboardToast('Clipboard is empty', 'info');
+      return;
+    }
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
     try {
       await window.copilotBridge.terminalWrite(officeId, this.currentAgentId, text);
+      showClipboardToast(`Pasted ${text.length} char${text.length === 1 ? '' : 's'}`, 'success');
     } catch (e) {
-      console.warn('[TerminalOverlay] paste terminalWrite failed', e);
+      showClipboardToast(`Paste failed: ${(e as Error)?.message || 'terminalWrite threw'}`, 'error');
     }
   }
 
@@ -556,6 +571,9 @@ export class TerminalOverlay {
       this.isReplaying = true;
       this.terminal.reset();
       this.terminal.clear();
+      // Spec 005: clearing the terminal means the previous selection is no
+      // longer meaningful — flush the cache so a stray Ctrl+C cannot copy it.
+      this.cachedSelection = '';
     }
 
     // Reset session ID for this agent
@@ -1237,6 +1255,19 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAndResizeTerminal();
 
+    // Spec 005 Bug B fix: subscribe to onSelectionChange and cache the
+    // current selection text. All copy paths read this.cachedSelection
+    // instead of calling getSelection() at event time.
+    this.cachedSelection = '';
+    this.selectionDisposable?.dispose();
+    this.selectionDisposable = this.terminal.onSelectionChange(() => {
+      try {
+        this.cachedSelection = this.terminal?.getSelection() ?? '';
+      } catch {
+        this.cachedSelection = '';
+      }
+    });
+
     // Spec 004: terminal right-click → context menu (Copy / Paste).
     this.installTerminalContextMenu();
 
@@ -1249,13 +1280,14 @@ export class TerminalOverlay {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        const selection = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+        // Spec 005 Bug B fix: read the cached selection populated by
+        // onSelectionChange — synchronous getSelection() at event time can
+        // race with xterm's internal mouse/focus handlers.
+        const selection = this.cachedSelection;
         if (!selection) return true;
         event.preventDefault();
         event.stopPropagation();
-        void this.copyToClipboard(selection).then((success) => {
-          if (!success) console.warn('[TerminalOverlay] copy failed');
-        });
+        void this.copyToClipboard(selection);
         return false;
       }
 
@@ -1405,12 +1437,9 @@ export class TerminalOverlay {
     };
 
     const copyItem = makeItem('Copy', () => {
-      // Spec 004 fix: prefer the right-click snapshot — xterm clears the
-      // selection on right-mousedown before the menu's click handler fires.
-      const live = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
-      const text = live || this.lastRightClickSelection || '';
-      if (!text) return;
-      void this.copyToClipboard(text);
+      // Spec 005: copy whatever is cached. copyToClipboard handles the
+      // empty case with an "Nothing selected" toast.
+      void this.copyToClipboard(this.cachedSelection);
     });
     const pasteItem = makeItem('Paste', () => {
       void this.pasteFromClipboardToTerminal();
@@ -1420,25 +1449,9 @@ export class TerminalOverlay {
     document.body.appendChild(menu);
     this.terminalContextMenu = menu;
 
-    // Spec 004 fix: snapshot the xterm selection on right-mousedown in the
-    // CAPTURE phase, BEFORE xterm's own mousedown handler clears it. The
-    // contextmenu event fires after mousedown, by which point hasSelection()
-    // is already false.
-    this.terminalDiv.addEventListener('mousedown', (event: MouseEvent) => {
-      if (event.button !== 2) return; // right button only
-      const sel = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
-      this.lastRightClickSelection = sel;
-    }, true);
-
     this.terminalDiv.addEventListener('contextmenu', (event: MouseEvent) => {
       if (!this.isVisible) return;
       event.preventDefault();
-      const live = this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
-      const text = live || this.lastRightClickSelection || '';
-      const hasSelection = text.length > 0;
-      copyItem.dataset.enabled = hasSelection ? 'true' : 'false';
-      copyItem.style.color = hasSelection ? '#cfd0e0' : '#55576a';
-      copyItem.style.cursor = hasSelection ? 'pointer' : 'default';
       // Clamp to viewport so the menu doesn't render off-screen.
       const vw = window.innerWidth;
       const vh = window.innerHeight;
@@ -1733,6 +1746,9 @@ export class TerminalOverlay {
       try { this.terminalContextMenu.parentNode.removeChild(this.terminalContextMenu); } catch { /* ignore */ }
     }
     this.terminalContextMenu = null;
+    this.selectionDisposable?.dispose();
+    this.selectionDisposable = null;
+    this.cachedSelection = '';
     this.onDataDisposable?.dispose();
     this.onDataDisposable = null;
     this.clearRefitTimers();

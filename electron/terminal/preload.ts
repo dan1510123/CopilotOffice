@@ -156,7 +156,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   // Spec 003 follow-up: write to OS clipboard via Electron main process.
   // Bypasses Permissions API + focus restrictions that make
   // navigator.clipboard.writeText unreliable in xterm-focused contexts.
-  clipboardWriteText: (text: string): Promise<{ success: boolean; error?: string }> => {
+  clipboardWriteText: (text: string): Promise<{ success: boolean; verified?: boolean; error?: string }> => {
     return ipcRenderer.invoke('clipboard-write-text', text);
   },
 
@@ -216,7 +216,7 @@ declare global {
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
       showNativeNotification: (title: string, body: string) => Promise<{ success: boolean }>;
-      clipboardWriteText: (text: string) => Promise<{ success: boolean; error?: string }>;
+      clipboardWriteText: (text: string) => Promise<{ success: boolean; verified?: boolean; error?: string }>;
       clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
       loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;

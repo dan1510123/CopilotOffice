@@ -269,8 +269,7 @@ describe('integration/TerminalOverlay', () => {
     expect(keyHandler).toBeTypeOf('function');
 
     // ── With selection: bridge writes, key event suppressed ──
-    terminal.hasSelection.mockReturnValue(true);
-    terminal.getSelection.mockReturnValue('selected text');
+    terminal.fireSelectionChange('selected text');
 
     const pdWith = vi.fn();
     const spWith = vi.fn();
@@ -286,8 +285,7 @@ describe('integration/TerminalOverlay', () => {
     expect(clipboardWrite).toHaveBeenCalledWith('selected text');
 
     // ── Without selection: pass through, do not preventDefault ──
-    terminal.hasSelection.mockReturnValue(false);
-    terminal.getSelection.mockReturnValue('');
+    terminal.fireSelectionChange('');
     const pdNo = vi.fn();
     const spNo = vi.fn();
     const r2 = keyHandler?.({
@@ -298,6 +296,108 @@ describe('integration/TerminalOverlay', () => {
     expect(r2).toBe(true);
     expect(pdNo).not.toHaveBeenCalled();
     expect(spNo).not.toHaveBeenCalled();
+  });
+
+  it('spec 005 Bug B: Ctrl+C uses cached selection from onSelectionChange even after hasSelection() returns false (race)', async () => {
+    // Simulates the race that broke spec 004: onSelectionChange fires with
+    // text, then xterm clears its internal state before the Ctrl+C handler
+    // reads it. The cached value must still be used.
+    const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-race' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    // 1. Selection happens — cache fills.
+    terminal.fireSelectionChange('race-text');
+    // 2. Race: xterm's live selection is cleared before our key handler reads.
+    terminal.hasSelection.mockReturnValue(false);
+    terminal.getSelection.mockReturnValue('');
+
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean) | undefined;
+    const result = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+
+    expect(result).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('race-text');
+  });
+
+  it('spec 005 Bug A: verify-mismatch from bridge shows failure toast, not success', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({
+      success: false, verified: false, error: 'clipboard verification failed',
+    });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-vmis' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    terminal.fireSelectionChange('payload');
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean) | undefined;
+    keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('payload');
+    const toast = document.getElementById('copilot-office-clipboard-toast');
+    expect(toast).toBeTruthy();
+    expect(toast?.textContent || '').toMatch(/failed/i);
+    expect(toast?.textContent || '').toMatch(/verification/i);
+  });
+
+  it('spec 005: cached selection is cleared on terminal.clear() during agent switch', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-clr' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    terminal.fireSelectionChange('stale text from previous agent');
+    expect((overlay as any).cachedSelection).toBe('stale text from previous agent');
+
+    // Switch to a different agent — triggers terminal.reset/clear path which
+    // also resets cachedSelection.
+    await overlay.show(createAgent({ id: 'debugger', name: 'Dan', sprite: 'npc_debugger' }), vi.fn());
+    expect((overlay as any).cachedSelection).toBe('');
   });
 
   it('runs a geometry self-heal when Refresh Focus is clicked', async () => {

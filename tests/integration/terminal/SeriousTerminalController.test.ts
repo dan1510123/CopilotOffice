@@ -39,18 +39,14 @@ describe('integration/SeriousTerminalController', () => {
   });
 
   it('US3 C5: Ctrl+C with non-empty selection writes to clipboard and suppresses SIGINT', async () => {
+    const writeText = vi.fn().mockResolvedValue({ success: true, verified: true });
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-serious' }),
       terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: '' }),
       getSessionId: vi.fn().mockResolvedValue('sess-serious'),
       getSessionMeta: vi.fn().mockResolvedValue({ title: 'Session Title' }),
-    });
-
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
+      clipboardWriteText: writeText,
     });
 
     const host = document.createElement('div');
@@ -72,8 +68,7 @@ describe('integration/SeriousTerminalController', () => {
       | undefined;
     expect(keyHandler).toBeTypeOf('function');
 
-    terminal.hasSelection.mockReturnValue(true);
-    terminal.getSelection.mockReturnValue('serious selected text');
+    terminal.fireSelectionChange('serious selected text');
 
     const preventDefaultWithSelection = vi.fn();
     const stopPropagationWithSelection = vi.fn();
@@ -93,7 +88,7 @@ describe('integration/SeriousTerminalController', () => {
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith('serious selected text');
 
-    terminal.hasSelection.mockReturnValue(false);
+    terminal.fireSelectionChange('');
     const preventDefaultNoSelection = vi.fn();
     const stopPropagationNoSelection = vi.fn();
     const copyWithoutSelection = keyHandler?.({
