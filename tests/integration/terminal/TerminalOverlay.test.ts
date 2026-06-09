@@ -369,8 +369,8 @@ describe('integration/TerminalOverlay', () => {
     expect(clipboardWrite).toHaveBeenCalledWith('payload');
     const toast = document.getElementById('copilot-office-clipboard-toast');
     expect(toast).toBeTruthy();
-    expect(toast?.textContent || '').toMatch(/failed/i);
-    expect(toast?.textContent || '').toMatch(/verification/i);
+    expect(toast?.textContent || '').toMatch(/verify-fail/i);
+    expect(toast?.textContent || '').toMatch(/wrote=7/);
   });
 
   it('spec 005: cached selection is cleared on terminal.clear() during agent switch', async () => {
@@ -398,6 +398,103 @@ describe('integration/TerminalOverlay', () => {
     // also resets cachedSelection.
     await overlay.show(createAgent({ id: 'debugger', name: 'Dan', sprite: 'npc_debugger' }), vi.fn());
     expect((overlay as any).cachedSelection).toBe('');
+  });
+
+  it('spec 006 mode A: Ctrl+C uses live getSelection() fallback when onSelectionChange never fired', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-modeA' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    // Deliberately do NOT fire onSelectionChange. Set live selection only.
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('live-only text');
+    expect((overlay as any).cachedSelection).toBe('');
+
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean) | undefined;
+    const result = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+
+    expect(result).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('live-only text');
+    const toast = document.getElementById('copilot-office-clipboard-toast');
+    expect(toast?.textContent || '').toMatch(/live-fallback/i);
+  });
+
+  it('spec 006 mode B: document copy listener calls preventDefault while terminal visible', async () => {
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-modeB' }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    // Dispatch a copy event from document; preventDefault should be called.
+    const evt = new Event('copy', { bubbles: true, cancelable: true });
+    const pd = vi.spyOn(evt, 'preventDefault');
+    document.dispatchEvent(evt);
+    expect(pd).toHaveBeenCalled();
+
+    // Hide the overlay — copy listener should now be a no-op.
+    overlay.hide();
+    const evt2 = new Event('copy', { bubbles: true, cancelable: true });
+    const pd2 = vi.spyOn(evt2, 'preventDefault');
+    document.dispatchEvent(evt2);
+    expect(pd2).not.toHaveBeenCalled();
+  });
+
+  it('spec 006 belt: mouseup fills cache 50ms later even without onSelectionChange', async () => {
+    vi.useFakeTimers();
+    try {
+      installMockCopilotBridge({
+        terminalExists: vi.fn().mockResolvedValue(false),
+        terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-mu' }),
+      });
+
+      const scene = createSceneStub();
+      const inputManager = {
+        activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+        switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+        focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+      };
+      overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+      await overlay.show(createAgent(), vi.fn());
+
+      const terminal = (overlay as any).terminal as MockTerminal;
+      terminal.hasSelection.mockReturnValue(true);
+      terminal.getSelection.mockReturnValue('mouse-selected');
+      // Simulate mouseup on the terminal div.
+      const terminalDiv = (overlay as any).terminalDiv as HTMLElement;
+      terminalDiv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      expect((overlay as any).cachedSelection).toBe('');
+      vi.advanceTimersByTime(60);
+      expect((overlay as any).cachedSelection).toBe('mouse-selected');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('runs a geometry self-heal when Refresh Focus is clicked', async () => {

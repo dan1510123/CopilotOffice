@@ -86,6 +86,14 @@ export class TerminalOverlay {
   // truth for copy paths.
   private cachedSelection: string = '';
   private selectionDisposable: { dispose: () => void } | null = null;
+  // Spec 006 belt: 50ms-deferred mouseup cache fill — covers the case where
+  // xterm.onSelectionChange doesn't fire on the user's renderer build.
+  private mouseupCacheTimer: ReturnType<typeof setTimeout> | null = null;
+  // Spec 006 suspenders: capture-phase document `copy` listener that
+  // pre-empts the browser's native copy when our terminal is visible —
+  // prevents the browser from clobbering the OS clipboard with empty after
+  // our IPC write succeeded.
+  private nativeCopyPreempt: ((e: ClipboardEvent) => void) | null = null;
   // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
   // so the handler's closure captures the new agent id (feature 002, C3/V6).
   private onDataDisposable: { dispose: () => void } | null = null;
@@ -205,38 +213,56 @@ export class TerminalOverlay {
     this.refitTimers.length = 0;
   }
 
-  // Spec 005: write text to OS clipboard via Electron main process. Single
-  // canonical path. Honors the IPC handler's `verified` field — earlier specs
-  // toasted "copied" even when verify-readback failed, so the app silently
-  // lied. Surfaces a user-visible toast for every outcome.
-  private async copyToClipboard(text: string): Promise<boolean> {
+  // Spec 006: diagnostic toast prefix so multi-instance and channel issues
+  // are visible in the UI (no DevTools required).
+  private tag(): string {
+    return `[O${this.instanceId}]`;
+  }
+
+  // Spec 006: read live xterm selection safely.
+  private liveSelection(): string {
+    try {
+      return this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+    } catch {
+      return '';
+    }
+  }
+
+  // Spec 005 + 006: write text to OS clipboard via Electron main process.
+  // Diagnostic toast on every outcome so we never have to guess again.
+  private async copyToClipboard(text: string, source: 'cache' | 'live' | 'session' = 'cache'): Promise<boolean> {
+    const t = this.tag();
     if (!text) {
-      showClipboardToast('Nothing selected to copy', 'info');
+      showClipboardToast(`${t} cache-empty live=${this.liveSelection().length}`, 'info');
       return false;
     }
     const bridge = window.copilotBridge as Window['copilotBridge'] | undefined;
-    try {
-      if (bridge?.clipboardWriteText) {
-        const r = await bridge.clipboardWriteText(text);
-        if (r?.success === true) {
-          showClipboardToast(`Copied ${text.length} char${text.length === 1 ? '' : 's'}`, 'success');
-          return true;
-        }
-        const reason = r?.error || (r?.verified === false ? 'clipboard verification mismatch' : 'unknown');
-        showClipboardToast(`Copy failed: ${reason}`, 'error');
+    if (!bridge?.clipboardWriteText) {
+      // Test/non-Electron fallback so unit tests can spy on clipboard writes.
+      try {
+        await navigator.clipboard.writeText(text);
+        showClipboardToast(`${t} OK ${text.length} (fallback)`, 'success');
+        return true;
+      } catch {
+        showClipboardToast(`${t} no-bridge`, 'error');
         return false;
       }
-    } catch (e) {
-      showClipboardToast(`Copy failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
-      return false;
     }
-    // Test/non-Electron fallback so unit tests can spy on clipboard writes.
     try {
-      await navigator.clipboard.writeText(text);
-      showClipboardToast(`Copied ${text.length} chars`, 'success');
-      return true;
-    } catch {
-      showClipboardToast('Copy failed: clipboard bridge unavailable', 'error');
+      const r = await bridge.clipboardWriteText(text);
+      if (r?.success === true) {
+        const srcSuffix = source === 'live' ? ' (live-fallback)' : '';
+        showClipboardToast(`${t} OK ${text.length} (verified)${srcSuffix}`, 'success');
+        return true;
+      }
+      if (r?.verified === false) {
+        showClipboardToast(`${t} verify-fail (wrote=${text.length})`, 'error');
+      } else {
+        showClipboardToast(`${t} bridge-err: ${r?.error || 'unknown'}`, 'error');
+      }
+      return false;
+    } catch (e) {
+      showClipboardToast(`${t} bridge-err: ${(e as Error)?.message || 'threw'}`, 'error');
       return false;
     }
   }
@@ -1268,6 +1294,30 @@ export class TerminalOverlay {
       }
     });
 
+    // Spec 006 belt: 50ms-deferred mouseup cache fill. If xterm's
+    // onSelectionChange doesn't fire on the user's renderer build (canvas
+    // vs WebGL differences), this catches the selection anyway. Never
+    // overwrites with empty so a click-with-no-drag won't clobber a valid
+    // cache from a prior selection.
+    if (this.terminalDiv) {
+      this.terminalDiv.addEventListener('mouseup', () => {
+        if (this.mouseupCacheTimer) clearTimeout(this.mouseupCacheTimer);
+        this.mouseupCacheTimer = setTimeout(() => {
+          const live = this.liveSelection();
+          if (live) this.cachedSelection = live;
+        }, 50);
+      }, true);
+    }
+
+    // Spec 006 suspenders: pre-empt the browser's native copy event while
+    // our terminal is visible, so the browser cannot race-overwrite the OS
+    // clipboard with empty text after our IPC write succeeded.
+    this.nativeCopyPreempt = (event: ClipboardEvent) => {
+      if (!this.isVisible) return;
+      try { event.preventDefault(); } catch { /* ignore */ }
+    };
+    document.addEventListener('copy', this.nativeCopyPreempt, true);
+
     // Spec 004: terminal right-click → context menu (Copy / Paste).
     this.installTerminalContextMenu();
 
@@ -1280,14 +1330,28 @@ export class TerminalOverlay {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Spec 005 Bug B fix: read the cached selection populated by
-        // onSelectionChange — synchronous getSelection() at event time can
-        // race with xterm's internal mouse/focus handlers.
-        const selection = this.cachedSelection;
-        if (!selection) return true;
+        // Spec 006: try cache first (populated by onSelectionChange OR the
+        // mouseup-deferred belt), then live selection as a last-resort
+        // fallback. copyToClipboard emits a diagnostic toast even when
+        // both are empty so the user sees *something* every Ctrl+C.
+        let selection = this.cachedSelection;
+        let source: 'cache' | 'live' = 'cache';
+        if (!selection) {
+          const live = this.liveSelection();
+          if (live) {
+            selection = live;
+            source = 'live';
+          }
+        }
+        if (!selection) {
+          // Both empty → pass through to PTY (SIGINT) but show diagnostic
+          // toast first so user knows their Ctrl+C was seen.
+          void this.copyToClipboard('', 'cache');
+          return true;
+        }
         event.preventDefault();
         event.stopPropagation();
-        void this.copyToClipboard(selection);
+        void this.copyToClipboard(selection, source);
         return false;
       }
 
@@ -1437,9 +1501,14 @@ export class TerminalOverlay {
     };
 
     const copyItem = makeItem('Copy', () => {
-      // Spec 005: copy whatever is cached. copyToClipboard handles the
-      // empty case with an "Nothing selected" toast.
-      void this.copyToClipboard(this.cachedSelection);
+      // Spec 006: same fallback chain as Ctrl+C — cache → live.
+      let selection = this.cachedSelection;
+      let source: 'cache' | 'live' = 'cache';
+      if (!selection) {
+        const live = this.liveSelection();
+        if (live) { selection = live; source = 'live'; }
+      }
+      void this.copyToClipboard(selection, source);
     });
     const pasteItem = makeItem('Paste', () => {
       void this.pasteFromClipboardToTerminal();
@@ -1749,6 +1818,14 @@ export class TerminalOverlay {
     this.selectionDisposable?.dispose();
     this.selectionDisposable = null;
     this.cachedSelection = '';
+    if (this.mouseupCacheTimer) {
+      clearTimeout(this.mouseupCacheTimer);
+      this.mouseupCacheTimer = null;
+    }
+    if (this.nativeCopyPreempt) {
+      document.removeEventListener('copy', this.nativeCopyPreempt, true);
+      this.nativeCopyPreempt = null;
+    }
     this.onDataDisposable?.dispose();
     this.onDataDisposable = null;
     this.clearRefitTimers();
