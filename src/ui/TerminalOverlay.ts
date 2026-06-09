@@ -72,9 +72,8 @@ export class TerminalOverlay {
   private isReplaying: boolean = false;
   private launchMode: TerminalLaunchMode = 'copilot';
   private pendingInputLine: string = '';
-  private awaitingSessionIdRefresh: boolean = false;
-  private sessionRefreshCommandTimer: ReturnType<typeof setTimeout> | null = null;
-  private sessionRefreshExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+  // Spec 007: awaitingSessionIdRefresh / sessionRefresh*Timer fields removed
+  // along with the parseSessionId / scheduleSessionIdRefresh helpers.
   private currentSessionTitle: string | null = null;
   private isEditingSessionTitle: boolean = false;
   private terminalContextMenu: HTMLDivElement | null = null;
@@ -121,8 +120,6 @@ export class TerminalOverlay {
         if (this.isReplaying) return;
         if (agentId === this.currentAgentId && this.terminal) {
           this.terminal.write(data);
-          // Try to capture session ID from copilot output
-          this.parseSessionId(data);
         }
       });
 
@@ -151,56 +148,12 @@ export class TerminalOverlay {
     console.log('[TerminalOverlay] Re-attached terminal IPC listeners');
   }
 
-  private clearSessionRefreshTimers(): void {
-    if (this.sessionRefreshCommandTimer) {
-      clearTimeout(this.sessionRefreshCommandTimer);
-      this.sessionRefreshCommandTimer = null;
-    }
-    if (this.sessionRefreshExpiryTimer) {
-      clearTimeout(this.sessionRefreshExpiryTimer);
-      this.sessionRefreshExpiryTimer = null;
-    }
-  }
-
-  private scheduleSessionIdRefresh(agentId: string): void {
-    if (!window.copilotBridge) return;
-    const officeId = this.getActiveOfficeId();
-    this.awaitingSessionIdRefresh = true;
-    this.clearSessionRefreshTimers();
-
-    const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
-    if (el) {
-      el.textContent = 'syncing...';
-    }
-
-    this.sessionRefreshCommandTimer = setTimeout(() => {
-      this.sessionRefreshCommandTimer = null;
-      void window.copilotBridge.terminalWrite(officeId, agentId, '/session\r').catch(() => {});
-    }, 400);
-
-    // Don't keep parsing forever if /session output never arrives.
-    this.sessionRefreshExpiryTimer = setTimeout(() => {
-      this.sessionRefreshExpiryTimer = null;
-      this.awaitingSessionIdRefresh = false;
-      this.updateSessionDisplay();
-    }, 12_000);
-  }
-
-  private parseSessionId(data: string): void {
-    if (!this.awaitingSessionIdRefresh || !this.currentAgentId || !window.copilotBridge) return;
-
-    const match = data.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-    if (!match) return;
-
-    const nextSessionId = match[0].toLowerCase();
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
-
-    this.sessionId = nextSessionId;
-    this.updateSessionDisplay();
-    const officeId = this.getActiveOfficeId();
-    void window.copilotBridge.setSessionId(officeId, this.currentAgentId, nextSessionId).catch(() => {});
-  }
+  // Spec 007: parseSessionId / scheduleSessionIdRefresh / awaitingSessionIdRefresh
+  // were removed. They greedily matched any UUID-shaped substring in PTY data
+  // (which could be a constant install/trace/OAuth UUID emitted by Copilot CLI
+  // before the real session UUID), then persisted that wrong value as the
+  // agent's session id. The server is now the only source of truth for session
+  // ids — see `bridge.resetSession` in the /new path below.
 
   private getActiveOfficeId(): string {
     return this.attachedOfficeId ?? this.getOfficeId();
@@ -552,8 +505,6 @@ export class TerminalOverlay {
     if (this.container) {
       this.container.style.display = 'flex';
     }
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
 
     // Show the SpriteCard
     if (this.spriteCardElement) {
@@ -583,8 +534,6 @@ export class TerminalOverlay {
     this.drawAgentSprite(agent);
 
     this.pendingInputLine = '';
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
     this.clearRefitTimers();
     this.refitGeneration += 1;
 
@@ -714,8 +663,6 @@ export class TerminalOverlay {
   }
 
   private async startNewSession(agentId: string, workingDir?: string, officeId?: string): Promise<void> {
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
     this.sessionId = null;
     this.updateSessionDisplay();
     
@@ -756,8 +703,20 @@ export class TerminalOverlay {
     }
   }
 
-  private fetchSessionId(agentId: string): void {
-    this.scheduleSessionIdRefresh(agentId);
+  // Spec 007: after the user types /new in the PTY, ask the server to mint
+  // a fresh per-agent session UUID. Authoritative — never parses CLI output.
+  private async fetchSessionId(agentId: string): Promise<void> {
+    if (!window.copilotBridge) return;
+    const officeId = this.getActiveOfficeId();
+    try {
+      const r = await window.copilotBridge.resetSession(officeId, agentId);
+      if (r?.success && r.sessionId && agentId === this.currentAgentId) {
+        this.sessionId = r.sessionId;
+        this.updateSessionDisplay();
+      }
+    } catch {
+      // Best-effort; leave the previous sessionId in place if reset failed.
+    }
   }
 
   private createContainer(): void {
@@ -1042,8 +1001,6 @@ export class TerminalOverlay {
 
   private async handleNewSession(): Promise<void> {
     if (!this.currentAgentId || !this.currentAgent || this.isReadOnly) return;
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
     
     // Snapshot office ID now — getOfficeId() returns the CURRENT office which may
     // change during async operations (e.g. fleet deploy switches office mid-await).
@@ -1746,8 +1703,6 @@ export class TerminalOverlay {
     this.isVisible = false;
     this.isReadOnly = false;
     this.pendingInputLine = '';
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
     this.closeHistoryPopover();
 
     // Always restore half-width so the game is visible
@@ -1829,8 +1784,6 @@ export class TerminalOverlay {
     this.onDataDisposable?.dispose();
     this.onDataDisposable = null;
     this.clearRefitTimers();
-    this.awaitingSessionIdRefresh = false;
-    this.clearSessionRefreshTimers();
     // Remove window resize listener
     if (this.resizeHandler) {
       window.removeEventListener('resize', this.resizeHandler);

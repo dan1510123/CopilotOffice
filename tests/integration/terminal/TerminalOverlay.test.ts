@@ -532,16 +532,13 @@ describe('integration/TerminalOverlay', () => {
     expect(inputManager.switchToTerminal.mock.calls.length).toBeGreaterThan(switchCallsBefore);
   });
 
-  it('intercepts /new and starts a tracked new session', async () => {
-    let terminalDataCb: ((agentId: string, data: string) => void) | undefined;
+  it('spec 007: intercepts /new and calls bridge.resetSession (no /session PTY parse)', async () => {
     let onSessionMetaUpdatedCb: ((agentId: string, meta: { title: string }) => void) | undefined;
     const bridge = installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-initial' }),
       getSessionMeta: vi.fn().mockResolvedValue({ title: 'Old title' }),
-      onTerminalData: vi.fn((cb) => {
-        terminalDataCb = cb;
-      }),
+      resetSession: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-after-new' }),
       onSessionMetaUpdated: vi.fn((cb) => {
         onSessionMetaUpdatedCb = cb;
       }),
@@ -568,23 +565,19 @@ describe('integration/TerminalOverlay', () => {
     onData?.('\r');
     await Promise.resolve();
     await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    terminalDataCb?.('generalist', 'Session ID: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(bridge.resetSession).not.toHaveBeenCalled();
+    // Spec 007: server-authoritative reset, no /session PTY round-trip.
+    expect(bridge.resetSession).toHaveBeenCalledWith('office-0', 'generalist');
     expect(bridge.terminalStart).toHaveBeenCalledTimes(1);
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/new');
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '\r');
-    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/session\r');
-    expect(bridge.setSessionId).toHaveBeenCalledWith(
-      'office-0',
-      'generalist',
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-    );
+    // The greedy /session parser is gone — no /session\r write, no setSessionId IPC.
+    expect(bridge.terminalWrite).not.toHaveBeenCalledWith('office-0', 'generalist', '/session\r');
+    expect(bridge.setSessionId).not.toHaveBeenCalled();
 
     const sessionDisplay = document.querySelector('.session-id-display') as HTMLElement;
-    expect(sessionDisplay.textContent).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    expect(sessionDisplay.textContent).toBe('sess-after-new');
 
     const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
     expect(titleDisplay.textContent).toBe('Old title');

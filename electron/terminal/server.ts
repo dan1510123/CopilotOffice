@@ -695,6 +695,20 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const current = officeData.sessionIds.get(msg.agentId);
       const changed = !!normalized && current !== normalized;
 
+      // Spec 007 defense-in-depth: reject if proposed id collides with
+      // another agent's id in the same office. Prevents any future renderer
+      // bug from re-introducing duplicate session ids in the persisted file
+      // (cf. the parseSessionId greedy regex removed in spec 007).
+      if (changed && normalized) {
+        for (const [otherAgent, otherSid] of officeData.sessionIds) {
+          if (otherAgent !== msg.agentId && otherSid === normalized) {
+            console.warn(`[TermServer] Rejected set-session-id ${normalized} for ${compositeKey(msg.officeId, msg.agentId)} — already in use by ${otherAgent}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'sessionId already in use by another agent in this office' } });
+            return;
+          }
+        }
+      }
+
       if (changed) {
         archiveSessionId(msg.officeId, msg.agentId);
         officeData.sessionIds.set(msg.agentId, normalized);
