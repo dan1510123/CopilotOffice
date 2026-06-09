@@ -437,7 +437,7 @@ describe('integration/TerminalOverlay', () => {
     expect(toast?.textContent || '').toMatch(/live-fallback/i);
   });
 
-  it('spec 006 mode B: document copy listener calls preventDefault while terminal visible', async () => {
+  it('spec 008 mode B: copy preempt fills clipboardData when selection present, no-ops when empty', async () => {
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-modeB' }),
@@ -452,18 +452,50 @@ describe('integration/TerminalOverlay', () => {
     overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
     await overlay.show(createAgent(), vi.fn());
 
-    // Dispatch a copy event from document; preventDefault should be called.
+    const terminal = (overlay as any).terminal as MockTerminal;
+
+    // (a) With a cached selection: preempt MUST setData + preventDefault.
+    terminal.fireSelectionChange('cached payload');
+    const setData = vi.fn();
+    const pd = vi.fn();
     const evt = new Event('copy', { bubbles: true, cancelable: true });
-    const pd = vi.spyOn(evt, 'preventDefault');
+    Object.defineProperty(evt, 'clipboardData', {
+      value: { setData },
+      configurable: true,
+    });
+    evt.preventDefault = pd;
     document.dispatchEvent(evt);
+    expect(setData).toHaveBeenCalledWith('text/plain', 'cached payload');
     expect(pd).toHaveBeenCalled();
 
-    // Hide the overlay — copy listener should now be a no-op.
-    overlay.hide();
+    // (b) With no selection: preempt MUST NOT preventDefault (so browser's
+    //     native DOM copy can proceed when user selected via xterm a11y layer).
+    terminal.fireSelectionChange('');
+    const setData2 = vi.fn();
+    const pd2 = vi.fn();
     const evt2 = new Event('copy', { bubbles: true, cancelable: true });
-    const pd2 = vi.spyOn(evt2, 'preventDefault');
+    Object.defineProperty(evt2, 'clipboardData', {
+      value: { setData: setData2 },
+      configurable: true,
+    });
+    evt2.preventDefault = pd2;
     document.dispatchEvent(evt2);
+    expect(setData2).not.toHaveBeenCalled();
     expect(pd2).not.toHaveBeenCalled();
+
+    // (c) After hide: listener is fully detached.
+    overlay.hide();
+    const setData3 = vi.fn();
+    const pd3 = vi.fn();
+    const evt3 = new Event('copy', { bubbles: true, cancelable: true });
+    Object.defineProperty(evt3, 'clipboardData', {
+      value: { setData: setData3 },
+      configurable: true,
+    });
+    evt3.preventDefault = pd3;
+    document.dispatchEvent(evt3);
+    expect(setData3).not.toHaveBeenCalled();
+    expect(pd3).not.toHaveBeenCalled();
   });
 
   it('spec 006 belt: mouseup fills cache 50ms later even without onSelectionChange', async () => {

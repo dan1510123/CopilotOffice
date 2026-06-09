@@ -682,7 +682,23 @@ export class SeriousTerminalController {
 
   private liveSelection(): string {
     try {
-      return this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      if (this.terminal?.hasSelection()) {
+        const xtermSel = this.terminal?.getSelection() ?? '';
+        if (xtermSel) return xtermSel;
+      }
+    } catch { /* ignore */ }
+    // Spec 008: fall back to scoped browser DOM selection (see TerminalOverlay).
+    try {
+      const sel = (typeof window !== 'undefined' ? window.getSelection?.() : null) ?? null;
+      const text = sel?.toString() ?? '';
+      if (!text) return '';
+      const container = this.terminalDivEl;
+      if (!container) return '';
+      const anchor = sel?.anchorNode;
+      const focus = sel?.focusNode;
+      const anchorIn = anchor ? container.contains(anchor) : false;
+      const focusIn = focus ? container.contains(focus) : false;
+      return (anchorIn || focusIn) ? text : '';
     } catch {
       return '';
     }
@@ -940,11 +956,18 @@ export class SeriousTerminalController {
       }, 50);
     }, true);
 
-    // Spec 006 suspenders: pre-empt browser native copy while terminal is
-    // visible — stops browser from racing-clobbering OS clipboard with empty.
+    // Spec 006 + Spec 008: preempt browser native copy and populate
+    // clipboardData ourselves so DOM-anchored selections (xterm a11y layer)
+    // copy correctly while still beating any racing handler.
     this.nativeCopyPreempt = (event: ClipboardEvent) => {
       if (!this.visible) return;
-      try { event.preventDefault(); } catch { /* ignore */ }
+      try {
+        const text = this.cachedSelection || this.liveSelection();
+        if (text && event.clipboardData) {
+          event.clipboardData.setData('text/plain', text);
+          event.preventDefault();
+        }
+      } catch { /* ignore */ }
     };
     document.addEventListener('copy', this.nativeCopyPreempt, true);
 

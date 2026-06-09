@@ -173,9 +173,31 @@ export class TerminalOverlay {
   }
 
   // Spec 006: read live xterm selection safely.
+  // Spec 008: fall back to scoped browser DOM selection. xterm renders an
+  // accessibility text layer (xterm-accessibility div) and some users select
+  // text via native browser drag instead of xterm's mouse handlers — in that
+  // case terminal.getSelection() returns empty but document.getSelection()
+  // holds the visible blue highlight. We scope the fallback to selections
+  // anchored inside our terminal container so we don't grab selections from
+  // other panels (sprite card, tabs, etc.).
   private liveSelection(): string {
     try {
-      return this.terminal?.hasSelection() ? (this.terminal?.getSelection() ?? '') : '';
+      if (this.terminal?.hasSelection()) {
+        const xtermSel = this.terminal?.getSelection() ?? '';
+        if (xtermSel) return xtermSel;
+      }
+    } catch { /* ignore */ }
+    try {
+      const sel = (typeof window !== 'undefined' ? window.getSelection?.() : null) ?? null;
+      const text = sel?.toString() ?? '';
+      if (!text) return '';
+      const container = this.terminalDiv;
+      if (!container) return '';
+      const anchor = sel?.anchorNode;
+      const focus = sel?.focusNode;
+      const anchorIn = anchor ? container.contains(anchor) : false;
+      const focusIn = focus ? container.contains(focus) : false;
+      return (anchorIn || focusIn) ? text : '';
     } catch {
       return '';
     }
@@ -1266,12 +1288,20 @@ export class TerminalOverlay {
       }, true);
     }
 
-    // Spec 006 suspenders: pre-empt the browser's native copy event while
-    // our terminal is visible, so the browser cannot race-overwrite the OS
-    // clipboard with empty text after our IPC write succeeded.
+    // Spec 006 suspenders + Spec 008: pre-empt the browser's native copy
+    // event while our terminal is visible, but populate clipboardData with
+    // our best-effort text first. This wins the race against any other
+    // handler AND preserves DOM-text selections (xterm a11y layer) that
+    // would otherwise be lost when we previously blocked the event outright.
     this.nativeCopyPreempt = (event: ClipboardEvent) => {
       if (!this.isVisible) return;
-      try { event.preventDefault(); } catch { /* ignore */ }
+      try {
+        const text = this.cachedSelection || this.liveSelection();
+        if (text && event.clipboardData) {
+          event.clipboardData.setData('text/plain', text);
+          event.preventDefault();
+        }
+      } catch { /* ignore */ }
     };
     document.addEventListener('copy', this.nativeCopyPreempt, true);
 
