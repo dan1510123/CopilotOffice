@@ -399,6 +399,59 @@ if (typeof window !== 'undefined') {
   window.__copilotOfficeMobileModeActive = isMobileModeActive;
 }
 
+// Spec 008-smoke: e2e debug hook. Only installed when the renderer was
+// launched under the e2e harness (preload exposes window.__copilotOfficeE2E
+// when process.env.COPILOT_E2E === '1'). Production launches leave
+// window.__copilotOfficeDebug === undefined.
+if (typeof window !== 'undefined' && window.__copilotOfficeE2E === true) {
+  installE2eDebugHook();
+}
+
+function installE2eDebugHook(): void {
+  const debugApi: CopilotOfficeDebugApi = {
+    getActiveMode: () => appMode,
+    setMode: (mode: 'game' | 'serious') => {
+      if (mode === appMode) return;
+      applyAppMode(mode, { persist: true, refreshTabs: true });
+    },
+    getCurrentOfficeId: () => officeManager.currentOfficeId,
+    listAgents: () => {
+      return getCurrentAgents().map((a) => ({
+        id: a.id,
+        name: a.name,
+        tileX: a.tileX,
+        tileY: a.tileY,
+      }));
+    },
+    getActiveTerminalAgentId: () => {
+      if (appMode === 'serious') {
+        return seriousTerminalController?.getActiveAgentId?.() ?? null;
+      }
+      const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+        | { getTerminalOverlay?: () => { getActiveAgentId(): string | null; getIsVisible(): boolean } }
+        | undefined;
+      const overlay = scene?.getTerminalOverlay?.();
+      if (!overlay || !overlay.getIsVisible()) return null;
+      return overlay.getActiveAgentId();
+    },
+    openAgentTerminal: async (agentId: string) => {
+      await openAgentTerminal(agentId);
+    },
+    closeActiveTerminal: async () => {
+      if (appMode === 'serious') {
+        await seriousTerminalController?.closeView({ detach: true });
+        return;
+      }
+      const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+        | { getTerminalOverlay?: () => { hide(): void } }
+        | undefined;
+      scene?.getTerminalOverlay?.()?.hide();
+    },
+  };
+  window.__copilotOfficeDebug = debugApi;
+  console.log('[main] Spec 008-smoke: __copilotOfficeDebug installed');
+}
+
 // ── Office Tabs ─────────────────────────────────────────────────
 
 function renderOfficeTabs() {

@@ -36,8 +36,14 @@ export function wipeWorkspaceDataDir(): void {
  * Caller is responsible for calling `app.close()` (typically in a finally
  * block). Captures main-process console output for forensic assertions —
  * retrieve it via `getMainProcessLog()`.
+ *
+ * Pass `env: { COPILOT_E2E: '1', ... }` to inject env vars into the Electron
+ * main process. This is how spec 008-smoke turns on the debug hook and forces
+ * `launchMode: 'shell'` for all PTY spawns.
  */
-export async function bootColdOffice(): Promise<{
+export async function bootColdOffice(options?: {
+  env?: Record<string, string>;
+}): Promise<{
   app: ElectronApplication;
   page: Page;
   getMainProcessLog: () => string;
@@ -45,9 +51,21 @@ export async function bootColdOffice(): Promise<{
   wipeWorkspaceDataDir();
 
   const mainLog: string[] = [];
+  // Strip ELECTRON_RUN_AS_NODE — when set in the inherited shell env it forces
+  // electron.exe to launch as plain Node, which breaks Playwright's electron
+  // launcher with an opaque "Process failed to launch" message.
+  const envWithoutNodeMode: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k === 'ELECTRON_RUN_AS_NODE') continue;
+    if (typeof v === 'string') envWithoutNodeMode[k] = v;
+  }
   const app = await electron.launch({
     args: [path.resolve(process.cwd())],
     timeout: 60_000,
+    env: {
+      ...envWithoutNodeMode,
+      ...(options?.env ?? {}),
+    },
   });
   app.process().stdout?.on('data', (chunk: Buffer) => {
     mainLog.push(chunk.toString('utf8'));

@@ -1720,6 +1720,15 @@ export class TerminalOverlay {
     // Calling focusTerminal() above already invokes InputManager.switchToTerminal().
   }
 
+  // Spec 008-smoke: expose state for the e2e debug hook.
+  getActiveAgentId(): string | null {
+    return this.currentAgentId;
+  }
+
+  getIsVisible(): boolean {
+    return this.isVisible;
+  }
+
   hide(): void {
     this.hideTerminalContextMenu();
     if (this.container) {

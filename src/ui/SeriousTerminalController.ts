@@ -303,6 +303,11 @@ export class SeriousTerminalController {
     return this.visible;
   }
 
+  // Spec 008-smoke: expose active agent id for the e2e debug hook.
+  getActiveAgentId(): string | null {
+    return this.activeAgentId ?? null;
+  }
+
   public refreshCardFromOverview(): void {
     if (!this.visible || !this.activeAgentId) return;
     this.renderExactOverviewCard(this.activeAgentId);

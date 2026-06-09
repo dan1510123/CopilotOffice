@@ -87,6 +87,11 @@ export class OfficeScene extends Phaser.Scene {
   private npcs: NPC[] = [];
   private desks: DeskInfo[] = [];
   private terminalOverlay!: TerminalOverlay;
+
+  // Spec 008-smoke: accessor for the e2e debug hook in src/main.ts.
+  public getTerminalOverlay(): TerminalOverlay {
+    return this.terminalOverlay;
+  }
   private basketballGame!: BasketballGame;
   private galaxianGame!: GalaxianGame;
   private basketballHoop: GameTable | null = null;

@@ -318,6 +318,12 @@ async function startTerminalForAgent(
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
 ): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
+  // Spec 008-smoke: force shell mode end-to-end when the e2e harness is driving
+  // the app. Avoids depending on a real copilot CLI binary on the test runner
+  // while still exercising the full IPC + PTY + xterm pipeline.
+  if (process.env.COPILOT_E2E === '1') {
+    launchMode = 'shell';
+  }
   if (!terminalBackend || !terminalBackend.isAvailable()) {
     return { success: false, error: 'terminal backend not available' };
   }

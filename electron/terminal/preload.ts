@@ -9,6 +9,11 @@ export interface CopilotEvent {
   parentId: string | null;
 }
 
+// Spec 008-smoke: expose the e2e mode flag to the renderer so src/main.ts can
+// gate installing window.__copilotOfficeDebug without touching process.env
+// directly (contextIsolation hides Node globals from renderer code).
+contextBridge.exposeInMainWorld('__copilotOfficeE2E', process.env.COPILOT_E2E === '1');
+
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
@@ -176,9 +181,24 @@ declare global {
     timestamp: string;
     parentId: string | null;
   }
-  
+
+  // Spec 008-smoke: e2e/diagnostic surface exposed by src/main.ts only when
+  // process.env.COPILOT_E2E === '1'. Production builds without the env have
+  // window.__copilotOfficeDebug === undefined.
+  interface CopilotOfficeDebugApi {
+    getActiveMode: () => 'game' | 'serious';
+    setMode: (mode: 'game' | 'serious') => void;
+    getCurrentOfficeId: () => string | null;
+    listAgents: () => Array<{ id: string; name: string; tileX: number; tileY: number }>;
+    getActiveTerminalAgentId: () => string | null;
+    openAgentTerminal: (agentId: string) => Promise<void>;
+    closeActiveTerminal: () => Promise<void>;
+  }
+
   interface Window {
     __copilotOfficeMobileModeActive?: () => boolean;
+    __copilotOfficeDebug?: CopilotOfficeDebugApi;
+    __copilotOfficeE2E?: boolean;
     copilotBridge: {
       terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
