@@ -137,4 +137,45 @@ test.describe('UI smoke harness (spec 008)', () => {
       await app.close();
     }
   });
+
+  // T8: real Electron clipboard round-trip. Drives the actual Spec 005-008
+  // copyToClipboard path: writes text via bridge.clipboardWriteText, reads
+  // it back via bridge.clipboardReadText (which goes through the same
+  // electron/clipboard IPC the Ctrl+C handler uses), and asserts byte-for-byte
+  // equality. This is the regression guard that would have flagged the user's
+  // "broken again" report if the right bundle were running.
+  test('T8 clipboard IPC round-trip writes and reads same text', async () => {
+    const { app, page } = await bootColdOffice({ env: { COPILOT_E2E: '1' } });
+    try {
+      await waitForDebugHook(page);
+
+      // Open a terminal so the renderer has fully wired the clipboard bridge.
+      await openAgentTerminal(page, 'generalist');
+      await expectActiveTerminalAgent(page, 'generalist', 10_000);
+
+      const payload = `spec-008-roundtrip ${Date.now()} 你好 \n\t<>&"'`;
+
+      const result = await page.evaluate(async (text) => {
+        const bridge = window.copilotBridge;
+        if (!bridge?.clipboardWriteText || !bridge?.clipboardReadText) {
+          return { wrote: false, read: '', verified: false, error: 'bridge missing' };
+        }
+        const w = await bridge.clipboardWriteText(text);
+        const r = await bridge.clipboardReadText();
+        return {
+          wrote: w?.success === true,
+          verified: w?.verified === true,
+          read: r?.text ?? '',
+          error: w?.error || r?.error || null,
+        };
+      }, payload);
+
+      expect(result.error, `clipboard IPC error: ${result.error}`).toBeNull();
+      expect(result.wrote, 'clipboardWriteText did not report success').toBe(true);
+      expect(result.verified, 'main process verify-readback failed').toBe(true);
+      expect(result.read, 'clipboard read did not match written payload').toBe(payload);
+    } finally {
+      await app.close();
+    }
+  });
 });
