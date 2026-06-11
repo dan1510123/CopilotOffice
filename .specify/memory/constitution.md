@@ -1,9 +1,9 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.0 -> 1.1.0
+- Version change: 1.1.0 -> 1.2.0
 - Modified principles: None
 - Added sections:
-  - VI. xterm.js Selection & Clipboard Discipline (new principle)
+  - VII. Worktree-Aware Verification Discipline (new principle)
 - Removed sections: None
 - Templates requiring updates: None
 - Follow-up TODOs: None
@@ -72,6 +72,40 @@ Mandatory rules for any code that copies from the terminal:
 This principle exists because the same class of clipboard bug has recurred across five
 specs. Treat it as a required regression checklist for every terminal change.
 
+### VII. Worktree-Aware Verification Discipline
+This repository commonly uses git worktrees for parallel feature work
+(`CopilotOffice-worktree-*` siblings of the main checkout). The Phaser bundle
+(`dist/game.bundle.js`) and the Electron main/preload bundles
+(`dist/electron/*.js`) are **per-worktree build artifacts** that are NOT shared
+between worktrees. A fix committed inside one worktree's branch produces a new
+`dist/` only inside that worktree. The main checkout (or any other worktree)
+keeps its own stale `dist/` until it is rebuilt against the same code.
+
+This has caused a "fix doesn't fix it" regression once: clipboard fixes shipped
+in spec 008 on a worktree branch, but the user kept running `npm start` from
+the main checkout, whose `dist/` was rebuilt from older uncommitted hand-fixes.
+Three consecutive rounds of "still broken" reports were caused entirely by
+running the wrong bundle, not by any code defect.
+
+Mandatory rules:
+1. Before claiming a fix works, the agent MUST confirm the path the user is
+   actually launching from. Acceptable evidence: matching timestamps on
+   `dist/game.bundle.js` AND a `grep`/`Select-String` for a distinctive marker
+   from the new code (e.g., a new toast string, a new symbol name) in the
+   bundle the user is running.
+2. When making changes inside a worktree, the agent SHOULD warn explicitly
+   that those changes are only live in that worktree's `dist/`, and either
+   (a) offer to merge the branch into the user's primary checkout, or
+   (b) tell the user the exact path they must `cd` into to verify the fix.
+3. Constitution-level fixes (new principles, version bumps, instructions
+   under `.github/`) MUST land in the primary checkout (typically `main`),
+   not only in a feature worktree, or they will not influence future work in
+   any other worktree.
+4. When debugging "still broken" reports following a shipped fix, the FIRST
+   investigation step MUST be to confirm the user is running the rebuilt
+   bundle (timestamps + distinctive-symbol grep). Skipping this step risks
+   chasing phantom code paths in code the user is not running.
+
 ## Technical Constraints & Invariants
 
 - TypeScript strictness MUST be preserved; avoid `any` and unsafe casts unless a typed boundary
@@ -118,4 +152,4 @@ Compliance review expectations:
 - Non-compliance MUST be resolved before merge or explicitly waived by maintainers with
   documented justification.
 
-**Version**: 1.1.0 | **Ratified**: 2026-04-27 | **Last Amended**: 2026-06-09
+**Version**: 1.2.0 | **Ratified**: 2026-04-27 | **Last Amended**: 2026-06-11

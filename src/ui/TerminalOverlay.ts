@@ -1725,10 +1725,6 @@ export class TerminalOverlay {
     return this.currentAgentId;
   }
 
-  getIsVisible(): boolean {
-    return this.isVisible;
-  }
-
   hide(): void {
     this.hideTerminalContextMenu();
     if (this.container) {
