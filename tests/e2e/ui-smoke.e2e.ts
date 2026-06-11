@@ -178,4 +178,68 @@ test.describe('UI smoke harness (spec 008)', () => {
       await app.close();
     }
   });
+
+  // T9: per-agent session ID isolation. Spec 007 removed the greedy
+  // parseSessionId regex that was clobbering agents' UUIDs with whatever id
+  // appeared in CLI output. This test proves the server-authoritative path
+  // hands the renderer a distinct UUID per agent, and that subsequent
+  // bridge.resetSession() calls (the /new path) keep them distinct.
+  test('T9 each agent has a distinct session ID across open + resetSession', async () => {
+    const { app, page } = await bootColdOffice({ env: { COPILOT_E2E: '1' } });
+    try {
+      await waitForDebugHook(page);
+
+      const agents = ['generalist', 'debugger', 'admin'] as const;
+
+      // Open each agent so a PTY (shell mode under COPILOT_E2E=1) is spawned
+      // and its session id is minted + persisted on the server.
+      for (const id of agents) {
+        await openAgentTerminal(page, id);
+        await expectActiveTerminalAgent(page, id, 15_000);
+      }
+
+      // Snapshot 1: server-side session ids via bridge.getSessionId.
+      const snap1 = await page.evaluate(async (agentIds) => {
+        const bridge = window.copilotBridge;
+        const officeId = window.__copilotOfficeDebug!.getCurrentOfficeId() || 'office-0';
+        const out: Record<string, string | null> = {};
+        for (const id of agentIds) {
+          out[id] = await bridge!.getSessionId(officeId, id);
+        }
+        return out;
+      }, agents as unknown as string[]);
+
+      const ids1 = agents.map((a) => snap1[a]);
+      expect(ids1.every((id) => typeof id === 'string' && id.length > 0),
+        `getSessionId returned null/empty: ${JSON.stringify(snap1)}`).toBe(true);
+      expect(new Set(ids1).size,
+        `expected 3 distinct session ids after open, got: ${JSON.stringify(snap1)}`).toBe(3);
+
+      // Now call resetSession on each (simulates the /new path) and snapshot
+      // again. Every id must change AND remain pairwise-distinct.
+      const snap2 = await page.evaluate(async (agentIds) => {
+        const bridge = window.copilotBridge;
+        const officeId = window.__copilotOfficeDebug!.getCurrentOfficeId() || 'office-0';
+        const out: Record<string, string | null> = {};
+        for (const id of agentIds) {
+          const r = await bridge!.resetSession(officeId, id);
+          out[id] = r?.sessionId ?? null;
+        }
+        return out;
+      }, agents as unknown as string[]);
+
+      const ids2 = agents.map((a) => snap2[a]);
+      expect(ids2.every((id) => typeof id === 'string' && id.length > 0),
+        `resetSession returned null/empty: ${JSON.stringify(snap2)}`).toBe(true);
+      expect(new Set(ids2).size,
+        `expected 3 distinct session ids after resetSession, got: ${JSON.stringify(snap2)}`).toBe(3);
+
+      // Each agent's id must have CHANGED from snap1 to snap2.
+      for (const id of agents) {
+        expect(snap1[id], `agent ${id}: id should change after resetSession`).not.toBe(snap2[id]);
+      }
+    } finally {
+      await app.close();
+    }
+  });
 });
