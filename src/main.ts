@@ -447,6 +447,11 @@ function installE2eDebugHook(): void {
         | undefined;
       scene?.getTerminalOverlay?.()?.hide();
     },
+    getSeriousPanelSnapshot: () => {
+      if (appMode !== 'serious') return null;
+      const snap = seriousTerminalController?.getPanelSnapshot?.();
+      return snap ?? null;
+    },
   };
   window.__copilotOfficeDebug = debugApi;
   console.log('[main] Spec 008-smoke: __copilotOfficeDebug installed');
@@ -1106,6 +1111,12 @@ function refreshRightPanelMode(): void {
 }
 
 async function openAgentTerminal(agentId: string): Promise<void> {
+  // Spec 008-smoke T10: unify "currently selected agent" across modes. Without
+  // this, game-mode opens never touch selectedAgentId, so a game -> serious
+  // flip loses the agent context and the serious panel never auto-attaches
+  // (user-reported "locked to one agent" after flipping modes).
+  selectedAgentId = agentId;
+
   if (appMode === 'game') {
     phaserGameRef?.events.emit('open:agent:terminal', agentId);
     return;

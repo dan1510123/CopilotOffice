@@ -193,6 +193,17 @@ declare global {
     getActiveTerminalAgentId: () => string | null;
     openAgentTerminal: (agentId: string) => Promise<void>;
     closeActiveTerminal: () => Promise<void>;
+    // Spec 008-smoke T10: snapshot of the serious-mode panel (sprite card
+    // title + session-id readout). Returns null when not in serious mode or
+    // when the controller is not visible.
+    getSeriousPanelSnapshot: () => null | {
+      activeAgentId: string | null;
+      titleText: string;
+      spriteName: string;
+      spriteSubtitle: string;
+      sessionIdText: string;
+      sessionIdField: string | null;
+    };
   }
 
   interface Window {

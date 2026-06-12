@@ -308,6 +308,27 @@ export class SeriousTerminalController {
     return this.activeAgentId ?? null;
   }
 
+  // Spec 008-smoke (T10): expose the visible sprite-card + session-id panel
+  // text so e2e tests can assert what the operator actually sees after agent
+  // switches. Used to repro the user-reported "locked to one agent" symptom.
+  getPanelSnapshot(): {
+    activeAgentId: string | null;
+    titleText: string;
+    spriteName: string;
+    spriteSubtitle: string;
+    sessionIdText: string;
+    sessionIdField: string | null;
+  } {
+    return {
+      activeAgentId: this.activeAgentId ?? null,
+      titleText: this.titleEl.textContent ?? '',
+      spriteName: this.spriteNameEl.textContent ?? '',
+      spriteSubtitle: this.spriteSubtitleEl.textContent ?? '',
+      sessionIdText: this.sessionIdEl.textContent ?? '',
+      sessionIdField: this.sessionId ?? null,
+    };
+  }
+
   public refreshCardFromOverview(): void {
     if (!this.visible || !this.activeAgentId) return;
     this.renderExactOverviewCard(this.activeAgentId);

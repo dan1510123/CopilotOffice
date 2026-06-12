@@ -242,4 +242,104 @@ test.describe('UI smoke harness (spec 008)', () => {
       await app.close();
     }
   });
+
+  // T10 (user-reported repro 2026-06-12): cold start -> click an agent in game
+  // mode -> flip to Serious mode -> click between agents in serious mode.
+  // User reports all agents appear "locked to the same one" and same session id
+  // gets shown. This test asserts:
+  //   - serious-mode getActiveTerminalAgentId tracks the latest requested agent
+  //   - serious-mode sprite-card title text + the session-id DOM display update
+  //     per switch (this is what the user actually sees)
+  //   - each agent retains its own distinct server-side session id throughout
+  test('T10 game-click -> flip serious -> switch agents updates terminal AND sprite card AND session id', async () => {
+    const { app, page } = await bootColdOffice({ env: { COPILOT_E2E: '1' } });
+    try {
+      await waitForDebugHook(page);
+
+      // Ensure starting in game mode.
+      if ((await getMode(page)) !== 'game') {
+        await setMode(page, 'game');
+      }
+
+      // Step 1: user clicks Gene in game mode.
+      await openAgentTerminal(page, 'generalist');
+      await expectActiveTerminalAgent(page, 'generalist', 10_000);
+
+      // Step 2: user flips to Serious mode. applyAppMode forwards the previously
+      // selected agent (selectedAgentBeforeModeSwitch) to seriousTerminalController.
+      await setMode(page, 'serious');
+      expect(await getMode(page)).toBe('serious');
+      await expectActiveTerminalAgent(page, 'generalist', 15_000);
+
+      // Step 3: user clicks Dan, then Alice, in serious mode.
+      const observations: Array<{
+        requested: string;
+        activeAfter: string | null;
+        spriteTitle: string;
+        sessionIdShown: string;
+        sessionIdFromBridge: string | null;
+      }> = [];
+
+      for (const id of ['debugger', 'admin', 'generalist'] as const) {
+        await openAgentTerminal(page, id);
+        await expectActiveTerminalAgent(page, id, 15_000);
+        // give DOM (sprite card title + session id readout) a tick to repaint
+        await page.waitForTimeout(300);
+
+        const snap = await page.evaluate(() =>
+          window.__copilotOfficeDebug!.getSeriousPanelSnapshot(),
+        );
+
+        const sidFromBridge = await page.evaluate(async (agentId) => {
+          const officeId = window.__copilotOfficeDebug!.getCurrentOfficeId() || 'office-0';
+          return await window.copilotBridge!.getSessionId(officeId, agentId);
+        }, id);
+
+        observations.push({
+          requested: id,
+          activeAfter: await getActiveTerminalAgentId(page),
+          spriteTitle: snap?.spriteName ?? '',
+          sessionIdShown: snap?.sessionIdText ?? '',
+          sessionIdFromBridge: sidFromBridge,
+        });
+      }
+
+      // Diagnostic dump so failures are immediately actionable.
+      const diag = JSON.stringify(observations, null, 2);
+
+      // (a) Active agent id from controller MUST match what was requested each time.
+      for (const obs of observations) {
+        expect(obs.activeAfter, `controller active id mismatch:\n${diag}`).toBe(obs.requested);
+      }
+
+      // (b) Sprite-card title MUST change between switches (catches "locked" UI).
+      const titles = observations.map((o) => o.spriteTitle);
+      expect(new Set(titles).size, `sprite-card title did not vary across switches:\n${diag}`)
+        .toBeGreaterThan(1);
+
+      // (c) Session id rendered in the panel MUST match what bridge.getSessionId
+      // says for the active agent — i.e., NOT stuck on the prior agent's id.
+      for (const obs of observations) {
+        expect(obs.sessionIdShown, `panel session id did not match bridge for ${obs.requested}:\n${diag}`)
+          .toBe(obs.sessionIdFromBridge);
+      }
+
+      // (d) Across the 3 unique agents observed, the rendered session ids must
+      // be pairwise distinct for distinct agents (the user-reported symptom).
+      const byAgent = new Map<string, Set<string>>();
+      for (const obs of observations) {
+        if (!byAgent.has(obs.requested)) byAgent.set(obs.requested, new Set());
+        byAgent.get(obs.requested)!.add(obs.sessionIdShown);
+      }
+      const distinctIdsAcrossAgents = new Set(
+        Array.from(byAgent.values()).map((s) => Array.from(s)[0]),
+      );
+      expect(
+        distinctIdsAcrossAgents.size,
+        `expected distinct session ids per agent in serious mode, got:\n${diag}`,
+      ).toBe(byAgent.size);
+    } finally {
+      await app.close();
+    }
+  });
 });
