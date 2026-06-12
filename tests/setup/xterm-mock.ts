@@ -18,19 +18,7 @@ export class MockTerminal {
   getSelection = vi.fn(() => '');
   attachCustomKeyEventHandler = vi.fn();
   onData = vi.fn(() => ({ dispose: vi.fn() }));
-  // Spec 005: capture the onSelectionChange callback so tests can fire it
-  // to drive the renderer's cachedSelection field. Returns a disposable.
-  selectionListeners: Array<() => void> = [];
-  onSelectionChange = vi.fn((cb: () => void) => {
-    this.selectionListeners.push(cb);
-    return { dispose: vi.fn() };
-  });
-  /** Test helper: simulate xterm firing onSelectionChange after a user selection. */
-  fireSelectionChange(text: string): void {
-    this.hasSelection.mockReturnValue(text.length > 0);
-    this.getSelection.mockReturnValue(text);
-    for (const cb of this.selectionListeners) cb();
-  }
+  onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
   dispose = vi.fn();
 }
 

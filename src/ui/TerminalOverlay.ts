@@ -79,21 +79,6 @@ export class TerminalOverlay {
   private isEditingSessionTitle: boolean = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
-  // Spec 005 Bug B fix: cache the xterm selection via onSelectionChange.
-  // Reading hasSelection()/getSelection() synchronously from event handlers
-  // races with xterm's internal mouse/focus side effects and can observe a
-  // stale or already-cleared selection. The cache is the single source of
-  // truth for copy paths.
-  private cachedSelection: string = '';
-  private selectionDisposable: { dispose: () => void } | null = null;
-  // Spec 006 belt: 50ms-deferred mouseup cache fill — covers the case where
-  // xterm.onSelectionChange doesn't fire on the user's renderer build.
-  private mouseupCacheTimer: ReturnType<typeof setTimeout> | null = null;
-  // Spec 006 suspenders: capture-phase document `copy` listener that
-  // pre-empts the browser's native copy when our terminal is visible —
-  // prevents the browser from clobbering the OS clipboard with empty after
-  // our IPC write succeeded.
-  private nativeCopyPreempt: ((e: ClipboardEvent) => void) | null = null;
   // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
   // so the handler's closure captures the new agent id (feature 002, C3/V6).
   private onDataDisposable: { dispose: () => void } | null = null;
@@ -173,43 +158,12 @@ export class TerminalOverlay {
     return `[O${this.instanceId}]`;
   }
 
-  // Spec 006: read live xterm selection safely.
-  // Spec 008: fall back to scoped browser DOM selection. xterm renders an
-  // accessibility text layer (xterm-accessibility div) and some users select
-  // text via native browser drag instead of xterm's mouse handlers — in that
-  // case terminal.getSelection() returns empty but document.getSelection()
-  // holds the visible blue highlight. We scope the fallback to selections
-  // anchored inside our terminal container so we don't grab selections from
-  // other panels (sprite card, tabs, etc.).
-  private liveSelection(): string {
-    try {
-      if (this.terminal?.hasSelection()) {
-        const xtermSel = this.terminal?.getSelection() ?? '';
-        if (xtermSel) return xtermSel;
-      }
-    } catch { /* ignore */ }
-    try {
-      const sel = (typeof window !== 'undefined' ? window.getSelection?.() : null) ?? null;
-      const text = sel?.toString() ?? '';
-      if (!text) return '';
-      const container = this.terminalDiv;
-      if (!container) return '';
-      const anchor = sel?.anchorNode;
-      const focus = sel?.focusNode;
-      const anchorIn = anchor ? container.contains(anchor) : false;
-      const focusIn = focus ? container.contains(focus) : false;
-      return (anchorIn || focusIn) ? text : '';
-    } catch {
-      return '';
-    }
-  }
-
   // Spec 005 + 006: write text to OS clipboard via Electron main process.
   // Diagnostic toast on every outcome so we never have to guess again.
-  private async copyToClipboard(text: string, source: 'cache' | 'live' | 'session' = 'cache'): Promise<boolean> {
+  private async copyToClipboard(text: string, source: 'live' | 'session' = 'live'): Promise<boolean> {
     const t = this.tag();
     if (!text) {
-      showClipboardToast(`${t} cache-empty live=${this.liveSelection().length}`, 'info');
+      showClipboardToast(`${t} empty selection`, 'info');
       return false;
     }
     const bridge = window.copilotBridge as Window['copilotBridge'] | undefined;
@@ -227,8 +181,7 @@ export class TerminalOverlay {
     try {
       const r = await bridge.clipboardWriteText(text);
       if (r?.success === true) {
-        const srcSuffix = source === 'live' ? ' (live-fallback)' : '';
-        showClipboardToast(`${t} OK ${text.length} (verified)${srcSuffix}`, 'success');
+        showClipboardToast(`${t} OK ${text.length} (verified)`, 'success');
         return true;
       }
       if (r?.verified === false) {
@@ -569,9 +522,6 @@ export class TerminalOverlay {
       this.isReplaying = true;
       this.terminal.reset();
       this.terminal.clear();
-      // Spec 005: clearing the terminal means the previous selection is no
-      // longer meaningful — flush the cache so a stray Ctrl+C cannot copy it.
-      this.cachedSelection = '';
     }
 
     // Reset session ID for this agent
@@ -1008,7 +958,7 @@ export class TerminalOverlay {
 
   private copySessionId(): void {
     if (!this.sessionId) return;
-    void this.copyToClipboard(this.sessionId).then((success) => {
+    void this.copyToClipboard(this.sessionId, 'session').then((success) => {
       if (!this.sessionIdElement) return;
       const original = this.sessionIdElement.textContent;
       this.sessionIdElement.textContent = success ? 'Copied!' : 'Copy failed';
@@ -1286,56 +1236,6 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAndResizeTerminal();
 
-    // Spec 005 Bug B fix: subscribe to onSelectionChange and cache the
-    // current selection text. All copy paths read this.cachedSelection
-    // instead of calling getSelection() at event time.
-    this.cachedSelection = '';
-    this.selectionDisposable?.dispose();
-    this.selectionDisposable = this.terminal.onSelectionChange(() => {
-      try {
-        const sel = this.terminal?.getSelection() ?? '';
-        // Only update cache with non-empty selections. xterm clears the
-        // selection on keydown (before custom key handlers fire), which would
-        // clobber the cache right before Ctrl+C reads it.
-        if (sel) this.cachedSelection = sel;
-      } catch {
-        // Don't clear — preserve last known good selection for copy.
-      }
-    });
-
-    // Spec 006 belt: 50ms-deferred mouseup cache fill. If xterm's
-    // onSelectionChange doesn't fire on the user's renderer build (canvas
-    // vs WebGL differences), this catches the selection anyway. Never
-    // overwrites with empty so a click-with-no-drag won't clobber a valid
-    // cache from a prior selection.
-    if (this.terminalDiv) {
-      this.terminalDiv.addEventListener('mouseup', () => {
-        if (this.mouseupCacheTimer) clearTimeout(this.mouseupCacheTimer);
-        this.mouseupCacheTimer = setTimeout(() => {
-          const live = this.liveSelection();
-          if (live) this.cachedSelection = live;
-        }, 50);
-      }, true);
-    }
-
-    // Spec 006 suspenders + Spec 008: pre-empt the browser's native copy
-    // event while our terminal is visible, but populate clipboardData with
-    // our best-effort text first. This wins the race against any other
-    // handler AND preserves DOM-text selections (xterm a11y layer) that
-    // would otherwise be lost when we previously blocked the event outright.
-    this.nativeCopyPreempt = (event: ClipboardEvent) => {
-      if (!this.isVisible) return;
-      try {
-        const text = this.cachedSelection || this.liveSelection();
-        if (text && event.clipboardData) {
-          event.clipboardData.setData('text/plain', text);
-          event.preventDefault();
-          this.cachedSelection = '';
-        }
-      } catch { /* ignore */ }
-    };
-    document.addEventListener('copy', this.nativeCopyPreempt, true);
-
     // Spec 004: terminal right-click → context menu (Copy / Paste).
     this.installTerminalContextMenu();
 
@@ -1348,31 +1248,16 @@ export class TerminalOverlay {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Spec 006: try cache first (populated by onSelectionChange OR the
-        // mouseup-deferred belt), then live selection as a last-resort
-        // fallback. copyToClipboard emits a diagnostic toast even when
-        // both are empty so the user sees *something* every Ctrl+C.
-        let selection = this.cachedSelection;
-        let source: 'cache' | 'live' = 'cache';
+        // Spec 002: query terminal selection directly — xterm 6.0.0 hasSelection()
+        // returns accurate values even in canvas/WebGL renderers.
+        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
         if (!selection) {
-          const live = this.liveSelection();
-          if (live) {
-            selection = live;
-            source = 'live';
-          }
-        }
-        if (!selection) {
-          // Both empty → pass through to PTY (SIGINT) but show diagnostic
-          // toast first so user knows their Ctrl+C was seen.
-          void this.copyToClipboard('', 'cache');
+          // No selection → pass through to PTY (SIGINT).
           return true;
         }
         event.preventDefault();
         event.stopPropagation();
-        void this.copyToClipboard(selection, source);
-        // Clear cache after copy so next Ctrl+C without a new selection
-        // passes through as SIGINT instead of re-copying stale text.
-        this.cachedSelection = '';
+        void this.copyToClipboard(selection, 'live');
         return false;
       }
 
@@ -1522,14 +1407,8 @@ export class TerminalOverlay {
     };
 
     const copyItem = makeItem('Copy', () => {
-      // Spec 006: same fallback chain as Ctrl+C — cache → live.
-      let selection = this.cachedSelection;
-      let source: 'cache' | 'live' = 'cache';
-      if (!selection) {
-        const live = this.liveSelection();
-        if (live) { selection = live; source = 'live'; }
-      }
-      void this.copyToClipboard(selection, source);
+      const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+      void this.copyToClipboard(selection, 'live');
     });
     const pasteItem = makeItem('Paste', () => {
       void this.pasteFromClipboardToTerminal();
@@ -1839,17 +1718,6 @@ export class TerminalOverlay {
       try { this.terminalContextMenu.parentNode.removeChild(this.terminalContextMenu); } catch { /* ignore */ }
     }
     this.terminalContextMenu = null;
-    this.selectionDisposable?.dispose();
-    this.selectionDisposable = null;
-    this.cachedSelection = '';
-    if (this.mouseupCacheTimer) {
-      clearTimeout(this.mouseupCacheTimer);
-      this.mouseupCacheTimer = null;
-    }
-    if (this.nativeCopyPreempt) {
-      document.removeEventListener('copy', this.nativeCopyPreempt, true);
-      this.nativeCopyPreempt = null;
-    }
     this.onDataDisposable?.dispose();
     this.onDataDisposable = null;
     this.clearRefitTimers();

@@ -269,7 +269,8 @@ describe('integration/TerminalOverlay', () => {
     expect(keyHandler).toBeTypeOf('function');
 
     // ── With selection: bridge writes, key event suppressed ──
-    terminal.fireSelectionChange('selected text');
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('selected text');
 
     const pdWith = vi.fn();
     const spWith = vi.fn();
@@ -285,7 +286,8 @@ describe('integration/TerminalOverlay', () => {
     expect(clipboardWrite).toHaveBeenCalledWith('selected text');
 
     // ── Without selection: pass through, do not preventDefault ──
-    terminal.fireSelectionChange('');
+    terminal.hasSelection.mockReturnValue(false);
+    terminal.getSelection.mockReturnValue('');
     const pdNo = vi.fn();
     const spNo = vi.fn();
     const r2 = keyHandler?.({
@@ -296,45 +298,6 @@ describe('integration/TerminalOverlay', () => {
     expect(r2).toBe(true);
     expect(pdNo).not.toHaveBeenCalled();
     expect(spNo).not.toHaveBeenCalled();
-  });
-
-  it('spec 005 Bug B: Ctrl+C uses cached selection from onSelectionChange even after hasSelection() returns false (race)', async () => {
-    // Simulates the race that broke spec 004: onSelectionChange fires with
-    // text, then xterm clears its internal state before the Ctrl+C handler
-    // reads it. The cached value must still be used.
-    const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
-    installMockCopilotBridge({
-      terminalExists: vi.fn().mockResolvedValue(false),
-      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-race' }),
-      clipboardWriteText: clipboardWrite,
-    });
-
-    const scene = createSceneStub();
-    const inputManager = {
-      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
-      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
-      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
-    };
-    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
-    await overlay.show(createAgent(), vi.fn());
-
-    const terminal = (overlay as any).terminal as MockTerminal;
-    // 1. Selection happens — cache fills.
-    terminal.fireSelectionChange('race-text');
-    // 2. Race: xterm's live selection is cleared before our key handler reads.
-    terminal.hasSelection.mockReturnValue(false);
-    terminal.getSelection.mockReturnValue('');
-
-    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
-      | ((e: KeyboardEvent) => boolean) | undefined;
-    const result = keyHandler?.({
-      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
-      preventDefault: vi.fn(), stopPropagation: vi.fn(),
-    } as unknown as KeyboardEvent);
-
-    expect(result).toBe(false);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(clipboardWrite).toHaveBeenCalledWith('race-text');
   });
 
   it('spec 005 Bug A: verify-mismatch from bridge shows failure toast, not success', async () => {
@@ -357,7 +320,8 @@ describe('integration/TerminalOverlay', () => {
     await overlay.show(createAgent(), vi.fn());
 
     const terminal = (overlay as any).terminal as MockTerminal;
-    terminal.fireSelectionChange('payload');
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('payload');
     const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
       | ((e: KeyboardEvent) => boolean) | undefined;
     keyHandler?.({
@@ -373,34 +337,7 @@ describe('integration/TerminalOverlay', () => {
     expect(toast?.textContent || '').toMatch(/wrote=7/);
   });
 
-  it('spec 005: cached selection is cleared on terminal.clear() during agent switch', async () => {
-    const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
-    installMockCopilotBridge({
-      terminalExists: vi.fn().mockResolvedValue(false),
-      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-clr' }),
-      clipboardWriteText: clipboardWrite,
-    });
-
-    const scene = createSceneStub();
-    const inputManager = {
-      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
-      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
-      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
-    };
-    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
-    await overlay.show(createAgent(), vi.fn());
-
-    const terminal = (overlay as any).terminal as MockTerminal;
-    terminal.fireSelectionChange('stale text from previous agent');
-    expect((overlay as any).cachedSelection).toBe('stale text from previous agent');
-
-    // Switch to a different agent — triggers terminal.reset/clear path which
-    // also resets cachedSelection.
-    await overlay.show(createAgent({ id: 'debugger', name: 'Dan', sprite: 'npc_debugger' }), vi.fn());
-    expect((overlay as any).cachedSelection).toBe('');
-  });
-
-  it('spec 006 mode A: Ctrl+C uses live getSelection() fallback when onSelectionChange never fired', async () => {
+  it('spec 006: Ctrl+C uses hasSelection/getSelection directly', async () => {
     const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
@@ -418,10 +355,8 @@ describe('integration/TerminalOverlay', () => {
     await overlay.show(createAgent(), vi.fn());
 
     const terminal = (overlay as any).terminal as MockTerminal;
-    // Deliberately do NOT fire onSelectionChange. Set live selection only.
     terminal.hasSelection.mockReturnValue(true);
     terminal.getSelection.mockReturnValue('live-only text');
-    expect((overlay as any).cachedSelection).toBe('');
 
     const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
       | ((e: KeyboardEvent) => boolean) | undefined;
@@ -434,100 +369,7 @@ describe('integration/TerminalOverlay', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(clipboardWrite).toHaveBeenCalledWith('live-only text');
     const toast = document.getElementById('copilot-office-clipboard-toast');
-    expect(toast?.textContent || '').toMatch(/live-fallback/i);
-  });
-
-  it('spec 008 mode B: copy preempt fills clipboardData when selection present, no-ops when empty', async () => {
-    installMockCopilotBridge({
-      terminalExists: vi.fn().mockResolvedValue(false),
-      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-modeB' }),
-    });
-
-    const scene = createSceneStub();
-    const inputManager = {
-      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
-      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
-      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
-    };
-    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
-    await overlay.show(createAgent(), vi.fn());
-
-    const terminal = (overlay as any).terminal as MockTerminal;
-
-    // (a) With a cached selection: preempt MUST setData + preventDefault.
-    terminal.fireSelectionChange('cached payload');
-    const setData = vi.fn();
-    const pd = vi.fn();
-    const evt = new Event('copy', { bubbles: true, cancelable: true });
-    Object.defineProperty(evt, 'clipboardData', {
-      value: { setData },
-      configurable: true,
-    });
-    evt.preventDefault = pd;
-    document.dispatchEvent(evt);
-    expect(setData).toHaveBeenCalledWith('text/plain', 'cached payload');
-    expect(pd).toHaveBeenCalled();
-
-    // (b) After xterm clears selection AND preempt already consumed the cache
-    //     in (a): cache is empty, preempt MUST NOT preventDefault (so browser's
-    //     native DOM copy can proceed for xterm a11y layer selections).
-    terminal.fireSelectionChange('');
-    const setData2 = vi.fn();
-    const pd2 = vi.fn();
-    const evt2 = new Event('copy', { bubbles: true, cancelable: true });
-    Object.defineProperty(evt2, 'clipboardData', {
-      value: { setData: setData2 },
-      configurable: true,
-    });
-    evt2.preventDefault = pd2;
-    document.dispatchEvent(evt2);
-    expect(setData2).not.toHaveBeenCalled();
-    expect(pd2).not.toHaveBeenCalled();
-
-    // (c) After hide: listener is fully detached.
-    overlay.hide();
-    const setData3 = vi.fn();
-    const pd3 = vi.fn();
-    const evt3 = new Event('copy', { bubbles: true, cancelable: true });
-    Object.defineProperty(evt3, 'clipboardData', {
-      value: { setData: setData3 },
-      configurable: true,
-    });
-    evt3.preventDefault = pd3;
-    document.dispatchEvent(evt3);
-    expect(setData3).not.toHaveBeenCalled();
-    expect(pd3).not.toHaveBeenCalled();
-  });
-
-  it('spec 006 belt: mouseup fills cache 50ms later even without onSelectionChange', async () => {
-    vi.useFakeTimers();
-    try {
-      installMockCopilotBridge({
-        terminalExists: vi.fn().mockResolvedValue(false),
-        terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-mu' }),
-      });
-
-      const scene = createSceneStub();
-      const inputManager = {
-        activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
-        switchToTerminal: vi.fn(), switchToGame: vi.fn(),
-        focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
-      };
-      overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
-      await overlay.show(createAgent(), vi.fn());
-
-      const terminal = (overlay as any).terminal as MockTerminal;
-      terminal.hasSelection.mockReturnValue(true);
-      terminal.getSelection.mockReturnValue('mouse-selected');
-      // Simulate mouseup on the terminal div.
-      const terminalDiv = (overlay as any).terminalDiv as HTMLElement;
-      terminalDiv.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-      expect((overlay as any).cachedSelection).toBe('');
-      vi.advanceTimersByTime(60);
-      expect((overlay as any).cachedSelection).toBe('mouse-selected');
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(toast?.textContent || '').toMatch(/verified/i);
   });
 
   it('runs a geometry self-heal when Refresh Focus is clicked', async () => {

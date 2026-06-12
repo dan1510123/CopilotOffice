@@ -55,12 +55,6 @@ export class SeriousTerminalController {
   private isFullWidth = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
-  // Spec 005 Bug B fix: see TerminalOverlay.cachedSelection.
-  private cachedSelection: string = '';
-  private selectionDisposable: { dispose: () => void } | null = null;
-  // Spec 006: belt-and-suspenders defenses (see TerminalOverlay).
-  private mouseupCacheTimer: ReturnType<typeof setTimeout> | null = null;
-  private nativeCopyPreempt: ((e: ClipboardEvent) => void) | null = null;
   private static nextSeriousId = 0;
   private readonly seriousInstanceId: string = String(SeriousTerminalController.nextSeriousId++);
   // Spec 003 V13/V14: the onData callback registered on the xterm closes
@@ -525,17 +519,6 @@ export class SeriousTerminalController {
     // reopen leaves no live handler bound to a stale agent.
     try { this.onDataDisposable?.dispose(); } catch { /* ignore */ }
     this.onDataDisposable = null;
-    // Spec 005: reset cached selection so a stale selection from the prior
-    // session can't be copied after the view is closed and reopened.
-    this.cachedSelection = '';
-    if (this.mouseupCacheTimer) {
-      clearTimeout(this.mouseupCacheTimer);
-      this.mouseupCacheTimer = null;
-    }
-    if (this.nativeCopyPreempt) {
-      document.removeEventListener('copy', this.nativeCopyPreempt, true);
-      this.nativeCopyPreempt = null;
-    }
     this.activeOfficeId = null;
     this.activeAgentId = null;
     this.activeOptions = null;
@@ -717,7 +700,7 @@ export class SeriousTerminalController {
 
   private copySessionId(): void {
     if (!this.sessionId) return;
-    void this.copyToClipboard(this.sessionId).then((success) => {
+    void this.copyToClipboard(this.sessionId, 'session').then((success) => {
       const original = this.sessionIdEl.textContent;
       this.sessionIdEl.textContent = success ? 'Copied!' : 'Copy failed';
       this.sessionIdEl.style.color = success ? '#61d394' : '#ff6b6b';
@@ -734,36 +717,12 @@ export class SeriousTerminalController {
     return `[S${this.seriousInstanceId}]`;
   }
 
-  private liveSelection(): string {
-    try {
-      if (this.terminal?.hasSelection()) {
-        const xtermSel = this.terminal?.getSelection() ?? '';
-        if (xtermSel) return xtermSel;
-      }
-    } catch { /* ignore */ }
-    // Spec 008: fall back to scoped browser DOM selection (see TerminalOverlay).
-    try {
-      const sel = (typeof window !== 'undefined' ? window.getSelection?.() : null) ?? null;
-      const text = sel?.toString() ?? '';
-      if (!text) return '';
-      const container = this.terminalDivEl;
-      if (!container) return '';
-      const anchor = sel?.anchorNode;
-      const focus = sel?.focusNode;
-      const anchorIn = anchor ? container.contains(anchor) : false;
-      const focusIn = focus ? container.contains(focus) : false;
-      return (anchorIn || focusIn) ? text : '';
-    } catch {
-      return '';
-    }
-  }
-
   // Spec 005 + 006: single canonical clipboard write path via Electron main.
   // Diagnostic toast on every outcome.
-  private async copyToClipboard(text: string, source: 'cache' | 'live' | 'session' = 'cache'): Promise<boolean> {
+  private async copyToClipboard(text: string, source: 'live' | 'session' = 'live'): Promise<boolean> {
     const t = this.tag();
     if (!text) {
-      showClipboardToast(`${t} cache-empty live=${this.liveSelection().length}`, 'info');
+      showClipboardToast(`${t} empty selection`, 'info');
       return false;
     }
     const bridge = window.copilotBridge as Window['copilotBridge'] | undefined;
@@ -780,8 +739,7 @@ export class SeriousTerminalController {
     try {
       const r = await bridge.clipboardWriteText(text);
       if (r?.success === true) {
-        const srcSuffix = source === 'live' ? ' (live-fallback)' : '';
-        showClipboardToast(`${t} OK ${text.length} (verified)${srcSuffix}`, 'success');
+        showClipboardToast(`${t} OK ${text.length} (verified)`, 'success');
         return true;
       }
       if (r?.verified === false) {
@@ -867,14 +825,8 @@ export class SeriousTerminalController {
       return item;
     };
     const copyItem = makeItem('Copy', () => {
-      // Spec 006: cache → live fallback chain.
-      let selection = this.cachedSelection;
-      let source: 'cache' | 'live' = 'cache';
-      if (!selection) {
-        const live = this.liveSelection();
-        if (live) { selection = live; source = 'live'; }
-      }
-      void this.copyToClipboard(selection, source);
+      const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+      void this.copyToClipboard(selection, 'live');
     });
     const pasteItem = makeItem('Paste', () => {
       void this.pasteFromClipboardToTerminal();
@@ -988,48 +940,6 @@ export class SeriousTerminalController {
     this.terminalDivEl.id = 'serious-terminal-container';
     this.terminal.open(this.terminalDivEl);
 
-    // Spec 005 Bug B fix: subscribe to onSelectionChange and cache the
-    // current selection text. Copy paths read this.cachedSelection instead
-    // of calling getSelection() inside event handlers.
-    this.cachedSelection = '';
-    this.selectionDisposable?.dispose();
-    this.selectionDisposable = this.terminal.onSelectionChange(() => {
-      try {
-        const sel = this.terminal?.getSelection() ?? '';
-        // Only update cache with non-empty selections. xterm clears the
-        // selection on keydown (before custom key handlers fire), which would
-        // clobber the cache right before Ctrl+C reads it.
-        if (sel) this.cachedSelection = sel;
-      } catch {
-        // Don't clear — preserve last known good selection for copy.
-      }
-    });
-
-    // Spec 006 belt: 50ms-deferred mouseup cache fill (see TerminalOverlay).
-    this.terminalDivEl.addEventListener('mouseup', () => {
-      if (this.mouseupCacheTimer) clearTimeout(this.mouseupCacheTimer);
-      this.mouseupCacheTimer = setTimeout(() => {
-        const live = this.liveSelection();
-        if (live) this.cachedSelection = live;
-      }, 50);
-    }, true);
-
-    // Spec 006 + Spec 008: preempt browser native copy and populate
-    // clipboardData ourselves so DOM-anchored selections (xterm a11y layer)
-    // copy correctly while still beating any racing handler.
-    this.nativeCopyPreempt = (event: ClipboardEvent) => {
-      if (!this.visible) return;
-      try {
-        const text = this.cachedSelection || this.liveSelection();
-        if (text && event.clipboardData) {
-          event.clipboardData.setData('text/plain', text);
-          event.preventDefault();
-          this.cachedSelection = '';
-        }
-      } catch { /* ignore */ }
-    };
-    document.addEventListener('copy', this.nativeCopyPreempt, true);
-
     // Spec 004: terminal right-click → context menu (Copy / Paste).
     this.installTerminalContextMenu();
 
@@ -1039,23 +949,13 @@ export class SeriousTerminalController {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Spec 006: cache → live fallback chain + always-toast diagnostic.
-        let selection = this.cachedSelection;
-        let source: 'cache' | 'live' = 'cache';
+        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
         if (!selection) {
-          const live = this.liveSelection();
-          if (live) { selection = live; source = 'live'; }
-        }
-        if (!selection) {
-          void this.copyToClipboard('', 'cache');
           return true;
         }
         event.preventDefault();
         event.stopPropagation();
-        void this.copyToClipboard(selection, source);
-        // Clear cache after copy so next Ctrl+C without a new selection
-        // passes through as SIGINT instead of re-copying stale text.
-        this.cachedSelection = '';
+        void this.copyToClipboard(selection, 'live');
         return false;
       }
 

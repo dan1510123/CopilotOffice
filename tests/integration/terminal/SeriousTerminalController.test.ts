@@ -68,7 +68,8 @@ describe('integration/SeriousTerminalController', () => {
       | undefined;
     expect(keyHandler).toBeTypeOf('function');
 
-    terminal.fireSelectionChange('serious selected text');
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('serious selected text');
 
     const preventDefaultWithSelection = vi.fn();
     const stopPropagationWithSelection = vi.fn();
@@ -88,7 +89,8 @@ describe('integration/SeriousTerminalController', () => {
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith('serious selected text');
 
-    terminal.fireSelectionChange('');
+    terminal.hasSelection.mockReturnValue(false);
+    terminal.getSelection.mockReturnValue('');
     const preventDefaultNoSelection = vi.fn();
     const stopPropagationNoSelection = vi.fn();
     const copyWithoutSelection = keyHandler?.({
