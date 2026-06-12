@@ -84,6 +84,16 @@ export class OfficeManager {
   private _currentOfficeId: string | null = null;
   private readonly persistence: OfficePersistencePort;
 
+  // Spec 008 (2026-06-12): durable load is async but renderer boot triggers
+  // saves (status updates, agent registrations) almost immediately. Without
+  // gating, those saves serialize the localStorage-only state and clobber
+  // the multi-office file on disk before the durable load can hydrate. We
+  // hold all durable writes until loadFromStorage's async path settles, then
+  // flush whatever the most-recent state was. localStorage writes are NOT
+  // gated — they're fast, synchronous, and only matter for next cold boot.
+  private durableLoadSettled = false;
+  private pendingDurableWrite = false;
+
   // Callbacks for UI updates
   onOfficeChanged: ((officeId: string) => void) | null = null;
   onOfficesUpdated: (() => void) | null = null;
@@ -277,7 +287,25 @@ export class OfficeManager {
       console.warn('[OfficeManager] Failed to save to localStorage:', e);
     }
 
+    // Spec 008 boot-race guard: don't touch the durable file until the
+    // initial loadDurable() has resolved (or failed). Mark a pending flush
+    // and we'll write the latest state in flushPendingDurableWrite().
+    if (!this.durableLoadSettled) {
+      this.pendingDurableWrite = true;
+      return;
+    }
+
     // Fire-and-forget durable write via the persistence port.
+    void this.persistence.saveDurable(json);
+  }
+
+  private flushPendingDurableWrite(): void {
+    if (!this.pendingDurableWrite) return;
+    this.pendingDurableWrite = false;
+    const json = serializeOffices({
+      currentOfficeId: this._currentOfficeId,
+      offices: Array.from(this.offices.values()).map((o) => o.config),
+    });
     void this.persistence.saveDurable(json);
   }
 
@@ -297,6 +325,13 @@ export class OfficeManager {
       })
       .catch((e: unknown) => {
         console.warn('[OfficeManager] Failed to load from durable persistence:', e);
+      })
+      .finally(() => {
+        // Always release the gate even on failure, so subsequent saves can
+        // proceed (we'd rather risk overwriting with the in-memory state
+        // than wedge persistence forever).
+        this.durableLoadSettled = true;
+        this.flushPendingDurableWrite();
       });
   }
 
