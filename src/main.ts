@@ -354,6 +354,26 @@ function applyAppMode(nextMode: AppMode, options: ApplyAppModeOptions = {}): voi
   if (previousMode === 'serious' && appMode === 'game') {
     void seriousTerminalController?.closeView({ detach: true, silent: true });
   }
+  if (previousMode === 'game' && appMode === 'serious') {
+    // User-reported 2026-06-12: a game-mode terminal that was open at flip
+    // time stayed parented in terminalPanel (the overlay DOM is created by
+    // OfficeScene.TerminalOverlay; teardownPhaserGame() destroys the scene
+    // but does NOT touch the overlay's DOM container or its IPC viewer
+    // attach). Hide it first so the serious panel gets a clean slate and
+    // the server stops streaming PTY data to a detached viewer. hide() is
+    // intentionally non-destructive — the PTY session stays alive.
+    try {
+      const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+        | { getTerminalOverlay?: () => { hide?: () => void; getIsVisible?: () => boolean } }
+        | undefined;
+      const overlay = scene?.getTerminalOverlay?.();
+      if (overlay?.getIsVisible?.()) {
+        overlay.hide?.();
+      }
+    } catch (err) {
+      console.warn('[main] failed to hide game-mode terminal overlay on mode flip', err);
+    }
+  }
   if (appMode === 'serious') {
     prewarmOverviewSpriteCacheFromTextures();
     teardownPhaserGame();

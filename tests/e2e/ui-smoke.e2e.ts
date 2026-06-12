@@ -342,4 +342,63 @@ test.describe('UI smoke harness (spec 008)', () => {
       await app.close();
     }
   });
+
+  // T11 (user-reported 2026-06-12): flipping from game to serious mode while
+  // a game-mode terminal is still open must close that overlay. Otherwise the
+  // overlay DOM stays parented in terminalPanel (the SeriousTerminalController
+  // host), overlapping the serious panel, and the PTY viewer attach leaks.
+  test('T11 game->serious flip closes any open game-mode terminal overlay', async () => {
+    const { app, page } = await bootColdOffice({ env: { COPILOT_E2E: '1' } });
+    try {
+      await waitForDebugHook(page);
+
+      if ((await getMode(page)) !== 'game') {
+        await setMode(page, 'game');
+      }
+
+      // Open Gene in game mode -> overlay container becomes visible.
+      await openAgentTerminal(page, 'generalist');
+      await expectActiveTerminalAgent(page, 'generalist', 10_000);
+
+      // Sanity: in game mode, getActiveTerminalAgentId reads the overlay.
+      // If it returns the agent id, the overlay reports itself visible.
+      expect(await getActiveTerminalAgentId(page)).toBe('generalist');
+
+      // Flip to serious mode WITHOUT manually closing the overlay first.
+      await setMode(page, 'serious');
+      expect(await getMode(page)).toBe('serious');
+
+      // After flip, the previously-active agent should auto-attach in the
+      // serious panel (T10 behaviour). Wait for that to settle first.
+      await expectActiveTerminalAgent(page, 'generalist', 15_000);
+
+      // The game-mode overlay DOM is parented in #terminal-panel. After flip,
+      // the only visible terminal surface in terminalPanel/terminalHost must
+      // be the serious controller's container. Assert no leftover xterm
+      // viewport from the game-mode overlay is visible.
+      const leakState = await page.evaluate(() => {
+        const panel = document.querySelector('#terminal-panel') as HTMLElement | null;
+        if (!panel) return { hasLeak: false, leakedViewports: 0, reason: 'no #terminal-panel' };
+        // Count xterm-viewport children that are visibly rendered.
+        const viewports = Array.from(panel.querySelectorAll('.xterm-viewport')) as HTMLElement[];
+        const visibleCount = viewports.filter((v) => {
+          // Walk up to find any ancestor with display:none.
+          let el: HTMLElement | null = v;
+          while (el && el !== panel) {
+            const cs = window.getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+            el = el.parentElement;
+          }
+          return v.offsetParent !== null;
+        }).length;
+        return { hasLeak: visibleCount > 1, leakedViewports: visibleCount, reason: '' };
+      });
+      // Exactly one visible xterm viewport (the serious controller's). More
+      // means the game-mode overlay leaked through.
+      expect(leakState.leakedViewports, JSON.stringify(leakState))
+        .toBeLessThanOrEqual(1);
+    } finally {
+      await app.close();
+    }
+  });
 });
