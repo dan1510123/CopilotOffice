@@ -449,4 +449,119 @@ test.describe('spec 009 auto-startup', () => {
       await app.close();
     }
   });
+
+  // A8 — Setting=OFF gates the roster pre-start (spec-002 path), not just the
+  // spec-009 triggers. Boot with the setting OFF, seed a titled agent so
+  // spec-009 would normally warm it on cold-launch, and a normal roster of
+  // untitled agents that the spec-002 preStartAgentSessions would normally
+  // warm. After boot + a 4s settle, assert that NO agent is alive. This is
+  // the user-requested clarification: "If auto start known agents is false,
+  // then default behavior should not start any agents until they're clicked
+  // on, which is different from the previous default behavior."
+  test('A8 setting OFF at boot prevents any agent from auto-starting (FR-017)', async () => {
+    seedDataDir(() => {
+      fs.writeFileSync(
+        path.join(process.cwd(), '.data', 'copilot-offices.json'),
+        JSON.stringify(SEED_OFFICES_TWO, null, 2),
+      );
+      // One titled agent (would trigger spec-009 cold-launch warm) PLUS the
+      // implicit default-roster pre-start (spec-002) for every other agent.
+      writeSessionsFile(
+        'office-0',
+        { [SEEDED_TITLED_AGENT]: '88888888-8888-8888-8888-888888888888' },
+        { [SEEDED_TITLED_AGENT]: { title: 'A8 OFF boot gate' } },
+      );
+    });
+
+    // First boot the app, set the setting to OFF, then reload the renderer.
+    // page.reload() preserves localStorage but re-runs the full renderer cold
+    // start (Boot/Office scenes, preStartAgentSessions, AutoStartCoordinator
+    // initial trigger), which is exactly the path we need to verify is gated.
+    const app = await launchElectron();
+    try {
+      const page = await findRenderer(app);
+
+      // Flip OFF, kill any sessions started by the first boot's pre-start
+      // (otherwise those alive PTYs in the main process would still appear in
+      // queryAgentStatuses and the test would not be measuring the gate).
+      // Also clear the warmed-office registry so we can assert it stays empty
+      // across the reload under setting=OFF.
+      await page.evaluate(async () => {
+        window.__copilotOfficeDebug!.setAutoStartEnabled(false);
+        window.__copilotOfficeDebug!.clearWarmedOfficeRegistry();
+        const all = await window.copilotBridge.queryAgentStatuses('office-0');
+        for (const [aid, s] of Object.entries(all)) {
+          if ((s as { alive: boolean }).alive) {
+            await window.copilotBridge.resetSession('office-0', aid);
+          }
+        }
+      });
+      // Confirm everything is closed before reload.
+      await page.waitForFunction(
+        async () => {
+          const all = await window.copilotBridge.queryAgentStatuses('office-0');
+          return Object.values(all).every((s: any) => !s.alive);
+        },
+        null,
+        { timeout: 10_000 },
+      );
+
+      await page.reload();
+      await page.waitForFunction(
+        () =>
+          typeof (window as any).__copilotOfficeDebug === 'object' &&
+          (window as any).__copilotOfficeDebug !== null,
+        null,
+        { timeout: 90_000 },
+      );
+      await page.waitForTimeout(1500);
+
+      // Confirm the setting really is OFF in the reloaded renderer.
+      const settingValue = await page.evaluate(() =>
+        window.__copilotOfficeDebug!.getAutoStartEnabled(),
+      );
+      expect(settingValue, 'reloaded renderer must see persisted OFF setting').toBe(false);
+
+      // Generous settle: pre-start would normally have started agents within
+      // ~2-3s. Wait 4s before sampling to give any errant spawn time to land.
+      await page.waitForTimeout(4000);
+
+      const aliveAgents = await page.evaluate(async () => {
+        const all = await window.copilotBridge.queryAgentStatuses('office-0');
+        return Object.entries(all)
+          .filter(([, s]) => (s as { alive: boolean }).alive)
+          .map(([id]) => id);
+      });
+      expect(aliveAgents, `OFF gate must prevent ALL boot-time spawns: ${JSON.stringify(aliveAgents)}`).toEqual([]);
+
+      // And the spec-009 coordinator must report zero warmed agents on the reload.
+      // (We can't easily zero the counter mid-test, but if it's still equal to its
+      // pre-reload value, the reload boot path did not invoke terminalStart again.)
+      // Simpler/sufficient: assert no office got added to the warmed registry.
+      const warmedAfterReload = await page.evaluate(() =>
+        window.__copilotOfficeDebug!.getWarmedOfficeIds(),
+      );
+      expect(warmedAfterReload, `OFF coordinator must NOT mark offices warmed: ${JSON.stringify(warmedAfterReload)}`).toEqual([]);
+
+      // Sanity: re-enabling the setting and manually opening an agent must
+      // still work — proves OFF is gating, not breaking, startup.
+      await page.evaluate(() => {
+        window.__copilotOfficeDebug!.setAutoStartEnabled(true);
+      });
+      await page.evaluate(
+        ([oid, aid]) => window.copilotBridge.terminalStart(oid as string, aid as string, '.'),
+        ['office-0', SEEDED_TITLED_AGENT],
+      );
+      const manualStatus = await pollAgentStatus(
+        page,
+        'office-0',
+        SEEDED_TITLED_AGENT,
+        (s) => s.alive,
+        15_000,
+      );
+      expect(manualStatus.alive, `manual terminalStart must still work after OFF: ${JSON.stringify(manualStatus)}`).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
 });

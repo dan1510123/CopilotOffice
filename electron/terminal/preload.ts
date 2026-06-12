@@ -212,6 +212,7 @@ declare global {
     triggerAutoStartForCurrentOffice: () => Promise<string[]>;
     replaceAgentSession: (officeId: string, agentId: string) => Promise<void>;
     setAutoStartEnabled: (enabled: boolean) => void;
+    getAutoStartEnabled: () => boolean;
     clearWarmedOfficeRegistry: () => void;
     getCurrentSessionIdForAgent: (officeId: string, agentId: string) => Promise<string | null>;
   }

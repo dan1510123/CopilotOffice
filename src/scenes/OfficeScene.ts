@@ -15,6 +15,7 @@ import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
 import { CameraDragController } from '../ui/CameraDragController';
+import { getAgentAutoStartSettings } from '../config/agentAutoStart';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
@@ -2116,6 +2117,16 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private async preStartAgentSessions(): Promise<void> {
+    // Spec 009 (FR-017 extension): when the "Auto-start known agents" setting
+    // is OFF, NO agents should start until the user clicks on them. This gates
+    // the spec-002 roster pre-start in addition to the spec-009 triggers, so
+    // the OFF state delivers a truly manual-only startup experience.
+    if (!getAgentAutoStartSettings().autoStartKnownAgents) {
+      if (DEBUG_COLD_START) {
+        console.log('[OfficeScene] preStart skipped (autoStartKnownAgents=false)');
+      }
+      return;
+    }
     if (typeof window !== 'undefined' && window.copilotBridge) {
       const oid = officeManager.currentOfficeId || 'office-0';
 

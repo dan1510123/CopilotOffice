@@ -493,6 +493,7 @@ function installE2eDebugHook(): void {
     setAutoStartEnabled: (enabled: boolean) => {
       setAgentAutoStartSettings({ autoStartKnownAgents: enabled });
     },
+    getAutoStartEnabled: () => getAgentAutoStartSettings().autoStartKnownAgents,
     clearWarmedOfficeRegistry: () => {
       autoStartCoordinator.warmedOffices.clearAll();
     },
