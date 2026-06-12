@@ -18,6 +18,8 @@ import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 import { isAskUserTool, nextSubStateAfterToolComplete } from './util/toolStatus';
 import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
+import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStartCoordinator';
+import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/agentAutoStart';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -483,6 +485,25 @@ function installE2eDebugHook(): void {
       const snap = seriousTerminalController?.getPanelSnapshot?.();
       return snap ?? null;
     },
+    getWarmedOfficeIds: () => autoStartCoordinator.warmedOffices.snapshot(),
+    getAutoStartTerminalStartCount: () => autoStartTerminalStartCount,
+    triggerAutoStartForCurrentOffice: () => autoStartCoordinator.tryWarmCurrentOffice(),
+    replaceAgentSession: (officeId: string, agentId: string) =>
+      autoStartCoordinator.replaceSession(officeId, agentId),
+    setAutoStartEnabled: (enabled: boolean) => {
+      setAgentAutoStartSettings({ autoStartKnownAgents: enabled });
+    },
+    clearWarmedOfficeRegistry: () => {
+      autoStartCoordinator.warmedOffices.clearAll();
+    },
+    getCurrentSessionIdForAgent: async (officeId: string, agentId: string) => {
+      if (!window.copilotBridge?.getSessionId) return null;
+      try {
+        return await window.copilotBridge.getSessionId(officeId, agentId);
+      } catch {
+        return null;
+      }
+    },
   };
   window.__copilotOfficeDebug = debugApi;
   console.log('[main] Spec 008-smoke: __copilotOfficeDebug installed');
@@ -733,6 +754,12 @@ function switchToOffice(officeId: string) {
   // This recovers event flow if the previous office switch detached viewers.
   void reconnectAgentStatuses();
   fetchSessionMeta();
+
+  // Spec 009 (US2): trigger auto-startup for the newly-selected office.
+  // Non-blocking — fire-and-forget so the office switch stays snappy.
+  // Coordinator's per-office WarmedOfficeRegistry guarantees no-double-spawn
+  // if this office was already warmed earlier this session (FR-008).
+  void autoStartCoordinator.tryWarmCurrentOffice();
 
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
 }
@@ -1181,6 +1208,117 @@ seriousTerminalController = new SeriousTerminalController(terminalHost, {
     updateTerminalContent();
   },
 });
+
+// Spec 009 e2e diag: count how many times the auto-start headless warm
+// helper invoked terminalStart. Used by tests/e2e/auto-startup.e2e.ts
+// scenarios A3 (second-visit no respawn) and A7 (double-click coalescing).
+let autoStartTerminalStartCount = 0;
+
+// ── Spec 009: auto-startup of known agents ──────────────────────
+// Headless PTY warm helper — spawns/reattaches the agent's PTY via the
+// existing terminalStart bridge WITHOUT mutating selectedAgentId, emitting
+// open:agent:terminal (which would pop the overlay in game mode), or
+// routing through seriousTerminalController.openAgentTerminal. The
+// status-badge transitions still flow through the existing per-agent
+// status event channel which the dashboard subscribes to regardless of
+// overlay state. (research.md §R5)
+async function warmAgentSession(officeId: string, agentId: string): Promise<void> {
+  if (!window.copilotBridge) return;
+  const launchConfig = getSeriousLaunchConfig(agentId);
+  if (!launchConfig) return;
+  const workingDir = launchConfig.workingDir;
+  const launchMode = launchConfig.launchMode;
+  // Surface the "starting" transition on the badge (FR-004). Same call the
+  // manual openAgentTerminal path makes; safe to repeat — the office status
+  // map tolerates idempotent transitions.
+  const officeStatus = officeManager.getAgentStatus(officeId, agentId);
+  if (officeStatus?.state === 'slacking') {
+    officeManager.setAgentStarting(officeId, agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
+    updateStatusBar();
+    updateTerminalContent();
+  }
+  autoStartTerminalStartCount += 1;
+  await window.copilotBridge.terminalStart(
+    officeId,
+    agentId,
+    workingDir,
+    undefined,
+    undefined,
+    undefined,
+    launchMode,
+  );
+}
+
+function buildCanonicalAgentIdsForOffice(officeId: string): string[] {
+  // For the current office the synced roster is the source of truth (it
+  // reflects swapActiveAgents + customAgents + customReserveAgents). For
+  // other offices we fall back to the layout's agent list + customAgents.
+  // Fleet sub-agents are not part of any office's agent list (they are
+  // tracked separately by FleetTracker), so this naturally satisfies
+  // FR-020. PC_TERMINAL_ID is a shell — exclude it because it has no
+  // persisted copilot session uuid we'd want to resume.
+  const office = officeManager.currentOfficeId === officeId
+    ? officeManager.currentOffice
+    : null;
+  if (office && officeManager.currentOfficeId === officeId) {
+    return getCurrentAgents().map((a) => a.id);
+  }
+  // Fallback: read the office's configured roster directly.
+  const layoutKey = officeManager.currentOffice?.config.layout ?? 'default';
+  const layoutAgents = getLayout(layoutKey).agents.map((a) => a.id);
+  const customIds = (officeManager.currentOffice?.config.customAgents ?? []).map(
+    (a) => a.id,
+  );
+  return Array.from(new Set([...layoutAgents, ...customIds]));
+}
+
+const autoStartCoordinator = new AutoStartCoordinator({
+  getCurrentOfficeId: () => officeManager.currentOfficeId,
+  getCanonicalAgentIds: (oid) => buildCanonicalAgentIdsForOffice(oid),
+  getSessionMeta: async (oid) => {
+    // Always fetch fresh from the bridge — cachedSessionMeta in main.ts
+    // is hydrated by an unawaited fetchSessionMeta() so it races our
+    // cold-launch trigger.
+    if (!window.copilotBridge?.getAllSessionMeta) {
+      return officeManager.currentOfficeId === oid
+        ? cachedSessionMeta
+        : getSessionMetaCacheForOffice(oid);
+    }
+    try {
+      const fresh = await window.copilotBridge.getAllSessionMeta(oid);
+      return fresh || {};
+    } catch {
+      return officeManager.currentOfficeId === oid
+        ? cachedSessionMeta
+        : getSessionMetaCacheForOffice(oid);
+    }
+  },
+  getCurrentSessionId: async (oid, aid) => {
+    if (!window.copilotBridge?.getSessionId) return null;
+    try {
+      return await window.copilotBridge.getSessionId(oid, aid);
+    } catch {
+      return null;
+    }
+  },
+  getAgentLaunchConfig: (_oid, aid) => {
+    const cfg = getSeriousLaunchConfig(aid);
+    return {
+      workingDir: cfg?.workingDir ?? officeManager.getCurrentWorkingDirectory(),
+      launchMode: cfg?.launchMode ?? 'copilot',
+    };
+  },
+  resetSession: async (oid, aid) => {
+    if (!window.copilotBridge) return;
+    await window.copilotBridge.resetSession(oid, aid);
+  },
+  warmAgentSession: (oid, aid) => warmAgentSession(oid, aid),
+  getSettings: () => getAgentAutoStartSettings(),
+});
+
+// T503/T504: expose for UI handleNewSession delegation.
+setAutoStartCoordinator(autoStartCoordinator);
 
 const notificationService = new NotificationService(
   toastManager,
@@ -2317,6 +2455,14 @@ officeManager.onOfficesUpdated = () => {
   fetchSessionMeta();
   updateTerminalContent();
   updateStatusBar();
+  // Spec 009 (US1): cold-launch trigger for auto-startup. Runs as the LAST
+  // step in this callback so cachedSessionMeta is fresh-ish (fetchSessionMeta
+  // is fire-and-forget but the cached-meta synchronous path above already
+  // hydrated the renderer for the current office). The coordinator
+  // re-checks per-agent session IDs via the async getSessionId bridge, so
+  // even if cachedSessionMeta is briefly stale the qualifying filter is
+  // correct.
+  void autoStartCoordinator.tryWarmCurrentOffice();
 };
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.

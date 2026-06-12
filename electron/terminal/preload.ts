@@ -206,6 +206,14 @@ declare global {
       sessionIdText: string;
       sessionIdField: string | null;
     };
+    // Spec 009: auto-startup of known agents — diagnostic surface for e2e.
+    getWarmedOfficeIds: () => string[];
+    getAutoStartTerminalStartCount: () => number;
+    triggerAutoStartForCurrentOffice: () => Promise<string[]>;
+    replaceAgentSession: (officeId: string, agentId: string) => Promise<void>;
+    setAutoStartEnabled: (enabled: boolean) => void;
+    clearWarmedOfficeRegistry: () => void;
+    getCurrentSessionIdForAgent: (officeId: string, agentId: string) => Promise<string | null>;
   }
 
   interface Window {

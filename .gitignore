@@ -46,3 +46,6 @@ yarn-error.log*
 # Local-only office data backups (don't commit user data)
 .data.bak-*/
 
+
+# Spec 009: transient e2e .data backup pointer
+.e2e-data-backup.txt
