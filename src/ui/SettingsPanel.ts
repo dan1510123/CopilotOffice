@@ -5,6 +5,10 @@ import {
   NOTIFICATION_EVENT_LABELS,
   resetNotificationSettings,
 } from '../config/notifications';
+import {
+  getAgentAutoStartSettings,
+  setAgentAutoStartSettings,
+} from '../config/agentAutoStart';
 import { ZIndex } from '../config/zIndex';
 import { type NotificationService } from './NotificationService';
 
@@ -128,8 +132,32 @@ export class SettingsPanel {
       </div>
 
       ${this.renderAudioSection()}
+      ${this.renderAgentsSection()}
       ${this.renderNotificationsSection()}
       ${this.renderAboutSection()}
+    `;
+  }
+
+  private renderAgentsSection(): string {
+    const settings = getAgentAutoStartSettings();
+    return `
+      <div class="settings-section" style="margin-bottom: 20px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+          🤖 Agents
+        </h3>
+        <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0; cursor: pointer;">
+          <input
+            type="checkbox"
+            id="settings-agent-auto-start"
+            ${settings.autoStartKnownAgents ? 'checked' : ''}
+            style="cursor: pointer; width: 15px; height: 15px;"
+          />
+          <span style="color: #aab; font-size: 13px;">Auto-start known agents</span>
+        </label>
+        <p style="margin: 4px 0 0 25px; font-size: 10px; color: #556;">
+          When ON, agents with a saved session resume automatically on launch, office switch, and New Session.
+        </p>
+      </div>
     `;
   }
 
@@ -287,7 +315,16 @@ export class SettingsPanel {
     panel.querySelector('#settings-close-btn')?.addEventListener('click', () => this.close());
 
     this.bindAudioEvents(panel);
+    this.bindAgentsEvents(panel);
     this.bindNotificationEvents(panel);
+  }
+
+  private bindAgentsEvents(panel: HTMLElement): void {
+    const cb = panel.querySelector('#settings-agent-auto-start') as HTMLInputElement | null;
+    if (!cb) return;
+    cb.addEventListener('change', () => {
+      setAgentAutoStartSettings({ autoStartKnownAgents: cb.checked });
+    });
   }
 
   private bindAudioEvents(panel: HTMLElement): void {
@@ -333,8 +370,8 @@ export class SettingsPanel {
       });
     });
 
-    // Other checkboxes
-    panel.querySelectorAll<HTMLInputElement>('input[type="checkbox"]:not([data-field="enabled"])').forEach(checkbox => {
+    // Other checkboxes (notifications only — must have data-event)
+    panel.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-event]:not([data-field="enabled"])').forEach(checkbox => {
       checkbox.addEventListener('change', () => {
         const eventType = checkbox.dataset.event as NotificationEventType;
         const field = checkbox.dataset.field as 'toast' | 'osNotification';
