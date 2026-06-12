@@ -16,6 +16,9 @@
 //       active agent each time.
 //   T7  Status bar contains no fatal error text.
 
+import * as fs from 'fs';
+import * as path from 'path';
+import { _electron as electron } from '@playwright/test';
 import { expect, test } from '@playwright/test';
 import {
   bootColdOffice,
@@ -399,6 +402,114 @@ test.describe('UI smoke harness (spec 008)', () => {
         .toBeLessThanOrEqual(1);
     } finally {
       await app.close();
+    }
+  });
+
+  // T12 (user-reported 2026-06-12): when durable persistence load sets
+  // currentOfficeId to a non-default value AFTER the initial
+  // fetchSessionMeta() ran (with the localStorage / auto-default office id),
+  // the dashboard rendered "Untitled session" for every agent because:
+  //   - cachedSessionMeta was populated for the WRONG office
+  //   - clicking the tab for the durable-load office is a no-op
+  //     (id already matches), so fetchSessionMeta never re-fires
+  //   - officeManager.onOfficesUpdated was never wired to refresh anything
+  //
+  // Fix: wire onOfficesUpdated in main.ts to renderOfficeTabs +
+  // fetchSessionMeta + updateTerminalContent. This test seeds .data/ with
+  // a 3-office payload whose currentOfficeId points at office-2 with a
+  // known title, boots, and asserts the dashboard shows the title WITHOUT
+  // any user-initiated tab click.
+  test('T12 durable load applies titles to dashboard without user click', async () => {
+    skipIfEnvBlocked();
+    // bootColdOffice wipes .data first, then launches asynchronously. We
+    // need to write our seed AFTER the wipe but BEFORE Electron's office
+    // store reads. Easiest: wipe + seed ourselves, then launch via the
+    // helper without re-wiping.
+    const cwd = process.cwd();
+    const dataDir = path.join(cwd, '.data');
+    if (fs.existsSync(dataDir)) fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    const offices = {
+      currentOfficeId: 'office-2',
+      offices: [
+        { id: 'office-0', name: 'Main Office', workingDirectory: '.', createdAt: 1, layout: 'default', seatedAgents: [] },
+        { id: 'office-1', name: 'One', workingDirectory: '.', createdAt: 2, layout: 'default', seatedAgents: [] },
+        {
+          id: 'office-2',
+          name: 'AIQB',
+          workingDirectory: '.',
+          createdAt: 3,
+          layout: 'default',
+          seatedAgents: [],
+          customAgents: [
+            {
+              id: 'office-4-agent-0',
+              name: 'Willa',
+              skill: 'general',
+              sprite: 'npc_random_4',
+              color: 5583769,
+              position: { x: 4, y: 3 },
+              greeting: 'hi',
+              description: 'Analyst',
+            },
+          ],
+          customReserveAgents: {},
+        },
+      ],
+    };
+    fs.writeFileSync(path.join(dataDir, 'copilot-offices.json'), JSON.stringify(offices, null, 2));
+    fs.writeFileSync(
+      path.join(dataDir, 'office-2.sessions.json'),
+      JSON.stringify(
+        {
+          current: { 'office-4-agent-0': '11111111-2222-3333-4444-555555555555' },
+          history: {},
+          metadata: { 'office-4-agent-0': { title: 'analyze gmm copilot' } },
+        },
+        null,
+        2,
+      ),
+    );
+
+    // Launch electron directly (bootColdOffice would wipe our seed).
+    const envWithoutNodeMode: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (k === 'ELECTRON_RUN_AS_NODE') continue;
+      if (typeof v === 'string') envWithoutNodeMode[k] = v;
+    }
+    const app = await electron.launch({
+      args: [path.resolve(cwd)],
+      timeout: 60_000,
+      env: { ...envWithoutNodeMode, COPILOT_E2E: '1' },
+    });
+
+    try {
+      const page = await app.firstWindow();
+      await waitForDebugHook(page);
+      // Allow durable load + onOfficesUpdated chain to settle.
+      await page.waitForTimeout(2500);
+
+      const result = await page.evaluate(async () => {
+        const debug = window.__copilotOfficeDebug!;
+        return {
+          currentOfficeId: debug.getCurrentOfficeId(),
+          cachedMeta: debug.getCachedSessionMetaForRender?.() ?? {},
+        };
+      });
+
+      const diag = JSON.stringify(result, null, 2);
+      // Without the fix: currentOfficeId='office-2' but cachedMeta={}
+      // With the fix: cachedMeta has the title keyed by office-4-agent-0.
+      expect(result.currentOfficeId, `expected office-2 to be current:\n${diag}`).toBe('office-2');
+      expect(
+        result.cachedMeta['office-4-agent-0']?.title,
+        `expected dashboard cache to have the title from the seeded sessions file:\n${diag}`,
+      ).toBe('analyze gmm copilot');
+    } finally {
+      await app.close();
+      // Best-effort cleanup of our seed.
+      if (fs.existsSync(dataDir)) fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
 });

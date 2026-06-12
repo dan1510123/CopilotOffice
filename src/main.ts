@@ -467,6 +467,17 @@ function installE2eDebugHook(): void {
         | undefined;
       scene?.getTerminalOverlay?.()?.hide();
     },
+    switchOffice: (officeId: string) => {
+      // Spec 008-smoke T12 diag: programmatically switch offices without
+      // relying on tab DOM rendering, which may not have fired yet during
+      // boot if onOfficesUpdated isn't wired.
+    switchToOffice(officeId);
+    },
+    getCachedSessionMetaForRender: () => {
+      // Returns the cachedSessionMeta the dashboard renderer is currently
+      // using. Diagnostic for the "Untitled session" bug.
+      return { ...cachedSessionMeta };
+    },
     getSeriousPanelSnapshot: () => {
       if (appMode !== 'serious') return null;
       const snap = seriousTerminalController?.getPanelSnapshot?.();
@@ -2286,6 +2297,27 @@ function teardownPhaserGame(): void {
 }
 
 bindOfficePanelListeners();
+
+// User-reported 2026-06-12: when durable persistence load completes AFTER
+// the initial fetchSessionMeta() call (the common case on cold boot because
+// localStorage hydrates synchronously but the file load is async), the
+// renderer is left with cachedSessionMeta keyed for the WRONG office.
+// Clicking the tab for the newly-current office is a no-op (id already
+// matches), so the cache never refills and the dashboard shows
+// "Untitled session" for every agent even though the metadata is on disk
+// and the bridge returns it correctly.
+//
+// Wire officeManager.onOfficesUpdated to re-render tabs and re-fetch the
+// session meta cache for whatever currentOfficeId became after the durable
+// load applied. Defensive: also run a roster sync + status bar update so
+// any other UI bound to office state catches up in one go.
+officeManager.onOfficesUpdated = () => {
+  syncActiveRosterForCurrentOffice();
+  renderOfficeTabs();
+  fetchSessionMeta();
+  updateTerminalContent();
+  updateStatusBar();
+};
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
 window.addEventListener('focus', () => {

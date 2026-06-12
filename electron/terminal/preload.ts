@@ -193,6 +193,8 @@ declare global {
     getActiveTerminalAgentId: () => string | null;
     openAgentTerminal: (agentId: string) => Promise<void>;
     closeActiveTerminal: () => Promise<void>;
+    switchOffice: (officeId: string) => void;
+    getCachedSessionMetaForRender: () => Record<string, { title: string }>;
     // Spec 008-smoke T10: snapshot of the serious-mode panel (sprite card
     // title + session-id readout). Returns null when not in serious mode or
     // when the controller is not visible.
