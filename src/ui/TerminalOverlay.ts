@@ -1267,9 +1267,13 @@ export class TerminalOverlay {
     this.selectionDisposable?.dispose();
     this.selectionDisposable = this.terminal.onSelectionChange(() => {
       try {
-        this.cachedSelection = this.terminal?.getSelection() ?? '';
+        const sel = this.terminal?.getSelection() ?? '';
+        // Only update cache with non-empty selections. xterm clears the
+        // selection on keydown (before custom key handlers fire), which would
+        // clobber the cache right before Ctrl+C reads it.
+        if (sel) this.cachedSelection = sel;
       } catch {
-        this.cachedSelection = '';
+        // Don't clear — preserve last known good selection for copy.
       }
     });
 
@@ -1300,6 +1304,7 @@ export class TerminalOverlay {
         if (text && event.clipboardData) {
           event.clipboardData.setData('text/plain', text);
           event.preventDefault();
+          this.cachedSelection = '';
         }
       } catch { /* ignore */ }
     };
@@ -1339,6 +1344,9 @@ export class TerminalOverlay {
         event.preventDefault();
         event.stopPropagation();
         void this.copyToClipboard(selection, source);
+        // Clear cache after copy so next Ctrl+C without a new selection
+        // passes through as SIGINT instead of re-copying stale text.
+        this.cachedSelection = '';
         return false;
       }
 

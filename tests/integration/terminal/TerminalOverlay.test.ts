@@ -468,8 +468,9 @@ describe('integration/TerminalOverlay', () => {
     expect(setData).toHaveBeenCalledWith('text/plain', 'cached payload');
     expect(pd).toHaveBeenCalled();
 
-    // (b) With no selection: preempt MUST NOT preventDefault (so browser's
-    //     native DOM copy can proceed when user selected via xterm a11y layer).
+    // (b) After xterm clears selection AND preempt already consumed the cache
+    //     in (a): cache is empty, preempt MUST NOT preventDefault (so browser's
+    //     native DOM copy can proceed for xterm a11y layer selections).
     terminal.fireSelectionChange('');
     const setData2 = vi.fn();
     const pd2 = vi.fn();
