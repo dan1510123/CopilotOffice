@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
 import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
 import { showClipboardToast } from './clipboardToast';
+import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -448,6 +449,33 @@ export class SeriousTerminalController {
   async startNewSession(options: SeriousTerminalOpenOptions): Promise<void> {
     if (!window.copilotBridge) return;
 
+    // T504: when the coordinator is wired (production path), delegate the
+    // close+restart chain to it so a rapid double-click coalesces to a
+    // single PTY (FR-014). If the view is currently rendering this
+    // (officeId, agentId) the resulting onStarting/onReady events propagate
+    // back through the existing terminal data channel and refresh the card.
+    const coordinator = getAutoStartCoordinator();
+    if (coordinator) {
+      try {
+        await coordinator.replaceSession(options.officeId, options.agentId);
+      } catch (err) {
+        console.warn(
+          `[SeriousTerminalController] replaceSession failed for ${options.agentId}: ${(err as Error)?.message || String(err)}`,
+        );
+      }
+      const isCurrentView =
+        this.visible &&
+        this.activeOfficeId === options.officeId &&
+        this.activeAgentId === options.agentId;
+      if (isCurrentView) {
+        // Re-attach the visible view to the new PTY so the terminal renders
+        // its replay/output stream.
+        await this.openAgentTerminal(options);
+      }
+      return;
+    }
+
+    // ── Fallback (coordinator not wired) ──────────────────────────
     try {
       await window.copilotBridge.resetSession(options.officeId, options.agentId);
     } catch {

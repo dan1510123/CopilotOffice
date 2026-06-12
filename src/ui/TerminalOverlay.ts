@@ -6,6 +6,7 @@ import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 import { showClipboardToast } from './clipboardToast';
+import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1027,7 +1028,8 @@ export class TerminalOverlay {
     // Snapshot office ID now — getOfficeId() returns the CURRENT office which may
     // change during async operations (e.g. fleet deploy switches office mid-await).
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
-    console.log(`[TerminalOverlay] handleNewSession: agent=${this.currentAgentId}, office=${officeId}`);
+    const agentId = this.currentAgentId;
+    console.log(`[TerminalOverlay] handleNewSession: agent=${agentId}, office=${officeId}`);
     this.clearRefitTimers();
     this.refitGeneration += 1;
 
@@ -1035,26 +1037,50 @@ export class TerminalOverlay {
     this.pendingInputLine = '';
     this.terminal?.clear();
     this.terminal?.writeln('\x1b[33m[Starting new session...]\x1b[0m\r\n');
-    
-    // Reset session (clears meta/title, generates new session ID, kills PTY)
-    await withTimeout(
-      window.copilotBridge.resetSession(officeId, this.currentAgentId),
-      IPC_TIMEOUT, 'resetSession'
-    ).catch(() => { /* ignore */ });
 
-    // Use the SAME snapshotted office ID for the new session start — if the office
-    // switched during the reset await, getOfficeId() would return the wrong office.
     const el = this.spriteCardElement?.querySelector('.session-id-display') as HTMLElement | null;
     if (el) el.textContent = 'starting...';
     this.sessionId = null;
     this.updateSessionDisplay();
     this.updateSessionTitleDisplay(null);
-    const dims = this.fitAndResizeTerminal({ officeId, agentId: this.currentAgentId });
+
+    // T503: delegate the close+restart chain to AutoStartCoordinator so the
+    // tracker coalesces a rapid double-click into a single PTY (FR-014 /
+    // SC-005 / SC-008). Falls back to inline behavior if the coordinator
+    // singleton has not been wired (defensive — should not happen in prod).
+    const coordinator = getAutoStartCoordinator();
+    if (coordinator) {
+      try {
+        await coordinator.replaceSession(officeId, agentId);
+      } catch (err) {
+        this.terminal?.writeln(`Failed to start terminal: ${(err as Error)?.message || String(err)}`);
+      }
+      // After the coordinator's warm path, refresh the session id from the
+      // bridge so the UI shows the freshly-minted uuid.
+      try {
+        if (window.copilotBridge?.getSessionId) {
+          const sid = await window.copilotBridge.getSessionId(officeId, agentId);
+          if (sid) {
+            this.sessionId = sid;
+            this.updateSessionDisplay();
+          }
+        }
+      } catch { /* ignore */ }
+      return;
+    }
+
+    // ── Fallback (coordinator not wired) ──────────────────────────
+    await withTimeout(
+      window.copilotBridge.resetSession(officeId, agentId),
+      IPC_TIMEOUT, 'resetSession'
+    ).catch(() => { /* ignore */ });
+
+    const dims = this.fitAndResizeTerminal({ officeId, agentId });
     const result = await withTimeout(
       this.launchMode === 'shell'
         ? window.copilotBridge.terminalStart(
             officeId,
-            this.currentAgentId,
+            agentId,
             this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(),
             dims?.cols,
             dims?.rows,
@@ -1063,7 +1089,7 @@ export class TerminalOverlay {
           )
         : window.copilotBridge.terminalStart(
             officeId,
-            this.currentAgentId,
+            agentId,
             this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(),
             dims?.cols,
             dims?.rows,
