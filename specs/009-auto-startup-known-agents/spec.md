@@ -3,9 +3,11 @@
 **Feature Branch**: `009-auto-startup-known-agents`
 **Created**: 2026-06-12
 **Status**: Draft
-**Input**: User description (two rules):
+**Input**: User description (rules):
 1. "When the app is first launched (cold start), every agent in the currently selected office that has a persisted session with a non-empty title should be automatically started up (its Copilot CLI PTY session spawned and brought to the 'ready' state), without the user having to click each agent individually."
 2. "Everyone in any newly selected office that has a non-empty title on their latest session should start up." (Applies to office switches during a running app session, in addition to the cold-launch case from rule #1.)
+3. "When the user clicks 'New Session' on an agent, the current session is auto-closed and a fresh session is auto-started immediately afterward (so the agent ends back in the `ready` state on the new session without any further user input). When the user clicks 'Close Session', the session closes and nothing else happens (the agent goes back to `slacking` and stays there)."
+4. "Auto-startup is governed by a user-facing Settings toggle (default ON). When the toggle is OFF, none of the auto-startup triggers (cold-launch, office-switch, post-new-session) fire — all agents start manually as they did before this feature."
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -43,6 +45,41 @@ During a single running app session, the user switches from their current office
 
 ---
 
+### User Story 3 - "New Session" returns the agent straight to ready (Priority: P2)
+
+The user is working with an agent that has an active session. They click the "New Session" control to start a fresh conversation. Today this leaves the agent in `slacking` until they press E or click the dashboard card again. With this rule, the system closes the current session and immediately auto-starts a new one in its place, so the agent transitions `ready → (closing) → starting → ready` on a brand-new session without any further user input. The "Close Session" control, by contrast, only closes — it never auto-restarts. The user can use Close Session deliberately when they want the agent quiet (back in `slacking`).
+
+**Why this priority**: "New Session" is overwhelmingly used as "I'm done with this conversation, give me a fresh one" — leaving the agent dead afterward is friction. Keeping Close Session as a deliberate "go quiet" action preserves the user's ability to silence an agent.
+
+**Independent Test**: With an agent in the `ready` state on session uuid U1, click "New Session". Observe that the badge transitions through `closing → starting → ready` automatically, the new session uuid U2 differs from U1, and no manual interaction was required to reach the final `ready` state. Then, with the same agent in `ready`, click "Close Session". Observe that the badge transitions to `slacking` and stays there.
+
+**Acceptance Scenarios**:
+
+1. **Given** an agent is in the `ready` state on session U1, **When** the user clicks "New Session", **Then** session U1 is closed and a fresh session U2 (≠ U1) is automatically started and brought to `ready` without further user input.
+2. **Given** an agent is in the `ready` state on session U1, **When** the user clicks "Close Session", **Then** session U1 is closed, the agent returns to `slacking`, and NO new session is started automatically.
+3. **Given** the user clicks "New Session" while an auto-restart from a previous "New Session" click is still in flight, **Then** the system MUST NOT spawn multiple concurrent replacement sessions for the same agent — only one fresh session ends up in `current[agentId]`.
+4. **Given** "New Session" was clicked and the close step succeeds but the subsequent auto-start fails (e.g., spawn error), **Then** the agent surfaces the failure through the existing error path and ends in `slacking` (or the appropriate error state), exactly as if the user had clicked "Close Session" then manually pressed E and had that fail.
+
+---
+
+### User Story 4 - User can disable auto-startup from Settings (Priority: P2)
+
+A user on a constrained machine, or one who prefers manual control over which agents are warm, opens Settings and toggles "Auto-start known agents" OFF. From that point forward — including future cold launches and office switches — no auto-startup trigger fires. All agents stay `slacking` until the user opens them manually, exactly as they did before this feature shipped. Toggling the setting back ON restores the auto-startup behavior on the next applicable trigger (next cold launch or next office selection of an office not yet warmed this session).
+
+**Why this priority**: The auto-startup feature trades resource use (PTYs, CPU, memory) for convenience. Users on lower-spec machines, or users who prefer deliberate control, need an escape hatch. The setting is also the right surface to address the "what if I have 40 known agents across 5 offices?" concern: lazy per-office warming already bounds the worst case to one office's agents at a time, but the toggle lets the user opt out entirely.
+
+**Independent Test**: With the setting ON (default), cold-start the app with a populated session file; observe known agents auto-start. Quit, set the setting to OFF, cold-start again with the same data; observe NO auto-startup occurs (every agent stays `slacking`). Switch offices to a different populated office; observe NO auto-startup occurs there either. Re-enable the setting from Settings; switch to a not-yet-warmed office; observe auto-startup runs for that office's known agents.
+
+**Acceptance Scenarios**:
+
+1. **Given** the "Auto-start known agents" setting is OFF, **When** the app cold-starts with a populated session file, **Then** no PTYs are spawned by auto-startup and every agent remains `slacking` until manual interaction.
+2. **Given** the setting is OFF, **When** the user switches to an office whose `.data/{officeId}.sessions.json` has known agents, **Then** no auto-startup runs for that office and every agent stays `slacking`.
+3. **Given** the setting is OFF, **When** the user clicks "New Session" on a `ready` agent, **Then** the current session is closed but NO replacement session is auto-started (rule #3's auto-restart is also gated by this toggle).
+4. **Given** the setting was OFF and the user toggles it ON, **When** the user subsequently cold-launches or selects a not-yet-warmed office, **Then** auto-startup runs normally for that office's known agents. Offices already visited under OFF this session are not retroactively warmed until next cold launch.
+5. **Given** the setting is at its default after a fresh install, **When** the user has never opened Settings, **Then** the setting is ON and the feature is active.
+
+---
+
 ### Edge Cases
 
 - **No persisted session file for the selected office** (cold-launch or office switch): Auto-startup has nothing to do; every agent stays `slacking`. App must still launch / switch normally.
@@ -55,6 +92,12 @@ During a single running app session, the user switches from their current office
 - **User switches away from an office while its auto-startup is still in flight**: In-flight spawns continue to completion in the original office. Status badges in that office update normally even though the user is now viewing a different office.
 - **Rapid office switching (X → Y → Z in quick succession)**: Each office's auto-startup runs at most once per app session. Rapid switching MUST NOT cause duplicate spawns or leave badges wedged.
 - **Many qualifying agents in one office**: All of them start in parallel; the system must not serialize them so aggressively that the last agent is still `starting` minutes later. (Throughput target captured in Success Criteria.)
+- **Total known agents across all offices is large (e.g., 40+)**: At any given moment, only the currently selected office's known agents are warmed (per-office lazy warming per rule #2). The system MUST NOT pre-warm offices the user has not selected this session, so resource usage scales with offices-visited, not total-offices-defined.
+- **"New Session" clicked on an agent that is not in `ready`** (e.g., still `starting`, or in an error state): The system MUST handle this gracefully — either queue the new-session request to fire once the close completes, or short-circuit with the same behavior as a manual close + manual press-E. The agent MUST NOT end up wedged.
+- **"New Session" clicked rapidly (double-click or in quick succession)**: The agent MUST end up with exactly one fresh session in `current[agentId]`, not multiple concurrent replacements.
+- **"Close Session" clicked**: Session is closed, agent returns to `slacking`, and NO auto-restart fires. This applies regardless of the auto-startup setting.
+- **Auto-startup setting toggled OFF mid-session**: In-flight auto-startup spawns that have already begun MUST complete normally (the toggle gates trigger evaluation, not in-flight work). Offices not yet warmed this session will not be warmed while the setting is OFF.
+- **Fleet sub-agents** (fleet-vteam offices): Out of scope for this spec. Auto-startup MUST NOT spawn fleet sub-agent PTYs even if their parent fleet office is selected. Only canonical NPC agents (the ones defined in `customAgents` / standard office rosters) are considered.
 
 ## Requirements *(mandatory)*
 
@@ -71,12 +114,22 @@ During a single running app session, the user switches from their current office
 - **FR-009**: When a known agent's persisted `current[agentId]` uuid cannot be resumed (e.g., the underlying session no longer exists), the system MUST fall back to the same behavior used today when the user manually opens an unresumable agent, so that the agent does not remain stuck in `starting`.
 - **FR-010**: Switching away from an office while its auto-startup is still in flight MUST NOT cancel the in-flight spawns; they continue to completion in the original office, and that office's status badges update normally even while the user is viewing a different office.
 - **FR-011**: Rapid office switching (e.g., X → Y → Z in quick succession) MUST result in each office's auto-startup running at most once and MUST NOT produce duplicate spawns or leave any agent's badge wedged in an intermediate state.
+- **FR-012**: When the user invokes the "New Session" control on an agent, the system MUST close the agent's current session and then automatically start a fresh session for that agent, leaving it in the `ready` state without further user input (transition: `ready → closing → starting → ready` on a new uuid).
+- **FR-013**: When the user invokes the "Close Session" control on an agent, the system MUST close the agent's current session and leave the agent in `slacking`. It MUST NOT automatically start any replacement session.
+- **FR-014**: Rapid or repeated "New Session" clicks on the same agent MUST result in exactly one fresh session in `current[agentId]` — the system MUST coalesce or sequence the requests to prevent multiple concurrent replacement spawns.
+- **FR-015**: If the close portion of a "New Session" sequence succeeds but the subsequent auto-start fails, the failure MUST be surfaced through the existing per-agent error/status channel and the agent MUST NOT be left wedged in an intermediate state (it ends in `slacking` or an explicit error state).
+- **FR-016**: A user-facing setting (located in the Settings surface) labeled "Auto-start known agents" (or equivalent) MUST gate every auto-startup trigger defined by this spec (cold-launch per FR-001(a), office-switch per FR-001(b), and post-"New Session" auto-restart per FR-012). Default value: ON.
+- **FR-017**: When the setting is OFF, no auto-startup trigger MUST fire. "New Session" under setting=OFF behaves as a plain close (equivalent to "Close Session"). "Close Session" behavior is unaffected by the setting.
+- **FR-018**: Toggling the setting MUST take effect on the next applicable trigger (cold launch, office switch to a not-yet-warmed office, or next "New Session" click). In-flight auto-startup spawns at the moment of toggling MUST complete normally — the toggle gates trigger evaluation, not in-flight work.
+- **FR-019**: The setting value MUST persist across app restarts via the same configuration mechanism used by other Settings entries.
+- **FR-020**: Auto-startup MUST only consider canonical NPC agents (the ones defined in the office's agent roster, including `customAgents`). Fleet sub-agent PTYs (dynamic children spawned by fleet-vteam orchestration) MUST NOT be auto-started by this feature.
 
 ### Key Entities *(include if feature involves data)*
 
-- **Persisted session metadata file** (`.data/{officeId}.sessions.json`): existing per-office record with `current`, `history`, and `metadata` maps. This feature consumes it read-only at boot to decide which agents qualify.
-- **Known agent**: an agent (NPC) in the currently selected office whose persisted metadata has a non-empty `title`. This is the unit the feature targets.
-- **Agent session state machine**: existing per-agent lifecycle (`slacking → starting → ready`, plus error states) driven by the terminal server. Auto-startup is an additional trigger into this same machine — no new states are introduced.
+- **Persisted session metadata file** (`.data/{officeId}.sessions.json`): existing per-office record with `current`, `history`, and `metadata` maps. This feature consumes it read-only to decide which agents qualify for auto-startup, and writes to it (via the existing session-lifecycle path) when "New Session" replaces `current[agentId]`.
+- **Known agent**: an agent (NPC) in a given office whose persisted metadata has a non-empty `title`. This is the unit auto-startup targets.
+- **Agent session state machine**: existing per-agent lifecycle (`slacking → starting → ready → closing → slacking`, plus error states) driven by the terminal server. Auto-startup, "New Session" auto-restart, and the Settings gate are additional triggers/conditions on this same machine — no new states are introduced.
+- **Auto-start setting**: a single boolean configuration value, default ON, surfaced in Settings and persisted across app restarts. Gates every auto-startup trigger in this spec.
 
 ## Success Criteria *(mandatory)*
 
@@ -89,23 +142,31 @@ During a single running app session, the user switches from their current office
 - **SC-005**: Zero double-spawn incidents: across cold-start runs and office-switch sequences, no agent ends up with more than one PTY because both auto-startup and a manual interaction tried to start it.
 - **SC-006**: Switching to an office where auto-startup has not yet run this session MUST visibly initiate the same `slacking → starting → ready` flow for its known agents within a short delay of the switch completing, and switching itself must remain as responsive as it is today (no user-noticeable regression in office-switch time).
 - **SC-007**: Across a single app session, for any given office, auto-startup runs exactly once regardless of how many times the user navigates to that office.
+- **SC-008**: After clicking "New Session" on a `ready` agent, the agent reaches `ready` again on a different session uuid within the time budget of one manual session start, with zero additional user interactions required.
+- **SC-009**: After clicking "Close Session" on a `ready` agent, the agent reaches `slacking` and stays there indefinitely (no spurious restart fires within at least the next 60 seconds of idle time).
+- **SC-010**: With the "Auto-start known agents" setting OFF, zero auto-startup PTYs are spawned across cold launch + 3 office switches + 1 "New Session" click on a previously-ready agent. The user can still manually start every agent exactly as before this feature shipped.
+- **SC-011**: Resource scaling: in the worst case where the user has K offices defined with N known agents each, the maximum number of PTYs warmed by auto-startup at any one time is bounded by the agents in offices the user has actually selected this session (not K×N).
 
 ## Assumptions
 
-- This spec covers **rules #1 and #2 of a larger agent-startup redesign**. Additional rules (e.g., behavior when the user manually closes an agent, configurability/opt-out, behavior when the title changes mid-session) will be specified separately and are intentionally out of scope here.
+- This spec covers **rules #1–#4 of the agent-startup redesign**. Additional refinements (e.g., per-office or per-agent opt-out granularity beyond the single global toggle, smarter title-change handling) may be specified separately and are out of scope here.
 - "Currently selected office" at boot is whatever `OfficeManager.loadFromStorage` resolves `currentOfficeId` to, including its fallback to the default office when storage is empty or invalid.
 - Office "selection" for rule #2 includes any user-initiated office switch surface (office tab bar today, plus any future equivalent). Programmatic office changes (e.g., the durable-load path that sets `currentOfficeId` after async file load on cold launch) count as the rule-#1 trigger for that office, not a separate rule-#2 trigger.
 - The existing manual-startup flow (the path triggered today when the user presses E or clicks a dashboard card) is the canonical "start one agent" primitive. Auto-startup invokes this primitive once per qualifying agent rather than introducing a separate spawn path.
 - The "non-empty title" signal is sufficient to mean "this agent had a real conversation worth resuming" because titles are server-generated from the first non-empty user message of a session and persisted in `metadata[agentId].title`.
-- "Per app session" in FR-008 / SC-007 means a single Electron main-process lifetime. A renderer reload, if one occurs, is treated as a continuation of the same app session and does not re-trigger auto-startup for any office.
-- Manual agent close/reopen and any user-facing toggle to disable auto-startup are **out of scope** for this spec and will be revisited in subsequent rules of this feature family.
-- The existing per-agent error/status surfaces (badges, toasts, logs) are adequate for reporting auto-startup failures; no new failure-reporting UI is introduced by this spec.
+- "Per app session" (FR-008, SC-007) means a single Electron main-process lifetime. A renderer reload, if one occurs, is treated as a continuation of the same app session and does not re-trigger auto-startup for any office.
+- Title can flip from empty → non-empty as the user types their first message into a freshly-started agent. Per FR-008 that office's auto-startup has already run, so the agent is not retroactively "auto-started" — but it is already started by virtue of the user interacting with it, so this is fine in practice and explicitly not treated as a separate trigger.
+- An agent's prior session ending in an error or crash does NOT disqualify it from auto-startup; failures are usually transient (network, CLI launch race) and the user benefits from another attempt. If the second attempt also fails, FR-007/FR-009 ensure it surfaces and does not wedge.
+- Resource scaling is handled by per-office laziness (rule #2 only warms the office the user actually selects) plus the global Settings toggle (rule #4) as the escape hatch. No additional per-agent or per-office concurrency cap is introduced by this spec.
+- "Settings" refers to the existing user-facing settings surface in the app; integration follows the existing pattern for boolean toggles there.
+- Fleet sub-agent PTYs (children spawned by fleet-vteam orchestration) are explicitly out of scope. Only canonical NPCs (office roster + `customAgents`) are eligible for auto-startup.
+- The existing per-agent error/status surfaces (badges, toasts, logs) are adequate for reporting auto-startup and auto-restart failures; no new failure-reporting UI is introduced by this spec.
 - Cold start is defined as the Electron app process being newly launched (not a renderer reload or office switch within an already-running app).
 
 ## Constitution Alignment *(mandatory)*
 
-- **Rendering Boundary**: No new in-canvas rendering is introduced. Status badge transitions (`slacking → starting → ready`) reuse the existing Phaser-driven status display; auto-startup only triggers existing state transitions earlier.
-- **Event & Input Boundary**: Auto-startup is wired by reusing the existing "open agent / start session" primitive that is already event-driven through the renderer → preload → main → terminal-server boundary. No new direct cross-layer coupling is introduced, and no input-handling paths change (InputManager is unaffected because auto-startup requires no user input).
-- **Session Integrity Impact**: Auto-startup is a new trigger into the existing agent terminal/session lifecycle and MUST preserve resume semantics (session uuid from `current[agentId]` is reused, not replaced). Per FR-006 and SC-005, it MUST NOT cause duplicate PTYs when a manual interaction races with auto-startup. Per FR-009, it MUST NOT leave agents wedged when a stored uuid is no longer resumable.
-- **Configuration Impact**: No new configuration surface is introduced in this rule. The qualifying-agent set is derived entirely from the already-persisted `.data/{officeId}.sessions.json` metadata. If future rules in this family require user-facing opt-out, that will be added through typed configuration rather than hardcoded scene logic, consistent with Principle V.
-- **Regression Plan**: Targeted verification covers (a) cold start with a session file containing a mix of titled and untitled agents — only titled ones spawn; (b) cold start with no session file — no spawns, app launches normally; (c) manual E-press on an agent that is mid-auto-startup — single PTY, single session resumed; (d) one agent's spawn failure does not block the others; (e) UI surfaces (Phaser scene, office tab bar, overview dashboard) render and respond during auto-startup; (f) switching to a not-yet-warmed office mid-session triggers its auto-startup exactly once and leaves the previous office's sessions undisturbed; (g) switching back to an already-warmed office does NOT respawn its agents; (h) rapid X→Y→Z office switching produces no duplicate spawns or wedged badges; (i) office-switch responsiveness is not noticeably regressed. These mirror the high-risk flows called out in Principle IV (terminal lifecycle, office switching) and Principle III (session continuity).
+- **Rendering Boundary**: No new in-canvas rendering is introduced. Status badge transitions reuse the existing Phaser-driven status display; auto-startup and "New Session" auto-restart only trigger existing state transitions earlier. The Settings toggle reuses the existing DOM-based Settings UI (no new Phaser surfaces).
+- **Event & Input Boundary**: Auto-startup and the post-"New Session" auto-restart are wired by reusing the existing "open agent / start session" and "close session" primitives that already cross renderer → preload → main → terminal-server through the established event boundary. No new direct cross-layer coupling is introduced. The Settings toggle is read via the existing typed configuration channel. InputManager is unaffected because auto-startup requires no user input and "New Session" / "Close Session" already route through their current handlers.
+- **Session Integrity Impact**: Auto-startup and auto-restart are new triggers into the existing agent terminal/session lifecycle and MUST preserve resume semantics for rules #1/#2 (session uuid from `current[agentId]` is reused, not replaced). For rule #3, "New Session" intentionally replaces `current[agentId]` with a fresh uuid — this is the existing close+spawn-new path, just chained automatically. FR-006/FR-014 and SC-005 protect against duplicate PTYs across all triggers (auto-startup racing manual interaction, rapid "New Session" double-clicks). FR-009/FR-015 ensure failure paths do not leave agents wedged. FR-020 explicitly excludes fleet sub-agents so the long-standing fleet PTY/key handling (see CopilotOffice known limitations) is not disturbed.
+- **Configuration Impact**: One new typed configuration value is introduced — the "Auto-start known agents" boolean (default ON), surfaced in the existing Settings UI and persisted through the existing settings storage mechanism (FR-016/FR-019). No hardcoded scene logic; the toggle is read at trigger evaluation time so changes take effect on the next applicable trigger (FR-018). Consistent with Principle V.
+- **Regression Plan**: Targeted verification covers (a) cold start with a session file containing a mix of titled and untitled agents — only titled ones spawn; (b) cold start with no session file — no spawns, app launches normally; (c) manual E-press on an agent that is mid-auto-startup — single PTY, single session resumed; (d) one agent's spawn failure does not block the others; (e) UI surfaces (Phaser scene, office tab bar, overview dashboard, Settings) render and respond during auto-startup; (f) switching to a not-yet-warmed office mid-session triggers its auto-startup exactly once and leaves the previous office's sessions undisturbed; (g) switching back to an already-warmed office does NOT respawn its agents; (h) rapid X→Y→Z office switching produces no duplicate spawns or wedged badges; (i) office-switch responsiveness is not noticeably regressed; (j) "New Session" on a `ready` agent results in exactly one fresh `ready` session with no manual interaction; (k) rapid double-clicks of "New Session" produce exactly one replacement session; (l) "Close Session" leaves the agent in `slacking` indefinitely with no auto-restart; (m) close-succeeds-but-spawn-fails path leaves the agent in a clean error/`slacking` state, not wedged; (n) Settings toggle OFF gates all three triggers (cold-launch, office-switch, post-New-Session) and toggling back ON re-enables on next applicable trigger; (o) fleet sub-agent PTYs are not auto-started even when their parent fleet office is selected. These mirror the high-risk flows called out in Principle IV (terminal lifecycle, office switching, settings/overlay focus) and Principle III (session continuity).
