@@ -78,3 +78,13 @@ export function resetAgentAutoStartSettings(): AgentAutoStartSettings {
   }
   return clone();
 }
+
+/**
+ * Spec 009 FR-017: single source of truth for "should any auto-startup
+ * behavior fire?". Used by both the spec-009 AutoStartCoordinator and the
+ * spec-002 OfficeScene.preStartAgentSessions roster pre-start so that
+ * setting=OFF gates every automatic spawn path uniformly.
+ */
+export function shouldAutoStart(): boolean {
+  return getAgentAutoStartSettings().autoStartKnownAgents === true;
+}

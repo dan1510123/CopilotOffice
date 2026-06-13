@@ -5,6 +5,7 @@ import {
   getAgentAutoStartSettings,
   setAgentAutoStartSettings,
   resetAgentAutoStartSettings,
+  shouldAutoStart,
 } from '../../../src/config/agentAutoStart';
 
 beforeEach(() => {
@@ -57,5 +58,36 @@ describe('config/agentAutoStart', () => {
     expect(getAgentAutoStartSettings()).toEqual(DEFAULT_AGENT_AUTO_START_SETTINGS);
     localStorage.setItem(STORAGE_KEY, 'null');
     expect(getAgentAutoStartSettings()).toEqual(DEFAULT_AGENT_AUTO_START_SETTINGS);
+  });
+
+  describe('shouldAutoStart (FR-017 gate predicate)', () => {
+    it('returns true by default (fresh install / cleared storage)', () => {
+      expect(shouldAutoStart()).toBe(true);
+    });
+
+    it('returns false when the setting is OFF', () => {
+      setAgentAutoStartSettings({ autoStartKnownAgents: false });
+      expect(shouldAutoStart()).toBe(false);
+    });
+
+    it('returns true when the setting is explicitly ON', () => {
+      setAgentAutoStartSettings({ autoStartKnownAgents: true });
+      expect(shouldAutoStart()).toBe(true);
+    });
+
+    it('returns true again after resetAgentAutoStartSettings clears an OFF value', () => {
+      setAgentAutoStartSettings({ autoStartKnownAgents: false });
+      expect(shouldAutoStart()).toBe(false);
+      resetAgentAutoStartSettings();
+      expect(shouldAutoStart()).toBe(true);
+    });
+
+    it('returns true (fail-safe to default) when storage has corrupt JSON', () => {
+      localStorage.setItem(STORAGE_KEY, '{not json');
+      // shouldAutoStart MUST NOT throw on corrupt storage — it must fall back
+      // to the default (ON) so users are never silently locked out of the
+      // feature by a bad stored value.
+      expect(shouldAutoStart()).toBe(true);
+    });
   });
 });

@@ -15,7 +15,7 @@ import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
 import { CameraDragController } from '../ui/CameraDragController';
-import { getAgentAutoStartSettings } from '../config/agentAutoStart';
+import { shouldAutoStart } from '../config/agentAutoStart';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
@@ -2121,7 +2121,7 @@ export class OfficeScene extends Phaser.Scene {
     // is OFF, NO agents should start until the user clicks on them. This gates
     // the spec-002 roster pre-start in addition to the spec-009 triggers, so
     // the OFF state delivers a truly manual-only startup experience.
-    if (!getAgentAutoStartSettings().autoStartKnownAgents) {
+    if (!shouldAutoStart()) {
       if (DEBUG_COLD_START) {
         console.log('[OfficeScene] preStart skipped (autoStartKnownAgents=false)');
       }
