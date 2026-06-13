@@ -750,6 +750,11 @@ export class TerminalOverlay {
       if (this.isVisible && !this.isFocused) {
         this.focusTerminal();
       }
+      // Always ensure the xterm textarea has keyboard focus on any mousedown.
+      // When SGR mouse mode is active (Copilot CLI), xterm routes mouse events
+      // to the PTY but may not focus its hidden textarea — without this,
+      // subsequent Ctrl+C/Ctrl+V keystrokes won't reach the customKeyEventHandler.
+      this.terminal?.focus();
     });
     this.container.appendChild(terminalOuter);
 
@@ -1561,17 +1566,15 @@ export class TerminalOverlay {
 
   /** Give keyboard focus to the terminal. Safe to call when already focused. */
   focusTerminal(): void {
-    console.log('[TerminalOverlay] focusTerminal() — delegating to InputManager');
     this.inputManager.switchToTerminal(
       'TerminalOverlay.focusTerminal()',
       () => this.handleNewSession(),
       () => this.toggleFullWidth()
     );
-    // Mobile browsers often require focus during the direct tap gesture to open
-    // the virtual keyboard. Keep this synchronous, then let InputManager retry.
-    if (window.__copilotOfficeMobileModeActive?.() === true) {
-      this.terminal?.focus();
-    }
+    // Synchronous focus — critical for keyboard capture when SGR mouse mode is
+    // active (Copilot CLI). The InputManager retry handles edge cases where the
+    // DOM isn't ready yet.
+    this.terminal?.focus();
     this.inputManager.focusTerminalXterm(this.terminal);
 
     // Restore NPC highlight for the active agent
@@ -1592,7 +1595,6 @@ export class TerminalOverlay {
 
   /** Give keyboard focus back to the game canvas. Safe to call when already blurred. */
   blurTerminal(): void {
-    console.log('[TerminalOverlay] blurTerminal() — delegating to InputManager');
     const mobileLocked = window.__copilotOfficeMobileModeActive?.() === true;
     if (mobileLocked) {
       this.inputManager.switchToNone('TerminalOverlay.blurTerminal() mobile lock');
