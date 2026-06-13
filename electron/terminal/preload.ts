@@ -75,7 +75,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   getSessionMeta: (officeId: string, agentId: string): Promise<{ title: string } | null> => {
     return ipcRenderer.invoke('get-session-meta', officeId, agentId);
   },
-  getAllSessionMeta: (officeId: string): Promise<Record<string, { title: string }>> => {
+  getAllSessionMeta: (officeId: string): Promise<Record<string, { title: string; sessionId?: string }>> => {
     return ipcRenderer.invoke('get-all-session-meta', officeId);
   },
 
@@ -240,7 +240,7 @@ declare global {
       queryAgentStatuses: (officeId?: string) => Promise<Record<string, { alive: boolean; ready: boolean; inTurn: boolean }>>;
       setSessionMeta: (officeId: string, agentId: string, meta: { title?: string }) => Promise<{ success: boolean }>;
       getSessionMeta: (officeId: string, agentId: string) => Promise<{ title: string } | null>;
-      getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string }>>;
+      getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string; sessionId?: string }>>;
       createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;

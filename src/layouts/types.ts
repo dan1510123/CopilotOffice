@@ -1,12 +1,21 @@
 import { AgentConfig } from '../config/agents';
 import { AgentStatus, OfficeData, OfficeLayout } from '../office/officeManager';
 
+/** Per-agent session snapshot displayed in the dashboard's session info panel. */
+export interface SessionMetaSnapshot {
+  title: string;
+  /** Current session uuid (the value in `current[agentId]` on disk). Optional
+   * because (a) old clients may not pass it and (b) an agent with metadata
+   * but no minted session yet legitimately has no id. */
+  sessionId?: string;
+}
+
 /** Context passed to dashboard renderers for building agent card HTML. */
 export interface DashboardRenderContext {
   agents: AgentConfig[];
   office: OfficeData | null;
   selectedAgentId: string | null;
-  cachedSessionMeta: Record<string, { title: string }>;
+  cachedSessionMeta: Record<string, SessionMetaSnapshot>;
   agentTools: Map<string, { toolId: string; name: string; status: string }[]>;
   formatElapsed: (startTime: number | null) => string;
   formatRelativeTime: (timestamp: number) => string;
@@ -29,6 +38,7 @@ export interface CardClickHandler {
   handleMetaPanelClick(target: HTMLElement, agentId: string, context: {
     startSessionMetaEdit: (agentId: string) => void;
     startNewSession: (agentId: string) => void;
+    closeSession: (agentId: string) => void;
   }): void;
 }
 

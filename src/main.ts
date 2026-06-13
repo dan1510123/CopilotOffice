@@ -1626,9 +1626,25 @@ function setupTerminalClickHandler() {
       e.stopPropagation();
       const agentId = (metaPanel as HTMLElement).dataset.agent;
       if (!agentId) return;
+      // Session-id badge: click-to-copy short-circuits before delegating to
+      // the layout handler so we never accidentally route copy clicks into
+      // edit/new-session/close-session.
+      const idBadge = target.closest('.session-id-badge') as HTMLElement | null;
+      if (idBadge) {
+        const fullId = idBadge.dataset.sessionId ?? idBadge.textContent?.trim() ?? '';
+        if (fullId) {
+          void navigator.clipboard?.writeText(fullId).catch(() => {});
+          // Brief visual ack: swap text → "copied!" → restore after 700ms.
+          const original = idBadge.textContent;
+          idBadge.textContent = '✓ copied';
+          setTimeout(() => { if (idBadge) idBadge.textContent = original; }, 700);
+        }
+        return;
+      }
       layout.clickHandler.handleMetaPanelClick(target, agentId, {
         startSessionMetaEdit,
         startNewSession: (id) => { void startSessionFromOverview(id); },
+        closeSession: (id) => { void closeSessionFromOverview(id); },
       });
       return;
     }
@@ -1684,6 +1700,29 @@ async function startSessionFromOverview(agentId: string): Promise<void> {
   }
 
   officeManager.setAgentStarting(officeId, agentId);
+  phaserGameRef?.events.emit('agent:status:changed', agentId);
+  updateStatusBar();
+  updateTerminalContent();
+}
+
+/** Dashboard "Close Session" button: deliberate close, no auto-restart
+ * (FR-013). Distinct from "New Session" which closes+restarts. */
+async function closeSessionFromOverview(agentId: string): Promise<void> {
+  if (!window.copilotBridge) return;
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  try {
+    await window.copilotBridge.resetSession(officeId, agentId);
+  } catch (error) {
+    console.warn(`[Office] Failed to close session from overview for ${agentId}:`, error);
+    return;
+  }
+  // Optimistic local state — the server's status event will reconcile.
+  const meta = cachedSessionMeta[agentId];
+  if (meta) {
+    cachedSessionMeta[agentId] = { ...meta, sessionId: undefined };
+    setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
+  }
+  officeManager.setAgentSlacking(officeId, agentId);
   phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateStatusBar();
   updateTerminalContent();

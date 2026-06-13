@@ -902,7 +902,19 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'get-all-session-meta': {
       const officeData = getOfficeSession(msg.officeId);
-      send({ type: 'response', requestId: msg.requestId, result: Object.fromEntries(officeData.sessionMeta) });
+      // Spec 009-enhancement: include the current sessionId per agent so the
+      // dashboard can render the id under the title without an extra RPC.
+      const merged: Record<string, { title: string; sessionId?: string }> = {};
+      for (const [agentId, meta] of officeData.sessionMeta.entries()) {
+        const sessionId = officeData.sessionIds.get(agentId);
+        merged[agentId] = sessionId ? { ...meta, sessionId } : { ...meta };
+      }
+      // Also surface agents that have a sessionId but no metadata entry yet
+      // (e.g., session minted but no first user message → no auto-title yet).
+      for (const [agentId, sessionId] of officeData.sessionIds.entries()) {
+        if (!merged[agentId]) merged[agentId] = { title: '', sessionId };
+      }
+      send({ type: 'response', requestId: msg.requestId, result: merged });
       break;
     }
 
