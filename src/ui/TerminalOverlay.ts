@@ -64,6 +64,7 @@ export class TerminalOverlay {
   private mobileKeyboardBtn: HTMLButtonElement | null = null;
   private isFocused: boolean = false;
   private resizeHandler: (() => void) | null = null;
+  private clipboardHandler: ((e: KeyboardEvent) => void) | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private refitGeneration: number = 0;
@@ -750,11 +751,20 @@ export class TerminalOverlay {
       if (this.isVisible && !this.isFocused) {
         this.focusTerminal();
       }
-      // Always ensure the xterm textarea has keyboard focus on any mousedown.
+      // Ensure the xterm textarea has keyboard focus on any mousedown.
       // When SGR mouse mode is active (Copilot CLI), xterm routes mouse events
       // to the PTY but may not focus its hidden textarea — without this,
       // subsequent Ctrl+C/Ctrl+V keystrokes won't reach the customKeyEventHandler.
       this.terminal?.focus();
+    });
+    // Re-assert focus after mouseup — the browser's default mousedown action
+    // and xterm's SGR mouse handler may move focus away from the textarea
+    // between mousedown and mouseup. This ensures keyboard focus is correct
+    // by the time the user presses Ctrl+C.
+    terminalOuter.addEventListener('mouseup', () => {
+      if (this.isVisible) {
+        requestAnimationFrame(() => this.terminal?.focus());
+      }
     });
     this.container.appendChild(terminalOuter);
 
@@ -1276,6 +1286,33 @@ export class TerminalOverlay {
       return true;
     });
 
+    // Document-level capture-phase clipboard handler — catches Ctrl+C/V even
+    // when xterm's textarea doesn't have DOM focus (e.g. SGR mouse mode stole
+    // focus during click, or user pressed Ctrl+C without clicking first).
+    if (this.clipboardHandler) {
+      document.removeEventListener('keydown', this.clipboardHandler, true);
+    }
+    this.clipboardHandler = (event: KeyboardEvent) => {
+      if (!this.isVisible) return;
+      const isModifierPressed = event.ctrlKey || event.metaKey;
+      if (!isModifierPressed || event.type !== 'keydown') return;
+      const key = event.key.toLowerCase();
+
+      if (key === 'c') {
+        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+        if (!selection) return; // no selection — let event propagate naturally
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void this.copyToClipboard(selection, 'live');
+      } else if (key === 'v') {
+        if (this.isReadOnly) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        void this.pasteFromClipboardToTerminal();
+      }
+    };
+    document.addEventListener('keydown', this.clipboardHandler, true);
+
     // Handle terminal input — registered fresh in registerOnDataHandler() per
     // show() so the bound agentId/officeId stay correct across agent switches
     // (feature 002, C3/V6). The first registration happens at the end of show().
@@ -1711,6 +1748,10 @@ export class TerminalOverlay {
 
   destroy(): void {
     this.hideTerminalContextMenu();
+    if (this.clipboardHandler) {
+      document.removeEventListener('keydown', this.clipboardHandler, true);
+      this.clipboardHandler = null;
+    }
     if (this.terminalContextMenuDismiss) {
       document.removeEventListener('mousedown', this.terminalContextMenuDismiss, true);
       document.removeEventListener('keydown', this.terminalContextMenuDismiss, true);
