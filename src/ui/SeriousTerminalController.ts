@@ -940,6 +940,15 @@ export class SeriousTerminalController {
     this.terminalDivEl.id = 'serious-terminal-container';
     this.terminal.open(this.terminalDivEl);
 
+    // Suppress SGR/any-event mouse tracking from the PTY (same as TerminalOverlay).
+    const MOUSE_MODES = new Set([1000, 1002, 1003, 1006]);
+    this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      for (const p of params) {
+        if (typeof p === 'number' && MOUSE_MODES.has(p)) return true;
+      }
+      return false;
+    });
+
     // Spec 004: terminal right-click → context menu (Copy / Paste).
     this.installTerminalContextMenu();
 

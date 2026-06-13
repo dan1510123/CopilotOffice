@@ -1251,6 +1251,20 @@ export class TerminalOverlay {
     this.terminal.open(this.terminalDiv);
     this.fitAndResizeTerminal();
 
+    // Suppress SGR/any-event mouse tracking sequences from the PTY.
+    // Copilot CLI enables mouse tracking (CSI ? 1000/1002/1003/1006 h) which
+    // causes xterm to route mouse events to the PTY and disable text selection.
+    // By intercepting these DECSET sequences, we keep selection working normally
+    // while the PTY program (Copilot CLI) remains unaware.
+    const MOUSE_MODES = new Set([1000, 1002, 1003, 1006]);
+    this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      // If ANY param is a mouse mode, swallow the entire sequence
+      for (const p of params) {
+        if (typeof p === 'number' && MOUSE_MODES.has(p)) return true;
+      }
+      return false; // not mouse-related — let default handler process it
+    });
+
     // Spec 004: terminal right-click → context menu (Copy / Paste).
     this.installTerminalContextMenu();
 
