@@ -1308,6 +1308,14 @@ export class TerminalOverlay {
     }
     this.clipboardHandler = (event: KeyboardEvent) => {
       if (!this.isVisible) return;
+      // Don't intercept when user is editing the session title or typing in
+      // any non-xterm input/textarea (e.g. search, title rename).
+      if (this.isEditingSessionTitle) return;
+      const active = document.activeElement;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') &&
+          active !== this.terminal?.textarea) {
+        return;
+      }
       const isModifierPressed = event.ctrlKey || event.metaKey;
       if (!isModifierPressed || event.type !== 'keydown') return;
       const key = event.key.toLowerCase();
