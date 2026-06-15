@@ -182,6 +182,18 @@ export const defaultDashboard: DashboardRenderer = {
       const meta = cachedSessionMeta[agent.id];
       const hasSession = liveStatus?.state === 'active';
       const metaTitle = meta?.title || '';
+      const metaSessionId = meta?.sessionId || '';
+      const sessionIdBadgeHtml = metaSessionId
+        ? `<div class="session-id-badge" data-agent="${agent.id}" data-session-id="${metaSessionId}" title="Click to copy: ${metaSessionId}" style="
+            display: inline-block; align-self: flex-start;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 10px; color: #8ec3ff;
+            background: #1a2030; border: 1px solid #2a3550;
+            padding: 1px 6px; border-radius: 3px;
+            cursor: pointer; user-select: text;
+            max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          ">${metaSessionId}</div>`
+        : '';
       const sessionPanelHtml = hasSession ? `
         <div class="session-meta-panel" data-agent="${agent.id}" style="
           flex: 2; min-width: 0;
@@ -198,6 +210,7 @@ export const defaultDashboard: DashboardRenderer = {
             overflow: hidden; text-overflow: ellipsis;
             display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
           " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set title'}">${metaTitle || 'Untitled session'}</div>
+          ${sessionIdBadgeHtml}
           <button class="session-new-btn" data-agent="${agent.id}" style="
             margin-top: 2px;
             align-self: flex-start;
@@ -205,6 +218,12 @@ export const defaultDashboard: DashboardRenderer = {
             font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
             cursor: pointer; transition: background 0.15s, border-color 0.15s;
           " title="Start a new session for this agent">🔄 New Session</button>
+          <button class="session-close-btn" data-agent="${agent.id}" style="
+            align-self: flex-start;
+            background: #3a2a2a; border: 1px solid #6a4a4a; color: #f7a9a9;
+            font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
+            cursor: pointer; transition: background 0.15s, border-color 0.15s;
+          " title="Close this agent's session (agent returns to slacking)">✖ Close Session</button>
           <div style="display: flex; justify-content: flex-end;">
             <button class="session-edit-btn" data-agent="${agent.id}" style="
               background: none; border: 1px solid #333; color: #667;

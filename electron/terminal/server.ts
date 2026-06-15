@@ -11,6 +11,13 @@ import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from 
 import { formatToolStatus } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
 import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess } from './terminal-backend';
+import {
+  addAgentViewer,
+  hasActiveViewer as hasActiveViewerForMaps,
+  removeAgentViewer,
+  type ViewerMaps,
+} from './agent-viewers';
+import { repairDuplicateSessionIds } from './session-repair';
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -23,8 +30,27 @@ interface PtyProcess {
 }
 
 const ptyProcesses: Map<string, PtyProcess> = new Map();
+
+// ── Feature 002 forensic logging ──
+// Set to true (or define COPILOT_OFFICE_DEBUG_COLD_START=1) to surface the
+// per-agent cold-start log lines documented in
+// `specs/002-fix-terminal-cold-start/contracts/terminal-protocol.md`.
+// Default false so production builds stay quiet.
+const DEBUG_COLD_START = process.env.COPILOT_OFFICE_DEBUG_COLD_START === '1';
+
+// Dual-key viewer bookkeeping (R-002 — see electron/terminal/agent-viewers.ts
+// for the full invariant). `agentToTerminal` maps a viewer-side composite key
+// to the PTY's original terminal key for transferred fleet sessions;
+// `activeAgentViewers` tracks every key with a live viewer attached.
+//
+// MUTATIONS THAT MAY INVOLVE TRANSFERRED SESSIONS MUST GO THROUGH
+// addAgentViewer / removeAgentViewer / hasActiveViewer so both the alias
+// key and the original PTY key stay in sync. Direct `Set.add` / `Set.delete`
+// calls are intentionally allowed in non-transfer cleanup paths (PTY exit,
+// reset-session, shutdown) where the dual-key contract does not apply.
 const agentToTerminal: Map<string, string> = new Map();
 const activeAgentViewers: Set<string> = new Set();
+const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
 const eventSourceFactory = new FileWatcherEventSourceFactory();
@@ -75,15 +101,11 @@ function compositeKey(officeId: string, agentId: string): string {
 
 /**
  * Check if a composite key has an active viewer, including alias keys.
- * For transferred sessions, the closure captures the original key but the viewer
- * may only have the alias (fleet office) key registered. This checks both.
+ * Delegates to the dual-key helper so transferred fleet sessions are handled
+ * uniformly (R-002). See `electron/terminal/agent-viewers.ts` for the invariant.
  */
 function hasActiveViewer(ck: string): boolean {
-  if (activeAgentViewers.has(ck)) return true;
-  for (const [alias, termKey] of agentToTerminal) {
-    if (termKey === ck && activeAgentViewers.has(alias)) return true;
-  }
-  return false;
+  return hasActiveViewerForMaps(ck, viewerMaps);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -132,6 +154,12 @@ async function loadOfficeSessionFile(officeId: string): Promise<void> {
         data.sessionIds = new Map(Object.entries(parsed));
         data.sessionHistory = new Map();
         data.sessionMeta = new Map();
+        await saveOfficeSessionFile(officeId);
+      }
+      // V3 (spec 002): repair duplicate sessionIds across agents in this office.
+      // First occurrence wins; subsequent duplicates get a freshly minted UUID.
+      const repaired = repairDuplicateSessionIds(officeId, data);
+      if (repaired) {
         await saveOfficeSessionFile(officeId);
       }
       console.log(`[TermServer] Loaded sessions for ${officeId}: ${data.sessionIds.size} current, ${data.sessionHistory.size} history`);
@@ -290,6 +318,12 @@ async function startTerminalForAgent(
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
 ): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
+  // Spec 008-smoke: force shell mode end-to-end when the e2e harness is driving
+  // the app. Avoids depending on a real copilot CLI binary on the test runner
+  // while still exercising the full IPC + PTY + xterm pipeline.
+  if (process.env.COPILOT_E2E === '1') {
+    launchMode = 'shell';
+  }
   if (!terminalBackend || !terminalBackend.isAvailable()) {
     return { success: false, error: 'terminal backend not available' };
   }
@@ -628,15 +662,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'attach': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       console.log(`[TermServer] Attaching viewer for ${ck}`);
-      activeAgentViewers.add(ck);
-
-      // If this is a transferred session, the PTY data callback closure captured the
-      // ORIGINAL composite key. We must also mark that key as having an active viewer,
-      // otherwise terminal output and copilot-event forwarding are silently dropped.
-      const termKey = agentToTerminal.get(ck);
-      if (termKey && termKey !== ck) {
-        activeAgentViewers.add(termKey);
-        console.log(`[TermServer] Also marking original key ${termKey} as active viewer (transferred session)`);
+      // Dual-key invariant (R-002): for transferred fleet sessions, this also
+      // marks the original terminal key so PTY/event closures bound to the
+      // source composite key continue forwarding. See agent-viewers.ts.
+      const { aliasKey } = addAgentViewer(ck, viewerMaps);
+      if (aliasKey) {
+        console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
       }
 
       const chunks = agentScrollbackBuffers.get(ck) || [];
@@ -648,12 +679,8 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'detach': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       console.log(`[TermServer] Detaching viewer for ${ck}`);
-      activeAgentViewers.delete(ck);
-      // Also remove original key if this was a transferred session
-      const termKey = agentToTerminal.get(ck);
-      if (termKey && termKey !== ck) {
-        activeAgentViewers.delete(termKey);
-      }
+      // Pairs with addAgentViewer on attach: dual-key removal for transferred sessions.
+      removeAgentViewer(ck, viewerMaps);
       break;
     }
 
@@ -673,6 +700,20 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const officeData = getOfficeSession(msg.officeId);
       const current = officeData.sessionIds.get(msg.agentId);
       const changed = !!normalized && current !== normalized;
+
+      // Spec 007 defense-in-depth: reject if proposed id collides with
+      // another agent's id in the same office. Prevents any future renderer
+      // bug from re-introducing duplicate session ids in the persisted file
+      // (cf. the parseSessionId greedy regex removed in spec 007).
+      if (changed && normalized) {
+        for (const [otherAgent, otherSid] of officeData.sessionIds) {
+          if (otherAgent !== msg.agentId && otherSid === normalized) {
+            console.warn(`[TermServer] Rejected set-session-id ${normalized} for ${compositeKey(msg.officeId, msg.agentId)} — already in use by ${otherAgent}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'sessionId already in use by another agent in this office' } });
+            return;
+          }
+        }
+      }
 
       if (changed) {
         archiveSessionId(msg.officeId, msg.agentId);
@@ -861,7 +902,19 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'get-all-session-meta': {
       const officeData = getOfficeSession(msg.officeId);
-      send({ type: 'response', requestId: msg.requestId, result: Object.fromEntries(officeData.sessionMeta) });
+      // Spec 009-enhancement: include the current sessionId per agent so the
+      // dashboard can render the id under the title without an extra RPC.
+      const merged: Record<string, { title: string; sessionId?: string }> = {};
+      for (const [agentId, meta] of officeData.sessionMeta.entries()) {
+        const sessionId = officeData.sessionIds.get(agentId);
+        merged[agentId] = sessionId ? { ...meta, sessionId } : { ...meta };
+      }
+      // Also surface agents that have a sessionId but no metadata entry yet
+      // (e.g., session minted but no first user message → no auto-title yet).
+      for (const [agentId, sessionId] of officeData.sessionIds.entries()) {
+        if (!merged[agentId]) merged[agentId] = { title: '', sessionId };
+      }
+      send({ type: 'response', requestId: msg.requestId, result: merged });
       break;
     }
 

@@ -3,12 +3,36 @@ import { Depths, ySortDepth } from '../config/depths';
 import { Direction, getStandFrame } from '../sprites/DirectionalSprite';
 import { MeetingPlan } from '../meeting/types';
 import { InputManager } from '../input/InputManager';
-import { TerminalOverlay } from '../ui/TerminalOverlay';
+import { TerminalOverlay, DEBUG_SPRITE_SERIOUS } from '../ui/TerminalOverlay';
 import { PlanApprovalOverlay } from '../meeting/planApproval';
 import { parsePlanFromOutput } from '../meeting/planParser';
 import { officeManager } from '../office/officeManager';
-import { AGENTS } from '../config/agents';
+import { AGENTS, ARCHITECT_AGENT_ID } from '../config/agents';
 
+/**
+ * MeetingScene — third scene in the lifecycle (Boot → Office → Meeting).
+ *
+ * Responsibilities:
+ *   - Render a small 6×5 meeting room (zoom 3×) with the Architect (Arthur)
+ *     and the Player seated at a table.
+ *   - Auto-open the Architect's terminal so the player can converse and
+ *     have Arthur produce a structured `MeetingPlan` (see `src/meeting/`).
+ *   - Detect plans in terminal output (`parsePlanFromOutput`), present
+ *     `PlanApprovalOverlay`, and on approval/cancel return to `OfficeScene`
+ *     via `scene.wake('OfficeScene', { plan })`.
+ *   - Provide a "Start Fleet V-Team" deploy dialog that emits
+ *     `fleet:deploy-requested` for `main.ts` to wire session transfer.
+ *   - All references to the Architect use `ARCHITECT_AGENT_ID` from
+ *     `src/config/agents.ts` — no hardcoded literal IDs.
+ *
+ * DOM-overlay dependencies:
+ *   - `TerminalOverlay` (`src/ui/TerminalOverlay.ts`) — Arthur's terminal.
+ *   - `PlanApprovalOverlay` (`src/meeting/planApproval.ts`) — approval UI.
+ *   - "Leave Meeting" + "Start Fleet V-Team" buttons + fleet deploy
+ *     dialog are DOM elements created directly here (documented exception
+ *     to the "no DOM in scenes" rule — see scenes instructions).
+ *   - Focus is owned by `InputManager`; Ctrl+Enter exits the meeting.
+ */
 export class MeetingScene extends Phaser.Scene {
   private tileSize: number = 64;
   private mapWidth: number = 6;
@@ -95,7 +119,7 @@ export class MeetingScene extends Phaser.Scene {
     // Create terminal overlay and auto-open Arthur's terminal
     this.terminalOverlay = new TerminalOverlay(this, this.inputManager, () => officeManager.currentOfficeId || 'office-0');
 
-    const arthur = AGENTS.find(a => a.id === 'architect');
+    const arthur = AGENTS.find(a => a.id === ARCHITECT_AGENT_ID);
     if (arthur) {
       this.terminalOverlay.show(arthur, () => {
         console.log('[MeetingScene] Terminal closed');
@@ -281,7 +305,7 @@ export class MeetingScene extends Phaser.Scene {
 
     const handler = (_agentId: string, data: string) => {
       if (this.isExiting) return;
-      if (_agentId !== 'architect') return;
+      if (_agentId !== ARCHITECT_AGENT_ID) return;
       this.terminalOutputBuffer += data;
 
       // Debounced check for plan in output
@@ -315,7 +339,7 @@ export class MeetingScene extends Phaser.Scene {
         console.log('[MeetingScene] Revision requested:', feedback);
         // Send feedback to Arthur's terminal
         if (window.copilotBridge) {
-          window.copilotBridge.terminalWrite(officeManager.currentOfficeId || 'office-0', 'architect', feedback + '\r');
+          window.copilotBridge.terminalWrite(officeManager.currentOfficeId || 'office-0', ARCHITECT_AGENT_ID, feedback + '\r');
         }
         // Reset plan detection for the revised output
         this.meetingPlan = null;
@@ -484,6 +508,15 @@ export class MeetingScene extends Phaser.Scene {
       this.terminalOverlay?.hide();
     }
     this.inputManager?.destroy();
+    // Spec 003 V10: tear down the TerminalOverlay so its #sprite-card DOM
+    // node does not leak into #game-container after leaving the meeting
+    // room (e.g. exit button or non-fleet leave path).
+    if (DEBUG_SPRITE_SERIOUS) {
+      console.log('[MeetingScene] shutdown destroying terminalOverlay');
+    }
+    try { this.terminalOverlay?.destroy(); } catch (e) {
+      console.warn('[MeetingScene] shutdown overlay destroy failed', e);
+    }
     this.meetingPlan = null;
     this.terminalOutputBuffer = '';
     this.isExiting = false;

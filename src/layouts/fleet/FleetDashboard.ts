@@ -1,4 +1,5 @@
 import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
+import { ARCHITECT_AGENT_ID } from '../../config/agents';
 
 /**
  * Dashboard renderer for the fleet v-team layout.
@@ -62,7 +63,7 @@ export const fleetDashboard: DashboardRenderer = {
 
       const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
       const isSelected = agent.id === selectedAgentId;
-      const isArthur = agent.id === 'architect';
+      const isArthur = agent.id === ARCHITECT_AGENT_ID;
       const borderColor = isSelected ? '#4a5a7a' : '#252540';
       const bgColor = isSelected ? '#1a1e2e' : '#13131f';
       const cursor = isArthur ? 'pointer' : 'default';

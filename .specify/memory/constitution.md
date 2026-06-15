@@ -1,21 +1,11 @@
 <!--
 Sync Impact Report
-- Version change: template-placeholder -> 1.0.0
-- Modified principles:
-  - Template Principle 1 -> I. Phaser-First Rendering
-  - Template Principle 2 -> II. Event-Driven Boundaries
-  - Template Principle 3 -> III. Real-Agent Session Integrity
-  - Template Principle 4 -> IV. Regression-Safe Delivery
-  - Template Principle 5 -> V. Configuration-First Extensibility
+- Version change: 1.1.0 -> 1.2.0
+- Modified principles: None
 - Added sections:
-  - Technical Constraints & Invariants
-  - Delivery Workflow & Review Gates
+  - VII. Worktree-Aware Verification Discipline (new principle)
 - Removed sections: None
-- Templates requiring updates:
-  - ✅ .specify/templates/plan-template.md
-  - ✅ .specify/templates/spec-template.md
-  - ✅ .specify/templates/tasks-template.md
-  - ✅ .specify/templates/commands/*.md (no files present)
+- Templates requiring updates: None
 - Follow-up TODOs: None
 -->
 # Copilot Office Constitution
@@ -52,6 +42,69 @@ Agent rosters, layouts, feature flags, and notification behavior MUST be driven 
 configuration rather than hardcoded scene logic. New NPCs, office variants, and optional
 features SHOULD be added by extending config and existing registries before introducing new
 special-case code paths. This keeps expansion predictable and minimizes brittle branching.
+
+### VI. xterm.js Selection & Clipboard Discipline
+Terminal selection lives in **two independent places** that MUST both be honored on every
+copy path: (a) xterm's internal selection (`terminal.getSelection()` / `onSelectionChange`),
+populated when the user drags using xterm's mouse handlers; and (b) the browser's DOM
+selection (`window.getSelection()`), populated when the user drags over xterm's accessibility
+text layer (`xterm-accessibility` div) or any other rendered DOM text inside the terminal
+container. Either source can be non-empty while the other is empty, and **which one the user
+hits depends on subtle factors** (renderer choice, screen-reader mode, focus, drag origin) —
+so code MUST NOT assume one is authoritative.
+
+Mandatory rules for any code that copies from the terminal:
+1. Selection lookups MUST cascade `cachedSelection` → `terminal.getSelection()` →
+   `window.getSelection().toString()` scoped to the terminal container (anchor or focus node
+   inside the terminal element). Never stop at xterm's selection alone.
+2. Any `document`-level `copy` event preempt added to beat browser races MUST populate
+   `event.clipboardData.setData('text/plain', text)` with our best-effort selection BEFORE
+   calling `preventDefault()`. A bare `preventDefault()` silently destroys valid DOM
+   selections the user can see highlighted on screen and is forbidden.
+3. Every clipboard write path MUST emit a user-visible diagnostic toast with an instance tag
+   (`[O0]`, `[S0]`, etc.) covering success, empty selection, verify-fail, and bridge-error
+   outcomes. Silent clipboard failures are a Principle IV violation and a recurring
+   regression vector.
+4. Clipboard plumbing changes MUST mirror across both `TerminalOverlay` and
+   `SeriousTerminalController` in the same change; divergence between the two surfaces has
+   produced shipped regressions repeatedly (specs 002, 004, 005, 006, 008).
+
+This principle exists because the same class of clipboard bug has recurred across five
+specs. Treat it as a required regression checklist for every terminal change.
+
+### VII. Worktree-Aware Verification Discipline
+This repository commonly uses git worktrees for parallel feature work
+(`CopilotOffice-worktree-*` siblings of the main checkout). The Phaser bundle
+(`dist/game.bundle.js`) and the Electron main/preload bundles
+(`dist/electron/*.js`) are **per-worktree build artifacts** that are NOT shared
+between worktrees. A fix committed inside one worktree's branch produces a new
+`dist/` only inside that worktree. The main checkout (or any other worktree)
+keeps its own stale `dist/` until it is rebuilt against the same code.
+
+This has caused a "fix doesn't fix it" regression once: clipboard fixes shipped
+in spec 008 on a worktree branch, but the user kept running `npm start` from
+the main checkout, whose `dist/` was rebuilt from older uncommitted hand-fixes.
+Three consecutive rounds of "still broken" reports were caused entirely by
+running the wrong bundle, not by any code defect.
+
+Mandatory rules:
+1. Before claiming a fix works, the agent MUST confirm the path the user is
+   actually launching from. Acceptable evidence: matching timestamps on
+   `dist/game.bundle.js` AND a `grep`/`Select-String` for a distinctive marker
+   from the new code (e.g., a new toast string, a new symbol name) in the
+   bundle the user is running.
+2. When making changes inside a worktree, the agent SHOULD warn explicitly
+   that those changes are only live in that worktree's `dist/`, and either
+   (a) offer to merge the branch into the user's primary checkout, or
+   (b) tell the user the exact path they must `cd` into to verify the fix.
+3. Constitution-level fixes (new principles, version bumps, instructions
+   under `.github/`) MUST land in the primary checkout (typically `main`),
+   not only in a feature worktree, or they will not influence future work in
+   any other worktree.
+4. When debugging "still broken" reports following a shipped fix, the FIRST
+   investigation step MUST be to confirm the user is running the rebuilt
+   bundle (timestamps + distinctive-symbol grep). Skipping this step risks
+   chasing phantom code paths in code the user is not running.
 
 ## Technical Constraints & Invariants
 
@@ -99,4 +152,4 @@ Compliance review expectations:
 - Non-compliance MUST be resolved before merge or explicitly waived by maintainers with
   documented justification.
 
-**Version**: 1.0.0 | **Ratified**: 2026-04-27 | **Last Amended**: 2026-04-27
+**Version**: 1.2.0 | **Ratified**: 2026-04-27 | **Last Amended**: 2026-06-11

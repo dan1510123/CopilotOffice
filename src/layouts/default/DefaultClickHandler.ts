@@ -15,6 +15,10 @@ export const defaultClickHandler: CardClickHandler = {
   },
 
   handleMetaPanelClick(target, agentId, context) {
+    if (target.closest('.session-close-btn')) {
+      context.closeSession(agentId);
+      return;
+    }
     if (target.closest('.session-new-btn')) {
       context.startNewSession(agentId);
       return;

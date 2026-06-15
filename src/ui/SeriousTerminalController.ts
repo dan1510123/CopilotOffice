@@ -1,5 +1,9 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { ZIndex } from '../config/zIndex';
+import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
+import { showClipboardToast } from './clipboardToast';
+import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -49,7 +53,16 @@ export class SeriousTerminalController {
   private sessionId: string | null = null;
   private activeOptions: SeriousTerminalOpenOptions | null = null;
   private isFullWidth = false;
-  private terminalCopyHandler: ((event: ClipboardEvent) => void) | null = null;
+  private terminalContextMenu: HTMLDivElement | null = null;
+  private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
+  private static nextSeriousId = 0;
+  private readonly seriousInstanceId: string = String(SeriousTerminalController.nextSeriousId++);
+  // Spec 003 V13/V14: the onData callback registered on the xterm closes
+  // over the office/agent ids captured at openAgentTerminal time, not the
+  // live this.activeOfficeId/this.activeAgentId. Holding the disposable
+  // here lets the next open() drop the previous binding before installing
+  // a new one — exactly one live onData per controller at any moment.
+  private onDataDisposable: { dispose(): void } | null = null;
 
   constructor(host: HTMLElement, options: SeriousTerminalControllerOptions = {}) {
     this.host = host;
@@ -285,6 +298,32 @@ export class SeriousTerminalController {
     return this.visible;
   }
 
+  // Spec 008-smoke: expose active agent id for the e2e debug hook.
+  getActiveAgentId(): string | null {
+    return this.activeAgentId ?? null;
+  }
+
+  // Spec 008-smoke (T10): expose the visible sprite-card + session-id panel
+  // text so e2e tests can assert what the operator actually sees after agent
+  // switches. Used to repro the user-reported "locked to one agent" symptom.
+  getPanelSnapshot(): {
+    activeAgentId: string | null;
+    titleText: string;
+    spriteName: string;
+    spriteSubtitle: string;
+    sessionIdText: string;
+    sessionIdField: string | null;
+  } {
+    return {
+      activeAgentId: this.activeAgentId ?? null,
+      titleText: this.titleEl.textContent ?? '',
+      spriteName: this.spriteNameEl.textContent ?? '',
+      spriteSubtitle: this.spriteSubtitleEl.textContent ?? '',
+      sessionIdText: this.sessionIdEl.textContent ?? '',
+      sessionIdField: this.sessionId ?? null,
+    };
+  }
+
   public refreshCardFromOverview(): void {
     if (!this.visible || !this.activeAgentId) return;
     this.renderExactOverviewCard(this.activeAgentId);
@@ -304,16 +343,52 @@ export class SeriousTerminalController {
     this.openedAt = Date.now();
     this.sessionId = null;
     this.container.style.display = 'flex';
-    this.attachTerminalCopyListener();
-    this.terminal.clear();
-    this.titleEl.textContent = `${options.name} (${options.agentId})`;
-    this.subtitleEl.textContent = options.description;
-    this.updateSpriteCard(options);
-    void this.updateSessionTitle(options.officeId, options.agentId);
-    this.updateSessionIdDisplay();
-    this.setStatus('Opening...');
-    this.applyPanelLayout();
-    this.refitAndResize(options.officeId, options.agentId);
+
+    // Spec 003 V12/V12.a, C8: the synchronous render phase (sprite, title,
+    // refit) MUST NOT silently abort the entire open. Wrap in try/catch; on
+    // throw, surface a status update + visible terminal warning, then STILL
+    // proceed to the IPC attach phase using the requested ids so the PTY
+    // session is reachable for the operator.
+    try {
+      this.terminal.clear();
+      this.titleEl.textContent = `${options.name} (${options.agentId})`;
+      this.subtitleEl.textContent = options.description;
+      this.updateSpriteCard(options);
+      void this.updateSessionTitle(options.officeId, options.agentId);
+      this.updateSessionIdDisplay();
+      this.setStatus('Opening...');
+      this.applyPanelLayout();
+      this.refitAndResize(options.officeId, options.agentId);
+    } catch (err) {
+      const message = `serious-mode open failed during render: ${(err as Error)?.message || String(err)}`;
+      try { this.setStatus(message); } catch { /* ignore */ }
+      try { this.terminal.writeln(`\r\n[render error: ${message}]\r\n`); } catch { /* ignore */ }
+      if (DEBUG_SPRITE_SERIOUS) {
+        console.log(
+          `[SeriousTerminalController] openAgentTerminal render failure (officeId=${options.officeId} agentId=${options.agentId}): ${message}`,
+        );
+      } else {
+        console.warn('[SeriousTerminalController] openAgentTerminal render failure', err);
+      }
+      // Fall through to attach — do NOT return.
+    }
+
+    // Spec 003 V13/V14, C9: bind the onData callback to local copies of
+    // office/agent so subsequent activeOfficeId/activeAgentId mutations
+    // cannot misroute keystrokes. Pattern lifted from spec 002 V6
+    // TerminalOverlay.registerOnDataHandler.
+    const boundOfficeId = options.officeId;
+    const boundAgentId = options.agentId;
+    try { this.onDataDisposable?.dispose(); } catch { /* ignore */ }
+    this.onDataDisposable = this.terminal.onData((data: string) => {
+      if (!window.copilotBridge) return;
+      void window.copilotBridge.terminalWrite(boundOfficeId, boundAgentId, data);
+    });
+    if (DEBUG_SPRITE_SERIOUS) {
+      console.log(
+        `[SeriousTerminalController] onData rebound officeId=${boundOfficeId} agentId=${boundAgentId}`,
+      );
+    }
 
     try {
       const exists = await window.copilotBridge.terminalExists(options.officeId, options.agentId);
@@ -368,6 +443,33 @@ export class SeriousTerminalController {
   async startNewSession(options: SeriousTerminalOpenOptions): Promise<void> {
     if (!window.copilotBridge) return;
 
+    // T504: when the coordinator is wired (production path), delegate the
+    // close+restart chain to it so a rapid double-click coalesces to a
+    // single PTY (FR-014). If the view is currently rendering this
+    // (officeId, agentId) the resulting onStarting/onReady events propagate
+    // back through the existing terminal data channel and refresh the card.
+    const coordinator = getAutoStartCoordinator();
+    if (coordinator) {
+      try {
+        await coordinator.replaceSession(options.officeId, options.agentId);
+      } catch (err) {
+        console.warn(
+          `[SeriousTerminalController] replaceSession failed for ${options.agentId}: ${(err as Error)?.message || String(err)}`,
+        );
+      }
+      const isCurrentView =
+        this.visible &&
+        this.activeOfficeId === options.officeId &&
+        this.activeAgentId === options.agentId;
+      if (isCurrentView) {
+        // Re-attach the visible view to the new PTY so the terminal renders
+        // its replay/output stream.
+        await this.openAgentTerminal(options);
+      }
+      return;
+    }
+
+    // ── Fallback (coordinator not wired) ──────────────────────────
     try {
       await window.copilotBridge.resetSession(options.officeId, options.agentId);
     } catch {
@@ -412,7 +514,11 @@ export class SeriousTerminalController {
 
     this.visible = false;
     this.container.style.display = 'none';
-    this.detachTerminalCopyListener();
+    this.hideTerminalContextMenu();
+    // Spec 003 V14: drop the per-agent onData binding so a close-without-
+    // reopen leaves no live handler bound to a stale agent.
+    try { this.onDataDisposable?.dispose(); } catch { /* ignore */ }
+    this.onDataDisposable = null;
     this.activeOfficeId = null;
     this.activeAgentId = null;
     this.activeOptions = null;
@@ -553,7 +659,7 @@ export class SeriousTerminalController {
       border-radius: 8px;
       box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
       padding: 10px 12px;
-      z-index: 10003;
+      z-index: ${ZIndex.SERIOUS_TERMINAL};
       color: #c8d4ff;
       font-size: 12px;
       white-space: pre-wrap;
@@ -594,7 +700,7 @@ export class SeriousTerminalController {
 
   private copySessionId(): void {
     if (!this.sessionId) return;
-    void this.writeClipboardText(this.sessionId).then((success) => {
+    void this.copyToClipboard(this.sessionId, 'session').then((success) => {
       const original = this.sessionIdEl.textContent;
       this.sessionIdEl.textContent = success ? 'Copied!' : 'Copy failed';
       this.sessionIdEl.style.color = success ? '#61d394' : '#ff6b6b';
@@ -605,62 +711,155 @@ export class SeriousTerminalController {
     });
   }
 
-  private attachTerminalCopyListener(): void {
-    if (this.terminalCopyHandler) return;
-
-    this.terminalCopyHandler = (event: ClipboardEvent) => {
-      if (!this.visible || !this.terminal) return;
-
-      const target = event.target;
-      if (target instanceof Node && !this.terminalDivEl.contains(target)) return;
-
-      const selectedText = this.terminal.hasSelection() ? this.terminal.getSelection() : '';
-      if (!selectedText) return;
-
-      if (event.clipboardData) {
-        event.clipboardData.setData('text/plain', selectedText);
-        event.preventDefault();
-        return;
-      }
-
-      event.preventDefault();
-      void this.writeClipboardText(selectedText).then((success) => {
-        if (!success) {
-          this.terminal?.writeln('\r\n[Unable to copy terminal selection. Check clipboard permissions.]');
-        }
-      });
-    };
-
-    this.terminalDivEl.addEventListener('copy', this.terminalCopyHandler);
+  // Spec 006: diagnostic prefix so multi-instance and channel issues
+  // are visible in the toast UI without opening DevTools.
+  private tag(): string {
+    return `[S${this.seriousInstanceId}]`;
   }
 
-  private detachTerminalCopyListener(): void {
-    if (!this.terminalCopyHandler) return;
-    this.terminalDivEl.removeEventListener('copy', this.terminalCopyHandler);
-    this.terminalCopyHandler = null;
-  }
-
-  private async writeClipboardText(text: string): Promise<boolean> {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      // Fall back for Electron contexts where navigator.clipboard may be unavailable/blocked.
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', 'true');
-      ta.style.position = 'fixed';
-      ta.style.left = '-9999px';
-      ta.style.top = '0';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      ta.setSelectionRange(0, ta.value.length);
-      const copied = document.execCommand('copy');
-      document.body.removeChild(ta);
-      return copied;
+  // Spec 005 + 006: single canonical clipboard write path via Electron main.
+  // Diagnostic toast on every outcome.
+  private async copyToClipboard(text: string, source: 'live' | 'session' = 'live'): Promise<boolean> {
+    const t = this.tag();
+    if (!text) {
+      showClipboardToast(`${t} empty selection`, 'info');
+      return false;
     }
+    const bridge = window.copilotBridge as Window['copilotBridge'] | undefined;
+    if (!bridge?.clipboardWriteText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showClipboardToast(`${t} OK ${text.length} (fallback)`, 'success');
+        return true;
+      } catch {
+        showClipboardToast(`${t} no-bridge`, 'error');
+        return false;
+      }
+    }
+    try {
+      const r = await bridge.clipboardWriteText(text);
+      if (r?.success === true) {
+        showClipboardToast(`${t} OK ${text.length} (verified)`, 'success');
+        return true;
+      }
+      if (r?.verified === false) {
+        showClipboardToast(`${t} verify-fail (wrote=${text.length})`, 'error');
+      } else {
+        showClipboardToast(`${t} bridge-err: ${r?.error || 'unknown'}`, 'error');
+      }
+      return false;
+    } catch (e) {
+      showClipboardToast(`${t} bridge-err: ${(e as Error)?.message || 'threw'}`, 'error');
+      return false;
+    }
+  }
+
+  // Spec 005: read OS clipboard via Electron main, forward to PTY.
+  private async pasteFromClipboardToTerminal(): Promise<void> {
+    if (!this.activeOfficeId || !this.activeAgentId || !window.copilotBridge) return;
+    let text = '';
+    try {
+      const bridge = window.copilotBridge;
+      if (bridge?.clipboardReadText) {
+        const r = await bridge.clipboardReadText();
+        if (r?.success) text = r.text || '';
+      } else if (navigator.clipboard?.readText) {
+        text = await navigator.clipboard.readText();
+      }
+    } catch (e) {
+      showClipboardToast(`Paste failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
+      return;
+    }
+    if (!text) {
+      showClipboardToast('Clipboard is empty', 'info');
+      return;
+    }
+    try {
+      await window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, text);
+      showClipboardToast(`Pasted ${text.length} char${text.length === 1 ? '' : 's'}`, 'success');
+    } catch (e) {
+      showClipboardToast(`Paste failed: ${(e as Error)?.message || 'terminalWrite threw'}`, 'error');
+    }
+  }
+
+  /**
+   * Spec 004: terminal right-click context menu (Copy / Paste). Built once
+   * during attachTerminal, reused per right-click. Dismissed on outside
+   * mousedown or Escape.
+   */
+  private installTerminalContextMenu(): void {
+    if (!this.terminal || !this.terminalDivEl) return;
+    const menu = document.createElement('div');
+    menu.id = 'serious-terminal-context-menu';
+    menu.style.cssText = `
+      position: fixed;
+      display: none;
+      z-index: ${ZIndex.TERMINAL_SPRITE_CARD + 10};
+      min-width: 160px;
+      background: #1c1c2a;
+      border: 1px solid #3a3a55;
+      border-radius: 6px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+      padding: 4px 0;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 13px;
+      color: #cfd0e0;
+      user-select: none;
+    `;
+    const makeItem = (label: string, onClick: () => void): HTMLDivElement => {
+      const item = document.createElement('div');
+      item.textContent = label;
+      item.style.cssText = `padding: 6px 14px; cursor: pointer;`;
+      item.dataset.enabled = 'true';
+      item.addEventListener('mouseenter', () => {
+        if (item.dataset.enabled === 'true') item.style.background = '#2a2a45';
+      });
+      item.addEventListener('mouseleave', () => { item.style.background = ''; });
+      item.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
+      item.addEventListener('click', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (item.dataset.enabled !== 'true') return;
+        this.hideTerminalContextMenu();
+        onClick();
+      });
+      return item;
+    };
+    const copyItem = makeItem('Copy', () => {
+      const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+      void this.copyToClipboard(selection, 'live');
+    });
+    const pasteItem = makeItem('Paste', () => {
+      void this.pasteFromClipboardToTerminal();
+    });
+    menu.appendChild(copyItem);
+    menu.appendChild(pasteItem);
+    document.body.appendChild(menu);
+    this.terminalContextMenu = menu;
+
+    this.terminalDivEl.addEventListener('contextmenu', (event: MouseEvent) => {
+      if (!this.visible) return;
+      event.preventDefault();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      menu.style.display = 'block';
+      const rect = menu.getBoundingClientRect();
+      const left = Math.min(event.clientX, vw - rect.width - 4);
+      const top = Math.min(event.clientY, vh - rect.height - 4);
+      menu.style.left = `${Math.max(0, left)}px`;
+      menu.style.top = `${Math.max(0, top)}px`;
+    });
+
+    this.terminalContextMenuDismiss = (e: Event) => {
+      if (!this.terminalContextMenu || this.terminalContextMenu.style.display === 'none') return;
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return;
+      this.hideTerminalContextMenu();
+    };
+    document.addEventListener('mousedown', this.terminalContextMenuDismiss, true);
+    document.addEventListener('keydown', this.terminalContextMenuDismiss, true);
+  }
+
+  private hideTerminalContextMenu(): void {
+    if (this.terminalContextMenu) this.terminalContextMenu.style.display = 'none';
   }
 
   private renderAgentSprite(seed: string, baseColor: number): void {
@@ -740,7 +939,18 @@ export class SeriousTerminalController {
     this.terminal.loadAddon(this.fitAddon);
     this.terminalDivEl.id = 'serious-terminal-container';
     this.terminal.open(this.terminalDivEl);
-    this.attachTerminalCopyListener();
+
+    // Suppress SGR/any-event mouse tracking from the PTY (same as TerminalOverlay).
+    const MOUSE_MODES = new Set([1000, 1002, 1003, 1006]);
+    this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      for (const p of params) {
+        if (typeof p === 'number' && MOUSE_MODES.has(p)) return true;
+      }
+      return false;
+    });
+
+    // Spec 004: terminal right-click → context menu (Copy / Paste).
+    this.installTerminalContextMenu();
 
     this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
@@ -748,17 +958,20 @@ export class SeriousTerminalController {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        // Selection: allow native copy shortcut path (handled by copy event listener).
-        // No selection: allow default terminal behavior (e.g. SIGINT).
-        return true;
+        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+        if (!selection) {
+          return true;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        void this.copyToClipboard(selection, 'live');
+        return false;
       }
 
       if (key === 'v') {
         event.preventDefault();
         event.stopPropagation();
-        navigator.clipboard.readText().then((text) => {
-          if (text) this.terminal?.paste(text);
-        }).catch(() => {});
+        void this.pasteFromClipboardToTerminal();
         return false;
       }
       if (key === 'f') {
@@ -770,9 +983,13 @@ export class SeriousTerminalController {
       return true;
     });
 
-    this.terminal.onData((data: string) => {
-      if (!window.copilotBridge || !this.activeOfficeId || !this.activeAgentId) return;
-      void window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, data);
+    this.terminal.onData((_data: string) => {
+      // Spec 003 V13/V14, C9: the active onData binding is installed per
+      // openAgentTerminal call with locals captured into closure (see
+      // openAgentTerminal). This handler is a no-op kept only so the xterm
+      // has at least one onData listener wired up before the first open.
+      // The real per-agent handler is owned by this.onDataDisposable.
+      // C10 audited 2026-06-04 — closeView is IPC-only, no unguarded render.
     });
 
     this.resizeHandler = () => {

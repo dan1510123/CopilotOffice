@@ -1,12 +1,21 @@
 import { AgentConfig } from '../config/agents';
 import { AgentStatus, OfficeData, OfficeLayout } from '../office/officeManager';
 
+/** Per-agent session snapshot displayed in the dashboard's session info panel. */
+export interface SessionMetaSnapshot {
+  title: string;
+  /** Current session uuid (the value in `current[agentId]` on disk). Optional
+   * because (a) old clients may not pass it and (b) an agent with metadata
+   * but no minted session yet legitimately has no id. */
+  sessionId?: string;
+}
+
 /** Context passed to dashboard renderers for building agent card HTML. */
 export interface DashboardRenderContext {
   agents: AgentConfig[];
   office: OfficeData | null;
   selectedAgentId: string | null;
-  cachedSessionMeta: Record<string, { title: string }>;
+  cachedSessionMeta: Record<string, SessionMetaSnapshot>;
   agentTools: Map<string, { toolId: string; name: string; status: string }[]>;
   formatElapsed: (startTime: number | null) => string;
   formatRelativeTime: (timestamp: number) => string;
@@ -29,6 +38,7 @@ export interface CardClickHandler {
   handleMetaPanelClick(target: HTMLElement, agentId: string, context: {
     startSessionMetaEdit: (agentId: string) => void;
     startNewSession: (agentId: string) => void;
+    closeSession: (agentId: string) => void;
   }): void;
 }
 
@@ -37,6 +47,25 @@ export interface LayoutDefinition {
   agents: AgentConfig[];
   dashboard: DashboardRenderer;
   clickHandler: CardClickHandler;
+  /** Static, declarative behavior flags so scene code can ask the layout what
+   * it supports instead of string-comparing layout ids. Lets new layouts opt
+   * into capabilities without modifying every `currentLayout === 'X'` check. */
+  behaviors: LayoutBehaviors;
+}
+
+/**
+ * Declarative capability flags. Default to the most restrictive value so a
+ * new layout that omits a flag won't accidentally inherit specialty behavior.
+ */
+export interface LayoutBehaviors {
+  /** Reserve agents can be seated/dismissed (default layout only). */
+  supportsReserveAgents: boolean;
+  /** Player↔E-key interaction is restricted to the architect NPC only (fleet only). */
+  restrictsInteractionToArchitect: boolean;
+  /** The clickable PC terminal node is rendered and interactable (default only). */
+  hasPlayerPcTerminal: boolean;
+  /** /fleet command is accepted from the architect and dismiss-unassigned UI runs (fleet only). */
+  supportsFleetExecution: boolean;
 }
 
 export interface DashboardTypography {

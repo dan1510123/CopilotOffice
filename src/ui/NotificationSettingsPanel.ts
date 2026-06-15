@@ -1,4 +1,11 @@
 // NotificationSettingsPanel — DOM-based settings UI for notification preferences
+//
+// Focus contract (slice S1-A, baseline BL-008; hooks ratified in S2-C): this
+// is a DOM-modal overlay. Owners MUST wire `onOpen` / `onClose` to
+// `InputManager.suspendGameInput()` / `resumeGameInput()` (e.g. via the
+// existing `settings:open` / `settings:close` event bus) so prior focus is
+// saved and restored on dismissal — mirrors `SettingsPanel` /
+// `SpriteCustomizerPanel`.
 
 import {
   type NotificationEventType,
@@ -6,6 +13,7 @@ import {
   NOTIFICATION_EVENT_LABELS,
   resetNotificationSettings,
 } from '../config/notifications';
+import { ZIndex } from '../config/zIndex';
 import { type NotificationService } from './NotificationService';
 
 const ALL_EVENT_TYPES: NotificationEventType[] = [
@@ -18,12 +26,21 @@ const ALL_EVENT_TYPES: NotificationEventType[] = [
   'sessionError',
 ];
 
+export interface NotificationSettingsPanelCallbacks {
+  /** Called when the panel opens — wire to InputManager.suspendGameInput. */
+  onOpen?: () => void;
+  /** Called when the panel closes — wire to InputManager.resumeGameInput. */
+  onClose?: () => void;
+}
+
 export class NotificationSettingsPanel {
   private overlay: HTMLDivElement | null = null;
   private service: NotificationService;
+  private callbacks: NotificationSettingsPanelCallbacks;
 
-  constructor(service: NotificationService) {
+  constructor(service: NotificationService, callbacks: NotificationSettingsPanelCallbacks = {}) {
     this.service = service;
+    this.callbacks = callbacks;
   }
 
   isOpen(): boolean {
@@ -49,7 +66,7 @@ export class NotificationSettingsPanel {
       position: fixed;
       inset: 0;
       background: rgba(0,0,0,0.6);
-      z-index: 20000;
+      z-index: ${ZIndex.NOTIFICATION_SETTINGS};
       display: flex;
       align-items: center;
       justify-content: center;
@@ -87,12 +104,14 @@ export class NotificationSettingsPanel {
     document.addEventListener('keydown', escHandler);
 
     this.bindEvents(panel, settings);
+    this.callbacks.onOpen?.();
   }
 
   close(): void {
     if (this.overlay) {
       this.overlay.remove();
       this.overlay = null;
+      this.callbacks.onClose?.();
     }
   }
 

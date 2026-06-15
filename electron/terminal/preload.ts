@@ -9,6 +9,11 @@ export interface CopilotEvent {
   parentId: string | null;
 }
 
+// Spec 008-smoke: expose the e2e mode flag to the renderer so src/main.ts can
+// gate installing window.__copilotOfficeDebug without touching process.env
+// directly (contextIsolation hides Node globals from renderer code).
+contextBridge.exposeInMainWorld('__copilotOfficeE2E', process.env.COPILOT_E2E === '1');
+
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
@@ -70,7 +75,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   getSessionMeta: (officeId: string, agentId: string): Promise<{ title: string } | null> => {
     return ipcRenderer.invoke('get-session-meta', officeId, agentId);
   },
-  getAllSessionMeta: (officeId: string): Promise<Record<string, { title: string }>> => {
+  getAllSessionMeta: (officeId: string): Promise<Record<string, { title: string; sessionId?: string }>> => {
     return ipcRenderer.invoke('get-all-session-meta', officeId);
   },
 
@@ -152,6 +157,19 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   showNativeNotification: (title: string, body: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('show-native-notification', title, body);
   },
+
+  // Spec 003 follow-up: write to OS clipboard via Electron main process.
+  // Bypasses Permissions API + focus restrictions that make
+  // navigator.clipboard.writeText unreliable in xterm-focused contexts.
+  clipboardWriteText: (text: string): Promise<{ success: boolean; verified?: boolean; error?: string }> => {
+    return ipcRenderer.invoke('clipboard-write-text', text);
+  },
+
+  // Spec 004: read OS clipboard via Electron main. Renderer pairs this with
+  // terminalWrite to implement Paste in the terminal context menu.
+  clipboardReadText: (): Promise<{ success: boolean; text: string; error?: string }> => {
+    return ipcRenderer.invoke('clipboard-read-text');
+  },
 });
 
 // Type declaration for the exposed API
@@ -163,9 +181,46 @@ declare global {
     timestamp: string;
     parentId: string | null;
   }
-  
+
+  // Spec 008-smoke: e2e/diagnostic surface exposed by src/main.ts only when
+  // process.env.COPILOT_E2E === '1'. Production builds without the env have
+  // window.__copilotOfficeDebug === undefined.
+  interface CopilotOfficeDebugApi {
+    getActiveMode: () => 'game' | 'serious';
+    setMode: (mode: 'game' | 'serious') => void;
+    getCurrentOfficeId: () => string | null;
+    listAgents: () => Array<{ id: string; name: string; tileX: number; tileY: number }>;
+    getActiveTerminalAgentId: () => string | null;
+    openAgentTerminal: (agentId: string) => Promise<void>;
+    closeActiveTerminal: () => Promise<void>;
+    switchOffice: (officeId: string) => void;
+    getCachedSessionMetaForRender: () => Record<string, { title: string }>;
+    // Spec 008-smoke T10: snapshot of the serious-mode panel (sprite card
+    // title + session-id readout). Returns null when not in serious mode or
+    // when the controller is not visible.
+    getSeriousPanelSnapshot: () => null | {
+      activeAgentId: string | null;
+      titleText: string;
+      spriteName: string;
+      spriteSubtitle: string;
+      sessionIdText: string;
+      sessionIdField: string | null;
+    };
+    // Spec 009: auto-startup of known agents — diagnostic surface for e2e.
+    getWarmedOfficeIds: () => string[];
+    getAutoStartTerminalStartCount: () => number;
+    triggerAutoStartForCurrentOffice: () => Promise<string[]>;
+    replaceAgentSession: (officeId: string, agentId: string) => Promise<void>;
+    setAutoStartEnabled: (enabled: boolean) => void;
+    getAutoStartEnabled: () => boolean;
+    clearWarmedOfficeRegistry: () => void;
+    getCurrentSessionIdForAgent: (officeId: string, agentId: string) => Promise<string | null>;
+  }
+
   interface Window {
     __copilotOfficeMobileModeActive?: () => boolean;
+    __copilotOfficeDebug?: CopilotOfficeDebugApi;
+    __copilotOfficeE2E?: boolean;
     copilotBridge: {
       terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
@@ -185,7 +240,7 @@ declare global {
       queryAgentStatuses: (officeId?: string) => Promise<Record<string, { alive: boolean; ready: boolean; inTurn: boolean }>>;
       setSessionMeta: (officeId: string, agentId: string, meta: { title?: string }) => Promise<{ success: boolean }>;
       getSessionMeta: (officeId: string, agentId: string) => Promise<{ title: string } | null>;
-      getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string }>>;
+      getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string; sessionId?: string }>>;
       createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
@@ -203,6 +258,8 @@ declare global {
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
       showNativeNotification: (title: string, body: string) => Promise<{ success: boolean }>;
+      clipboardWriteText: (text: string) => Promise<{ success: boolean; verified?: boolean; error?: string }>;
+      clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
       loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;
     };

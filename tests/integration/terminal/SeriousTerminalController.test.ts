@@ -38,13 +38,15 @@ describe('integration/SeriousTerminalController', () => {
     controller = null;
   });
 
-  it('uses native copy path for selection and keeps Ctrl+C pass-through without selection', async () => {
+  it('US3 C5: Ctrl+C with non-empty selection writes to clipboard and suppresses SIGINT', async () => {
+    const writeText = vi.fn().mockResolvedValue({ success: true, verified: true });
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-serious' }),
       terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: '' }),
       getSessionId: vi.fn().mockResolvedValue('sess-serious'),
       getSessionMeta: vi.fn().mockResolvedValue({ title: 'Session Title' }),
+      clipboardWriteText: writeText,
     });
 
     const host = document.createElement('div');
@@ -80,25 +82,15 @@ describe('integration/SeriousTerminalController', () => {
       stopPropagation: stopPropagationWithSelection,
     } as unknown as KeyboardEvent);
 
-    expect(copyWithSelection).toBe(true);
-    expect(preventDefaultWithSelection).not.toHaveBeenCalled();
-    expect(stopPropagationWithSelection).not.toHaveBeenCalled();
-
-    const setData = vi.fn();
-    const preventDefault = vi.fn();
-    const terminalDiv = (controller as any).terminalDivEl as HTMLDivElement;
-    const copyHandler = (controller as any).terminalCopyHandler as ((e: ClipboardEvent) => void) | null;
-    expect(copyHandler).toBeTypeOf('function');
-    copyHandler?.({
-      clipboardData: { setData } as unknown as DataTransfer,
-      preventDefault,
-      target: terminalDiv,
-    } as unknown as ClipboardEvent);
-
-    expect(setData).toHaveBeenCalledWith('text/plain', 'serious selected text');
-    expect(preventDefault).toHaveBeenCalled();
+    expect(copyWithSelection).toBe(false);
+    expect(preventDefaultWithSelection).toHaveBeenCalledTimes(1);
+    expect(stopPropagationWithSelection).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('serious selected text');
 
     terminal.hasSelection.mockReturnValue(false);
+    terminal.getSelection.mockReturnValue('');
     const preventDefaultNoSelection = vi.fn();
     const stopPropagationNoSelection = vi.fn();
     const copyWithoutSelection = keyHandler?.({
@@ -115,7 +107,7 @@ describe('integration/SeriousTerminalController', () => {
     expect(stopPropagationNoSelection).not.toHaveBeenCalled();
   });
 
-  it('removes copy listener when view closes', async () => {
+  it('spec 004: context menu element is created during openAgentTerminal', async () => {
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-serious-2' }),
@@ -137,8 +129,10 @@ describe('integration/SeriousTerminalController', () => {
       launchMode: 'copilot',
     });
 
-    await controller.closeView({ detach: true });
-
-    expect((controller as any).terminalCopyHandler).toBeNull();
+    // Spec 004: the right-click context menu element is appended to the
+    // document body once the terminal is attached.
+    const menu = document.getElementById('serious-terminal-context-menu');
+    expect(menu, 'context menu should be installed after openAgentTerminal').toBeTruthy();
+    expect((controller as any).terminalContextMenu).toBe(menu);
   });
 });

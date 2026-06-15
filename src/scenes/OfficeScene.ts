@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
 import { Player } from '../entities/Player';
 import { NPC } from '../entities/NPC';
-import { TerminalOverlay } from '../ui/TerminalOverlay';
+import { TerminalOverlay, DEBUG_SPRITE_SERIOUS } from '../ui/TerminalOverlay';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
-import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
+import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, ARCHITECT_AGENT_ID, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
+import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager, OfficeLayout } from '../office/officeManager';
 import { MeetingPlan } from '../meeting/types';
@@ -14,11 +15,22 @@ import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
 import { Direction } from '../sprites/DirectionalSprite';
 import { CameraDragController } from '../ui/CameraDragController';
+import { shouldAutoStart } from '../config/agentAutoStart';
 
 /** Log only when debug mode is active (physics.world.drawDebug mirrors debug state) */
 function debugLog(scene: Phaser.Scene, ...args: unknown[]): void {
   if (scene.physics.world.drawDebug) console.log('[Debug]', ...args);
 }
+
+// Feature 002 forensic logging.
+// Flip to true (or set window.__COPILOT_OFFICE_DEBUG_COLD_START__ === true in
+// devtools before reload) to surface the per-agent preStart log line documented
+// in `specs/002-fix-terminal-cold-start/contracts/terminal-protocol.md`.
+// Default false so production builds stay quiet.
+const DEBUG_COLD_START =
+  (typeof window !== 'undefined' &&
+    (window as unknown as { __COPILOT_OFFICE_DEBUG_COLD_START__?: boolean })
+      .__COPILOT_OFFICE_DEBUG_COLD_START__ === true) || false;
 
 interface DeskInfo {
   sprite: Phaser.GameObjects.Sprite;
@@ -47,11 +59,40 @@ const ENABLE_GALAXIAN = true;
 const ENABLE_ZOOM_BAR = true;
 const PC_TERMINAL_ID = 'pc-terminal';
 
+/**
+ * OfficeScene — main gameplay scene (second in Boot → Office → Meeting).
+ *
+ * Responsibilities:
+ *   - Build the 20×12 tile office world from the active layout
+ *     (`'default'` or `'fleet-vteam'`), driven by `officeManager.currentOffice.config.layout`.
+ *   - Instantiate the Player and NPCs (rosters come from `src/config/agents.ts`
+ *     via `src/layouts/index.ts` — never hardcoded in this file).
+ *   - Drive movement, proximity detection, y-depth sorting, and the
+ *     interaction key (E) to start conversations.
+ *   - Bridge to `MeetingScene` when the player interacts with the Architect
+ *     (see `ARCHITECT_AGENT_ID` from `src/config/agents.ts`).
+ *   - Manage the fleet pipeline (FleetTracker + FleetVisualizer) when the
+ *     office layout is `'fleet-vteam'`.
+ *   - Handle `office:switch` (via `rebuildLayout`) so agent state, sprite
+ *     metadata, and dashboard cards survive switching between offices.
+ *
+ * DOM-overlay dependencies:
+ *   - `TerminalOverlay` (`src/ui/TerminalOverlay.ts`) — agent terminals.
+ *   - `BasketballGame`, `GalaxianGame` (`src/ui/`) — mini-game overlays.
+ *   - Skip / instruction buttons are created directly in this file.
+ *   - Focus transitions go through `InputManager` only; never touch the
+ *     Phaser keyboard plugin directly (see `.github/copilot-instructions.md`).
+ */
 export class OfficeScene extends Phaser.Scene {
   private player!: Player;
   private npcs: NPC[] = [];
   private desks: DeskInfo[] = [];
   private terminalOverlay!: TerminalOverlay;
+
+  // Spec 008-smoke: accessor for the e2e debug hook in src/main.ts.
+  public getTerminalOverlay(): TerminalOverlay {
+    return this.terminalOverlay;
+  }
   private basketballGame!: BasketballGame;
   private galaxianGame!: GalaxianGame;
   private basketballHoop: GameTable | null = null;
@@ -231,7 +272,7 @@ export class OfficeScene extends Phaser.Scene {
         }
         
         // Update Arthur's NPC badge back to normal
-        const arthurNPC = this.npcs.find(n => n.config.id === 'architect');
+        const arthurNPC = this.npcs.find(n => n.config.id === ARCHITECT_AGENT_ID);
         if (arthurNPC) {
           arthurNPC.updateAgentStatus(undefined); // Reset to slacking
         }
@@ -240,7 +281,7 @@ export class OfficeScene extends Phaser.Scene {
         // Hide all badges until Arthur is seated.
         const seatedNpcs: NPC[] = [];
         for (const agent of AGENTS) {
-          if (agent.id === 'architect') continue;
+          if (agent.id === ARCHITECT_AGENT_ID) continue;
           const npc = this.npcs.find(n => n.config.id === agent.id);
           if (!npc) continue;
           const deskX = npc.config.position.x * this.tileSize + this.tileSize / 2;
@@ -254,7 +295,7 @@ export class OfficeScene extends Phaser.Scene {
         const showAllBadges = () => {
           seatedNpcs.forEach(n => n.setBadgeVisible(true));
         };
-        this.triggerAgentWalkIn(['architect'], showAllBadges);
+        this.triggerAgentWalkIn([ARCHITECT_AGENT_ID], showAllBadges);
       }
     });
 
@@ -390,7 +431,7 @@ export class OfficeScene extends Phaser.Scene {
         this.openPlayerPcTerminal();
         return;
       }
-      if (this.currentLayout === 'fleet-vteam' && agentId !== 'architect') return;
+      if (getLayout(this.currentLayout).behaviors.restrictsInteractionToArchitect && agentId !== ARCHITECT_AGENT_ID) return;
       const agents = getLayout(this.currentLayout).agents;
       const agent = agents.find(a => a.id === agentId);
       if (agent) this.startConversation(agent);
@@ -646,6 +687,15 @@ export class OfficeScene extends Phaser.Scene {
       this.game.events.off('zoom:change');
       this.cameraDrag?.destroy();
       this.inputManager.destroy();
+      // Spec 003 V10: tear down the TerminalOverlay (DOM nodes, listeners,
+      // sprite-card) when the scene shuts down so multiple scene transitions
+      // cannot leak stacked sprite-cards into #game-container.
+      if (DEBUG_SPRITE_SERIOUS) {
+        console.log('[OfficeScene] shutdown destroying terminalOverlay');
+      }
+      try { this.terminalOverlay?.destroy(); } catch (e) {
+        console.warn('[OfficeScene] shutdown overlay destroy failed', e);
+      }
     }, this);
   }
 
@@ -1822,7 +1872,7 @@ export class OfficeScene extends Phaser.Scene {
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 16px;
       font-weight: bold;
-      z-index: 150;
+      z-index: ${ZIndex.OFFICE_SCENE_OVERLAY};
       transition: background 0.15s;
     `;
     btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(0, 255, 136, 0.2)'; });
@@ -1990,7 +2040,7 @@ export class OfficeScene extends Phaser.Scene {
     const isReEntry = !this.fleetPrompt;
     console.log(`[OfficeScene] initFleetPipeline: attachOfficeId=${attachOfficeId}, sourceOfficeId=${this.fleetSourceOfficeId}, currentOfficeId=${officeManager.currentOfficeId}, isReEntry=${isReEntry}`);
     try {
-      this.fleetTracker = new FleetTracker('architect', attachOfficeId);
+      this.fleetTracker = new FleetTracker(ARCHITECT_AGENT_ID, attachOfficeId);
       await this.fleetTracker.startTracking();
 
       this.fleetVisualizer = new FleetVisualizer(
@@ -2008,8 +2058,8 @@ export class OfficeScene extends Phaser.Scene {
         const fleetOfficeId = officeManager.currentOfficeId;
         if (fleetOfficeId && window.copilotBridge?.terminalWrite) {
           const fleetCmd = `/fleet ${this.fleetPrompt}\r`;
-          console.log(`[OfficeScene] Sending /fleet to ${fleetOfficeId}:architect (${fleetCmd.length} chars)`);
-          const result = await window.copilotBridge.terminalWrite(fleetOfficeId, 'architect', fleetCmd);
+          console.log(`[OfficeScene] Sending /fleet to ${fleetOfficeId}:${ARCHITECT_AGENT_ID} (${fleetCmd.length} chars)`);
+          const result = await window.copilotBridge.terminalWrite(fleetOfficeId, ARCHITECT_AGENT_ID, fleetCmd);
           console.log(`[OfficeScene] /fleet command result:`, result);
         } else {
           console.warn('[OfficeScene] Cannot send /fleet — no officeId or copilotBridge');
@@ -2067,26 +2117,62 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private async preStartAgentSessions(): Promise<void> {
+    // Spec 009 (FR-017 extension): when the "Auto-start known agents" setting
+    // is OFF, NO agents should start until the user clicks on them. This gates
+    // the spec-002 roster pre-start in addition to the spec-009 triggers, so
+    // the OFF state delivers a truly manual-only startup experience.
+    if (!shouldAutoStart()) {
+      if (DEBUG_COLD_START) {
+        console.log('[OfficeScene] preStart skipped (autoStartKnownAgents=false)');
+      }
+      return;
+    }
     if (typeof window !== 'undefined' && window.copilotBridge) {
       const oid = officeManager.currentOfficeId || 'office-0';
 
-      const startAgent = async (agentId: string, label: string) => {
-        const agent = AGENTS.find(a => a.id === agentId);
-        const savedSessionId = await window.copilotBridge.getSessionId(oid, agentId);
+      const startAgent = async (agentConfig: AgentConfig, label: string) => {
+        const startedAt = Date.now();
+        const savedSessionId = await window.copilotBridge.getSessionId(oid, agentConfig.id);
         if (savedSessionId) {
           console.log(`[CopilotOffice] Resuming ${label} session: ${savedSessionId}`);
         } else {
           console.log(`[CopilotOffice] Starting new ${label} session (no saved session found)`);
         }
-        await window.copilotBridge.terminalStart(oid, agentId, agent?.workingDir || officeManager.getCurrentWorkingDirectory());
+        const result = await window.copilotBridge.terminalStart(
+          oid,
+          agentConfig.id,
+          agentConfig.workingDir || officeManager.getCurrentWorkingDirectory(),
+        );
         console.log(`[CopilotOffice] ${label} session ready`);
+        if (DEBUG_COLD_START) {
+          const sessionId = (result && (result as { sessionId?: string }).sessionId) ?? 'unknown';
+          const elapsedMs = Date.now() - startedAt;
+          console.log(
+            `[OfficeScene] preStart agent=${agentConfig.id} sessionId=${sessionId} elapsedMs=${elapsedMs}`,
+          );
+        }
       };
 
-      // Pre-start first 2 agents from the current roster
-      const agentsToStart = AGENTS.slice(0, 2);
-      await Promise.all(
-        agentsToStart.map(a => startAgent(a.id, `${a.name} (${a.description})`))
+      // Feature 002 (US1, C1): pre-start EVERY agent in the current roster, not
+      // just the first two. The previous `AGENTS.slice(0, 2)` left the third
+      // agent to lazy-start from TerminalOverlay.show(), where a focus race
+      // could cause the open IPC to dispatch with a stale agentId — producing
+      // the shared-sessionId / input-lock symptom.
+      // Use the layout-driven roster so layouts with different agent counts
+      // (e.g. fleet-vteam) also get full pre-start coverage.
+      const roster = getLayout(this.currentLayout).agents;
+      const agentsToStart = roster.length > 0 ? roster : AGENTS;
+      const results = await Promise.allSettled(
+        agentsToStart.map(a => startAgent(a, `${a.name} (${a.description})`)),
       );
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
+        if (r.status === 'rejected') {
+          console.warn(
+            `[CopilotOffice] preStart failed for ${agentsToStart[i].id}: ${String(r.reason)}`,
+          );
+        }
+      }
     }
   }
 
@@ -2163,7 +2249,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Check for dismiss (F key) — only reserve agents can be dismissed
-    if (Phaser.Input.Keyboard.JustDown(this.dismissKey) && this.currentLayout === 'default') {
+    if (Phaser.Input.Keyboard.JustDown(this.dismissKey) && getLayout(this.currentLayout).behaviors.supportsReserveAgents) {
       const targetNPC = this.nearestNPC
         ?? (this.nearestDesk ? this.npcs.find(n => n.config.id === this.nearestDesk!.agentId) ?? null : null);
       if (targetNPC && !CORE_AGENT_IDS.has(targetNPC.config.id) && RESERVE_AGENT_DESK[targetNPC.config.id]) {
@@ -2388,7 +2474,7 @@ export class OfficeScene extends Phaser.Scene {
   private startConversation(agent: AgentConfig): void {
     // Fleet v-team: only Arthur can open a terminal (writable so user can type commands)
     if (this.currentLayout === 'fleet-vteam') {
-      if (agent.id !== 'architect') return;
+      if (agent.id !== ARCHITECT_AGENT_ID) return;
       this.game.events.emit('agent:interact', agent.id);
       this.terminalOverlay.show(
         agent,
@@ -2400,7 +2486,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Arthur triggers meeting mode instead of normal terminal
-    if (agent.id === 'architect') {
+    if (agent.id === ARCHITECT_AGENT_ID) {
       this.enterMeeting();
       return;
     }
@@ -2440,7 +2526,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private openPlayerPcTerminal(): void {
-    if (this.currentLayout !== 'default') return;
+    if (!getLayout(this.currentLayout).behaviors.hasPlayerPcTerminal) return;
 
     const workingDir = officeManager.getCurrentWorkingDirectory();
     const pcTerminalConfig: AgentConfig = {

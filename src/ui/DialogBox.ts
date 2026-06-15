@@ -2,6 +2,12 @@ import Phaser from 'phaser';
 import { AgentConfig } from '../config/agents';
 import { Depths } from '../config/depths';
 
+// Focus contract (slice S1-A, baseline BL-008): DialogBox is a Phaser-rendered
+// in-canvas overlay (not currently instantiated). If reactivated, the owner
+// MUST call `InputManager.suspendGameInput()` when `show()` is invoked and
+// `resumeGameInput()` on dismissal so the dialog's text-entry keys do not
+// race with Player WASD movement keys against the shared gated keyboard.
+
 interface ConversationMessage {
   role: 'user' | 'agent';
   content: string;

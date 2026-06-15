@@ -17,8 +17,12 @@ export class MockTerminal {
   hasSelection = vi.fn(() => false);
   getSelection = vi.fn(() => '');
   attachCustomKeyEventHandler = vi.fn();
-  onData = vi.fn();
+  onData = vi.fn(() => ({ dispose: vi.fn() }));
+  onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
   dispose = vi.fn();
+  parser = {
+    registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })),
+  };
 }
 
 export class MockFitAddon {

@@ -12,6 +12,37 @@ export interface AgentConfig {
 
 import type { HeroConfig } from '../sprites/SpriteGenerator';
 
+/**
+ * Canonical agent ID for "the Architect" (Arthur).
+ *
+ * This is the single source of truth for the architect role identifier.
+ * Scene/layout code MUST import this constant rather than using the literal
+ * string `'architect'`, so the role can be reassigned in one place if needed.
+ * See `.github/copilot-instructions.md` → "Regression-Prone Pitfalls"
+ * (hardcoded agent IDs).
+ */
+export const ARCHITECT_AGENT_ID = 'architect';
+
+/**
+ * Named ids for the other always-present default-office agents. Use these
+ * instead of raw string literals so any future rename ripples through every
+ * dashboard / click handler / parser. The string values match the entries
+ * in `AGENTS` below — keep in sync.
+ */
+export const GENERALIST_AGENT_ID = 'generalist';
+export const DEBUGGER_AGENT_ID = 'debugger';
+export const ADMIN_AGENT_ID = 'admin';
+
+/**
+ * Canonical valid agent ids accepted by the meeting plan parser. Re-exported
+ * so `src/meeting/planParser.ts` doesn't duplicate the list literal.
+ */
+export const DEFAULT_PLAN_AGENT_IDS: readonly string[] = [
+  GENERALIST_AGENT_ID,
+  DEBUGGER_AGENT_ID,
+  ADMIN_AGENT_ID,
+];
+
 // Pool of common first names for agents
 export const FLEET_NAMES = [
   'Liam', 'Emma', 'Noah', 'Olivia', 'James', 'Ava', 'Ethan', 'Sophia',
@@ -68,7 +99,7 @@ const ARTHUR_FLEET_SEAT_INDEX = 7; // {x: 10, y: 8}
 export const FLEET_AGENTS: AgentConfig[] = FLEET_SEAT_POSITIONS.map((pos, i) => {
   if (i === ARTHUR_FLEET_SEAT_INDEX) {
     return {
-      id: 'architect',
+      id: ARCHITECT_AGENT_ID,
       name: 'Arthur',
       skill: 'general',
       sprite: 'npc_architect',
@@ -164,10 +195,10 @@ const SHOW_ARCHITECT_IN_DEFAULT_OFFICE = false;
 
 // Core agent IDs that cannot be dismissed
 export const CORE_AGENT_IDS = new Set([
-  'generalist',
-  ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? ['architect'] : []),
-  'debugger',
-  'admin',
+  GENERALIST_AGENT_ID,
+  ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? [ARCHITECT_AGENT_ID] : []),
+  DEBUGGER_AGENT_ID,
+  ADMIN_AGENT_ID,
 ]);
 
 // Reverse lookup: agentId → deskId (for dismiss/restore flows)
@@ -186,7 +217,7 @@ export const AGENTS: AgentConfig[] = [
     description: 'the Generalist',
   },
   ...(SHOW_ARCHITECT_IN_DEFAULT_OFFICE ? [{
-    id: 'architect',
+    id: ARCHITECT_AGENT_ID,
     name: 'Arthur',
     skill: 'general',
     sprite: 'npc_architect',

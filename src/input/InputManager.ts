@@ -7,6 +7,30 @@ export type FocusTarget = 'game' | 'terminal';
 export type FocusFull = FocusTarget | 'none';
 
 /**
+ * Focus-gating contract (slice S1-A, baseline BL-008):
+ *
+ *   Switching focus toggles `scene.input.keyboard.enabled`; consumers register
+ *   their own keys against the same gated instance.
+ *
+ * Practical consequences:
+ *   - `GameInputListener` is the SOLE place that flips `scene.input.keyboard.enabled`
+ *     and adds/clears Phaser keyboard captures. Do not toggle the enabled flag
+ *     elsewhere (see `.github/instructions/src-input.instructions.md`).
+ *   - Per-component `scene.input.keyboard.addKey(...)` calls are permitted
+ *     (Player WASD, OfficeScene E/F, mini-game ESC/SPACE, DialogBox). All such
+ *     keys are gated wholesale by the InputManager's enabled-flag toggle.
+ *   - Two mutually exclusive focus states exist: `game` and `terminal`. `none`
+ *     is a transient bootstrap/shutdown state and not a third user-facing mode.
+ *   - DOM-modal overlays (settings, sprite customizer, notification settings)
+ *     MUST call `suspendGameInput()` on open and `resumeGameInput()` on close
+ *     so prior focus is saved and restored. Phaser-canvas mini-games
+ *     (Basketball, Galaxian) stay in `game` focus and gate their own state
+ *     via scene-level visibility flags.
+ *   - The terminal overlay routes through `switchToTerminal()` / `switchToGame()`
+ *     and uses `activateTerminalF10()` for the always-visible F10 close handler.
+ */
+
+/**
  * InputManager — central orchestrator for all keyboard focus transitions.
  *
  * Owns one instance each of:
@@ -134,32 +158,32 @@ export class InputManager {
   }
 
   /**
-   * Focus the xterm Terminal instance with retry.  Includes the 100 ms delay
-   * required for reliable focus transfer after the DOM has updated, plus up to
-   * 2 retries with increasing backoff if initial focus doesn't stick.
+   * Focus the xterm Terminal instance.  Calls focus() synchronously for
+   * immediate keyboard capture, then verifies after a short delay and retries
+   * if the DOM wasn't ready (e.g. display transition still in flight).
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   focusTerminalXterm(terminal: any): void {
-    console.log(`[InputManager] focusTerminalXterm() scheduled (+100ms) | time: ${Date.now()}`);
-    const attempt = (n: number, delay: number) => {
+    // Synchronous focus — ensures keyboard events reach xterm immediately
+    terminal?.focus();
+
+    // Verification + retry: if the textarea didn't actually receive focus
+    // (e.g. parent was still display:none at call time), retry with backoff.
+    const verify = (n: number, delay: number) => {
       setTimeout(() => {
-        terminal?.focus();
-        console.log(`[InputManager] focusTerminalXterm() attempt ${n} executed | time: ${Date.now()}`);
-        // Check if xterm's textarea actually received focus
         const textarea = terminal?.textarea as HTMLTextAreaElement | undefined;
-        if (textarea && document.activeElement !== textarea && n < 3) {
-          console.warn(`[InputManager] focus attempt ${n} didn't stick — retrying (+${delay * 2}ms)`);
-          attempt(n + 1, delay * 2);
+        if (textarea && document.activeElement !== textarea) {
+          terminal?.focus();
+          if (n < 3) verify(n + 1, delay * 2);
         }
       }, delay);
     };
-    attempt(1, 100);
+    verify(1, 50);
   }
 
   /** Blur the xterm Terminal instance (return DOM focus away from xterm). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   blurTerminalXterm(terminal: any): void {
-    console.log(`[InputManager] blurTerminalXterm() | time: ${Date.now()}`);
     terminal?.blur();
   }
 

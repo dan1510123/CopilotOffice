@@ -71,3 +71,16 @@ These are the **only** outward communication channels. Consumers wire them up af
 - Bypassing `setAgent*` helpers to mutate status fields directly (skips validation)
 - Forgetting `saveToStorage` after a new mutation method
 - Assuming agent status is persisted — it resets on reload (only office configs survive)
+
+## Post-Refactor (S2-A, 2026-06-04)
+
+The persistence boundary now lives in `src/office/officePersistence.ts`:
+
+- **Pure serializer / deserializer**: `serializeOffices(state)` / `deserializeOffices(json)` produce and consume the JSON schema. Side-effect free and unit-testable.
+- **`OfficePersistencePort`**: tiny interface (`loadDurable`, `saveDurable`, `createOfficeSession`, `deleteOfficeSession`) the manager calls instead of touching `window.copilotBridge` directly.
+- **Defaults**: `createBridgePersistencePort()` adapts the existing `window.copilotBridge` surface for production; `createNoopPersistencePort()` is for tests and SSR.
+
+`OfficeManager`'s constructor accepts an optional port (defaults to `createBridgePersistencePort()`). The schema is unchanged; legacy backfill (`layout`, `seatedAgents`, UUID id → `office-N` reindexing, `index` field drop) lives in `deserializeOffices` and matches the prior inline `loadFromJson` behaviour exactly.
+
+Every `setAgent*` mutation also emits a structured `[lifecycle]` log line via `src/util/lifecycleLog.ts` — see `src-main.instructions.md` for the telemetry contract.
+

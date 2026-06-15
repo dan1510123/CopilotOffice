@@ -1,4 +1,5 @@
 import { CardClickHandler } from '../types';
+import { ARCHITECT_AGENT_ID } from '../../config/agents';
 
 /**
  * Click handler for the fleet v-team layout.
@@ -7,7 +8,7 @@ import { CardClickHandler } from '../types';
  */
 export const fleetClickHandler: CardClickHandler = {
   handleCardClick(agentId, context) {
-    if (agentId === 'architect') {
+    if (agentId === ARCHITECT_AGENT_ID) {
       context.setSelectedAgent(agentId);
       context.emitOpenTerminal(agentId);
       return;
