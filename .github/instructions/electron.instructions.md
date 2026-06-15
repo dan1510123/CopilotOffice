@@ -67,6 +67,14 @@ Key method groups:
 
 Monitors `~/.copilot/session-state/<sessionId>/events.jsonl` for structured Copilot CLI events. Uses triple-redundant file watching (fs.watch + fs.watchFile + manual poll at 500 ms). Parses JSONL lines into typed `CopilotEvent` objects. Includes `formatToolStatus()` helper for human-readable tool descriptions.
 
+## terminal/session-repair.ts — V3 invariant (spec 002)
+
+Pure helper that scans a freshly-loaded office session map for duplicate `sessionId` values across `agentId` keys. First occurrence wins; later duplicates are re-minted via `crypto.randomUUID()` and a `[TermServer] Repaired duplicate sessionId …` warning is emitted. Called from `loadOfficeSessionFile` so the V3 invariant from `specs/002-fix-terminal-cold-start/data-model.md` cannot be violated by a corrupted persisted file. Unit-tested via `tests/integration/terminal/server-cold-start.test.ts`.
+
+## Forensic debug flag
+
+Set `COPILOT_OFFICE_DEBUG_COLD_START=1` (server side) or `window.__COPILOT_OFFICE_DEBUG_COLD_START__ = true` in the renderer devtools before reload to surface the optional cold-start log lines documented in `specs/002-fix-terminal-cold-start/contracts/terminal-protocol.md` (`[OfficeScene] preStart …`, `[TerminalOverlay] switch …`). Default off so production builds stay quiet. The V3 `Repaired duplicate sessionId` warning is always logged regardless of the flag.
+
 ## cli-bridge.ts — MOCK / PLACEHOLDER
 
 **Not used at runtime.** Contains hardcoded mock responses. Do not extend or rely on this file. All real terminal spawning is handled by `server.ts` via `ipc-relay.ts`.
@@ -85,3 +93,17 @@ Monitors `~/.copilot/session-state/<sessionId>/events.jsonl` for structured Copi
 - **IPC type mismatches**: Adding a new message type requires updating `protocol.ts`, the handler in `server.ts`, and the relay in `ipc-relay.ts`.
 - **Scrollback overflow**: Large outputs can hit the 512 KB buffer cap. Oldest chunks are evicted, which may break ANSI escape sequences mid-stream.
 - **Ready signal race**: The 100 ms watcher-start delay in `server.ts` prevents the ready signal from firing before the renderer processes the preloading status.
+
+
+## Post-Refactor (S1-D + S2-F, 2026-06-04)
+
+**Dual-key viewer invariant (R-002)** is extracted into `electron/terminal/agent-viewers.ts` with documented `addAgentViewer` / `removeAgentViewer` / `hasActiveViewer` operating on a shared `ViewerMaps` object. server.ts attach/detach IPC handlers route through it; direct `Set.add` / `Set.delete` calls are only allowed in non-transfer cleanup paths (PTY exit, reset, shutdown).
+
+**Sub-agent lifecycle forwarding** in server.ts bypasses `hasActiveViewer` for the `isFleetCriticalEvent` set (`subagent.*`, `system.notification`, `tool.execution_start` for `task`). FleetTracker (renderer) is a defense-in-depth safety net only; do not regress these unconditional sends.
+
+**Non-terminal IPC** is now extracted into two modules so `electron/main.ts` stays focused on app shell:
+
+- `electron/officeFileStore.ts` — pure FS wrapper for `.data/copilot-offices.json` (load/save/path). No electron deps → unit-testable.
+- `electron/nonTerminalIpc.ts` — `registerNonTerminalIpc({ getMainWindow, onHardReloadRequested, officeStore })` wires the 4 handlers (`request-hard-reload`, `show-native-notification`, `save-offices`, `load-offices`). Response shapes match the prior inline implementation exactly so the renderer's `OfficePersistencePort` sees no protocol delta.
+
+Terminal IPC (S1-D scope) stays in `electron/terminal/ipc-relay.ts`.

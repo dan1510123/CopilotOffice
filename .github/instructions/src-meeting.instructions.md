@@ -81,3 +81,17 @@ Read `MeetingMode.md` at the repo root for the full design.
 - **Plan JSON may be split across events**: Terminal data arrives in chunks via IPC. Accumulate output before parsing — don't parse each data event independently.
 - **Agent ID mismatch**: Arthur may output agent IDs that don't match the roster. The validator silently skips invalid tasks — check that at least one valid task remains.
 - **Overlay z-index conflicts**: The approval overlay must be above the terminal overlay and sprite card bar. Use `z-index: 10002` or higher.
+
+
+## Post-Refactor (S1-E, 2026-06-04)
+
+The three fleet modules now carry header docblocks naming each module's pipeline phase:
+
+- `FleetOrchestrator` — **spawn** phase (owns `terminalStart` lifecycle for N parallel agents)
+- `FleetTracker` — **track** phase (subscribes to `copilot-event` for sub-agent fan-out)
+- `FleetVisualizer` — **visualize** phase (read-only consumer of `FleetTracker` state, emits `fleet:*` Phaser events)
+- Teardown is the caller's responsibility (`cancel()` + `dispose()` + visualizer unsubscribe).
+
+`FleetTracker`'s silent `terminalAttach` + 10s periodic re-attach is preserved as **defense in depth** alongside the server-side dual-key invariant in `electron/terminal/agent-viewers.ts`. Do NOT remove without coordinating with that module.
+
+Parser + approval are now covered by `tests/unit/meeting/planParser.test.ts` (18 cases) and `tests/unit/meeting/planApproval.test.ts` (7 cases). Orchestrator covered by `tests/unit/meeting/fleetOrchestrator.test.ts` (7 cases). The vitest scope guard in `vitest.config.ts` allows imports from `src/meeting/**` only for these test paths + `src/main.ts` + `tests/integration/main/**`.

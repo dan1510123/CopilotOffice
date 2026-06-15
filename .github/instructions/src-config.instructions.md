@@ -82,3 +82,17 @@ JSON plan format with `agentId`, `title`, `description`, and `prompt` per task.
 - Agent positions are **grid coordinates**, not pixel positions.
 - Reserve agents have pre-generated sprites — activate by adding to `AGENTS`.
 - When changing depth layers, update `depths.ts` **and** all consumer call sites.
+
+
+## Post-Refactor (S2-E, 2026-06-04)
+
+`src/config/agents.ts` now exports named id constants alongside `ARCHITECT_AGENT_ID`:
+
+- `GENERALIST_AGENT_ID`
+- `DEBUGGER_AGENT_ID`
+- `ADMIN_AGENT_ID`
+- `DEFAULT_PLAN_AGENT_IDS` — the canonical list the meeting plan parser accepts
+
+Never use raw string literals (`'architect'`, `'admin'`, etc.) in new code — read from these constants so any future rename ripples through every dashboard, click handler, and parser.
+
+`src/config/zIndex.ts` (added in S2-C) is the canonical DOM layer registry. `src/config/depths.ts` (Phaser depths) is audited clean — every `setDepth(...)` call uses `Depths.*` or `ySortDepth()`.

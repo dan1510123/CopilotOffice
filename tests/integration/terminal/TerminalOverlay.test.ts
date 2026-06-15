@@ -193,16 +193,13 @@ describe('integration/TerminalOverlay', () => {
     expect((resizeOrder as number) < (attachOrder as number)).toBe(true);
   });
 
-  it('handles Ctrl+V once by suppressing default paste path', async () => {
+  it('Ctrl+V: spec 004 — reads clipboard via bridge and forwards text to PTY via terminalWrite', async () => {
+    const terminalWriteSpy = vi.fn().mockResolvedValue({ success: true });
     installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-paste' }),
-    });
-
-    const readText = vi.fn().mockResolvedValue('hello');
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { readText },
+      terminalWrite: terminalWriteSpy,
+      clipboardReadText: vi.fn().mockResolvedValue({ success: true, text: 'hello' }),
     });
 
     const scene = createSceneStub();
@@ -222,7 +219,6 @@ describe('integration/TerminalOverlay', () => {
     const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
       | ((e: KeyboardEvent) => boolean)
       | undefined;
-
     expect(keyHandler).toBeTypeOf('function');
 
     const preventDefault = vi.fn();
@@ -236,14 +232,144 @@ describe('integration/TerminalOverlay', () => {
       stopPropagation,
     } as unknown as KeyboardEvent);
 
-    await Promise.resolve();
-
     expect(result).toBe(false);
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(stopPropagation).toHaveBeenCalledTimes(1);
-    expect(readText).toHaveBeenCalledTimes(1);
-    expect(terminal.paste).toHaveBeenCalledTimes(1);
-    expect(terminal.paste).toHaveBeenCalledWith('hello');
+
+    // Allow the pasteFromClipboardToTerminal microtask chain to settle.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(terminalWriteSpy).toHaveBeenCalledWith('office-0', expect.any(String), 'hello');
+  });
+
+  it('Ctrl+C (spec 004): non-empty selection writes to clipboard via bridge; empty selection passes through', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({ success: true });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-copy' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean)
+      | undefined;
+    expect(keyHandler).toBeTypeOf('function');
+
+    // ── With selection: bridge writes, key event suppressed ──
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('selected text');
+
+    const pdWith = vi.fn();
+    const spWith = vi.fn();
+    const r1 = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: pdWith, stopPropagation: spWith,
+    } as unknown as KeyboardEvent);
+
+    expect(r1).toBe(false);
+    expect(pdWith).toHaveBeenCalledTimes(1);
+    expect(spWith).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('selected text');
+
+    // ── Without selection: pass through, do not preventDefault ──
+    terminal.hasSelection.mockReturnValue(false);
+    terminal.getSelection.mockReturnValue('');
+    const pdNo = vi.fn();
+    const spNo = vi.fn();
+    const r2 = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: pdNo, stopPropagation: spNo,
+    } as unknown as KeyboardEvent);
+
+    expect(r2).toBe(true);
+    expect(pdNo).not.toHaveBeenCalled();
+    expect(spNo).not.toHaveBeenCalled();
+  });
+
+  it('spec 005 Bug A: verify-mismatch from bridge shows failure toast, not success', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({
+      success: false, verified: false, error: 'clipboard verification failed',
+    });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-vmis' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('payload');
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean) | undefined;
+    keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('payload');
+    const toast = document.getElementById('copilot-office-clipboard-toast');
+    expect(toast).toBeTruthy();
+    expect(toast?.textContent || '').toMatch(/verify-fail/i);
+    expect(toast?.textContent || '').toMatch(/wrote=7/);
+  });
+
+  it('spec 006: Ctrl+C uses hasSelection/getSelection directly', async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue({ success: true, verified: true });
+    installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-modeA' }),
+      clipboardWriteText: clipboardWrite,
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(), deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(), switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(), blurTerminalXterm: vi.fn(),
+    };
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    await overlay.show(createAgent(), vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    terminal.hasSelection.mockReturnValue(true);
+    terminal.getSelection.mockReturnValue('live-only text');
+
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean) | undefined;
+    const result = keyHandler?.({
+      ctrlKey: true, metaKey: false, key: 'c', type: 'keydown',
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+
+    expect(result).toBe(false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(clipboardWrite).toHaveBeenCalledWith('live-only text');
+    const toast = document.getElementById('copilot-office-clipboard-toast');
+    expect(toast?.textContent || '').toMatch(/verified/i);
   });
 
   it('runs a geometry self-heal when Refresh Focus is clicked', async () => {
@@ -281,16 +407,13 @@ describe('integration/TerminalOverlay', () => {
     expect(inputManager.switchToTerminal.mock.calls.length).toBeGreaterThan(switchCallsBefore);
   });
 
-  it('intercepts /new and starts a tracked new session', async () => {
-    let terminalDataCb: ((agentId: string, data: string) => void) | undefined;
+  it('spec 007: intercepts /new and calls bridge.resetSession (no /session PTY parse)', async () => {
     let onSessionMetaUpdatedCb: ((agentId: string, meta: { title: string }) => void) | undefined;
     const bridge = installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-initial' }),
       getSessionMeta: vi.fn().mockResolvedValue({ title: 'Old title' }),
-      onTerminalData: vi.fn((cb) => {
-        terminalDataCb = cb;
-      }),
+      resetSession: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-after-new' }),
       onSessionMetaUpdated: vi.fn((cb) => {
         onSessionMetaUpdatedCb = cb;
       }),
@@ -317,28 +440,74 @@ describe('integration/TerminalOverlay', () => {
     onData?.('\r');
     await Promise.resolve();
     await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    terminalDataCb?.('generalist', 'Session ID: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(bridge.resetSession).not.toHaveBeenCalled();
+    // Spec 007: server-authoritative reset, no /session PTY round-trip.
+    expect(bridge.resetSession).toHaveBeenCalledWith('office-0', 'generalist');
     expect(bridge.terminalStart).toHaveBeenCalledTimes(1);
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/new');
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '\r');
-    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', '/session\r');
-    expect(bridge.setSessionId).toHaveBeenCalledWith(
-      'office-0',
-      'generalist',
-      'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-    );
+    // The greedy /session parser is gone — no /session\r write, no setSessionId IPC.
+    expect(bridge.terminalWrite).not.toHaveBeenCalledWith('office-0', 'generalist', '/session\r');
+    expect(bridge.setSessionId).not.toHaveBeenCalled();
 
     const sessionDisplay = document.querySelector('.session-id-display') as HTMLElement;
-    expect(sessionDisplay.textContent).toBe('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    expect(sessionDisplay.textContent).toBe('sess-after-new');
 
     const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
     expect(titleDisplay.textContent).toBe('Old title');
     onSessionMetaUpdatedCb?.('generalist', { title: 'New title from first message' });
     expect(titleDisplay.textContent).toBe('New title from first message');
+  });
+
+  it('US1 V6: routes keystrokes to the freshly-bound agent after show() switches', async () => {
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-X' }),
+      terminalDetach: vi.fn().mockResolvedValue({ success: true }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      switchToNone: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+
+    const geneAgent = createAgent({ id: 'generalist', name: 'Gene' });
+    const danAgent = createAgent({ id: 'debugger', name: 'Dan' });
+
+    await overlay.show(geneAgent, vi.fn());
+
+    const terminal = (overlay as any).terminal as MockTerminal;
+    const onDataGene = terminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
+    expect(onDataGene).toBeTypeOf('function');
+    onDataGene?.('g');
+
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', 'g');
+
+    await overlay.show(danAgent, vi.fn());
+
+    // After switch the previous onData closure should be disposed AND a fresh
+    // closure registered with bound agentId=debugger.
+    const onDataDan = terminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
+    expect(onDataDan).toBeTypeOf('function');
+    expect(onDataDan).not.toBe(onDataGene);
+
+    // Detach was awaited for the previous agent.
+    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+
+    onDataDan?.('d');
+
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'debugger', 'd');
+    // V6: input addressed to the new agent must NEVER be routed to the previous one.
+    expect(bridge.terminalWrite).not.toHaveBeenCalledWith('office-0', 'generalist', 'd');
   });
 
   it('supports inline session title editing from the sprite card', async () => {
@@ -379,4 +548,3 @@ describe('integration/TerminalOverlay', () => {
     expect((document.querySelector('.session-title-display') as HTMLElement).textContent).toBe('Renamed from sprite card');
   });
 });
-

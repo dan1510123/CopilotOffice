@@ -1,4 +1,10 @@
 // SpriteCustomizerPanel — DOM-based dropdown for player sprite color customization
+//
+// Focus contract (slice S1-A, baseline BL-008): this is a DOM-modal overlay
+// that may steal keyboard focus from the Phaser canvas. The owner MUST wire
+// `onOpen` / `onClose` to `InputManager.suspendGameInput()` /
+// `resumeGameInput()` (e.g. via the existing `settings:open` / `settings:close`
+// event bus) so prior focus is saved and restored on dismissal.
 
 import {
   type PlayerColors,
@@ -9,6 +15,7 @@ import {
   loadPlayerColors,
   resetPlayerColors,
 } from '../config/playerCustomization';
+import { ZIndex } from '../config/zIndex';
 
 function hexToCSS(hex: number): string {
   return '#' + hex.toString(16).padStart(6, '0');
@@ -21,15 +28,26 @@ export class SpriteCustomizerPanel {
   private previewImg: HTMLImageElement | null = null;
   private currentColors: PlayerColors;
   private onColorsChanged: (colors: PlayerColors) => void;
+  private onOpenCallback: (() => void) | undefined;
+  private onCloseCallback: (() => void) | undefined;
   private outsideClickHandler: ((e: MouseEvent) => void) | null = null;
   private escapeHandler: ((e: KeyboardEvent) => void) | null = null;
 
-  constructor(options: { onColorsChanged: (colors: PlayerColors) => void }) {
+  constructor(options: {
+    onColorsChanged: (colors: PlayerColors) => void;
+    /** Called when the panel opens — wire to InputManager.suspendGameInput. */
+    onOpen?: () => void;
+    /** Called when the panel closes — wire to InputManager.resumeGameInput. */
+    onClose?: () => void;
+  }) {
     this.onColorsChanged = options.onColorsChanged;
+    this.onOpenCallback = options.onOpen;
+    this.onCloseCallback = options.onClose;
     this.currentColors = loadPlayerColors();
   }
 
   show(anchorElement: HTMLElement): void {
+    const wasOpen = this.container !== null;
     if (this.container) this.hide();
 
     this.currentColors = loadPlayerColors();
@@ -37,7 +55,7 @@ export class SpriteCustomizerPanel {
     this.container = document.createElement('div');
     this.container.style.cssText = `
       position: fixed;
-      z-index: 15000;
+      z-index: ${ZIndex.SPRITE_CUSTOMIZER};
       width: 320px;
       background: #1a1a2e;
       border: 2px solid #333;
@@ -68,9 +86,12 @@ export class SpriteCustomizerPanel {
     this.previewImg = this.container.querySelector('#sprite-preview-img') as HTMLImageElement | null;
 
     this.bindEvents();
+
+    if (!wasOpen) this.onOpenCallback?.();
   }
 
   hide(): void {
+    const wasOpen = this.container !== null;
     if (this.outsideClickHandler) {
       document.removeEventListener('mousedown', this.outsideClickHandler, true);
       this.outsideClickHandler = null;
@@ -84,6 +105,7 @@ export class SpriteCustomizerPanel {
       this.container = null;
     }
     this.previewImg = null;
+    if (wasOpen) this.onCloseCallback?.();
   }
 
   toggle(anchorElement: HTMLElement): void {

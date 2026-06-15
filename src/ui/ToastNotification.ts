@@ -1,6 +1,8 @@
 // ToastNotification - DOM-based toast notification stack
 // Shows popups when background agents complete work
 
+import { ZIndex } from '../config/zIndex';
+
 export interface ToastOptions {
   agentId: string;
   agentName: string;
@@ -33,7 +35,7 @@ export class ToastNotificationManager {
       top: 80px;
       left: 16px;
       width: calc(50% - 32px);
-      z-index: 9000;
+      z-index: ${ZIndex.TOAST};
       pointer-events: none;
       display: flex;
       flex-direction: column;

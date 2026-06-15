@@ -42,6 +42,8 @@ export function createMockCopilotBridge(
     removeCopilotListeners: vi.fn(),
     requestHardReload: vi.fn().mockResolvedValue({ success: true }),
     showNativeNotification: vi.fn().mockResolvedValue({ success: true }),
+    clipboardWriteText: vi.fn().mockResolvedValue({ success: true, verified: true }),
+    clipboardReadText: vi.fn().mockResolvedValue({ success: true, text: '' }),
     saveOffices: vi.fn().mockResolvedValue({ success: true }),
     loadOffices: vi.fn().mockResolvedValue({ success: false, data: null }),
   };

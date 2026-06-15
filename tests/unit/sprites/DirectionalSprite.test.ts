@@ -5,6 +5,7 @@ import {
   directionName,
   getFrameIndex,
   getStandFrame,
+  nextWalkAction,
   registerWalkAnimations,
   walkAnimKey,
   WALK_FRAME_RATE,
@@ -44,6 +45,67 @@ describe('sprites/DirectionalSprite', () => {
     expect(firstCall.frameRate).toBe(WALK_FRAME_RATE);
     expect(firstCall.repeat).toBe(-1);
     expect(firstCall.frames).toHaveLength(4);
+  });
+});
+
+describe('sprites/DirectionalSprite.nextWalkAction (walk-state reducer)', () => {
+  it('returns idle with the last direction when velocity is zero', () => {
+    const action = nextWalkAction('player', 0, 0, {
+      direction: Direction.UP,
+      isWalking: true,
+    });
+    expect(action.kind).toBe('idle');
+    if (action.kind === 'idle') {
+      expect(action.direction).toBe(Direction.UP);
+      expect(action.standFrame).toBe(getStandFrame(Direction.UP));
+    }
+  });
+
+  it('returns play with the correct animKey for moving velocity', () => {
+    const action = nextWalkAction('player', 5, 0, {
+      direction: Direction.DOWN,
+      isWalking: false,
+    });
+    expect(action.kind).toBe('play');
+    if (action.kind === 'play') {
+      expect(action.direction).toBe(Direction.RIGHT);
+      expect(action.animKey).toBe('player_walk_right');
+      expect(action.directionChanged).toBe(true);
+    }
+  });
+
+  it('flags directionChanged=false when continuing in the same direction', () => {
+    const action = nextWalkAction('player', 5, 0, {
+      direction: Direction.RIGHT,
+      isWalking: true,
+    });
+    expect(action.kind).toBe('play');
+    if (action.kind === 'play') {
+      expect(action.directionChanged).toBe(false);
+    }
+  });
+
+  it('honors the dominant-axis tie-breaker (vertical wins)', () => {
+    const action = nextWalkAction('npc', 3, -3, {
+      direction: Direction.DOWN,
+      isWalking: false,
+    });
+    expect(action.kind).toBe('play');
+    if (action.kind === 'play') {
+      expect(action.direction).toBe(Direction.UP);
+      expect(action.animKey).toBe('npc_walk_up');
+    }
+  });
+
+  it('uses the supplied spriteKey for the animKey (not hardcoded)', () => {
+    const action = nextWalkAction('custom_hero', 0, 5, {
+      direction: Direction.UP,
+      isWalking: false,
+    });
+    expect(action.kind).toBe('play');
+    if (action.kind === 'play') {
+      expect(action.animKey).toBe('custom_hero_walk_down');
+    }
   });
 });
 

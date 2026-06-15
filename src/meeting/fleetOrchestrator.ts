@@ -1,3 +1,37 @@
+/**
+ * FleetOrchestrator — **Spawn phase** of the fleet pipeline.
+ *
+ * Owns the lifecycle of N parallel Copilot CLI sessions spawned from an
+ * approved {@link MeetingPlan}. One orchestrator instance manages one fleet
+ * execution; it stages spawns, watches per-agent readiness via
+ * `onPreloadStatus` and `onCopilotEvent`, and emits aggregated `fleet:*`
+ * lifecycle events that the UI/visualizer consume.
+ *
+ * Pipeline contract (see also `MeetingMode.md`):
+ *
+ *   FleetOrchestrator  ─[spawn]─▶  copilotBridge.terminalStart
+ *          │
+ *          │ emits fleet:agent:started / working / done / failed
+ *          ▼
+ *   FleetTracker       ─[track]─▶  copilot-event stream (sub-agent activity)
+ *          │
+ *          ▼
+ *   FleetVisualizer    ─[visualize]─▶ OfficeScene NPC walks/badges
+ *          │
+ *          ▼
+ *   Teardown          ◀─[fleet:all:complete / cancel()]
+ *
+ * Boundaries:
+ *   - The orchestrator does NOT track sub-agent fan-out — that is
+ *     {@link FleetTracker}'s job. The orchestrator only sees top-level
+ *     spawned-session lifecycle.
+ *   - The orchestrator never mutates Phaser state directly — visualization is
+ *     mediated by {@link FleetVisualizer}, which listens to FleetTracker.
+ *   - On cancel/teardown the orchestrator kills any starting/working PTYs
+ *     and detaches its bridge listeners; downstream visualizer/tracker
+ *     cleanup is the caller's responsibility (typically OfficeScene).
+ */
+
 import { MeetingPlan, TaskAssignment } from './types';
 
 export interface FleetAgentState {

@@ -109,3 +109,15 @@ a complete no-op since fleet cards have no session metadata panel.
 - **Importing rendering logic into types.ts** — keep `types.ts` pure interfaces with no runtime code.
 - **Forgetting to register in index.ts** — new layouts won't be discoverable by `getLayout()`.
 - **Assuming terminal access in fleet layout** — fleet agents (except Arthur) have no terminal; don't render session controls for them.
+
+
+## Post-Refactor (S2-B, 2026-06-04)
+
+LayoutDefinition now carries a ehaviors: LayoutBehaviors field — declarative capability flags so scene code can ask the layout what it supports instead of string-comparing layout ids:
+
+- `supportsReserveAgents` (default `true` / fleet `false`)
+- `restrictsInteractionToArchitect` (default `false` / fleet `true`)
+- `hasPlayerPcTerminal` (default `true` / fleet `false`)
+- `supportsFleetExecution` (default `false` / fleet `true`)
+
+Defaults are the most restrictive so a new layout that omits a flag can't accidentally inherit specialty behavior. Prefer `getLayout(id).behaviors.X` over `id === 'default' / 'fleet-vteam'` in new code.

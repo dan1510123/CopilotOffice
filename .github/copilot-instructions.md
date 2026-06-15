@@ -126,14 +126,27 @@ Testing notes:
 
 ## Regression-Prone Pitfalls (from recent history)
 
-- **Do not hardcode agent IDs in scene/layout logic.** Office rosters can be dynamic; use config-driven lists, seat/index mappings, or position-based lookups.
-- **Guard status transitions against concurrent tool events.** In `src/main.ts`, treat `ask_user` as a waiting-state signal even when other tools complete in the same tick.
-- **Preserve and restore focus around overlays/popovers.** Settings/terminal UI changes must keep `InputManager` and DOM focus in sync on open/close.
-- **Do not gate fleet lifecycle events on active terminal viewers.** In `electron/terminal/server.ts`, sub-agent lifecycle forwarding must continue through scene transitions/detaches.
+- **Do not hardcode agent IDs in scene/layout/dashboard logic.** Office rosters can be dynamic; use the named constants in `src/config/agents.ts` (`ARCHITECT_AGENT_ID`, `GENERALIST_AGENT_ID`, `DEBUGGER_AGENT_ID`, `ADMIN_AGENT_ID`, `DEFAULT_PLAN_AGENT_IDS`).
+- **Do not use raw layout id string-compares in new scene code.** Read `getLayout(id).behaviors.X` instead — `supportsReserveAgents`, `restrictsInteractionToArchitect`, `hasPlayerPcTerminal`, `supportsFleetExecution`. See `src/layouts/types.ts`.
+- **Guard status transitions against concurrent tool events.** Route through `src/util/toolStatus.ts` — `nextSubStateAfterToolComplete` is the canonical ask_user race-guard reducer. Do not reimplement the branching inline.
+- **Preserve and restore focus around overlays/popovers.** Every DOM-modal overlay (Settings, SpriteCustomizer, NotificationSettings) MUST expose `onOpen` / `onClose` callbacks and wire them to `InputManager.suspendGameInput()` / `resumeGameInput()` via the `settings:open` / `settings:close` event bus.
+- **Use the `ZIndex` registry for new overlays.** `src/config/zIndex.ts` is the single source of truth for DOM layer values. Never pick a magic number ad hoc.
+- **Do not gate fleet lifecycle events on active terminal viewers.** In `electron/terminal/server.ts`, the `isFleetCriticalEvent` branch forwards `subagent.*` / `system.notification` / `tool.execution_start[task]` regardless of viewers. Don't regress this.
+- **Mutate `activeAgentViewers` only via `agent-viewers.ts`.** `addAgentViewer` / `removeAgentViewer` / `hasActiveViewer` own the dual-key invariant (R-002). Direct `Set.add` / `Set.delete` is reserved for non-transfer cleanup paths (PTY exit, reset, shutdown).
 - **For terminal backend/SDK changes, keep protocol + preload + server compatible in the same change.** Path resolution and PATH sanitization are required to avoid selecting broken local binaries.
 - **After large UI mode/layout changes, run parity checks for split-pane behavior and dashboard card rendering.** Watch for sprite/session metadata persistence regressions across default and serious/fleet views.
+- **For office persistence, go through `OfficePersistencePort`.** Don't touch `window.copilotBridge` directly from `OfficeManager` — that boundary lives in `src/office/officePersistence.ts`.
+- **Use `[lifecycle]` log lines during incident triage.** Every `OfficeManager.setAgent*` mutation emits structured telemetry — `grep '[lifecycle]'` reconstructs an agent's full state graph.
 
 ## Known Limitations
 
-### Fleet V-Team: activeAgentViewers key mismatch after session transfer
-When Arthur's terminal is transferred from the source office to a fleet office (via `transferSession`), the server's PTY data callback and `EventsWatcher` callback closures capture the **original** composite key (`office-0:architect`). The `copilot-event` channel, `terminal-data` forwarding, and PTY output are only sent when `activeAgentViewers.has(ck)` — but the client attaches with the **new** fleet office key. **Fix in server:** The `attach` handler now also adds the original terminal key (via `agentToTerminal` lookup) to `activeAgentViewers`, so both keys are marked active. The `detach` handler cleans up both. **Additional workaround:** FleetTracker also attaches using the `sourceOfficeId` as a belt-and-suspenders approach. If either fix is removed, terminal output and/or copilot-event data may silently stop flowing in fleet offices.
+### BL-004 session-detach on office switch — partial coverage
+Switching offices detaches viewers from the prior office; the existing flow relies on `reconnectAgentStatuses()` in `src/main.ts` to restore event flow. There is no automated regression test that switches offices and asserts the prior session is detached (not killed) and reattaches cleanly. The Playwright `electron-smoke.e2e.ts` covers boot + create + switch but does not assert the lifecycle invariant. Deferred — needs PTY-server integration test infrastructure.
+
+> Note: The earlier "Fleet V-Team: activeAgentViewers key mismatch" limitation has been **resolved** by the S1-D refactor. The dual-key invariant is now extracted into `electron/terminal/agent-viewers.ts` with documented `addAgentViewer` / `removeAgentViewer` / `hasActiveViewer` helpers and 9 dedicated unit tests (`tests/unit/terminal/agentViewers.test.ts`). FleetTracker's silent-attach is preserved as defense in depth.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+at specs/009-auto-startup-known-agents/plan.md
+<!-- SPECKIT END -->

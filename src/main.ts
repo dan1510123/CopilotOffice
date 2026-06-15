@@ -6,8 +6,9 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout } from './office/officeManager';
-import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents } from './config/agents';
+import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
+import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { NotificationService } from './ui/NotificationService';
@@ -15,6 +16,10 @@ import { SettingsPanel } from './ui/SettingsPanel';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
+import { isAskUserTool, nextSubStateAfterToolComplete } from './util/toolStatus';
+import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
+import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStartCoordinator';
+import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/agentAutoStart';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -42,17 +47,6 @@ function syncActiveRosterForCurrentOffice(): void {
   if (office.config.layout === 'default') {
     restoreSeatedReserveAgents(officeManager.getSeatedAgents(office.config.id));
   }
-}
-
-function normalizeToolName(toolName: string | null | undefined): string {
-  return (toolName ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-}
-
-function isAskUserTool(toolName: string | null | undefined, status: string | null | undefined): boolean {
-  const normalized = normalizeToolName(toolName);
-  if (normalized === 'ask_user' || normalized === 'askuser') return true;
-  const statusText = (status ?? '').toLowerCase();
-  return statusText.includes('waiting for your answer') || statusText.includes('waiting on user input');
 }
 
 function isDonePendingAck(status: { completionPendingAck?: boolean } | null | undefined): boolean {
@@ -362,6 +356,26 @@ function applyAppMode(nextMode: AppMode, options: ApplyAppModeOptions = {}): voi
   if (previousMode === 'serious' && appMode === 'game') {
     void seriousTerminalController?.closeView({ detach: true, silent: true });
   }
+  if (previousMode === 'game' && appMode === 'serious') {
+    // User-reported 2026-06-12: a game-mode terminal that was open at flip
+    // time stayed parented in terminalPanel (the overlay DOM is created by
+    // OfficeScene.TerminalOverlay; teardownPhaserGame() destroys the scene
+    // but does NOT touch the overlay's DOM container or its IPC viewer
+    // attach). Hide it first so the serious panel gets a clean slate and
+    // the server stops streaming PTY data to a detached viewer. hide() is
+    // intentionally non-destructive — the PTY session stays alive.
+    try {
+      const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+        | { getTerminalOverlay?: () => { hide?: () => void; getIsVisible?: () => boolean } }
+        | undefined;
+      const overlay = scene?.getTerminalOverlay?.();
+      if (overlay?.getIsVisible?.()) {
+        overlay.hide?.();
+      }
+    } catch (err) {
+      console.warn('[main] failed to hide game-mode terminal overlay on mode flip', err);
+    }
+  }
   if (appMode === 'serious') {
     prewarmOverviewSpriteCacheFromTextures();
     teardownPhaserGame();
@@ -405,6 +419,95 @@ applyResponsiveLayout(computeResponsiveLayout(window.innerWidth, window.innerHei
 window.addEventListener('resize', onWindowResize);
 if (typeof window !== 'undefined') {
   window.__copilotOfficeMobileModeActive = isMobileModeActive;
+}
+
+// Spec 008-smoke: e2e debug hook. Only installed when the renderer was
+// launched under the e2e harness (preload exposes window.__copilotOfficeE2E
+// when process.env.COPILOT_E2E === '1'). Production launches leave
+// window.__copilotOfficeDebug === undefined.
+if (typeof window !== 'undefined' && window.__copilotOfficeE2E === true) {
+  installE2eDebugHook();
+}
+
+function installE2eDebugHook(): void {
+  const debugApi: CopilotOfficeDebugApi = {
+    getActiveMode: () => appMode,
+    setMode: (mode: 'game' | 'serious') => {
+      if (mode === appMode) return;
+      applyAppMode(mode, { persist: true, refreshTabs: true });
+    },
+    getCurrentOfficeId: () => officeManager.currentOfficeId,
+    listAgents: () => {
+      return getCurrentAgents().map((a) => ({
+        id: a.id,
+        name: a.name,
+        tileX: a.tileX,
+        tileY: a.tileY,
+      }));
+    },
+    getActiveTerminalAgentId: () => {
+      if (appMode === 'serious') {
+        return seriousTerminalController?.getActiveAgentId?.() ?? null;
+      }
+      const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+        | { getTerminalOverlay?: () => { getActiveAgentId(): string | null; getIsVisible(): boolean } }
+        | undefined;
+      const overlay = scene?.getTerminalOverlay?.();
+      if (!overlay || !overlay.getIsVisible()) return null;
+      return overlay.getActiveAgentId();
+    },
+    openAgentTerminal: async (agentId: string) => {
+      await openAgentTerminal(agentId);
+    },
+    closeActiveTerminal: async () => {
+      if (appMode === 'serious') {
+        await seriousTerminalController?.closeView({ detach: true });
+        return;
+      }
+      const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+        | { getTerminalOverlay?: () => { hide(): void } }
+        | undefined;
+      scene?.getTerminalOverlay?.()?.hide();
+    },
+    switchOffice: (officeId: string) => {
+      // Spec 008-smoke T12 diag: programmatically switch offices without
+      // relying on tab DOM rendering, which may not have fired yet during
+      // boot if onOfficesUpdated isn't wired.
+    switchToOffice(officeId);
+    },
+    getCachedSessionMetaForRender: () => {
+      // Returns the cachedSessionMeta the dashboard renderer is currently
+      // using. Diagnostic for the "Untitled session" bug.
+      return { ...cachedSessionMeta };
+    },
+    getSeriousPanelSnapshot: () => {
+      if (appMode !== 'serious') return null;
+      const snap = seriousTerminalController?.getPanelSnapshot?.();
+      return snap ?? null;
+    },
+    getWarmedOfficeIds: () => autoStartCoordinator.warmedOffices.snapshot(),
+    getAutoStartTerminalStartCount: () => autoStartTerminalStartCount,
+    triggerAutoStartForCurrentOffice: () => autoStartCoordinator.tryWarmCurrentOffice(),
+    replaceAgentSession: (officeId: string, agentId: string) =>
+      autoStartCoordinator.replaceSession(officeId, agentId),
+    setAutoStartEnabled: (enabled: boolean) => {
+      setAgentAutoStartSettings({ autoStartKnownAgents: enabled });
+    },
+    getAutoStartEnabled: () => getAgentAutoStartSettings().autoStartKnownAgents,
+    clearWarmedOfficeRegistry: () => {
+      autoStartCoordinator.warmedOffices.clearAll();
+    },
+    getCurrentSessionIdForAgent: async (officeId: string, agentId: string) => {
+      if (!window.copilotBridge?.getSessionId) return null;
+      try {
+        return await window.copilotBridge.getSessionId(officeId, agentId);
+      } catch {
+        return null;
+      }
+    },
+  };
+  window.__copilotOfficeDebug = debugApi;
+  console.log('[main] Spec 008-smoke: __copilotOfficeDebug installed');
 }
 
 // ── Office Tabs ─────────────────────────────────────────────────
@@ -653,6 +756,12 @@ function switchToOffice(officeId: string) {
   void reconnectAgentStatuses();
   fetchSessionMeta();
 
+  // Spec 009 (US2): trigger auto-startup for the newly-selected office.
+  // Non-blocking — fire-and-forget so the office switch stays snappy.
+  // Coordinator's per-office WarmedOfficeRegistry guarantees no-double-spawn
+  // if this office was already warmed earlier this session (FR-008).
+  void autoStartCoordinator.tryWarmCurrentOffice();
+
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
 }
 
@@ -663,7 +772,7 @@ function showNewOfficeDialog() {
   const overlay = document.createElement('div');
   overlay.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.7); z-index: 99999;
+    background: rgba(0,0,0,0.7); z-index: ${ZIndex.MODAL_DIALOG};
     display: flex; align-items: center; justify-content: center;
   `;
 
@@ -790,7 +899,7 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
     min-width: 280px;
     font-family: 'Cascadia Code', Consolas, monospace;
     color: #eee;
-    z-index: 100000;
+    z-index: ${ZIndex.TOP_MODAL};
     box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   `;
 
@@ -955,7 +1064,7 @@ statusBar.style.cssText = `
   font-family: monospace;
   font-size: 16px;
   color: #888;
-  z-index: 100;
+  z-index: ${ZIndex.STATUS_BAR};
 `;
 document.body.appendChild(statusBar);
 
@@ -1061,6 +1170,12 @@ function refreshRightPanelMode(): void {
 }
 
 async function openAgentTerminal(agentId: string): Promise<void> {
+  // Spec 008-smoke T10: unify "currently selected agent" across modes. Without
+  // this, game-mode opens never touch selectedAgentId, so a game -> serious
+  // flip loses the agent context and the serious panel never auto-attaches
+  // (user-reported "locked to one agent" after flipping modes).
+  selectedAgentId = agentId;
+
   if (appMode === 'game') {
     phaserGameRef?.events.emit('open:agent:terminal', agentId);
     return;
@@ -1094,6 +1209,117 @@ seriousTerminalController = new SeriousTerminalController(terminalHost, {
     updateTerminalContent();
   },
 });
+
+// Spec 009 e2e diag: count how many times the auto-start headless warm
+// helper invoked terminalStart. Used by tests/e2e/auto-startup.e2e.ts
+// scenarios A3 (second-visit no respawn) and A7 (double-click coalescing).
+let autoStartTerminalStartCount = 0;
+
+// ── Spec 009: auto-startup of known agents ──────────────────────
+// Headless PTY warm helper — spawns/reattaches the agent's PTY via the
+// existing terminalStart bridge WITHOUT mutating selectedAgentId, emitting
+// open:agent:terminal (which would pop the overlay in game mode), or
+// routing through seriousTerminalController.openAgentTerminal. The
+// status-badge transitions still flow through the existing per-agent
+// status event channel which the dashboard subscribes to regardless of
+// overlay state. (research.md §R5)
+async function warmAgentSession(officeId: string, agentId: string): Promise<void> {
+  if (!window.copilotBridge) return;
+  const launchConfig = getSeriousLaunchConfig(agentId);
+  if (!launchConfig) return;
+  const workingDir = launchConfig.workingDir;
+  const launchMode = launchConfig.launchMode;
+  // Surface the "starting" transition on the badge (FR-004). Same call the
+  // manual openAgentTerminal path makes; safe to repeat — the office status
+  // map tolerates idempotent transitions.
+  const officeStatus = officeManager.getAgentStatus(officeId, agentId);
+  if (officeStatus?.state === 'slacking') {
+    officeManager.setAgentStarting(officeId, agentId);
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
+    updateStatusBar();
+    updateTerminalContent();
+  }
+  autoStartTerminalStartCount += 1;
+  await window.copilotBridge.terminalStart(
+    officeId,
+    agentId,
+    workingDir,
+    undefined,
+    undefined,
+    undefined,
+    launchMode,
+  );
+}
+
+function buildCanonicalAgentIdsForOffice(officeId: string): string[] {
+  // For the current office the synced roster is the source of truth (it
+  // reflects swapActiveAgents + customAgents + customReserveAgents). For
+  // other offices we fall back to the layout's agent list + customAgents.
+  // Fleet sub-agents are not part of any office's agent list (they are
+  // tracked separately by FleetTracker), so this naturally satisfies
+  // FR-020. PC_TERMINAL_ID is a shell — exclude it because it has no
+  // persisted copilot session uuid we'd want to resume.
+  const office = officeManager.currentOfficeId === officeId
+    ? officeManager.currentOffice
+    : null;
+  if (office && officeManager.currentOfficeId === officeId) {
+    return getCurrentAgents().map((a) => a.id);
+  }
+  // Fallback: read the office's configured roster directly.
+  const layoutKey = officeManager.currentOffice?.config.layout ?? 'default';
+  const layoutAgents = getLayout(layoutKey).agents.map((a) => a.id);
+  const customIds = (officeManager.currentOffice?.config.customAgents ?? []).map(
+    (a) => a.id,
+  );
+  return Array.from(new Set([...layoutAgents, ...customIds]));
+}
+
+const autoStartCoordinator = new AutoStartCoordinator({
+  getCurrentOfficeId: () => officeManager.currentOfficeId,
+  getCanonicalAgentIds: (oid) => buildCanonicalAgentIdsForOffice(oid),
+  getSessionMeta: async (oid) => {
+    // Always fetch fresh from the bridge — cachedSessionMeta in main.ts
+    // is hydrated by an unawaited fetchSessionMeta() so it races our
+    // cold-launch trigger.
+    if (!window.copilotBridge?.getAllSessionMeta) {
+      return officeManager.currentOfficeId === oid
+        ? cachedSessionMeta
+        : getSessionMetaCacheForOffice(oid);
+    }
+    try {
+      const fresh = await window.copilotBridge.getAllSessionMeta(oid);
+      return fresh || {};
+    } catch {
+      return officeManager.currentOfficeId === oid
+        ? cachedSessionMeta
+        : getSessionMetaCacheForOffice(oid);
+    }
+  },
+  getCurrentSessionId: async (oid, aid) => {
+    if (!window.copilotBridge?.getSessionId) return null;
+    try {
+      return await window.copilotBridge.getSessionId(oid, aid);
+    } catch {
+      return null;
+    }
+  },
+  getAgentLaunchConfig: (_oid, aid) => {
+    const cfg = getSeriousLaunchConfig(aid);
+    return {
+      workingDir: cfg?.workingDir ?? officeManager.getCurrentWorkingDirectory(),
+      launchMode: cfg?.launchMode ?? 'copilot',
+    };
+  },
+  resetSession: async (oid, aid) => {
+    if (!window.copilotBridge) return;
+    await window.copilotBridge.resetSession(oid, aid);
+  },
+  warmAgentSession: (oid, aid) => warmAgentSession(oid, aid),
+  getSettings: () => getAgentAutoStartSettings(),
+});
+
+// T503/T504: expose for UI handleNewSession delegation.
+setAutoStartCoordinator(autoStartCoordinator);
 
 const notificationService = new NotificationService(
   toastManager,
@@ -1155,6 +1381,14 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
       const base64 = scene.textures.getBase64('player');
       spriteCustomizerPanel.updatePreview(base64);
     }
+  },
+  // Route focus through InputManager: reuse the settings:open / settings:close
+  // bus that OfficeScene already wires to suspendGameInput / resumeGameInput.
+  onOpen: () => {
+    phaserGameRef?.events.emit('settings:open');
+  },
+  onClose: () => {
+    phaserGameRef?.events.emit('settings:close');
   },
 });
 
@@ -1392,9 +1626,25 @@ function setupTerminalClickHandler() {
       e.stopPropagation();
       const agentId = (metaPanel as HTMLElement).dataset.agent;
       if (!agentId) return;
+      // Session-id badge: click-to-copy short-circuits before delegating to
+      // the layout handler so we never accidentally route copy clicks into
+      // edit/new-session/close-session.
+      const idBadge = target.closest('.session-id-badge') as HTMLElement | null;
+      if (idBadge) {
+        const fullId = idBadge.dataset.sessionId ?? idBadge.textContent?.trim() ?? '';
+        if (fullId) {
+          void navigator.clipboard?.writeText(fullId).catch(() => {});
+          // Brief visual ack: swap text → "copied!" → restore after 700ms.
+          const original = idBadge.textContent;
+          idBadge.textContent = '✓ copied';
+          setTimeout(() => { if (idBadge) idBadge.textContent = original; }, 700);
+        }
+        return;
+      }
       layout.clickHandler.handleMetaPanelClick(target, agentId, {
         startSessionMetaEdit,
         startNewSession: (id) => { void startSessionFromOverview(id); },
+        closeSession: (id) => { void closeSessionFromOverview(id); },
       });
       return;
     }
@@ -1450,6 +1700,29 @@ async function startSessionFromOverview(agentId: string): Promise<void> {
   }
 
   officeManager.setAgentStarting(officeId, agentId);
+  phaserGameRef?.events.emit('agent:status:changed', agentId);
+  updateStatusBar();
+  updateTerminalContent();
+}
+
+/** Dashboard "Close Session" button: deliberate close, no auto-restart
+ * (FR-013). Distinct from "New Session" which closes+restarts. */
+async function closeSessionFromOverview(agentId: string): Promise<void> {
+  if (!window.copilotBridge) return;
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  try {
+    await window.copilotBridge.resetSession(officeId, agentId);
+  } catch (error) {
+    console.warn(`[Office] Failed to close session from overview for ${agentId}:`, error);
+    return;
+  }
+  // Optimistic local state — the server's status event will reconcile.
+  const meta = cachedSessionMeta[agentId];
+  if (meta) {
+    cachedSessionMeta[agentId] = { ...meta, sessionId: undefined };
+    setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
+  }
+  officeManager.setAgentSlacking(officeId, agentId);
   phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateStatusBar();
   updateTerminalContent();
@@ -1563,11 +1836,11 @@ if (window.copilotBridge) {
 
     // Update agent status based on tool type
     if (isAskUserTool(toolName, status)) {
-      officeManager.setAgentWaiting(officeId, agentId);
+      officeManager.setAgentWaiting(officeId, agentId, 'ask_user');
       console.log(`[Office] Status: ${agentId} → waiting (ask_user)`);
       notifyAgent(agentId, 'askUser');
     } else {
-      officeManager.setAgentThinking(officeId, agentId, `${toolName}`);
+      officeManager.setAgentThinking(officeId, agentId, `${toolName}`, 'tool_start');
       console.log(`[Office] Status: ${agentId} → thinking (${toolName})`);
       notifyAgent(agentId, 'toolStart', { toolName });
     }
@@ -1598,21 +1871,22 @@ if (window.copilotBridge) {
       officeManager.pushRecentAction(officeId, agentId, completedToolName, 'completed');
       notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
 
-      // Update status based on remaining tools
-      if (remaining.length === 0) {
+      // Update status based on remaining tools. Uses `nextSubStateAfterToolComplete`
+      // to centralize the ask_user race-guard — see src/util/toolStatus.ts.
+      const next = nextSubStateAfterToolComplete(remaining);
+      if (next.kind === 'idle') {
         // Keep thinking while a turn is still settling; turn_end/sync will mark ready.
         const currentStatus = officeManager.getAgentStatus(officeId, agentId);
         if (currentStatus?.subState === 'thinking') {
-          officeManager.setAgentThinking(officeId, agentId, currentStatus.thinkingDetail ?? 'Processing...');
+          officeManager.setAgentThinking(officeId, agentId, currentStatus.thinkingDetail ?? 'Processing...', 'tool_complete_settling');
         } else {
-          officeManager.setAgentReady(officeId, agentId);
+          officeManager.setAgentReady(officeId, agentId, 'tool_complete');
         }
-      } else if (remaining.some(t => isAskUserTool(t.name, t.status))) {
+      } else if (next.kind === 'waiting') {
         // ask_user is still active — preserve waiting state even if other tools completed
-        officeManager.setAgentWaiting(officeId, agentId);
+        officeManager.setAgentWaiting(officeId, agentId, 'ask_user_race_guard');
       } else {
-        const last = remaining[remaining.length - 1];
-        officeManager.setAgentThinking(officeId, agentId, `${last.name}`);
+        officeManager.setAgentThinking(officeId, agentId, next.detail, 'tool_complete');
       }
     }
 
@@ -1634,10 +1908,10 @@ if (window.copilotBridge) {
         agentTools.set(agentId, []);
       }
       if (waitingToolActive) {
-        officeManager.setAgentWaiting(officeId, agentId);
+        officeManager.setAgentWaiting(officeId, agentId, 'turn_end_ask_user_active');
       } else {
         // Turn finished and no wait tool active: mark response done until user acknowledges.
-        officeManager.setAgentDonePendingAck(officeId, agentId);
+        officeManager.setAgentDonePendingAck(officeId, agentId, 'turn_end');
       }
       notifyAgent(agentId, 'turnEnd');
     }
@@ -1699,11 +1973,11 @@ if (window.copilotBridge) {
       const current = officeManager.getAgentStatus(officeId, agentId);
       if (status === 'preloading') {
         if (!current || current.state === 'slacking') {
-          officeManager.setAgentStarting(officeId, agentId);
+          officeManager.setAgentStarting(officeId, agentId, 'preload');
         }
       } else if (status === 'ready') {
         // This is the ONLY path allowed to transition out of starting state
-        officeManager.setAgentReady(officeId, agentId);
+        officeManager.setAgentReady(officeId, agentId, 'preload_ready');
         // Clear any stale tool state accumulated from historical events during startup
         const agentTools = getCurrentAgentTools();
         if (agentTools.has(agentId)) {
@@ -1712,7 +1986,7 @@ if (window.copilotBridge) {
         notifyAgent(agentId, 'sessionReady');
       } else if (status === 'failed') {
         console.warn(`[Office] Preload FAILED for ${agentId}`);
-        officeManager.setAgentError(officeId, agentId, 'Preload failed');
+        officeManager.setAgentError(officeId, agentId, 'Preload failed', 'preload_failed');
         notifyAgent(agentId, 'sessionError');
       }
     }
@@ -1785,11 +2059,27 @@ async function syncAgentStatuses(force = false): Promise<void> {
         && activeTools.length === 0
       );
 
-      // Timeout: if agent has been in 'starting' for too long, transition to error
-      if (current?.subState === 'starting' && current.activityStartTime
-          && (now - current.activityStartTime) > STARTING_TIMEOUT_MS) {
+      // Feature 002 (US2, C4/V4): only flip to error: 'Startup timed out' when
+      // the underlying PTY is actually dead. If the PTY is alive the ready
+      // signal just hasn't landed yet — recover to ready and log it.
+      const decision = decideStartupTimeoutTransition({
+        subState: current?.subState,
+        activityStartTime: current?.activityStartTime,
+        now,
+        timeoutMs: STARTING_TIMEOUT_MS,
+        serverAlive: serverStatus?.alive,
+      });
+      if (decision.kind === 'recover-to-ready') {
+        console.warn(
+          `[Office] Agent ${agent.id} stuck in starting past timeout but PTY alive — recovering to ready`,
+        );
+        officeManager.setAgentReady(officeId, agent.id);
+        changed = true;
+        continue;
+      }
+      if (decision.kind === 'transition-to-error') {
         console.warn(`[Office] Agent ${agent.id} stuck in starting for >${STARTING_TIMEOUT_MS / 1000}s — transitioning to error`);
-        officeManager.setAgentError(officeId, agent.id, 'Startup timed out');
+        officeManager.setAgentError(officeId, agent.id, decision.reason);
         changed = true;
         continue;
       }
@@ -2019,7 +2309,7 @@ type FleetStatusSummary = { total: number; completed: number; failed: number; ac
 
 function onAgentSessionClosed(agentId: string): void {
   const officeId = officeManager.currentOfficeId;
-  if (officeId) officeManager.setAgentSlacking(officeId, agentId);
+  if (officeId) officeManager.setAgentSlacking(officeId, agentId, 'session_closed');
   phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateTerminalContent();
   updateStatusBar();
@@ -2041,7 +2331,7 @@ async function onFleetOfficeCreated(officeId: string, sourceOfficeId?: string): 
   // Transfer Arthur's meeting session to the fleet office so it's accessible there
   if (sourceOfficeId && window.copilotBridge?.transferSession) {
     try {
-      const result = await window.copilotBridge.transferSession(sourceOfficeId, officeId, 'architect');
+      const result = await window.copilotBridge.transferSession(sourceOfficeId, officeId, ARCHITECT_AGENT_ID);
       console.log(`[Office] Arthur session transfer: ${result.success ? 'OK' : result.error ?? 'failed'}`);
     } catch (e) {
       console.warn('[Office] Failed to transfer Arthur session:', e);
@@ -2067,7 +2357,7 @@ async function onFleetDeployRequested(data: FleetDeployRequest): Promise<void> {
   // 2. Transfer Arthur's session from the source office to the fleet office
   if (window.copilotBridge?.transferSession) {
     try {
-      const result = await window.copilotBridge.transferSession(data.sourceOfficeId, officeId, 'architect');
+      const result = await window.copilotBridge.transferSession(data.sourceOfficeId, officeId, ARCHITECT_AGENT_ID);
       console.log(`[Fleet] Arthur session transfer: ${result.success ? 'OK' : 'failed'}`, result);
     } catch (e) {
       console.warn('[Fleet] Failed to transfer Arthur session:', e);
@@ -2163,6 +2453,11 @@ function ensurePhaserGame(): void {
     scene: [BootScene, OfficeScene, MeetingScene],
   });
   phaserGameRef = game;
+  // Diagnostic / e2e handle: exposes the Phaser.Game instance under a stable
+  // window key so Playwright specs (and devtools sessions) can dispatch
+  // `game.events` without screen coordinate scripting. Read-only consumer
+  // convention — never assigned to from inside the app.
+  (window as unknown as { __phaserGame?: Phaser.Game }).__phaserGame = game;
   bindPhaserEventListeners(game);
 }
 
@@ -2175,10 +2470,40 @@ function teardownPhaserGame(): void {
   } catch (error) {
     console.warn('[main] Failed to destroy Phaser game cleanly:', error);
   }
+  delete (window as unknown as { __phaserGame?: Phaser.Game }).__phaserGame;
   officePanel.innerHTML = '';
 }
 
 bindOfficePanelListeners();
+
+// User-reported 2026-06-12: when durable persistence load completes AFTER
+// the initial fetchSessionMeta() call (the common case on cold boot because
+// localStorage hydrates synchronously but the file load is async), the
+// renderer is left with cachedSessionMeta keyed for the WRONG office.
+// Clicking the tab for the newly-current office is a no-op (id already
+// matches), so the cache never refills and the dashboard shows
+// "Untitled session" for every agent even though the metadata is on disk
+// and the bridge returns it correctly.
+//
+// Wire officeManager.onOfficesUpdated to re-render tabs and re-fetch the
+// session meta cache for whatever currentOfficeId became after the durable
+// load applied. Defensive: also run a roster sync + status bar update so
+// any other UI bound to office state catches up in one go.
+officeManager.onOfficesUpdated = () => {
+  syncActiveRosterForCurrentOffice();
+  renderOfficeTabs();
+  fetchSessionMeta();
+  updateTerminalContent();
+  updateStatusBar();
+  // Spec 009 (US1): cold-launch trigger for auto-startup. Runs as the LAST
+  // step in this callback so cachedSessionMeta is fresh-ish (fetchSessionMeta
+  // is fire-and-forget but the cached-meta synchronous path above already
+  // hydrated the renderer for the current office). The coordinator
+  // re-checks per-agent session IDs via the async getSessionId bridge, so
+  // even if cachedSessionMeta is briefly stale the qualifying filter is
+  // correct.
+  void autoStartCoordinator.tryWarmCurrentOffice();
+};
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
 window.addEventListener('focus', () => {

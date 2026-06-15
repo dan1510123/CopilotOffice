@@ -18,8 +18,24 @@ export default defineConfig({
           isMeetingScene && normalizedImporter.includes('/tests/integration/main/');
         const isMainCoordinatorImport =
           isMeetingScene && normalizedImporter.endsWith('/src/main.ts');
+        // S1-E: allow targeted parity tests under tests/{unit,integration}/meeting/**
+        // to import from src/meeting/** (parser + approval coverage). The guard treats
+        // the test file's own path as a "meeting source" (since it lives under
+        // /meeting/), so we also exempt sources that are themselves test files.
+        const isMeetingTestSource =
+          normalized.includes('/tests/unit/meeting/') ||
+          normalized.includes('/tests/integration/meeting/');
+        const isMeetingTestImporter =
+          normalizedImporter.includes('/tests/unit/meeting/') ||
+          normalizedImporter.includes('/tests/integration/meeting/');
 
-        if ((isMeetingSource || isMeetingScene) && !isMainIntegrationMock && !isMainCoordinatorImport) {
+        if (
+          (isMeetingSource || isMeetingScene) &&
+          !isMainIntegrationMock &&
+          !isMainCoordinatorImport &&
+          !isMeetingTestSource &&
+          !isMeetingTestImporter
+        ) {
           throw new Error(
             `[test-scope] Import blocked by Meeting/Fleet scope guard: ${source}`
           );

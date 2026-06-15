@@ -403,3 +403,25 @@ Sequential:
     → meeting-exit (walk out sequence)
     → office-reentry (return to office with plan data)
 ```
+
+
+## Post-S1-E Contract (2026-06-04)
+
+The fleet pipeline contract is now codified in module headers — read them before modifying:
+
+- **`src/meeting/fleetOrchestrator.ts`** — SPAWN phase. Owns N parallel `terminalStart` lifecycles; watches per-agent readiness via `onPreloadStatus` + `onCopilotEvent`; emits aggregated `fleet:agent:*` and `fleet:all:complete` events. Does NOT track sub-agent fan-out, NEVER mutates Phaser state directly.
+- **`src/meeting/fleetTracker.ts`** — TRACK phase. Renderer-side state machine for sub-agent activity (`task` tool calls). Uses ONLY existing `copilotBridge` APIs. `startTracking()` calls `terminalAttach` even when the overlay is hidden — this is the **defense-in-depth** companion to the server-side dual-key invariant in `electron/terminal/agent-viewers.ts` (R-002). Do NOT remove the silent attach without coordinating with the server module.
+- **`src/meeting/fleetVisualizer.ts`** — VISUALIZE phase. Read-only consumer of `FleetTracker` state. Emits `fleet:*` Phaser events (`fleet:assign`, `fleet:agent:badge`, `fleet:agent:exit`, `fleet:status`, `fleet:complete`). NEVER mutates tracker state and NEVER talks to `copilotBridge` directly.
+
+### Plan parsing and approval
+
+- `src/meeting/planParser.ts` reads its default valid-agent list from `DEFAULT_PLAN_AGENT_IDS` in `src/config/agents.ts`. Don't reintroduce the hardcoded `['generalist', 'debugger', 'admin']` literal.
+- `src/meeting/planApproval.ts` exposes `onApprove` / `onRevise` / `onCancel` callbacks. The approval overlay is DOM-modal (z-index `ZIndex.SETTINGS` tier) and does NOT currently wire focus through `InputManager` — meeting flow gates input via the scene swap.
+
+### Test coverage
+
+- `tests/unit/meeting/planParser.test.ts` (18 cases) — parse, validate, malformed fallbacks.
+- `tests/unit/meeting/planApproval.test.ts` (7 cases) — approve / revise / cancel paths.
+- `tests/unit/meeting/fleetOrchestrator.test.ts` (7 cases) — spawn → working → done lifecycle, retry, cancel.
+- `tests/e2e/meeting-fleet.e2e.ts` — end-to-end Playwright spec (env-blocked on headless CLI runners).
+- `vitest.config.ts` allows `src/meeting/**` imports only from `tests/{unit,integration}/meeting/**`, `src/main.ts`, and `tests/integration/main/**`. New tests must live under those paths.
