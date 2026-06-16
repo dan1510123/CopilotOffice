@@ -24,6 +24,7 @@ import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/a
 // ── State ────────────────────────────────────────────────────
 
 officeManager.ensureDefaultOffice();
+recordOfficeAccess(officeManager.currentOfficeId);
 
 /** Get the current office layout type. */
 function getCurrentLayout(): OfficeLayout {
@@ -64,6 +65,25 @@ const APP_MODE_STORAGE_KEY = 'agencyOffice:appMode';
 const SESSION_META_CACHE_STORAGE_KEY = 'agencyOffice:sessionMetaCacheByOffice';
 const OVERVIEW_SPRITE_CACHE_STORAGE_KEY = 'agencyOffice:overviewSpriteCache';
 const PC_TERMINAL_ID = 'pc-terminal';
+
+// Office tab sort state
+type OfficeSortMode = 'default' | 'recent';
+const OFFICE_SORT_STORAGE_KEY = 'agencyOffice:officeSortMode';
+const OFFICE_ACCESS_TIMES_KEY = 'agencyOffice:officeAccessTimes';
+let officeSortMode: OfficeSortMode = (localStorage.getItem(OFFICE_SORT_STORAGE_KEY) as OfficeSortMode) || 'default';
+
+function getOfficeAccessTimes(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(OFFICE_ACCESS_TIMES_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function recordOfficeAccess(officeId: string): void {
+  const times = getOfficeAccessTimes();
+  times[officeId] = Date.now();
+  try { localStorage.setItem(OFFICE_ACCESS_TIMES_KEY, JSON.stringify(times)); } catch { /* ignore */ }
+}
 
 function sanitizeAppMode(value: string | null | undefined): AppMode {
   return value === 'serious' ? 'serious' : 'game';
@@ -513,8 +533,13 @@ function installE2eDebugHook(): void {
 // ── Office Tabs ─────────────────────────────────────────────────
 
 function renderOfficeTabs() {
-  const offices = officeManager.getAllOffices();
+  let offices = officeManager.getAllOffices();
   const currentId = officeManager.currentOfficeId;
+
+  if (officeSortMode === 'recent') {
+    const accessTimes = getOfficeAccessTimes();
+    offices = [...offices].sort((a, b) => (accessTimes[b.id] || 0) - (accessTimes[a.id] || 0));
+  }
 
   let html = '';
 
@@ -740,6 +765,7 @@ function switchToOffice(officeId: string) {
   void seriousTerminalController?.closeView({ detach: true });
 
   officeManager.switchOffice(officeId);
+  recordOfficeAccess(officeId);
   cachedSessionMeta = getSessionMetaCacheForOffice(officeId);
 
   // Swap global agent roster before rendering dashboard
@@ -1007,20 +1033,49 @@ overviewHeader.innerHTML = `
     <div id="terminal-title" style="font-size: 18px; font-weight: bold; color: #8af; margin-bottom: 4px;">🏢 Office Overview</div>
     <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
   </div>
-  <button id="close-office-btn" style="
-    display: none;
-    padding: 6px 14px;
-    background: #cc3344;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    font-family: 'Cascadia Code', Consolas, monospace;
-    font-size: 12px;
-    cursor: pointer;
-    white-space: nowrap;
-  ">✕ Close Office</button>
+  <div style="display: flex; align-items: center; gap: 8px;">
+    <button id="office-sort-btn" style="
+      padding: 6px 12px;
+      background: ${officeSortMode === 'recent' ? '#2a3a5a' : '#252538'};
+      color: ${officeSortMode === 'recent' ? '#8af' : '#666'};
+      border: 1px solid ${officeSortMode === 'recent' ? '#4488ff' : '#444'};
+      border-radius: 4px;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    " title="Sort office tabs">⇅ ${officeSortMode === 'recent' ? 'Recent' : 'Default'}</button>
+    <button id="close-office-btn" style="
+      display: none;
+      padding: 6px 14px;
+      background: #cc3344;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-family: 'Cascadia Code', Consolas, monospace;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    ">✕ Close Office</button>
+  </div>
 `;
 overviewHost.appendChild(overviewHeader);
+
+// Sort button handler
+document.getElementById('office-sort-btn')!.addEventListener('click', () => {
+  officeSortMode = officeSortMode === 'default' ? 'recent' : 'default';
+  try { localStorage.setItem(OFFICE_SORT_STORAGE_KEY, officeSortMode); } catch { /* ignore */ }
+  renderOfficeTabs();
+  // Re-render the sort button to reflect new state
+  const sortBtn = document.getElementById('office-sort-btn');
+  if (sortBtn) {
+    sortBtn.textContent = `⇅ ${officeSortMode === 'recent' ? 'Recent' : 'Default'}`;
+    sortBtn.style.background = officeSortMode === 'recent' ? '#2a3a5a' : '#252538';
+    sortBtn.style.color = officeSortMode === 'recent' ? '#8af' : '#666';
+    sortBtn.style.borderColor = officeSortMode === 'recent' ? '#4488ff' : '#444';
+  }
+});
 
 // Close Office button handler
 document.getElementById('close-office-btn')!.addEventListener('click', () => {
