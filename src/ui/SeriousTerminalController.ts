@@ -3,6 +3,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
 import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
 import { showClipboardToast } from './clipboardToast';
+import { ensureXtermStyles } from './xtermStyles';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 type SeriousTerminalOpenOptions = {
@@ -137,7 +138,7 @@ export class SeriousTerminalController {
       box-sizing: border-box;
     `;
     this.terminalDivEl = document.createElement('div');
-    this.terminalDivEl.style.cssText = 'width: 100%; height: 100%; overflow: hidden;';
+    this.terminalDivEl.style.cssText = 'width: 100%; height: 100%;';
     this.terminalOuterEl.appendChild(this.terminalDivEl);
     this.terminalOuterEl.addEventListener('mousedown', () => this.terminal?.focus());
 
@@ -907,15 +908,7 @@ export class SeriousTerminalController {
   }
 
   private ensureXtermStyles(): void {
-    if (document.getElementById('xterm-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'xterm-styles';
-    style.textContent = `
-      .xterm { height: 100%; }
-      .xterm-viewport { overflow-y: auto !important; }
-      #serious-terminal-container .xterm { height: 100%; }
-    `;
-    document.head.appendChild(style);
+    ensureXtermStyles();
   }
 
   private createTerminal(): void {

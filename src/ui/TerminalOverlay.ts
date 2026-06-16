@@ -6,6 +6,7 @@ import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 import { showClipboardToast } from './clipboardToast';
+import { ensureXtermStyles } from './xtermStyles';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -743,7 +744,6 @@ export class TerminalOverlay {
     this.terminalDiv.style.cssText = `
       width: 100%;
       height: 100%;
-      overflow: hidden;
     `;
     terminalOuter.appendChild(this.terminalDiv);
     // Click anywhere in the terminal area to re-focus (switches input + restores visuals)
@@ -1191,22 +1191,7 @@ export class TerminalOverlay {
   }
 
   private injectStyles(): void {
-    if (document.getElementById('xterm-styles')) return;
-
-    const style = document.createElement('style');
-    style.id = 'xterm-styles';
-    style.textContent = `
-      .xterm {
-        height: 100%;
-      }
-      .xterm-viewport {
-        background-color: #0a0a14 !important;
-      }
-      #terminal-container .xterm {
-        height: 100%;
-      }
-    `;
-    document.head.appendChild(style);
+    ensureXtermStyles();
   }
 
   private createTerminal(): void {
