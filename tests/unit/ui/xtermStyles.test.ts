@@ -20,10 +20,10 @@ describe('ensureXtermStyles', () => {
     expect(elements.length).toBe(1);
   });
 
-  it('includes overflow-y: auto for .xterm-viewport', () => {
+  it('includes overflow-y: scroll for .xterm-viewport', () => {
     ensureXtermStyles();
     const el = document.getElementById('copilot-office-xterm-styles');
-    expect(el?.textContent).toContain('overflow-y: auto !important');
+    expect(el?.textContent).toContain('overflow-y: scroll !important');
   });
 
   it('hides the native scrollbar via scrollbar-width: none', () => {

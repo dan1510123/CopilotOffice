@@ -7,6 +7,7 @@ import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
+import { wheelToPtySequence } from './terminalWheel';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -735,7 +736,7 @@ export class TerminalOverlay {
     terminalOuter.id = 'terminal-container';
     terminalOuter.style.cssText = `
       flex: 1;
-      overflow: hidden;
+      overflow: auto;
       min-height: 0;
       padding: 10px;
       box-sizing: border-box;
@@ -1248,6 +1249,25 @@ export class TerminalOverlay {
         if (typeof p === 'number' && MOUSE_MODES.has(p)) return true;
       }
       return false; // not mouse-related — let default handler process it
+    });
+
+    // Mouse-wheel scroll fix: Copilot CLI runs in the xterm alternate screen
+    // buffer (no scrollback), where xterm's default wheel handler emits bare
+    // arrow keys the CLI ignores — so the wheel appears dead while PageUp/Down
+    // work. Take over the wheel: in the alt buffer, forward PageUp/PageDown to
+    // the PTY (the keys the CLI actually pages on); in the normal buffer, return
+    // true to let xterm scroll its scrollback natively.
+    this.terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
+      const term = this.terminal;
+      if (!term) return true;
+      if (term.buffer.active.type !== 'alternate') return true; // normal buffer → native scroll
+      const seq = wheelToPtySequence(event.deltaY);
+      if (!seq) return true;
+      const officeId = this.attachedOfficeId ?? this.getOfficeId();
+      if (officeId && this.currentAgentId && window.copilotBridge) {
+        void window.copilotBridge.terminalWrite(officeId, this.currentAgentId, seq);
+      }
+      return false; // suppress xterm's default arrow-key translation
     });
 
     // Spec 004: terminal right-click → context menu (Copy / Paste).

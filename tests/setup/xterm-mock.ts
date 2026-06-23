@@ -17,9 +17,13 @@ export class MockTerminal {
   hasSelection = vi.fn(() => false);
   getSelection = vi.fn(() => '');
   attachCustomKeyEventHandler = vi.fn();
+  attachCustomWheelEventHandler = vi.fn();
   onData = vi.fn(() => ({ dispose: vi.fn() }));
   onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
   dispose = vi.fn();
+  buffer = {
+    active: { type: 'normal' as 'normal' | 'alternate' },
+  };
   parser = {
     registerCsiHandler: vi.fn(() => ({ dispose: vi.fn() })),
   };

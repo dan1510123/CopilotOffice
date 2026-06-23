@@ -4,6 +4,7 @@ import { ZIndex } from '../config/zIndex';
 import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
+import { wheelToPtySequence } from './terminalWheel';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 type SeriousTerminalOpenOptions = {
@@ -132,7 +133,7 @@ export class SeriousTerminalController {
     this.terminalOuterEl.style.cssText = `
       flex: 1;
       min-height: 0;
-      overflow: hidden;
+      overflow: auto;
       background: #0d111b;
       padding: 10px;
       box-sizing: border-box;
@@ -938,6 +939,22 @@ export class SeriousTerminalController {
     this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
       for (const p of params) {
         if (typeof p === 'number' && MOUSE_MODES.has(p)) return true;
+      }
+      return false;
+    });
+
+    // Mouse-wheel scroll fix (mirrors TerminalOverlay; Constitution VI rule 4).
+    // In the alternate screen buffer (Copilot CLI TUI, no scrollback) xterm emits
+    // bare arrow keys on wheel — which the CLI ignores. Forward PageUp/PageDown to
+    // the PTY instead; in the normal buffer let xterm scroll natively.
+    this.terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
+      const term = this.terminal;
+      if (!term) return true;
+      if (term.buffer.active.type !== 'alternate') return true;
+      const seq = wheelToPtySequence(event.deltaY);
+      if (!seq) return true;
+      if (this.activeOfficeId && this.activeAgentId && window.copilotBridge) {
+        void window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, seq);
       }
       return false;
     });

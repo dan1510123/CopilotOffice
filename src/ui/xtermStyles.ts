@@ -18,13 +18,15 @@ export function ensureXtermStyles(): void {
       height: 100%;
     }
     .xterm-viewport {
-      overflow-y: auto !important;
+      overflow-y: scroll !important;
       background-color: #0a0a14 !important;
       scrollbar-width: none;
+      scrollbar-gutter: auto;
     }
     .xterm-viewport::-webkit-scrollbar {
-      width: 0;
-      height: 0;
+      width: 0 !important;
+      height: 0 !important;
+      display: none !important;
     }
     #terminal-container .xterm {
       height: 100%;
