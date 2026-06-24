@@ -283,6 +283,11 @@ export class TerminalRelay {
       return { success: true };
     });
 
+    ipcMain.handle('set-additional-params', (_event, params: string) => {
+      this.send({ type: 'set-additional-params', params: String(params ?? '') });
+      return { success: true };
+    });
+
     ipcMain.handle('terminal-kill', (_event, officeId: string, agentId: string) =>
       this.request({ type: 'kill', requestId: this.id(), officeId, agentId })
     );

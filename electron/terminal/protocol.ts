@@ -91,6 +91,12 @@ export interface MsgSetYolo {
   enabled: boolean;
 }
 
+export interface MsgSetAdditionalParams {
+  type: 'set-additional-params';
+  /** Effective parameter string to append to copilot launches (empty = none). */
+  params: string;
+}
+
 export interface MsgResetAllSessions {
   type: 'reset-all-sessions';
   requestId: string;
@@ -183,6 +189,7 @@ export type MainToServer =
   | MsgPopOut
   | MsgShutdown
   | MsgSetYolo
+  | MsgSetAdditionalParams
   | MsgResetAllSessions
   | MsgResetSession
   | MsgGetSessionHistory

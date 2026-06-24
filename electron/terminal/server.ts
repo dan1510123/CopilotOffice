@@ -317,6 +317,11 @@ function killPtyProcess(proc: PtyProcess): void {
  *  PTYs are unaffected. */
 let yoloEnabled = false;
 
+/** Global additional-parameters string, synced from the renderer via the
+ *  `set-additional-params` message. Appended to copilot CLI launches when
+ *  non-empty (e.g. "--model gpt-5.4"). Applies to the next launch. */
+let additionalParams = '';
+
 /** Stores pre-seeded prompts to send once the agent signals ready. */
 const pendingPreseededPrompts = new Map<string, string>();
 
@@ -606,8 +611,9 @@ async function startTerminalForAgent(
       // Start copilot CLI
       setTimeout(() => {
         const yoloFlag = yoloEnabled ? ' --yolo' : '';
-        console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}${yoloEnabled ? ' (yolo)' : ''}`);
-        proc.write(`copilot --session-id=${sessionId}${yoloFlag}\r`);
+        const extraParams = additionalParams ? ` ${additionalParams}` : '';
+        console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}${yoloEnabled ? ' (yolo)' : ''}${additionalParams ? ` (params: ${additionalParams})` : ''}`);
+        proc.write(`copilot --session-id=${sessionId}${yoloFlag}${extraParams}\r`);
       }, 500);
     }
 
@@ -654,6 +660,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'set-yolo': {
       yoloEnabled = msg.enabled;
       console.log(`[TermServer] YOLO mode ${yoloEnabled ? 'ENABLED' : 'disabled'}`);
+      break;
+    }
+
+    case 'set-additional-params': {
+      additionalParams = (msg.params ?? '').trim();
+      console.log(`[TermServer] Additional params ${additionalParams ? `set: ${additionalParams}` : 'cleared'}`);
       break;
     }
 
@@ -780,6 +792,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       try {
         const wtArgs = ['-d', cwd, 'copilot', '--session-id', sid];
         if (yoloEnabled) wtArgs.push('--yolo');
+        if (additionalParams) wtArgs.push(...additionalParams.split(/\s+/).filter(Boolean));
         spawn('wt', wtArgs, { detached: true, stdio: 'ignore' }).unref();
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } catch (error) {

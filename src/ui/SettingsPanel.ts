@@ -13,6 +13,11 @@ import {
   getYoloModeSettings,
   setYoloModeSettings,
 } from '../config/yoloMode';
+import {
+  getAdditionalParamsSettings,
+  setAdditionalParamsSettings,
+  type AdditionalParamsSettings,
+} from '../config/additionalParams';
 import { ZIndex } from '../config/zIndex';
 import { type NotificationService } from './NotificationService';
 
@@ -145,6 +150,7 @@ export class SettingsPanel {
   private renderAgentsSection(): string {
     const settings = getAgentAutoStartSettings();
     const yolo = getYoloModeSettings();
+    const extra = getAdditionalParamsSettings();
     return `
       <div class="settings-section" style="margin-bottom: 20px;">
         <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
@@ -173,6 +179,36 @@ export class SettingsPanel {
         </label>
         <p style="margin: 4px 0 0 25px; font-size: 10px; color: #b86;">
           When ON, every terminal launches with <code style="color: #db8;">--yolo</code> — auto-approves all tool, file, and URL permissions without prompting. Applies to the next terminal you open.
+        </p>
+        <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0; cursor: pointer;">
+          <input
+            type="checkbox"
+            id="settings-additional-params-enabled"
+            ${extra.enabled ? 'checked' : ''}
+            style="cursor: pointer; width: 15px; height: 15px;"
+          />
+          <span style="color: #aab; font-size: 13px;">Additional parameters</span>
+          <input
+            type="text"
+            id="settings-additional-params-text"
+            value="${this.escapeHtml(extra.params)}"
+            placeholder="--model gpt-5.4"
+            ${extra.enabled ? '' : 'disabled'}
+            style="
+              flex: 1;
+              background: #12121f;
+              border: 1px solid #333;
+              border-radius: 4px;
+              padding: 4px 8px;
+              color: #dde;
+              font-family: inherit;
+              font-size: 12px;
+              ${extra.enabled ? '' : 'opacity: 0.5;'}
+            "
+          />
+        </label>
+        <p style="margin: 4px 0 0 25px; font-size: 10px; color: #556;">
+          When ON, these parameters are appended to every <code style="color: #889;">copilot</code> launch. Applies to the next terminal you open.
         </p>
       </div>
     `;
@@ -351,6 +387,27 @@ export class SettingsPanel {
         // Push the global flag to the PTY server so the next launch reflects it.
         window.copilotBridge?.setYolo(yoloCb.checked);
       });
+    }
+
+    const apCb = panel.querySelector('#settings-additional-params-enabled') as HTMLInputElement | null;
+    const apText = panel.querySelector('#settings-additional-params-text') as HTMLInputElement | null;
+    if (apCb && apText) {
+      const persistAndPush = () => {
+        const next: AdditionalParamsSettings = {
+          enabled: apCb.checked,
+          params: apText.value,
+        };
+        setAdditionalParamsSettings(next);
+        // Effective string: empty when disabled. Push to the PTY server.
+        const effective = next.enabled ? next.params.trim() : '';
+        window.copilotBridge?.setAdditionalParams?.(effective);
+      };
+      apCb.addEventListener('change', () => {
+        apText.disabled = !apCb.checked;
+        apText.style.opacity = apCb.checked ? '1' : '0.5';
+        persistAndPush();
+      });
+      apText.addEventListener('input', persistAndPush);
     }
   }
 
