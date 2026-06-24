@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   terminalKill: (officeId: string, agentId: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-kill', officeId, agentId);
   },
+  // YOLO mode: push global flag to the PTY server so new copilot sessions launch with --yolo.
+  setYolo: (enabled: boolean): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('set-yolo', enabled);
+  },
   terminalExists: (officeId: string, agentId: string): Promise<boolean> => {
     return ipcRenderer.invoke('terminal-exists', officeId, agentId);
   },
@@ -226,6 +230,7 @@ declare global {
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalResize: (officeId: string, agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
       terminalKill: (officeId: string, agentId: string) => Promise<{ success: boolean; error?: string }>;
+      setYolo: (enabled: boolean) => Promise<{ success: boolean }>;
       terminalExists: (officeId: string, agentId: string) => Promise<boolean>;
       terminalAttach: (officeId: string, agentId: string) => Promise<{ success: boolean; scrollback?: string }>;
       terminalDetach: (officeId: string, agentId: string) => Promise<{ success: boolean }>;

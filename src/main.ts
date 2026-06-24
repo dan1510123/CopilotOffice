@@ -20,6 +20,7 @@ import { isAskUserTool, nextSubStateAfterToolComplete } from './util/toolStatus'
 import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
 import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStartCoordinator';
 import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/agentAutoStart';
+import { isYoloEnabled } from './config/yoloMode';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -1861,6 +1862,10 @@ function stopInteraction() {
 // ── Copilot Event Handlers ────────────────────────────────────────
 
 if (window.copilotBridge) {
+
+  // Sync the persisted YOLO flag to the PTY server before any terminal launches,
+  // so new copilot sessions reflect the saved setting from cold boot.
+  window.copilotBridge.setYolo?.(isYoloEnabled());
 
   window.copilotBridge.onCopilotToolStart((agentId, toolName, toolId, status) => {
     console.log(`[Office] Tool start: ${agentId} - ${toolName} - ${status}`);

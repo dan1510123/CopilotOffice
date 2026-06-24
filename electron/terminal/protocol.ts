@@ -86,6 +86,11 @@ export interface MsgShutdown {
   type: 'shutdown';
 }
 
+export interface MsgSetYolo {
+  type: 'set-yolo';
+  enabled: boolean;
+}
+
 export interface MsgResetAllSessions {
   type: 'reset-all-sessions';
   requestId: string;
@@ -177,6 +182,7 @@ export type MainToServer =
   | MsgSetSessionId
   | MsgPopOut
   | MsgShutdown
+  | MsgSetYolo
   | MsgResetAllSessions
   | MsgResetSession
   | MsgGetSessionHistory

@@ -266,6 +266,11 @@ export class TerminalRelay {
       return { success: true };
     });
 
+    ipcMain.handle('set-yolo', (_event, enabled: boolean) => {
+      this.send({ type: 'set-yolo', enabled: !!enabled });
+      return { success: true };
+    });
+
     ipcMain.handle('terminal-kill', (_event, officeId: string, agentId: string) =>
       this.request({ type: 'kill', requestId: this.id(), officeId, agentId })
     );

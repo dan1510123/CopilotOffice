@@ -306,6 +306,12 @@ function killPtyProcess(proc: PtyProcess): void {
 
 // ── PTY Lifecycle ───────────────────────────────────────────────
 
+/** Global YOLO flag, synced from the renderer via the `set-yolo` message.
+ *  When true, copilot CLI sessions launch with `--yolo` (auto-approves all
+ *  tool/file/URL permissions). Applies to the next launch — already-running
+ *  PTYs are unaffected. */
+let yoloEnabled = false;
+
 /** Stores pre-seeded prompts to send once the agent signals ready. */
 const pendingPreseededPrompts = new Map<string, string>();
 
@@ -585,8 +591,9 @@ async function startTerminalForAgent(
     if (!shellOnlyMode && terminalBackend.name === 'node-pty') {
       // Start copilot CLI
       setTimeout(() => {
-        console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}`);
-        proc.write(`copilot --session-id=${sessionId}\r`);
+        const yoloFlag = yoloEnabled ? ' --yolo' : '';
+        console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}${yoloEnabled ? ' (yolo)' : ''}`);
+        proc.write(`copilot --session-id=${sessionId}${yoloFlag}\r`);
       }, 500);
     }
 
@@ -627,6 +634,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) proc.process.resize(msg.cols, msg.rows);
+      break;
+    }
+
+    case 'set-yolo': {
+      yoloEnabled = msg.enabled;
+      console.log(`[TermServer] YOLO mode ${yoloEnabled ? 'ENABLED' : 'disabled'}`);
       break;
     }
 
@@ -751,7 +764,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         } catch { /* use default */ }
       }
       try {
-        spawn('wt', ['-d', cwd, 'copilot', '--session-id', sid], { detached: true, stdio: 'ignore' }).unref();
+        const wtArgs = ['-d', cwd, 'copilot', '--session-id', sid];
+        if (yoloEnabled) wtArgs.push('--yolo');
+        spawn('wt', wtArgs, { detached: true, stdio: 'ignore' }).unref();
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } catch (error) {
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
