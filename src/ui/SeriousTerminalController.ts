@@ -4,7 +4,7 @@ import { ZIndex } from '../config/zIndex';
 import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
-import { wheelToPtySequence } from './terminalWheel';
+import { WheelPager } from './terminalWheel';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
@@ -46,6 +46,9 @@ export class SeriousTerminalController {
   private historyPopover: HTMLDivElement | null = null;
   private terminal: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
+  // Accumulates wheel movement so alt-buffer scrolling is slower than one page
+  // per notch (see terminalWheel.ts).
+  private readonly wheelPager = new WheelPager();
   private resizeObserver: ResizeObserver | null = null;
   private resizeHandler: (() => void) | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
@@ -342,6 +345,9 @@ export class SeriousTerminalController {
     this.activeOfficeId = options.officeId;
     this.activeAgentId = options.agentId;
     this.activeOptions = { ...options };
+    // New agent/office binding — drop any partial wheel accumulation so it can't
+    // bleed a stray PageUp/PageDown into the newly-bound session.
+    this.wheelPager.reset();
     this.visible = true;
     this.openedAt = Date.now();
     this.sessionId = null;
@@ -526,6 +532,7 @@ export class SeriousTerminalController {
     this.activeAgentId = null;
     this.activeOptions = null;
     this.sessionId = null;
+    this.wheelPager.reset();
     this.sessionTitleEl.textContent = 'Untitled session';
     this.sessionTitleEl.style.color = '#77839f';
     this.updateSessionIdDisplay();
@@ -959,8 +966,8 @@ export class SeriousTerminalController {
       const term = this.terminal;
       if (!term) return true;
       if (term.buffer.active.type !== 'alternate') return true;
-      const seq = wheelToPtySequence(event.deltaY);
-      if (!seq) return true;
+      const seq = this.wheelPager.feed(event);
+      if (!seq) return false; // movement accumulated but not enough for a page yet
       if (this.activeOfficeId && this.activeAgentId && window.copilotBridge) {
         void window.copilotBridge.terminalWrite(this.activeOfficeId, this.activeAgentId, seq);
       }

@@ -7,7 +7,7 @@ import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
-import { wheelToPtySequence } from './terminalWheel';
+import { WheelPager } from './terminalWheel';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
@@ -68,6 +68,9 @@ export class TerminalOverlay {
   private isFocused: boolean = false;
   private resizeHandler: (() => void) | null = null;
   private clipboardHandler: ((e: KeyboardEvent) => void) | null = null;
+  // Accumulates wheel movement so alt-buffer scrolling is slower than one page
+  // per notch (see terminalWheel.ts).
+  private readonly wheelPager = new WheelPager();
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private refitGeneration: number = 0;
@@ -1269,8 +1272,8 @@ export class TerminalOverlay {
       const term = this.terminal;
       if (!term) return true;
       if (term.buffer.active.type !== 'alternate') return true; // normal buffer → native scroll
-      const seq = wheelToPtySequence(event.deltaY);
-      if (!seq) return true;
+      const seq = this.wheelPager.feed(event);
+      if (!seq) return false; // movement accumulated but not enough for a page yet
       const officeId = this.attachedOfficeId ?? this.getOfficeId();
       if (officeId && this.currentAgentId && window.copilotBridge) {
         void window.copilotBridge.terminalWrite(officeId, this.currentAgentId, seq);
@@ -1383,6 +1386,9 @@ export class TerminalOverlay {
    */
   private registerOnDataHandler(boundAgentId: string, boundOfficeId: string): void {
     if (!this.terminal) return;
+    // New agent/office binding — drop any partial wheel accumulation so it can't
+    // bleed a stray PageUp/PageDown into the newly-bound session.
+    this.wheelPager.reset();
     this.onDataDisposable?.dispose();
     this.onDataDisposable = null;
 
@@ -1714,6 +1720,7 @@ export class TerminalOverlay {
 
   hide(): void {
     this.hideTerminalContextMenu();
+    this.wheelPager.reset();
     if (this.container) {
       this.container.style.display = 'none';
     }
