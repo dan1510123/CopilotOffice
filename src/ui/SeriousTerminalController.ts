@@ -5,6 +5,7 @@ import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
 import { wheelToPtySequence } from './terminalWheel';
+import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 type SeriousTerminalOpenOptions = {
@@ -756,6 +757,13 @@ export class SeriousTerminalController {
     }
   }
 
+  // Returns the current xterm selection sanitized for clipboard use, with any
+  // trailing CLI scrollbar glyph removed (see terminalSelection.ts).
+  private getSelectionForCopy(): string {
+    const raw = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+    return sanitizeTerminalSelection(raw);
+  }
+
   // Spec 005: read OS clipboard via Electron main, forward to PTY.
   private async pasteFromClipboardToTerminal(): Promise<void> {
     if (!this.activeOfficeId || !this.activeAgentId || !window.copilotBridge) return;
@@ -827,7 +835,7 @@ export class SeriousTerminalController {
       return item;
     };
     const copyItem = makeItem('Copy', () => {
-      const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+      const selection = this.getSelectionForCopy();
       void this.copyToClipboard(selection, 'live');
     });
     const pasteItem = makeItem('Paste', () => {
@@ -968,7 +976,7 @@ export class SeriousTerminalController {
       if (event.type !== 'keydown' || !isModifierPressed) return true;
 
       if (key === 'c') {
-        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+        const selection = this.getSelectionForCopy();
         if (!selection) {
           return true;
         }

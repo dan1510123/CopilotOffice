@@ -8,6 +8,7 @@ import { officeManager } from '../office/officeManager';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
 import { wheelToPtySequence } from './terminalWheel';
+import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -197,6 +198,13 @@ export class TerminalOverlay {
       showClipboardToast(`${t} bridge-err: ${(e as Error)?.message || 'threw'}`, 'error');
       return false;
     }
+  }
+
+  // Returns the current xterm selection sanitized for clipboard use, with any
+  // trailing CLI scrollbar glyph removed (see terminalSelection.ts).
+  private getSelectionForCopy(): string {
+    const raw = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+    return sanitizeTerminalSelection(raw);
   }
 
   // Spec 005: read OS clipboard via Electron main, forward to PTY.
@@ -1284,7 +1292,7 @@ export class TerminalOverlay {
       if (key === 'c') {
         // Spec 002: query terminal selection directly — xterm 6.0.0 hasSelection()
         // returns accurate values even in canvas/WebGL renderers.
-        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+        const selection = this.getSelectionForCopy();
         if (!selection) {
           // No selection → pass through to PTY (SIGINT).
           return true;
@@ -1326,7 +1334,7 @@ export class TerminalOverlay {
       const key = event.key.toLowerCase();
 
       if (key === 'c') {
-        const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+        const selection = this.getSelectionForCopy();
         if (!selection) return; // no selection — let event propagate naturally
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -1476,7 +1484,7 @@ export class TerminalOverlay {
     };
 
     const copyItem = makeItem('Copy', () => {
-      const selection = this.terminal?.hasSelection() ? (this.terminal.getSelection() ?? '') : '';
+      const selection = this.getSelectionForCopy();
       void this.copyToClipboard(selection, 'live');
     });
     const pasteItem = makeItem('Paste', () => {
