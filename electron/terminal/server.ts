@@ -18,6 +18,7 @@ import {
   type ViewerMaps,
 } from './agent-viewers';
 import { repairDuplicateSessionIds } from './session-repair';
+import { registerPty, unregisterPty } from './pty-registry';
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -295,6 +296,9 @@ function killAllPtyProcesses(): void {
   agentToTerminal.clear();
   agentWatchers.forEach((w) => w.stop());
   agentWatchers.clear();
+  // Note: each killPtyProcess() already unregistered its own PID from the
+  // registry, so no blanket reset is needed here (a reset would also wipe a
+  // co-running instance's live entries).
 }
 
 /** Platform-aware process-tree kill. On Windows, uses taskkill /T /F to kill
@@ -302,6 +306,7 @@ function killAllPtyProcesses(): void {
  *  function — all PTY kill sites must use this, never bare proc.process.kill(). */
 function killPtyProcess(proc: PtyProcess): void {
   proc.process.kill();
+  unregisterPty(proc.pid);
 }
 
 // ── PTY Lifecycle ───────────────────────────────────────────────
@@ -396,6 +401,14 @@ async function startTerminalForAgent(
     });
 
     agentToTerminal.set(ck, terminalKey);
+
+    // Persist the PTY root PID so a crashed/ungracefully-killed session can be
+    // reaped on the next launch (see electron/terminal/pty-registry.ts). Only
+    // real OS PIDs from node-pty are tracked — the SDK backend hands out
+    // synthetic PIDs (1_000_000+) that must never be force-killed.
+    if (terminalBackend.name === 'node-pty') {
+      registerPty({ pid: proc.pid, agentId, sessionId, startedAt: Date.now() });
+    }
 
     if (!shellOnlyMode) {
       // Signal that the PTY is spawned and copilot CLI is starting
@@ -578,6 +591,7 @@ async function startTerminalForAgent(
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
       send({ type: 'terminal-exit', agentId, exitCode });
+      unregisterPty(proc.pid);
       ptyProcesses.delete(terminalKey);
       activeAgentViewers.delete(ck);
       agentScrollbackBuffers.delete(ck);

@@ -1,10 +1,11 @@
 import { app, BrowserWindow, ipcMain, Menu, Notification } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn, execSync, ChildProcess } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { TerminalRelay } from './terminal/ipc-relay';
 import { createOfficeFileStore } from './officeFileStore';
 import { registerNonTerminalIpc } from './nonTerminalIpc';
+import { reapRegisteredPtys } from './terminal/pty-registry';
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -12,39 +13,23 @@ const OPEN_DEVTOOLS_ON_START = process.env.COPILOT_OFFICE_OPEN_DEVTOOLS !== '0';
 const ENABLE_FILE_WATCHER = process.env.COPILOT_OFFICE_ENABLE_WATCHER !== '0';
 
 // ── Orphan Cleanup ──────────────────────────────────────────────
-// Kill stale processes tagged with COPILOT_OFFICE_PROCESS from previous
-// crashed sessions. Best-effort — startup must not fail if none exist.
+// Reap PTY process trees (shell + copilot CLI) left alive by a previous
+// session that exited ungracefully (crash, Task Manager kill, OS shutdown).
+// The terminal server persists every spawned PTY root PID to .data/pty-pids.json
+// (see electron/terminal/pty-registry.ts); we read that registry and force-kill
+// any survivor, then reset it. This replaces the old `wmic`/`pgrep` approach,
+// which was a no-op: `wmic` is removed from modern Windows, and both queries
+// matched the COPILOT_OFFICE_PROCESS *env var* against the *command line*, where
+// env vars never appear. Best-effort — startup must not fail if none exist.
 
 function killOrphanedProcesses(): void {
   try {
-    if (process.platform === 'win32') {
-      // wmic returns lines like "ProcessId\r\n1234\r\n5678\r\n"
-      const out = execSync(
-        'wmic process where "CommandLine like \'%COPILOT_OFFICE_PROCESS%\'" get ProcessId',
-        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }
-      );
-      const pids = out.split(/\r?\n/)
-        .map((l) => parseInt(l.trim(), 10))
-        .filter((n) => !isNaN(n) && n !== process.pid);
-      if (pids.length > 0) {
-        console.log(`[Main] Killing ${pids.length} orphaned COPILOT_OFFICE processes:`, pids);
-        for (const pid of pids) {
-          try { execSync(`taskkill /T /F /PID ${pid}`, { stdio: 'ignore' }); } catch { /* ignore */ }
-        }
-      }
-    } else {
-      const out = execSync('pgrep -f COPILOT_OFFICE_PROCESS || true', {
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-      });
-      const pids = out.split(/\r?\n/)
-        .map((l) => parseInt(l.trim(), 10))
-        .filter((n) => !isNaN(n) && n !== process.pid);
-      if (pids.length > 0) {
-        console.log(`[Main] Killing ${pids.length} orphaned COPILOT_OFFICE processes:`, pids);        for (const pid of pids) {
-          try { process.kill(pid, 'SIGKILL'); } catch { /* ignore */ }
-        }
-      }
+    const { reaped, skipped } = reapRegisteredPtys();
+    if (reaped.length > 0) {
+      console.log(`[Main] Reaped ${reaped.length} orphaned PTY process tree(s):`, reaped);
+    }
+    if (skipped.length > 0) {
+      console.log(`[Main] Skipped ${skipped.length} already-dead PTY record(s) from registry`);
     }
   } catch {
     // Best-effort — don't block startup

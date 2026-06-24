@@ -12,7 +12,7 @@ The `electron/` directory contains the Electron main process: BrowserWindow crea
 
 Creates the BrowserWindow, loads the renderer, and wires everything together.
 
-- **Orphan cleanup**: On startup, kills stale PTY processes tagged with `COPILOT_OFFICE_PROCESS` from previous crashed sessions (platform-aware: `wmic`/`taskkill` on Windows, `pgrep`/`SIGKILL` on Unix).
+- **Orphan cleanup**: On startup, reaps PTY process trees (shell + copilot CLI) left alive by a previous ungracefully-exited session, using the persisted PID registry at `.data/pty-pids.json` (`reapRegisteredPtys` in `terminal/pty-registry.ts`) and `taskkill /T /F` (Windows) / process-group `SIGKILL` (Unix). Before killing, it validates process identity via the recorded creation time so a recycled PID can't kill an unrelated process. The registry is the source of truth — it does not depend on `wmic` (removed from modern Windows) or on matching an env-var tag against a command line.
 - **Terminal server**: Spawns the server via `TerminalRelay.spawnServer()` before creating the window.
 - **IPC registration**: `relay.registerIpc()` registers all `ipcMain.handle()` calls. Also registers `request-hard-reload` and `show-native-notification`.
 - **Dev tools**: `OPEN_DEVTOOLS_ON_START` flag controls whether DevTools open automatically.
@@ -23,7 +23,7 @@ Creates the BrowserWindow, loads the renderer, and wires everything together.
 
 Runs as a **forked child process** (not in the main Electron process). Owns all PTY lifecycle:
 
-- **PTY spawn**: `startTerminalForAgent()` spawns a shell via node-pty, tags the env with `COPILOT_OFFICE_PROCESS`, then runs `copilot --resume <sessionId>`.
+- **PTY spawn**: `startTerminalForAgent()` spawns a shell via node-pty, tags the env with `COPILOT_OFFICE_PROCESS`, records the PTY root PID in the registry (`.data/pty-pids.json`) for orphan reaping, then runs `copilot --resume <sessionId>`.
 - **Scrollback buffers**: Per-agent raw ANSI buffers capped at 512 KB (`MAX_BUFFER_BYTES`). Oldest chunks are evicted when the limit is exceeded.
 - **Session persistence**: Session IDs, history, and metadata are stored in `.data/copilot-office-sessions.json`. Supports archive (on kill/reset) and migration from legacy flat format.
 - **Attach/detach**: `activeAgentViewers` set tracks which agents have a live viewer. PTY data is only forwarded when the agent has an active viewer; scrollback is replayed on attach.

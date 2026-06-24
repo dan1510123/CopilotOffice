@@ -7,6 +7,7 @@ import { fork, ChildProcess, execSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import type { MainToServer, ServerToMain, MsgQueryAgentStatuses } from './protocol';
+import { reapRegisteredPtys } from './pty-registry';
 
 export class TerminalRelay {
   private server: ChildProcess | null = null;
@@ -61,6 +62,17 @@ export class TerminalRelay {
 
         const win = this.getWindow();
         if (win && !win.isDestroyed()) {
+          // The crashed server abandoned its PTY children (node-pty does not
+          // reap them on parent death). Reap the recorded survivors before the
+          // fresh server starts, so they don't linger holding session locks.
+          try {
+            const { reaped } = reapRegisteredPtys();
+            if (reaped.length > 0) {
+              console.log(`[Relay] Reaped ${reaped.length} orphaned PTY tree(s) from crashed server:`, reaped);
+            }
+          } catch (e) {
+            console.error('[Relay] Failed to reap orphaned PTYs after crash:', e);
+          }
           console.log('[Relay] Respawning terminal server...');
           this.spawnServer(distDir).catch((e) =>
             console.error('[Relay] Failed to respawn:', e)

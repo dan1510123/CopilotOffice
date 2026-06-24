@@ -306,6 +306,7 @@ One-way events sent from main → renderer via `webContents.send()`:
    - Initial size: 120 cols × 30 rows
    - Working directory: `process.cwd()` or custom `workingDir` joined to cwd
    - Environment: inherits `process.env` + `COPILOT_OFFICE_PROCESS=true` + `COPILOT_OFFICE_AGENT={agentId}`
+   - Registers the PTY root PID in `.data/pty-pids.json` (see `terminal/pty-registry.ts`) so an ungracefully-killed session can be reaped on next launch
 4. Create `EventsWatcher` for the session
 5. Register data handler with batching
 6. After 500ms delay: write `copilot --resume {sessionId}\r` to PTY
