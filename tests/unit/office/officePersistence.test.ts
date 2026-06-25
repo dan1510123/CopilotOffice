@@ -61,6 +61,50 @@ describe('office/officePersistence.deserializeOffices', () => {
     expect(restored.currentOfficeId).toBe('office-0');
   });
 
+  it('preserves stored office-N ids with a gap (post-deletion) instead of reindexing', () => {
+    // After deleting office-3, the durable config keeps stable ids 0,1,2,4.
+    // Reindexing to 0,1,2,3 would remap office-4 onto office-3's session-history
+    // file and orphan its real history — the bug this guards against.
+    const afterDelete = JSON.stringify({
+      currentOfficeId: 'office-4',
+      offices: [
+        { id: 'office-0', name: 'Main', workingDirectory: '.', createdAt: 1, layout: 'default', seatedAgents: [] },
+        { id: 'office-1', name: 'GMM', workingDirectory: '.', createdAt: 2, layout: 'default', seatedAgents: [] },
+        { id: 'office-2', name: 'AIQB', workingDirectory: '.', createdAt: 3, layout: 'default', seatedAgents: [] },
+        { id: 'office-4', name: 'Teams', workingDirectory: '.', createdAt: 4, layout: 'default', seatedAgents: [] },
+      ],
+    });
+    const restored = deserializeOffices(afterDelete);
+    expect(restored.offices.map((o) => o.id)).toEqual(['office-0', 'office-1', 'office-2', 'office-4']);
+    expect(restored.offices.map((o) => o.name)).toEqual(['Main', 'GMM', 'AIQB', 'Teams']);
+    expect(restored.currentOfficeId).toBe('office-4');
+  });
+
+  it('reindexes when a stored id is not in the office-N scheme', () => {
+    // Mixed/legacy ids → positional migration still applies.
+    const mixed = JSON.stringify({
+      currentOfficeId: 'office-0',
+      offices: [
+        { id: 'office-0', name: 'A', workingDirectory: '.', createdAt: 1 },
+        { id: 'weird-id', name: 'B', workingDirectory: '.', createdAt: 2 },
+      ],
+    });
+    const restored = deserializeOffices(mixed);
+    expect(restored.offices.map((o) => o.id)).toEqual(['office-0', 'office-1']);
+  });
+
+  it('reindexes when stored office-N ids contain a duplicate', () => {
+    const dup = JSON.stringify({
+      currentOfficeId: 'office-1',
+      offices: [
+        { id: 'office-1', name: 'A', workingDirectory: '.', createdAt: 1 },
+        { id: 'office-1', name: 'B', workingDirectory: '.', createdAt: 2 },
+      ],
+    });
+    const restored = deserializeOffices(dup);
+    expect(restored.offices.map((o) => o.id)).toEqual(['office-0', 'office-1']);
+  });
+
   it('backfills missing layout and seatedAgents on legacy payloads', () => {
     const legacy = JSON.stringify({
       currentOfficeId: null,

@@ -12,9 +12,12 @@
 //      in-memory implementation.
 //
 // Backward compatibility: the on-disk schema is unchanged. `deserializeOffices`
-// still backfills missing `layout`, missing `seatedAgents`, reindexes ids to
-// `office-N` from array position, and drops the legacy `index` field — matching
-// the prior inline `loadFromJson` behaviour.
+// still backfills missing `layout`, missing `seatedAgents`, and drops the legacy
+// `index` field. Modern payloads (all offices have unique `office-N` ids) keep
+// their stored ids; only legacy payloads (UUID / missing ids) are reindexed to
+// `office-N` from array position. Preserving ids is required because per-office
+// session-history files are keyed by id — positionally reindexing survivors
+// after a deletion would remap later offices onto the wrong session file.
 
 import type { OfficeConfig, OfficeLayout, SeatedAgent } from './officeManager';
 
@@ -68,6 +71,23 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
   const record = data as Record<string, unknown>;
   const rawOffices = Array.isArray(record.offices) ? record.offices : [];
 
+  // Preserve stored `office-N` ids when the payload is already in the modern
+  // scheme (every entry is a well-formed object with a unique `office-N` id).
+  // Per-office session-history files are keyed by office id, so positionally
+  // reindexing the survivors after a deletion would silently remap every office
+  // *after* the deleted one onto the wrong session file — wiping their visible
+  // history. Legacy payloads (UUID / missing ids, or any malformed entry) still
+  // fall back to positional assignment so the original migration behaviour holds.
+  const officeIdPattern = /^office-\d+$/;
+  const objectOffices = rawOffices.filter(
+    (o): o is Record<string, unknown> => o !== null && typeof o === 'object'
+  );
+  const storedIds = objectOffices.map((o) => o.id);
+  const preserveIds =
+    objectOffices.length === rawOffices.length &&
+    storedIds.every((id) => typeof id === 'string' && officeIdPattern.test(id)) &&
+    new Set(storedIds).size === storedIds.length;
+
   const offices: OfficeConfig[] = [];
   for (let i = 0; i < rawOffices.length; i++) {
     const raw = rawOffices[i];
@@ -90,9 +110,9 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
       : [];
 
     const normalized: OfficeConfig = {
-      // Reindex from array position — this replaces legacy UUID-style ids and
-      // matches the prior inline loader behaviour exactly.
-      id: `office-${i}`,
+      // Keep the stored id in the modern scheme; otherwise reindex from array
+      // position (legacy migration — replaces UUID-style / missing ids).
+      id: preserveIds ? (cfg.id as string) : `office-${i}`,
       name,
       workingDirectory,
       createdAt,
