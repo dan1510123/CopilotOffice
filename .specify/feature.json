@@ -1,1 +1,3 @@
-{ "feature_directory": "specs/009-auto-startup-known-agents" }
+{
+  "feature_directory": "specs/011-teams-remote-agents"
+}
