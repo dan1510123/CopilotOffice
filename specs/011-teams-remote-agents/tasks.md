@@ -27,9 +27,9 @@ description: "Task list for Teams Remote Agents (011)"
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 Add `ws` dependency and `@types/ws` devDependency to `package.json`; create `electron/teams/` and `tests/unit/teams/` directories; add `electron/teams/types.ts` with core domain types (`OnlineAgentBinding`, `KnownThread`, `TeamsSettings`, `InboundMessage`, `OnlineAgentStatus`) per data-model.md.
-- [ ] T002 [P] Add `TEAMS_SETTINGS` layer constant to `src/config/zIndex.ts` (between `SPRITE_CUSTOMIZER` and `SETTINGS`).
-- [ ] T003 [P] Create `src/config/teamsConfig.ts` — `TeamsSettings` shape + defaults (`enabled:false`, `defaultChannelUrl:''`, `checkInEnabled:false`, `checkInThresholdMs:120000`, `checkInThrottleMs:60000`).
+- [X] T001 Add `ws` dependency and `@types/ws` devDependency to `package.json`; create `electron/teams/` and `tests/unit/teams/` directories; add `electron/teams/types.ts` with core domain types (`OnlineAgentBinding`, `KnownThread`, `TeamsSettings`, `InboundMessage`, `OnlineAgentStatus`) per data-model.md.
+- [X] T002 [P] Add `TEAMS_SETTINGS` layer constant to `src/config/zIndex.ts` (between `SPRITE_CUSTOMIZER` and `SETTINGS`).
+- [X] T003 [P] Create `src/config/teamsConfig.ts` — `TeamsSettings` shape + defaults (`enabled:false`, `defaultChannelUrl:''`, `checkInEnabled:false`, `checkInThresholdMs:120000`, `checkInThrottleMs:60000`).
 
 ---
 
@@ -39,30 +39,30 @@ description: "Task list for Teams Remote Agents (011)"
 
 ### Pure helpers (parallel — separate files)
 
-- [ ] T004 [P] `electron/teams/channelLink.ts` — `parseChannelLink(url)` → `{teamId,channelId,tenantId}|null` (decode `%3A`/`%40`, extract `groupId`/`tenantId`).
-- [ ] T005 [P] `electron/teams/handleRegistry.ts` — `normalizeHandle(name)` (lowercase, alnum-only) + `assignHandle(base, takenOnline)` (`base`, `base-1`, …); reject empty.
-- [ ] T006 [P] `electron/teams/marker.ts` — `embedMarker(html)` / `hasMarker(content)` (hidden self-loop marker) per research D9.
-- [ ] T007 [P] `electron/teams/chunk.ts` — `chunkReply(text, max)` → ordered `(i/N)` chunks (FR-011).
-- [ ] T008 [P] `electron/teams/channelResolver.ts` — `resolveChannel(office, settings)` (`office.teamsChannelUrl ?? settings.defaultChannelUrl`) + `activeChannelSet(bindings)` + `classifyThread(channelId, rootId, bindings, knownThreads)` → `bound|orphaned|foreign`.
+- [X] T004 [P] `electron/teams/channelLink.ts` — `parseChannelLink(url)` → `{teamId,channelId,tenantId}|null` (decode `%3A`/`%40`, extract `groupId`/`tenantId`).
+- [X] T005 [P] `electron/teams/handleRegistry.ts` — `normalizeHandle(name)` (lowercase, alnum-only) + `assignHandle(base, takenOnline)` (`base`, `base-1`, …); reject empty.
+- [X] T006 [P] `electron/teams/marker.ts` — `embedMarker(html)` / `hasMarker(content)` (hidden self-loop marker) per research D9.
+- [X] T007 [P] `electron/teams/chunk.ts` — `chunkReply(text, max)` → ordered `(i/N)` chunks (FR-011).
+- [X] T008 [P] `electron/teams/channelResolver.ts` — `resolveChannel(office, settings)` (`office.teamsChannelUrl ?? settings.defaultChannelUrl`) + `activeChannelSet(bindings)` + `classifyThread(channelId, rootId, bindings, knownThreads)` → `bound|orphaned|foreign`.
 
 ### Infrastructure
 
-- [ ] T009 [P] `electron/teams/onlineAgentsStore.ts` — `TeamsOnlineStore` port (file + in-memory impls), `load()`/`save()`, and pure `gcStale(bindings, nowMs, 30d)` helper. Never persist tokens.
-- [ ] T010 [P] `electron/teams/auth.ts` — `TokenProvider` over `az account get-access-token` for `graph`/`ic3`; JWT `exp` decode, in-memory cache, proactive refresh, graceful reuse on refresh failure (research D4). Secrets never logged.
-- [ ] T011 [P] `electron/teams/graphClient.ts` — `GraphSender`: `createThread({teamId,channelId,subject,html})` and `replyToThread(...)`; embeds marker; uses `fetch` + graph token (contracts/teams-api.md).
-- [ ] T012 [P] `electron/teams/chatsvcClient.ts` — receive fallback: poll `GET …/chatsvc/{region}/…/conversations/{channelId}/messages` with `sequenceId` cursor; normalize to `InboundMessage`.
-- [ ] T013 `electron/teams/trouterClient.ts` — `MessageSource` via `ws`: port the reference handshake (connect → authenticate → `trouter.connected` → register V3+V2 → listen `3:::` → ACK → heartbeat/re-register); emit normalized `InboundMessage`; extract thread root id from `conversationid` `;messageid=` suffix.
-- [ ] T014 `electron/teams/messageFilter.ts` — pipeline (research D10): dedup → marker-drop → stale → channel-in-active-set → classifyThread → injection-scan → decision (`dispatch|orphaned-notice|ignore`).
-- [ ] T015 `electron/teams/sessionGateway.ts` — `SessionGateway` adapter over existing terminal protocol (`get-session-id`, `get-session-meta`, `write` = `prompt+'\r'`, `copilot-event`/`copilot-turn-end` subscription, session-changed notifications). Reuse existing `MainToServer`/`ServerToMain`; do NOT touch `activeAgentViewers` directly.
-- [ ] T016 `electron/teams/teamsService.ts` — orchestrator skeleton: holds store, `TokenProvider`, `GraphSender`, `MessageSource`, `SessionGateway`, `dispatchQueue`; `start()/stop()`, wiring stubs for register/route/reply.
-- [ ] T017 Add `teams:*` IPC handlers in `electron/terminal/ipc-relay.ts` and bridge surface in `electron/terminal/preload.ts` (`teams:status/register/stop/getSettings/saveSettings`; events `teams:status:changed`, `teams:toast`) per contracts/ipc-channels.md.
-- [ ] T018 Add optional `teamsChannelUrl` to `OfficeConfig` in `src/office/officeManager.ts` and carry it verbatim through `serializeOffices`/`deserializeOffices` in `src/office/officePersistence.ts` (like `customAgents`).
-- [ ] T019 Wire `TeamsService` lifecycle in `electron/main.ts` (construct + `start()` on app ready, `stop()` on quit); load persisted bindings.
+- [X] T009 [P] `electron/teams/onlineAgentsStore.ts` — `TeamsOnlineStore` port (file + in-memory impls), `load()`/`save()`, and pure `gcStale(bindings, nowMs, 30d)` helper. Never persist tokens.
+- [X] T010 [P] `electron/teams/auth.ts` — `TokenProvider` over `az account get-access-token` for `graph`/`ic3`; JWT `exp` decode, in-memory cache, proactive refresh, graceful reuse on refresh failure (research D4). Secrets never logged.
+- [X] T011 [P] `electron/teams/graphClient.ts` — `GraphSender`: `createThread({teamId,channelId,subject,html})` and `replyToThread(...)`; embeds marker; uses `fetch` + graph token (contracts/teams-api.md).
+- [X] T012 [P] `electron/teams/chatsvcClient.ts` — receive fallback: poll `GET …/chatsvc/{region}/…/conversations/{channelId}/messages` with `sequenceId` cursor; normalize to `InboundMessage`.
+- [X] T013 `electron/teams/trouterClient.ts` — `MessageSource` via `ws`: port the reference handshake (connect → authenticate → `trouter.connected` → register V3+V2 → listen `3:::` → ACK → heartbeat/re-register); emit normalized `InboundMessage`; extract thread root id from `conversationid` `;messageid=` suffix.
+- [X] T014 `electron/teams/messageFilter.ts` — pipeline (research D10): dedup → marker-drop → stale → channel-in-active-set → classifyThread → injection-scan → decision (`dispatch|orphaned-notice|ignore`).
+- [X] T015 `electron/teams/sessionGateway.ts` — `SessionGateway` adapter over existing terminal protocol (`get-session-id`, `get-session-meta`, `write` = `prompt+'\r'`, `copilot-event`/`copilot-turn-end` subscription, session-changed notifications). Reuse existing `MainToServer`/`ServerToMain`; do NOT touch `activeAgentViewers` directly.
+- [X] T016 `electron/teams/teamsService.ts` — orchestrator skeleton: holds store, `TokenProvider`, `GraphSender`, `MessageSource`, `SessionGateway`, `dispatchQueue`; `start()/stop()`, wiring stubs for register/route/reply.
+- [X] T017 Add `teams:*` IPC handlers in `electron/terminal/ipc-relay.ts` and bridge surface in `electron/terminal/preload.ts` (`teams:status/register/stop/getSettings/saveSettings`; events `teams:status:changed`, `teams:toast`) per contracts/ipc-channels.md.
+- [X] T018 Add optional `teamsChannelUrl` to `OfficeConfig` in `src/office/officeManager.ts` and carry it verbatim through `serializeOffices`/`deserializeOffices` in `src/office/officePersistence.ts` (like `customAgents`).
+- [X] T019 Wire `TeamsService` lifecycle in `electron/main.ts` (construct + `start()` on app ready, `stop()` on quit); load persisted bindings.
 
 ### Foundational tests
 
-- [ ] T020 [P] Unit tests in `tests/unit/teams/` for `channelLink`, `handleRegistry`, `marker`, `chunk`, `channelResolver.classifyThread`, and `onlineAgentsStore.gcStale`.
-- [ ] T021 [P] Unit test `tests/unit/teams/messageFilter.test.ts` — dedup/marker/stale/channel-set/classify/injection ordering.
+- [X] T020 [P] Unit tests in `tests/unit/teams/` for `channelLink`, `handleRegistry`, `marker`, `chunk`, `channelResolver.classifyThread`, and `onlineAgentsStore.gcStale`.
+- [X] T021 [P] Unit test `tests/unit/teams/messageFilter.test.ts` — dedup/marker/stale/channel-set/classify/injection ordering.
 
 **Checkpoint**: Transport, auth, store, helpers, gateway, IPC, and config ready — user stories can begin.
 
@@ -76,18 +76,18 @@ description: "Task list for Teams Remote Agents (011)"
 
 ### Implementation
 
-- [ ] T022 [US1] Implement register flow in `electron/teams/teamsService.ts`: resolve channel (office override ?? default), `assignHandle`, create thread with subject `<name>: <sessionTitle>` (fallback `<name>: <handle>`), post intro, bind + persist, start routing (FR-002/004/021).
-- [ ] T023 [US1] Intro content in `electron/teams/teamsService.ts` (+ `sessionGateway`): include display name, `workingDir`, handle, session title, and best-effort convo summary from recent `assistant.message` events; degrade gracefully if unavailable (FR-021a).
-- [ ] T024 [US1] Bound-thread dispatch in `electron/teams/teamsService.ts` + `electron/teams/dispatchQueue.ts`: on `bound` message → submit prompt via gateway, accumulate `assistant.message` until turn-end, post reply into the thread with marker (FR-007/008/010/013).
-- [ ] T025 [US1] Add "Teams remote" button to `src/ui/TerminalOverlay.ts` near New/Close Session (~L908), rendered only when `settings.enabled`; states offline/pending/online; calls `teams:register`/`teams:status` (FR-001/004a).
-- [ ] T026 [US1] Mirror the "Teams remote" control in `src/ui/SeriousTerminalController.ts` (Principle VI parity).
-- [ ] T027 [US1] Create `src/ui/TeamsSettingsOverlay.ts`: feature-flag toggle + default channel URL input (+ check-in toggles), `ZIndex.TEAMS_SETTINGS`, `onOpen`/`onClose` wired to `InputManager` via `settings:open`/`settings:close`; save through `teams:saveSettings` with parse validation (FR-004/004a).
-- [ ] T028 [US1] No-channel guard in `teamsService`/renderer: clicking Teams remote with no resolved channel routes to `TeamsSettingsOverlay` with a clear prompt instead of failing (FR-004).
-- [ ] T029 [US1] Renderer status wiring in `src/main.ts`: handle `teams:status:changed` (button + status dot) and `teams:toast` (toast surface).
+- [X] T022 [US1] Implement register flow in `electron/teams/teamsService.ts`: resolve channel (office override ?? default), `assignHandle`, create thread with subject `<name>: <sessionTitle>` (fallback `<name>: <handle>`), post intro, bind + persist, start routing (FR-002/004/021).
+- [X] T023 [US1] Intro content in `electron/teams/teamsService.ts` (+ `sessionGateway`): include display name, `workingDir`, handle, session title, and best-effort convo summary from recent `assistant.message` events; degrade gracefully if unavailable (FR-021a).
+- [X] T024 [US1] Bound-thread dispatch in `electron/teams/teamsService.ts` + `electron/teams/dispatchQueue.ts`: on `bound` message → submit prompt via gateway, accumulate `assistant.message` until turn-end, post reply into the thread with marker (FR-007/008/010/013).
+- [X] T025 [US1] Add "Teams remote" button to `src/ui/TerminalOverlay.ts` near New/Close Session (~L908), rendered only when `settings.enabled`; states offline/pending/online; calls `teams:register`/`teams:status` (FR-001/004a).
+- [X] T026 [US1] Mirror the "Teams remote" control in `src/ui/SeriousTerminalController.ts` (Principle VI parity).
+- [X] T027 [US1] Create `src/ui/TeamsSettingsOverlay.ts`: feature-flag toggle + default channel URL input (+ check-in toggles), `ZIndex.TEAMS_SETTINGS`, `onOpen`/`onClose` wired to `InputManager` via `settings:open`/`settings:close`; save through `teams:saveSettings` with parse validation (FR-004/004a).
+- [X] T028 [US1] No-channel guard in `teamsService`/renderer: clicking Teams remote with no resolved channel routes to `TeamsSettingsOverlay` with a clear prompt instead of failing (FR-004).
+- [X] T029 [US1] Renderer status wiring in `src/main.ts`: handle `teams:status:changed` (button + status dot) and `teams:toast` (toast surface).
 
 ### Tests
 
-- [ ] T030 [P] [US1] Integration test `tests/integration/teams-online-roundtrip.test.ts`: register → thread create → bound message → dispatch → reply, with mocked `GraphSender`/`MessageSource`/`SessionGateway`.
+- [X] T030 [P] [US1] Integration test `tests/integration/teams-online-roundtrip.test.ts`: register → thread create → bound message → dispatch → reply, with mocked `GraphSender`/`MessageSource`/`SessionGateway`.
 - [ ] T031 [US1] Regression test `tests/integration/teams-dispatch-noninterference.test.ts`: remote dispatch into a session leaves the terminal viewer and `activeAgentViewers` dual-key state intact (Principle III).
 
 **Checkpoint**: MVP — one agent online, reply in / reply out.
@@ -102,14 +102,14 @@ description: "Task list for Teams Remote Agents (011)"
 
 ### Implementation
 
-- [ ] T032 [US2] Finalize per-agent sequential `electron/teams/dispatchQueue.ts`: FIFO per agent, one reply per prompt, next dequeued only after turn-end (FR-009).
-- [ ] T033 [US2] Continuity in `teamsService`: subsequent bound messages reuse the same session (no new thread/session), preserving context (FR-013).
-- [ ] T034 [US2] Wire `chunkReply` into the reply path (ordered `(i/N)`, sequential post) in `teamsService` (FR-011).
+- [X] T032 [US2] Finalize per-agent sequential `electron/teams/dispatchQueue.ts`: FIFO per agent, one reply per prompt, next dequeued only after turn-end (FR-009).
+- [X] T033 [US2] Continuity in `teamsService`: subsequent bound messages reuse the same session (no new thread/session), preserving context (FR-013).
+- [X] T034 [US2] Wire `chunkReply` into the reply path (ordered `(i/N)`, sequential post) in `teamsService` (FR-011).
 
 ### Tests
 
-- [ ] T035 [P] [US2] Unit test `tests/unit/teams/dispatchQueue.test.ts`: burst ordering, one-reply-per-prompt.
-- [ ] T036 [P] [US2] Unit test `tests/unit/teams/chunk.test.ts`: chunk ordering + full delivery for ~10k chars.
+- [X] T035 [P] [US2] Unit test `tests/unit/teams/dispatchQueue.test.ts`: burst ordering, one-reply-per-prompt.
+- [X] T036 [P] [US2] Unit test `tests/unit/teams/chunk.test.ts`: chunk ordering + full delivery for ~10k chars.
 
 **Checkpoint**: US1 + US2 both work independently.
 
@@ -123,14 +123,14 @@ description: "Task list for Teams Remote Agents (011)"
 
 ### Implementation
 
-- [ ] T037 [US3] Wire `assignHandle` collision suffixing into the register flow; reject empty/invalid normalization with a clear error (FR-002/003).
-- [ ] T038 [US3] Active-channel-set routing in `messageFilter`/`teamsService`: admit only channels with ≥1 online agent; route by `(channelId, threadRootId)` across multiple channels (FR-005/007).
-- [ ] T039 [US3] Per-office override UI: add the override channel deep-link field next to working directory in the office create/edit dialog (`src/main.ts`/office dialog), persisted on `OfficeConfig`; enforce resolution precedence (FR-004b).
+- [X] T037 [US3] Wire `assignHandle` collision suffixing into the register flow; reject empty/invalid normalization with a clear error (FR-002/003).
+- [X] T038 [US3] Active-channel-set routing in `messageFilter`/`teamsService`: admit only channels with ≥1 online agent; route by `(channelId, threadRootId)` across multiple channels (FR-005/007).
+- [X] T039 [US3] Per-office override UI: add the override channel deep-link field next to working directory in the office create/edit dialog (`src/main.ts`/office dialog), persisted on `OfficeConfig`; enforce resolution precedence (FR-004b).
 
 ### Tests
 
-- [ ] T040 [P] [US3] Unit test `tests/unit/teams/handleRegistry.test.ts`: collision sequence + case-insensitive normalize.
-- [ ] T041 [P] [US3] Integration test `tests/integration/teams-multichannel.test.ts`: two colliding agents across two channels route correctly.
+- [X] T040 [P] [US3] Unit test `tests/unit/teams/handleRegistry.test.ts`: collision sequence + case-insensitive normalize.
+- [X] T041 [P] [US3] Integration test `tests/integration/teams-multichannel.test.ts`: two colliding agents across two channels route correctly.
 
 **Checkpoint**: Multi-agent, multi-channel functional.
 
@@ -144,14 +144,14 @@ description: "Task list for Teams Remote Agents (011)"
 
 ### Implementation
 
-- [ ] T042 [US4] `/stop` handling in `messageFilter`/`teamsService` + in-app toggle in the button: take offline (remove binding, post offline notice with marker) — connection only, session untouched (FR-015/015a).
-- [ ] T043 [US4] Orphaned/foreign handling in `teamsService`: `orphaned` known-thread → one-time inactive notice (dedupe via `KnownThread.noticePosted`); `foreign`/root → ignore silently (FR-026/027/028).
-- [ ] T044 [US4] Verify every app post (intro/reply/check-in/offline/inactive notices) embeds the marker and marked inbound is dropped before all processing (FR-007a).
+- [X] T042 [US4] `/stop` handling in `messageFilter`/`teamsService` + in-app toggle in the button: take offline (remove binding, post offline notice with marker) — connection only, session untouched (FR-015/015a).
+- [X] T043 [US4] Orphaned/foreign handling in `teamsService`: `orphaned` known-thread → one-time inactive notice (dedupe via `KnownThread.noticePosted`); `foreign`/root → ignore silently (FR-026/027/028).
+- [X] T044 [US4] Verify every app post (intro/reply/check-in/offline/inactive notices) embeds the marker and marked inbound is dropped before all processing (FR-007a).
 
 ### Tests
 
-- [ ] T045 [P] [US4] Unit test `tests/unit/teams/classify-notice.test.ts`: bound/orphaned/foreign classification + one-time notice dedupe.
-- [ ] T046 [P] [US4] Unit test `tests/unit/teams/marker.test.ts`: marker round-trip; app self-post excluded (no loop, incl. notice-triggers-itself).
+- [X] T045 [P] [US4] Unit test `tests/unit/teams/classify-notice.test.ts`: bound/orphaned/foreign classification + one-time notice dedupe.
+- [X] T046 [P] [US4] Unit test `tests/unit/teams/marker.test.ts`: marker round-trip; app self-post excluded (no loop, incl. notice-triggers-itself).
 
 **Checkpoint**: Full remote lifecycle control from Teams.
 
@@ -165,11 +165,11 @@ description: "Task list for Teams Remote Agents (011)"
 
 ### Implementation
 
-- [ ] T047 [US5] Check-in logic in `teamsService`: when a turn exceeds `checkInThresholdMs`, post throttled updates derived from tool/turn events; gate on `checkInEnabled`; respect `checkInThrottleMs` (FR-016).
+- [X] T047 [US5] Check-in logic in `teamsService`: when a turn exceeds `checkInThresholdMs`, post throttled updates derived from tool/turn events; gate on `checkInEnabled`; respect `checkInThrottleMs` (FR-016).
 
 ### Tests
 
-- [ ] T048 [P] [US5] Unit test `tests/unit/teams/checkin.test.ts`: threshold trigger, throttle spacing, disabled no-op.
+- [X] T048 [P] [US5] Unit test `tests/unit/teams/checkin.test.ts`: threshold trigger, throttle spacing, disabled no-op.
 
 **Checkpoint**: All user stories independently functional.
 
@@ -179,14 +179,14 @@ description: "Task list for Teams Remote Agents (011)"
 
 **Purpose**: Session-lifecycle robustness (high-risk, Principle III/IV), auth hardening, docs, validation.
 
-- [ ] T049 New-session teardown in `teamsService` via `sessionGateway.onSessionChanged`: when an agent's session id changes, take Teams offline + remove binding + post offline notice (FR-022).
-- [ ] T050 Event-driven reconnect in `teamsService`: when a session with a stored id becomes available, reconnect + re-bind to the persisted thread with no duplicate thread (FR-024).
-- [ ] T051 Startup GC in `teamsService`: drop bindings with `lastConnected` older than 30 days and emit a `teams:toast` summary (FR-024a).
-- [ ] T052 Reconnect thread-missing fallback in `teamsService`/`graphClient`: if the persisted thread is unresolvable, start a fresh thread + rebind OR flag failed-to-reconnect (FR-025).
-- [ ] T053 [P] Regression tests `tests/unit/teams/lifecycle.test.ts` + `tests/integration/teams-reconnect.test.ts`: session-id reconnect (SC-010), new-session teardown (SC-009), 30-day GC.
-- [ ] T054 [P] Auth test `tests/unit/teams/auth.test.ts`: fake-JWT `exp` refresh + assert tokens never logged/persisted.
+- [X] T049 New-session teardown in `teamsService` via `sessionGateway.onSessionChanged`: when an agent's session id changes, take Teams offline + remove binding + post offline notice (FR-022).
+- [X] T050 Event-driven reconnect in `teamsService`: when a session with a stored id becomes available, reconnect + re-bind to the persisted thread with no duplicate thread (FR-024).
+- [X] T051 Startup GC in `teamsService`: drop bindings with `lastConnected` older than 30 days and emit a `teams:toast` summary (FR-024a).
+- [X] T052 Reconnect thread-missing fallback in `teamsService`/`graphClient`: if the persisted thread is unresolvable, start a fresh thread + rebind OR flag failed-to-reconnect (FR-025).
+- [X] T053 [P] Regression tests `tests/unit/teams/lifecycle.test.ts` + `tests/integration/teams-reconnect.test.ts`: session-id reconnect (SC-010), new-session teardown (SC-009), 30-day GC.
+- [X] T054 [P] Auth test `tests/unit/teams/auth.test.ts`: fake-JWT `exp` refresh + assert tokens never logged/persisted.
 - [ ] T055 [P] Playwright e2e `tests/integration/teams-ui.e2e.ts`: feature-flag gating + button → online → status (Teams transport mocked).
-- [ ] T056 [P] Docs: update the Teams Remote Agents section reference in `.github/copilot-instructions.md`; note feature flag + per-office override.
+- [X] T056 [P] Docs: update the Teams Remote Agents section reference in `.github/copilot-instructions.md`; note feature flag + per-office override.
 - [ ] T057 Run `npm run test`, then `npm run test:e2e`, then walk `specs/011-teams-remote-agents/quickstart.md` manual matrix (SC-001…010).
 
 ---

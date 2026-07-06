@@ -74,6 +74,16 @@ Arthur plans tasks in a meeting room, outputs structured JSON with agent assignm
 
 See **`MeetingMode.md`** for design context. Always read it before making changes to meeting/fleet code.
 
+### Teams Remote Agents (implemented — spec 011)
+A per-agent "Teams remote" control (in `TerminalOverlay` + `SeriousTerminalController`, gated by the `TeamsSettings.enabled` feature flag) brings an agent online in a Microsoft Teams channel **thread**; anyone can drive it by replying in-thread, which routes into the agent's persistent terminal session, with answers posted back. The main-process service lives in `electron/teams/`:
+
+- `teamsService.ts` — orchestrator (register/route/reply, reconnect/teardown/GC lifecycle)
+- `auth.ts` (az Graph + ic3 tokens) · `graphClient.ts` (send) · `trouterClient.ts` (real-time receive WS) · `chatsvcClient.ts` (poll fallback)
+- `messageFilter.ts` (dedup→marker→stale→channel→classify→injection) · `dispatchQueue.ts` (per-agent FIFO) · `sessionGateway.ts` (adapter over the terminal server via `TerminalRelay.mainEvents`)
+- `channelLink.ts` · `handleRegistry.ts` · `marker.ts` (self-loop guard) · `chunk.ts` · `channelResolver.ts` · `onlineAgentsStore.ts` (`.data/teams-online-agents.json`, 30-day GC)
+
+Config: global `TeamsSettings` (feature flag + default channel deep-link + check-in prefs, `.data/teams-settings.json`) and a per-office `OfficeConfig.teamsChannelUrl` override; effective channel = `office.teamsChannelUrl ?? settings.defaultChannelUrl`. Renderer↔main over `teams:*` IPC. See **`specs/011-teams-remote-agents/`** for the full spec, plan, and contracts.
+
 ## Common Tasks
 
 - **Add NPC**: `src/config/agents.ts` → `src/sprites/SpriteGenerator.ts` (or use reserve sprite)

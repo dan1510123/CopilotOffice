@@ -949,6 +949,11 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
       width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12121f; border: 1px solid #333;
       border-radius: 5px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
     " />
+    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Teams Channel Override <span style="color:#667;">(optional)</span></label>
+    <input class="osp-teams" type="text" value="${escapeHtml(office.config.teamsChannelUrl ?? '')}" placeholder="Leave empty to use the default channel" style="
+      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12121f; border: 1px solid #333;
+      border-radius: 5px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+    " />
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       ${canDelete ? `<button class="osp-delete" style="
         padding: 5px 12px; background: #2a1a1a; border: 1px solid #633; border-radius: 5px;
@@ -972,6 +977,7 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
   // Bind events
   const nameInput = popover.querySelector('.osp-name') as HTMLInputElement;
   const pathInput = popover.querySelector('.osp-path') as HTMLInputElement;
+  const teamsInput = popover.querySelector('.osp-teams') as HTMLInputElement;
 
   popover.querySelector('.osp-close')?.addEventListener('click', closeOfficePopover);
 
@@ -980,6 +986,8 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
     const newPath = pathInput.value.trim();
     if (newName) officeManager.updateOffice(officeId, { name: newName });
     if (newPath) officeManager.updateOffice(officeId, { workingDirectory: newPath });
+    // Per-office Teams channel override (empty string clears it).
+    officeManager.updateOffice(officeId, { teamsChannelUrl: teamsInput.value.trim() });
     renderOfficeTabs();
     updateTerminalContent();
     closeOfficePopover();

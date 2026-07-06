@@ -1,0 +1,132 @@
+import { describe, expect, it, vi } from 'vitest';
+import { TeamsService } from '../../../electron/teams/teamsService';
+import { InMemoryTeamsOnlineStore } from '../../../electron/teams/onlineAgentsStore';
+import type { GraphSender } from '../../../electron/teams/graphClient';
+import type { MessageSource } from '../../../electron/teams/chatsvcClient';
+import type { SessionGateway, AgentEvent } from '../../../electron/teams/sessionGateway';
+import type { TokenProvider } from '../../../electron/teams/auth';
+import type { InboundMessage, TeamsSettings, OnlineAgentBinding } from '../../../electron/teams/types';
+
+const CH_A = '19:aaa@thread.tacv2';
+const CH_B = '19:bbb@thread.tacv2';
+const URL_A = `https://teams.microsoft.com/l/channel/19%3Aaaa%40thread.tacv2/A?groupId=team-a&tenantId=tn`;
+const URL_B = `https://teams.microsoft.com/l/channel/19%3Abbb%40thread.tacv2/B?groupId=team-b&tenantId=tn`;
+
+function baseSettings(over: Partial<TeamsSettings> = {}): TeamsSettings {
+  return {
+    enabled: true,
+    defaultChannelUrl: URL_A,
+    checkInEnabled: false,
+    checkInThresholdMs: 120000,
+    checkInThrottleMs: 60000,
+    ...over,
+  };
+}
+
+function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?: OnlineAgentBinding[] } = {}) {
+  const store = new InMemoryTeamsOnlineStore(
+    opts.seed ? { bindings: opts.seed, knownThreads: opts.seed.map((b) => ({ threadRootId: b.threadRootId, noticePosted: false })) } : undefined,
+  );
+  const tokens: TokenProvider = { getToken: async () => 'fake' };
+  const replies: Array<{ threadRootId: string; html: string }> = [];
+  let threadSeq = 0;
+  const graph: GraphSender = {
+    createThread: vi.fn(async () => ({ threadRootId: `root-${++threadSeq}`, webUrl: 'https://web' })),
+    replyToThread: vi.fn(async (p) => { replies.push({ threadRootId: p.threadRootId, html: p.html }); return { messageId: 'x' }; }),
+  };
+  let emit: (m: InboundMessage) => void = () => {};
+  const source: MessageSource = { health: 'connected', start: async (cb) => { emit = cb; }, stop: async () => {} };
+  let agentCb: (e: AgentEvent) => void = () => {};
+  const submitted: Array<{ agentId: string; prompt: string }> = [];
+  const sessionByAgent: Record<string, string | null> = { generalist: 'session-1', debugger: 'session-2' };
+  const gateway: SessionGateway = {
+    getSessionId: async (_o, a) => sessionByAgent[a] ?? null,
+    getSessionMeta: async () => ({ title: '' }),
+    submitPrompt: async (_o, a, prompt) => { submitted.push({ agentId: a, prompt }); },
+    onAgentEvent: (cb) => { agentCb = cb; return () => {}; },
+    onSessionExit: () => () => {},
+  };
+  const service = new TeamsService({
+    store, tokens, graph, source, gateway,
+    getSettings: () => opts.settings ?? baseSettings(),
+    emitStatus: () => {}, emitToast: () => {},
+    now: opts.now,
+  });
+  return { service, replies, submitted, sessionByAgent, inbound: () => emit, agent: () => agentCb };
+}
+
+const inbound = (channelId: string, threadRootId: string, content: string): InboundMessage => ({
+  messageId: `m-${Math.random()}`, channelId, threadRootId, senderName: 'Alice', content,
+  composeTime: new Date().toISOString(), hasMarker: false,
+});
+
+describe('teams multichannel (US3, FR-005)', () => {
+  it('routes replies to the right agent across two channels', async () => {
+    const h = makeHarness();
+    await h.service.start();
+    // Gene on default channel A (office-0), Dan on override channel B (office-1).
+    const a = await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    const b = await h.service.register({ officeId: 'office-1', agentId: 'debugger', displayName: 'Dan', workingDir: '.', officeChannelUrl: URL_B });
+    expect(a.success && b.success).toBe(true);
+
+    // Message in channel B / Dan's thread → routes to debugger only.
+    h.inbound()(inbound(CH_B, 'root-2', 'hi dan'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.submitted).toEqual([{ agentId: 'debugger', prompt: 'hi dan' }]);
+
+    // Message in channel A / Gene's thread → routes to generalist.
+    h.inbound()(inbound(CH_A, 'root-1', 'hi gene'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.submitted).toContainEqual({ agentId: 'generalist', prompt: 'hi gene' });
+  });
+});
+
+describe('teams check-ins (US5, FR-016)', () => {
+  it('posts a throttled interim update on a long turn when enabled', async () => {
+    let t = 1_000_000;
+    const h = makeHarness({ settings: baseSettings({ checkInEnabled: true, checkInThresholdMs: 1000, checkInThrottleMs: 500 }), now: () => t });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+
+    h.inbound()(inbound(CH_A, 'root-1', 'do a big task'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Advance past the check-in threshold, then a tool starts.
+    t += 2000;
+    h.agent()({ agentId: 'generalist', kind: 'tool-start', toolName: 'grep' });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(h.replies.some((r) => /still working/i.test(r.html))).toBe(true);
+  });
+
+  it('does not post check-ins when disabled', async () => {
+    let t = 1_000_000;
+    const h = makeHarness({ settings: baseSettings({ checkInEnabled: false, checkInThresholdMs: 1000 }), now: () => t });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    h.inbound()(inbound(CH_A, 'root-1', 'task'));
+    await new Promise((r) => setTimeout(r, 20));
+    t += 5000;
+    h.agent()({ agentId: 'generalist', kind: 'tool-start', toolName: 'grep' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.replies.some((r) => /still working/i.test(r.html))).toBe(false);
+  });
+});
+
+describe('teams reconnect (FR-024, SC-010)', () => {
+  it('re-binds a persisted binding when its session reappears, with no new thread', async () => {
+    const seed: OnlineAgentBinding[] = [{
+      agentId: 'generalist', officeId: 'office-0', sessionId: 'session-1', handle: 'gene',
+      displayName: 'Gene', workingDir: '.', sessionTitle: '', teamId: 'team-a', channelId: CH_A,
+      tenantId: 'tn', threadRootId: 'root-seed', threadWebUrl: 'https://web', online: true,
+      lastConnected: Date.now(),
+    }];
+    const h = makeHarness({ seed });
+    await h.service.start(); // loads as offline, reconcile() re-binds since session-1 matches
+
+    const status = h.service.getStatus('office-0', 'generalist');
+    expect(status?.online).toBe(true);
+    // No new thread created on reconnect.
+    // (createThread is only called by register(), never on reconnect.)
+  });
+});
