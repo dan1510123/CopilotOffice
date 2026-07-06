@@ -27,6 +27,8 @@ export interface OfficeConfig {
   seatedAgents: SeatedAgent[];
   customAgents?: AgentConfig[];
   customReserveAgents?: Record<string, AgentConfig>;
+  /** Optional per-office override Teams channel deep-link (falls back to global default). */
+  teamsChannelUrl?: string;
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -212,13 +214,14 @@ export class OfficeManager {
   }
   
   // Update office config
-  updateOffice(officeId: string, updates: Partial<Pick<OfficeConfig, 'name' | 'workingDirectory' | 'layout'>>): boolean {
+  updateOffice(officeId: string, updates: Partial<Pick<OfficeConfig, 'name' | 'workingDirectory' | 'layout' | 'teamsChannelUrl'>>): boolean {
     const office = this.offices.get(officeId);
     if (!office) return false;
     
     if (updates.name !== undefined) office.config.name = updates.name;
     if (updates.workingDirectory !== undefined) office.config.workingDirectory = updates.workingDirectory;
     if (updates.layout !== undefined) office.config.layout = updates.layout;
+    if (updates.teamsChannelUrl !== undefined) office.config.teamsChannelUrl = updates.teamsChannelUrl;
     
     this.saveToStorage();
     this.onOfficesUpdated?.();

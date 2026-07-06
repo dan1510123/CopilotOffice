@@ -1,0 +1,479 @@
+// Teams service orchestrator (T016 + US1–US5 + lifecycle).
+//
+// Owns: the online-agent bindings, the receive transport, prompt dispatch, reply posting,
+// reconnect/teardown/GC lifecycle. Injectable deps make it unit-testable without live
+// network/auth/terminal.
+
+import type { TokenProvider } from './auth';
+import type { GraphSender } from './graphClient';
+import type { MessageSource } from './chatsvcClient';
+import type { SessionGateway, AgentEvent } from './sessionGateway';
+import type { TeamsOnlineStore } from './onlineAgentsStore';
+import { gcStale } from './onlineAgentsStore';
+import { DispatchQueue, type DispatchItem } from './dispatchQueue';
+import { MessageFilter } from './messageFilter';
+import { normalizeHandle, assignHandle } from './handleRegistry';
+import { parseChannelLink } from './channelLink';
+import { resolveChannel, activeChannelSet } from './channelResolver';
+import { chunkReply } from './chunk';
+import { escapeHtml } from './htmlText';
+import type {
+  TeamsSettings,
+  OnlineAgentBinding,
+  KnownThread,
+  InboundMessage,
+  OnlineAgentStatus,
+} from './types';
+
+export interface TeamsToast {
+  level: 'info' | 'warn' | 'error';
+  message: string;
+}
+
+export interface AgentInfo {
+  displayName: string;
+  workingDir: string;
+}
+
+/** Context the renderer supplies when bringing an agent online. */
+export interface RegisterContext {
+  officeId: string;
+  agentId: string;
+  displayName: string;
+  workingDir: string;
+  /** Per-office override channel deep-link (office.teamsChannelUrl); may be empty. */
+  officeChannelUrl?: string;
+}
+
+export interface TeamsServiceDeps {
+  store: TeamsOnlineStore;
+  tokens: TokenProvider;
+  graph: GraphSender;
+  source: MessageSource;
+  gateway: SessionGateway;
+  /** Current global Teams settings. */
+  getSettings: () => TeamsSettings;
+  /** Emit a per-agent status change to the renderer. */
+  emitStatus: (s: OnlineAgentStatus) => void;
+  /** Emit a toast to the renderer. */
+  emitToast: (t: TeamsToast) => void;
+  now?: () => number;
+}
+
+interface PendingTurn {
+  officeId: string;
+  agentId: string;
+  binding: OnlineAgentBinding;
+  chunks: string[];
+  resolve: () => void;
+  startedAt: number;
+  lastCheckIn: number;
+}
+
+const RECONCILE_MS = 15_000;
+
+export class TeamsService {
+  private bindings: OnlineAgentBinding[] = [];
+  private knownThreads: KnownThread[] = [];
+  private readonly filter: MessageFilter;
+  private readonly queue: DispatchQueue;
+  private readonly pending = new Map<string, PendingTurn>(); // key = agentId
+  private unsubEvent: (() => void) | null = null;
+  private unsubExit: (() => void) | null = null;
+  private reconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private started = false;
+  private readonly now: () => number;
+
+  constructor(private readonly deps: TeamsServiceDeps) {
+    this.now = deps.now ?? Date.now;
+    this.filter = new MessageFilter(this.now);
+    this.queue = new DispatchQueue((item) => this.processDispatch(item));
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────
+
+  async start(): Promise<void> {
+    if (this.started) return;
+    this.started = true;
+
+    const state = await this.deps.store.load();
+    // 30-day GC (FR-024a).
+    const { kept, removed } = gcStale(state.bindings, this.now());
+    this.bindings = kept.map((b) => ({ ...b, online: false })); // reconnect is event-driven
+    this.knownThreads = state.knownThreads;
+    if (removed.length > 0) {
+      await this.persist();
+      this.deps.emitToast({
+        level: 'info',
+        message: `Teams: cleaned up ${removed.length} stale agent binding(s) (>30 days).`,
+      });
+    }
+
+    this.unsubEvent = this.deps.gateway.onAgentEvent((e) => this.onAgentEvent(e));
+    this.unsubExit = this.deps.gateway.onSessionExit((agentId) => this.onSessionExit(agentId));
+
+    await this.deps.source.start((m) => {
+      void this.handleInbound(m);
+    });
+
+    this.reconcileTimer = setInterval(() => void this.reconcile(), RECONCILE_MS);
+    // Attempt immediate reconnect for persisted bindings.
+    void this.reconcile();
+  }
+
+  async stop(): Promise<void> {
+    this.started = false;
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    this.reconcileTimer = null;
+    this.unsubEvent?.();
+    this.unsubExit?.();
+    this.unsubEvent = this.unsubExit = null;
+    await this.deps.source.stop();
+  }
+
+  // ── Public API (invoked from IPC) ────────────────────────────
+
+  getStatuses(): OnlineAgentStatus[] {
+    return this.bindings.map((b) => this.toStatus(b));
+  }
+
+  getStatus(officeId: string, agentId: string): OnlineAgentStatus | null {
+    const b = this.findBinding(officeId, agentId);
+    return b ? this.toStatus(b) : null;
+  }
+
+  /** Bring an agent online: resolve channel, create thread, bind, start listening. */
+  async register(
+    ctx: RegisterContext,
+  ): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> {
+    const { officeId, agentId } = ctx;
+    const settings = this.deps.getSettings();
+    if (!settings.enabled) return { success: false, error: 'Teams remote is disabled in settings.' };
+
+    const channelUrl = resolveChannel({ teamsChannelUrl: ctx.officeChannelUrl }, settings);
+    const coords = parseChannelLink(channelUrl);
+    if (!coords) {
+      return { success: false, error: 'no-channel' };
+    }
+
+    const sessionId = await this.deps.gateway.getSessionId(officeId, agentId);
+    if (!sessionId) {
+      return { success: false, error: 'No active session for this agent. Open its terminal first.' };
+    }
+
+    const displayName = ctx.displayName || agentId;
+    const workingDir = ctx.workingDir || '';
+
+    // Already online? Return existing binding.
+    const existing = this.findBinding(officeId, agentId);
+    if (existing && existing.online) {
+      return { success: true, handle: existing.handle, threadWebUrl: existing.threadWebUrl };
+    }
+
+    const meta = await this.deps.gateway.getSessionMeta(officeId, agentId);
+    const sessionTitle = meta?.title?.trim() || '';
+
+    const base = normalizeHandle(displayName);
+    let handle: string;
+    try {
+      handle = assignHandle(base, this.onlineHandles());
+    } catch {
+      return { success: false, error: 'Could not derive a valid handle from the agent name.' };
+    }
+
+    const subject = sessionTitle ? `${displayName}: ${sessionTitle}` : `${displayName}: ${handle}`;
+    const introHtml = this.buildIntro({ displayName, workingDir }, handle, sessionTitle);
+
+    let thread: { threadRootId: string; webUrl: string };
+    try {
+      thread = await this.deps.graph.createThread({
+        teamId: coords.teamId,
+        channelId: coords.channelId,
+        subject,
+        html: introHtml,
+      });
+    } catch (e) {
+      return { success: false, error: `Failed to create Teams thread: ${(e as Error).message}` };
+    }
+
+    const binding: OnlineAgentBinding = {
+      agentId,
+      officeId,
+      sessionId,
+      handle,
+      displayName,
+      workingDir,
+      sessionTitle,
+      teamId: coords.teamId,
+      channelId: coords.channelId,
+      tenantId: coords.tenantId,
+      threadRootId: thread.threadRootId,
+      threadWebUrl: thread.webUrl,
+      online: true,
+      lastConnected: this.now(),
+    };
+    // Replace any stale binding for this agent.
+    this.bindings = this.bindings.filter((b) => !(b.officeId === officeId && b.agentId === agentId));
+    this.bindings.push(binding);
+    this.rememberThread(thread.threadRootId);
+    await this.persist();
+    this.updateSourceChannels();
+    this.deps.emitStatus(this.toStatus(binding));
+
+    return { success: true, handle, threadWebUrl: thread.webUrl };
+  }
+
+  /** Take an agent offline (connection only; session untouched). */
+  async goOffline(officeId: string, agentId: string, postNotice = true): Promise<{ success: boolean }> {
+    const b = this.findBinding(officeId, agentId);
+    if (!b) return { success: true };
+    if (postNotice && b.online && b.threadRootId) {
+      await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
+    }
+    this.queue.clear(officeId, agentId);
+    this.pending.delete(agentId);
+    this.bindings = this.bindings.filter((x) => !(x.officeId === officeId && x.agentId === agentId));
+    await this.persist();
+    this.updateSourceChannels();
+    this.deps.emitStatus({ agentId, officeId, online: false, handle: b.handle, health: 'disconnected' });
+    return { success: true };
+  }
+
+  // ── Inbound handling ─────────────────────────────────────────
+
+  async handleInbound(msg: InboundMessage): Promise<void> {
+    const result = this.filter.evaluate(msg, this.bindings, this.knownThreads);
+    if (result.action === 'ignore') return;
+
+    if (result.action === 'orphaned-notice') {
+      await this.postOrphanedNotice(msg);
+      return;
+    }
+
+    // dispatch
+    const binding = result.binding;
+    if (!binding) return;
+
+    const content = msg.content.trim();
+    if (content === '/stop') {
+      await this.goOffline(binding.officeId, binding.agentId, true);
+      return;
+    }
+
+    this.queue.enqueue({
+      officeId: binding.officeId,
+      agentId: binding.agentId,
+      sessionId: binding.sessionId,
+      threadRootId: binding.threadRootId,
+      prompt: msg.content,
+    });
+  }
+
+  private async postOrphanedNotice(msg: InboundMessage): Promise<void> {
+    const known = this.knownThreads.find((t) => t.threadRootId === msg.threadRootId);
+    if (!known || known.noticePosted) return;
+    known.noticePosted = true;
+    await this.persist();
+    // Reply into the orphaned thread using any resolvable channel coords.
+    const coords = this.coordsForChannel(msg.channelId);
+    if (!coords) return;
+    try {
+      await this.deps.graph.replyToThread({
+        teamId: coords.teamId,
+        channelId: msg.channelId,
+        threadRootId: msg.threadRootId,
+        html: 'ℹ️ This thread is no longer active and will not receive responses.',
+      });
+    } catch (e) {
+      console.warn('[Teams] Failed to post orphaned-thread notice:', (e as Error).message);
+    }
+  }
+
+  // ── Dispatch + response capture ──────────────────────────────
+
+  private processDispatch(item: DispatchItem): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const binding = this.findBinding(item.officeId, item.agentId);
+      if (!binding || !binding.online) {
+        resolve();
+        return;
+      }
+      const record: PendingTurn = {
+        officeId: item.officeId,
+        agentId: item.agentId,
+        binding,
+        chunks: [],
+        resolve,
+        startedAt: this.now(),
+        lastCheckIn: this.now(),
+      };
+      this.pending.set(item.agentId, record);
+
+      this.deps.gateway.submitPrompt(item.officeId, item.agentId, item.prompt).catch((e) => {
+        console.warn('[Teams] submitPrompt failed:', (e as Error).message);
+        this.pending.delete(item.agentId);
+        resolve();
+      });
+
+      // Safety timeout so the queue never wedges if turn-end is missed.
+      setTimeout(() => {
+        if (this.pending.get(item.agentId) === record) {
+          void this.finalizeTurn(item.agentId);
+        }
+      }, 10 * 60 * 1000);
+    });
+  }
+
+  private onAgentEvent(e: AgentEvent): void {
+    const rec = this.pending.get(e.agentId);
+    if (!rec) return;
+    if (e.kind === 'message' && e.content) {
+      rec.chunks.push(e.content);
+    } else if (e.kind === 'turn-end') {
+      void this.finalizeTurn(e.agentId);
+    } else if (e.kind === 'tool-start') {
+      void this.maybeCheckIn(rec, e.toolName);
+    }
+  }
+
+  private async finalizeTurn(agentId: string): Promise<void> {
+    const rec = this.pending.get(agentId);
+    if (!rec) return;
+    this.pending.delete(agentId);
+    const text = rec.chunks.join('\n\n').trim();
+    if (text) {
+      await this.postReply(rec.binding, text);
+    }
+    rec.resolve();
+  }
+
+  private async maybeCheckIn(rec: PendingTurn, toolName?: string): Promise<void> {
+    const settings = this.deps.getSettings();
+    if (!settings.checkInEnabled) return;
+    const t = this.now();
+    if (t - rec.startedAt < settings.checkInThresholdMs) return;
+    if (t - rec.lastCheckIn < settings.checkInThrottleMs) return;
+    rec.lastCheckIn = t;
+    const label = toolName ? ` (running: ${escapeHtml(toolName)})` : '';
+    await this.safeReply(rec.binding, `⏳ Still working…${label}`);
+  }
+
+  private async postReply(binding: OnlineAgentBinding, text: string): Promise<void> {
+    const chunks = chunkReply(text, 3500);
+    for (const chunk of chunks) {
+      await this.safeReply(binding, escapeHtml(chunk).replace(/\n/g, '<br>'));
+    }
+  }
+
+  /** Reply to a thread, swallowing errors (logs only) so the queue keeps moving. */
+  private async safeReply(binding: OnlineAgentBinding, html: string): Promise<void> {
+    try {
+      await this.deps.graph.replyToThread({
+        teamId: binding.teamId,
+        channelId: binding.channelId,
+        threadRootId: binding.threadRootId,
+        html,
+      });
+    } catch (e) {
+      console.warn('[Teams] replyToThread failed:', (e as Error).message);
+    }
+  }
+
+  // ── Reconnect / teardown reconcile (FR-022/024) ──────────────
+
+  private async reconcile(): Promise<void> {
+    let changed = false;
+    for (const b of [...this.bindings]) {
+      let current: string | null = null;
+      try {
+        current = await this.deps.gateway.getSessionId(b.officeId, b.agentId);
+      } catch {
+        continue;
+      }
+      if (b.online) {
+        if (current !== b.sessionId) {
+          // Session was replaced or ended → tear down Teams (FR-022).
+          await this.goOffline(b.officeId, b.agentId, true);
+          changed = true;
+        } else {
+          b.lastConnected = this.now();
+        }
+      } else {
+        // Event-driven reconnect (FR-024): the stored session reappeared.
+        if (current && current === b.sessionId) {
+          b.online = true;
+          b.lastConnected = this.now();
+          this.deps.emitStatus(this.toStatus(b));
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      await this.persist();
+      this.updateSourceChannels();
+    }
+  }
+
+  private async onSessionExit(agentId: string): Promise<void> {
+    const b = this.bindings.find((x) => x.agentId === agentId && x.online);
+    if (b) await this.goOffline(b.officeId, b.agentId, true);
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────
+
+  private buildIntro(info: AgentInfo, handle: string, sessionTitle: string): string {
+    const lines = [
+      `<p>🟢 <b>${escapeHtml(info.displayName)}</b> is now online via Copilot Office.</p>`,
+      `<p>Reply in this thread to talk to the agent. Send <code>/stop</code> to take it offline.</p>`,
+      `<ul>`,
+      `<li><b>Handle:</b> ${escapeHtml(handle)}</li>`,
+      `<li><b>Folder:</b> ${escapeHtml(info.workingDir)}</li>`,
+    ];
+    if (sessionTitle) lines.push(`<li><b>Session:</b> ${escapeHtml(sessionTitle)}</li>`);
+    lines.push(`</ul>`);
+    return lines.join('');
+  }
+
+  private toStatus(b: OnlineAgentBinding): OnlineAgentStatus {
+    return {
+      agentId: b.agentId,
+      officeId: b.officeId,
+      online: b.online,
+      handle: b.handle,
+      threadWebUrl: b.threadWebUrl,
+      health: b.online ? this.deps.source.health : 'disconnected',
+    };
+  }
+
+  private findBinding(officeId: string, agentId: string): OnlineAgentBinding | undefined {
+    return this.bindings.find((b) => b.officeId === officeId && b.agentId === agentId);
+  }
+
+  private onlineHandles(): Set<string> {
+    return new Set(this.bindings.filter((b) => b.online).map((b) => b.handle));
+  }
+
+  private rememberThread(threadRootId: string): void {
+    if (!this.knownThreads.some((t) => t.threadRootId === threadRootId)) {
+      this.knownThreads.push({ threadRootId, noticePosted: false });
+    }
+  }
+
+  private coordsForChannel(channelId: string): { teamId: string; tenantId: string } | null {
+    const b = this.bindings.find((x) => x.channelId === channelId);
+    if (b) return { teamId: b.teamId, tenantId: b.tenantId };
+    return null;
+  }
+
+  /** Push the current active-channel set to a pollable source (chatsvc fallback). */
+  private updateSourceChannels(): void {
+    const src = this.deps.source as MessageSource & { setChannels?: (c: string[]) => void };
+    if (typeof src.setChannels === 'function') {
+      src.setChannels([...activeChannelSet(this.bindings)]);
+    }
+  }
+
+  private async persist(): Promise<void> {
+    await this.deps.store.save({ bindings: this.bindings, knownThreads: this.knownThreads });
+  }
+}

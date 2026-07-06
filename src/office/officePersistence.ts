@@ -126,6 +126,10 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
     if (cfg.customReserveAgents !== undefined) {
       (normalized as Record<string, unknown>).customReserveAgents = cfg.customReserveAgents;
     }
+    // Carry the optional per-office Teams channel override verbatim.
+    if (cfg.teamsChannelUrl !== undefined) {
+      (normalized as Record<string, unknown>).teamsChannelUrl = cfg.teamsChannelUrl;
+    }
     offices.push(normalized);
   }
 

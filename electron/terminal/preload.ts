@@ -178,6 +178,29 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   clipboardReadText: (): Promise<{ success: boolean; text: string; error?: string }> => {
     return ipcRenderer.invoke('clipboard-read-text');
   },
+
+  // ── Teams Remote Agents (011) ────────────────────────────────
+  teamsStatus: (args?: { officeId?: string; agentId?: string }): Promise<{ success: boolean; connected: boolean; bindings: unknown[] }> => {
+    return ipcRenderer.invoke('teams:status', args ?? {});
+  },
+  teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string }): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> => {
+    return ipcRenderer.invoke('teams:register', ctx);
+  },
+  teamsStop: (args: { officeId: string; agentId: string }): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('teams:stop', args);
+  },
+  teamsGetSettings: (): Promise<{ success: boolean; settings: unknown }> => {
+    return ipcRenderer.invoke('teams:getSettings');
+  },
+  teamsSaveSettings: (settings: unknown): Promise<{ success: boolean; parsed?: unknown; error?: string }> => {
+    return ipcRenderer.invoke('teams:saveSettings', { settings });
+  },
+  onTeamsStatusChanged: (callback: (status: unknown) => void) => {
+    ipcRenderer.on('teams:status:changed', (_event, status) => callback(status));
+  },
+  onTeamsToast: (callback: (toast: unknown) => void) => {
+    ipcRenderer.on('teams:toast', (_event, toast) => callback(toast));
+  },
 });
 
 // Type declaration for the exposed API
@@ -272,6 +295,30 @@ declare global {
       clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
       loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;
+      teamsStatus: (args?: { officeId?: string; agentId?: string }) => Promise<{ success: boolean; connected: boolean; bindings: TeamsAgentStatus[] }>;
+      teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string }) => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
+      teamsStop: (args: { officeId: string; agentId: string }) => Promise<{ success: boolean }>;
+      teamsGetSettings: () => Promise<{ success: boolean; settings: TeamsSettingsShape }>;
+      teamsSaveSettings: (settings: TeamsSettingsShape) => Promise<{ success: boolean; parsed?: unknown; error?: string }>;
+      onTeamsStatusChanged: (callback: (status: TeamsAgentStatus) => void) => void;
+      onTeamsToast: (callback: (toast: { level: string; message: string }) => void) => void;
     };
+  }
+
+  interface TeamsAgentStatus {
+    agentId: string;
+    officeId: string;
+    online: boolean;
+    handle: string;
+    threadWebUrl?: string;
+    health: 'connected' | 'disconnected' | 'error';
+  }
+
+  interface TeamsSettingsShape {
+    enabled: boolean;
+    defaultChannelUrl: string;
+    checkInEnabled: boolean;
+    checkInThresholdMs: number;
+    checkInThrottleMs: number;
   }
 }

@@ -50,6 +50,11 @@ export const ZIndex = {
   /** Sprite customizer modal. Above terminal but below settings. */
   SPRITE_CUSTOMIZER: 15000,
 
+  /** Teams remote settings modal. Above the sprite customizer but below the
+   *  main settings panel, matching other feature-settings overlays. Routed via
+   *  the same `settings:open` / `settings:close` bus. */
+  TEAMS_SETTINGS: 18000,
+
   /** Settings panel modal. */
   SETTINGS: 20000,
 

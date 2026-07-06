@@ -4,12 +4,22 @@
 
 import { ipcMain, BrowserWindow } from 'electron';
 import { fork, ChildProcess, execSync } from 'child_process';
+import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import type { MainToServer, ServerToMain, MsgQueryAgentStatuses } from './protocol';
 import { reapRegisteredPtys } from './pty-registry';
 
 export class TerminalRelay {
+  /**
+   * Event bus for main-process consumers (e.g. the Teams service) that need
+   * server→main copilot/terminal events without going through the renderer.
+   * Emits: 'copilot-event' (agentId, event), 'copilot-turn-start' (agentId),
+   * 'copilot-turn-end' (agentId), 'copilot-tool-start' (agentId, toolName, toolId, status),
+   * 'session-meta-updated' (agentId, meta), 'terminal-exit' (agentId, exitCode).
+   */
+  public readonly mainEvents = new EventEmitter();
+
   private server: ChildProcess | null = null;
   private pendingRequests: Map<string, (result: unknown) => void> = new Map();
   private getWindow: () => BrowserWindow | null;
@@ -180,6 +190,22 @@ export class TerminalRelay {
     return crypto.randomUUID();
   }
 
+  // ── Main-process gateway (for the Teams service) ──────────────
+  // These let a main-process consumer talk to the terminal server directly,
+  // reusing the same request/response plumbing as the renderer IPC handlers.
+
+  mainGetSessionId(officeId: string, agentId: string): Promise<string | null> {
+    return this.request({ type: 'get-session-id', requestId: this.id(), officeId, agentId }) as Promise<string | null>;
+  }
+
+  mainGetSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null> {
+    return this.request({ type: 'get-session-meta', requestId: this.id(), officeId, agentId }) as Promise<{ title?: string } | null>;
+  }
+
+  mainWrite(officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> {
+    return this.request({ type: 'write', requestId: this.id(), officeId, agentId, data }) as Promise<{ success: boolean; error?: string }>;
+  }
+
   private handleServerMessage(
     msg: ServerToMain,
     readyTimeout: ReturnType<typeof setTimeout>,
@@ -215,6 +241,29 @@ export class TerminalRelay {
     }
 
     // All other messages forward to the renderer
+    // First, mirror them to main-process consumers (e.g. the Teams service),
+    // which must receive events even when no renderer window is present.
+    switch (msg.type) {
+      case 'copilot-event':
+        this.mainEvents.emit('copilot-event', msg.agentId, msg.event);
+        break;
+      case 'copilot-turn-start':
+        this.mainEvents.emit('copilot-turn-start', msg.agentId);
+        break;
+      case 'copilot-turn-end':
+        this.mainEvents.emit('copilot-turn-end', msg.agentId);
+        break;
+      case 'copilot-tool-start':
+        this.mainEvents.emit('copilot-tool-start', msg.agentId, msg.toolName, msg.toolId, msg.status);
+        break;
+      case 'session-meta-updated':
+        this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);
+        break;
+      case 'terminal-exit':
+        this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode);
+        break;
+    }
+
     const win = this.getWindow();
     if (!win || win.isDestroyed()) return;
 

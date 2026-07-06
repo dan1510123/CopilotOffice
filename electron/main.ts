@@ -6,6 +6,14 @@ import { TerminalRelay } from './terminal/ipc-relay';
 import { createOfficeFileStore } from './officeFileStore';
 import { registerNonTerminalIpc } from './nonTerminalIpc';
 import { reapRegisteredPtys } from './terminal/pty-registry';
+import { TeamsService } from './teams/teamsService';
+import { AzTokenProvider } from './teams/auth';
+import { GraphClient } from './teams/graphClient';
+import { TrouterClient } from './teams/trouterClient';
+import { RelaySessionGateway } from './teams/sessionGateway';
+import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
+import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
+import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -41,6 +49,7 @@ function killOrphanedProcesses(): void {
 let mainWindow: BrowserWindow | null = null;
 let watcherProcess: ChildProcess | null = null;
 const relay = new TerminalRelay(() => mainWindow);
+let teamsService: TeamsService | null = null;
 /** Set by renderer before Ctrl+Shift+R hard reload to signal server restart. */
 let pendingHardReload = false;
 
@@ -149,6 +158,51 @@ app.whenReady().then(async () => {
   });
 
   await relay.spawnServer(__dirname);
+
+  // ── Teams Remote Agents service ───────────────────────────────
+  // Main-process background service: real-time receive (Trouter) + Graph send +
+  // dispatch into existing terminal sessions. Feature-gated by settings.enabled.
+  try {
+    const settingsStore = createTeamsSettingsStore(process.cwd());
+    const tokens = new AzTokenProvider();
+    const graph = new GraphClient(tokens);
+    const source = new TrouterClient(tokens);
+    const gateway = new RelaySessionGateway(relay);
+    const store = new FileTeamsOnlineStore(
+      FileTeamsOnlineStore.defaultPath(path.join(process.cwd(), '.data')),
+    );
+    const emitStatus = makeStatusEmitter(() => mainWindow);
+    const emitToast = makeToastEmitter(() => mainWindow);
+
+    teamsService = new TeamsService({
+      store,
+      tokens,
+      graph,
+      source,
+      gateway,
+      getSettings: () => settingsStore.load(),
+      emitStatus,
+      emitToast,
+    });
+
+    registerTeamsIpc({
+      service: teamsService,
+      settingsStore,
+      getMainWindow: () => mainWindow,
+      onSettingsChanged: (settings) => {
+        if (settings.enabled) teamsService?.start().catch((e) => console.error('[Main] Teams start failed:', e));
+        else teamsService?.stop().catch((e) => console.error('[Main] Teams stop failed:', e));
+      },
+    });
+
+    // Only spin up the receive transport when the feature is enabled.
+    if (settingsStore.load().enabled) {
+      await teamsService.start();
+    }
+  } catch (e) {
+    console.error('[Main] Failed to initialize Teams service:', e);
+  }
+
   if (ENABLE_FILE_WATCHER) {
     startFileWatcher();
   } else {
@@ -172,9 +226,12 @@ app.on('before-quit', (event) => {
   isShuttingDown = true;
   event.preventDefault();              // hold quit until PTYs are cleaned up
   console.log('[Main] Awaiting relay shutdown before quit…');
-  relay.shutdown().finally(() => {
-    console.log('[Main] Relay shutdown complete — quitting');
-    app.quit();                        // re-trigger quit (isShuttingDown guard skips this handler)
+  const teamsStop = teamsService ? teamsService.stop().catch(() => undefined) : Promise.resolve();
+  Promise.resolve(teamsStop).finally(() => {
+    relay.shutdown().finally(() => {
+      console.log('[Main] Relay shutdown complete — quitting');
+      app.quit();                        // re-trigger quit (isShuttingDown guard skips this handler)
+    });
   });
 });
 
