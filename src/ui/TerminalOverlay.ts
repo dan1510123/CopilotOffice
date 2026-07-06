@@ -10,6 +10,7 @@ import { ensureXtermStyles } from './xtermStyles';
 import { WheelPager } from './terminalWheel';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
+import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -93,6 +94,9 @@ export class TerminalOverlay {
   // against a half-attached agent (feature 002, V5).
   private isSwitchingAgent: boolean = false;
   private readonly instanceId: string;
+  /** "Teams remote" control (011) — rendered only when the feature flag is on. */
+  private teamsRemoteBtn: HTMLButtonElement | null = null;
+  private teamsSettingsOverlay: TeamsSettingsOverlay | null = null;
 
   private static nextInstanceId = 0;
   private static readonly STORAGE_KEY = 'agencyOffice:terminalFullWidth';
@@ -104,6 +108,11 @@ export class TerminalOverlay {
     this.instanceId = String(TerminalOverlay.nextInstanceId++);
     // Load persisted fullscreen preference
     this.isFullWidth = localStorage.getItem(TerminalOverlay.STORAGE_KEY) === 'true';
+    this.teamsSettingsOverlay = new TeamsSettingsOverlay({
+      onOpen: () => this.scene.game.events.emit('settings:open'),
+      onClose: () => this.scene.game.events.emit('settings:close'),
+      onSaved: () => { void this.refreshTeamsButton(); },
+    });
     this.setupTerminalListeners();
   }
 
@@ -125,6 +134,14 @@ export class TerminalOverlay {
       window.copilotBridge.onSessionMetaUpdated((agentId: string, meta: { title: string }) => {
         if (agentId === this.currentAgentId) {
           this.updateSessionTitleDisplay(meta?.title || null);
+        }
+      });
+
+      // Teams Remote Agents (011): live-update the button when the bound
+      // agent's online state changes.
+      window.copilotBridge.onTeamsStatusChanged?.((status: { agentId: string; online: boolean }) => {
+        if (status?.agentId === this.currentAgentId) {
+          this.setTeamsButtonState(!!status.online);
         }
       });
     }
@@ -448,6 +465,9 @@ export class TerminalOverlay {
     if (!this.container) {
       this.createContainer();
     }
+
+    // Teams Remote Agents (011): refresh the control for the now-current agent.
+    void this.refreshTeamsButton();
 
     // Update header with inception indicator for admin
     const inceptionBadge = agent.id === ADMIN_AGENT_ID ? ' 🎭 INCEPTION MODE' : '';
@@ -929,6 +949,18 @@ export class TerminalOverlay {
     closeSessionBtn.onclick = () => this.handleCloseSession();
     buttonGrid.appendChild(closeSessionBtn);
 
+    // Teams Remote Agents (011): bring the agent online in a Teams channel thread.
+    // Rendered only when the feature flag is enabled (visibility set by refreshTeamsButton).
+    this.teamsRemoteBtn = document.createElement('button');
+    this.teamsRemoteBtn.textContent = '💬 Teams Remote';
+    this.teamsRemoteBtn.style.cssText = btnStyle + 'color: #88ccff; display: none;';
+    this.teamsRemoteBtn.onmouseover = () => { if (this.teamsRemoteBtn) this.teamsRemoteBtn.style.background = '#2a3a5a'; };
+    this.teamsRemoteBtn.onmouseout = () => { if (this.teamsRemoteBtn) this.teamsRemoteBtn.style.background = '#2a3a4a'; };
+    this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
+    this.teamsRemoteBtn.title = 'Bring this agent online in a Teams channel thread';
+    buttonGrid.appendChild(this.teamsRemoteBtn);
+    void this.refreshTeamsButton();
+
     this.fullscreenBtn = document.createElement('button');
     this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';
     this.fullscreenBtn.style.cssText = btnStyle + 'color: #88ccff;';
@@ -981,6 +1013,97 @@ export class TerminalOverlay {
 
     // Keep footerElement reference pointing to spriteCard for history popover positioning
     this.footerElement = this.spriteCardElement;
+  }
+
+  // ── Teams Remote Agents (011) ─────────────────────────────────
+
+  /** Show/hide + label the Teams remote button based on the feature flag + online state. */
+  private async refreshTeamsButton(): Promise<void> {
+    if (!this.teamsRemoteBtn || !window.copilotBridge?.teamsGetSettings) return;
+    let enabled = false;
+    try {
+      const res = await window.copilotBridge.teamsGetSettings();
+      enabled = !!(res?.success && (res.settings as { enabled?: boolean })?.enabled);
+    } catch {
+      enabled = false;
+    }
+    // In read-only (meeting replay) mode the control is not applicable.
+    if (!enabled || this.isReadOnly) {
+      this.teamsRemoteBtn.style.display = 'none';
+      return;
+    }
+    this.teamsRemoteBtn.style.display = '';
+    let online = false;
+    try {
+      const officeId = this.attachedOfficeId ?? this.getOfficeId();
+      const status = await window.copilotBridge.teamsStatus({ officeId, agentId: this.currentAgentId ?? undefined });
+      online = !!status?.connected;
+    } catch {
+      online = false;
+    }
+    this.setTeamsButtonState(online);
+  }
+
+  private setTeamsButtonState(online: boolean, pending = false): void {
+    if (!this.teamsRemoteBtn) return;
+    if (pending) {
+      this.teamsRemoteBtn.textContent = '💬 Connecting…';
+      this.teamsRemoteBtn.disabled = true;
+      this.teamsRemoteBtn.style.color = '#ccaa66';
+      return;
+    }
+    this.teamsRemoteBtn.disabled = false;
+    if (online) {
+      this.teamsRemoteBtn.textContent = '🟢 Teams Online';
+      this.teamsRemoteBtn.style.color = '#88ffaa';
+    } else {
+      this.teamsRemoteBtn.textContent = '💬 Teams Remote';
+      this.teamsRemoteBtn.style.color = '#88ccff';
+    }
+  }
+
+  private async handleTeamsRemote(): Promise<void> {
+    if (!this.currentAgentId || !this.currentAgent || this.isReadOnly || !window.copilotBridge) return;
+    const officeId = this.attachedOfficeId ?? this.getOfficeId();
+    const agentId = this.currentAgentId;
+
+    // If already online, toggle offline.
+    let online = false;
+    try {
+      const status = await window.copilotBridge.teamsStatus({ officeId, agentId });
+      online = !!status?.connected;
+    } catch { /* treat as offline */ }
+
+    if (online) {
+      this.setTeamsButtonState(false, true);
+      await window.copilotBridge.teamsStop({ officeId, agentId });
+      this.setTeamsButtonState(false);
+      return;
+    }
+
+    this.setTeamsButtonState(false, true);
+    const officeChannelUrl = officeManager.getOffice(officeId)?.config.teamsChannelUrl;
+    const workingDir = this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory();
+    const res = await window.copilotBridge.teamsRegister({
+      officeId,
+      agentId,
+      displayName: this.currentAgent.name,
+      workingDir,
+      officeChannelUrl,
+    });
+    if (res?.success) {
+      this.setTeamsButtonState(true);
+      return;
+    }
+    this.setTeamsButtonState(false);
+    // No channel configured → route the user to the Teams settings overlay (FR-004).
+    if (res?.error === 'no-channel') {
+      void this.teamsSettingsOverlay?.open('No Teams channel is configured. Add a default channel link to bring agents online.');
+      return;
+    }
+    if (res?.error) {
+      showClipboardToast(`Teams: ${res.error}`, 'error');
+    }
   }
 
   private copySessionId(): void {

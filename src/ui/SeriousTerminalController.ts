@@ -7,6 +7,8 @@ import { ensureXtermStyles } from './xtermStyles';
 import { WheelPager } from './terminalWheel';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
+import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
+import { officeManager } from '../office/officeManager';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -20,6 +22,10 @@ type SeriousTerminalOpenOptions = {
 
 type SeriousTerminalControllerOptions = {
   onClose?: () => void;
+  /** Called when a DOM-modal overlay (Teams settings) opens — wire to InputManager. */
+  onOverlayOpen?: () => void;
+  /** Called when that overlay closes — wire to InputManager. */
+  onOverlayClose?: () => void;
 };
 
 /**
@@ -69,10 +75,18 @@ export class SeriousTerminalController {
   // here lets the next open() drop the previous binding before installing
   // a new one — exactly one live onData per controller at any moment.
   private onDataDisposable: { dispose(): void } | null = null;
+  /** Teams Remote Agents (011) — mirror of the TerminalOverlay control (Principle VI). */
+  private teamsRemoteBtn: HTMLButtonElement | null = null;
+  private readonly teamsSettingsOverlay: TeamsSettingsOverlay;
 
   constructor(host: HTMLElement, options: SeriousTerminalControllerOptions = {}) {
     this.host = host;
     this.onClose = options.onClose;
+    this.teamsSettingsOverlay = new TeamsSettingsOverlay({
+      onOpen: options.onOverlayOpen,
+      onClose: options.onOverlayClose,
+      onSaved: () => { void this.refreshTeamsButton(); },
+    });
     this.isFullWidth = localStorage.getItem(SeriousTerminalController.FULL_WIDTH_STORAGE_KEY) === 'true';
     this.container = document.createElement('div');
     this.container.style.cssText = `
@@ -260,6 +274,14 @@ export class SeriousTerminalController {
     };
     buttonGrid.appendChild(closeSessionBtn);
 
+    // Teams Remote Agents (011): mirror of TerminalOverlay's control (Principle VI).
+    this.teamsRemoteBtn = document.createElement('button');
+    this.teamsRemoteBtn.textContent = '💬 Teams Remote';
+    this.teamsRemoteBtn.style.cssText = this.buttonCss('#2a3a5a', '#5a6aa0');
+    this.teamsRemoteBtn.style.display = 'none';
+    this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
+    buttonGrid.appendChild(this.teamsRemoteBtn);
+
     this.fullscreenBtn = document.createElement('button');
     this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';
     this.fullscreenBtn.style.cssText = this.buttonCss('#2a2f4a', '#5a6aa0');
@@ -296,6 +318,9 @@ export class SeriousTerminalController {
       window.copilotBridge.onSessionMetaUpdated((agentId) => {
         if (!this.visible || !this.activeOfficeId || this.activeAgentId !== agentId) return;
         void this.updateSessionTitle(this.activeOfficeId, agentId);
+      });
+      window.copilotBridge.onTeamsStatusChanged?.((status: { agentId: string; online: boolean }) => {
+        if (status?.agentId === this.activeAgentId) this.setTeamsButtonState(!!status.online);
       });
     }
   }
@@ -345,6 +370,7 @@ export class SeriousTerminalController {
     this.activeOfficeId = options.officeId;
     this.activeAgentId = options.agentId;
     this.activeOptions = { ...options };
+    void this.refreshTeamsButton();
     // New agent/office binding — drop any partial wheel accumulation so it can't
     // bleed a stray PageUp/PageDown into the newly-bound session.
     this.wheelPager.reset();
@@ -618,6 +644,82 @@ export class SeriousTerminalController {
     if (!this.activeOptions) return;
     await this.startNewSession(this.activeOptions);
     this.closeSessionHistoryPopover();
+  }
+
+  // ── Teams Remote Agents (011) ─────────────────────────────────
+
+  private async refreshTeamsButton(): Promise<void> {
+    if (!this.teamsRemoteBtn || !window.copilotBridge?.teamsGetSettings) return;
+    let enabled = false;
+    try {
+      const res = await window.copilotBridge.teamsGetSettings();
+      enabled = !!(res?.success && (res.settings as { enabled?: boolean })?.enabled);
+    } catch { enabled = false; }
+    if (!enabled) {
+      this.teamsRemoteBtn.style.display = 'none';
+      return;
+    }
+    this.teamsRemoteBtn.style.display = '';
+    let online = false;
+    try {
+      const status = await window.copilotBridge.teamsStatus({
+        officeId: this.activeOfficeId ?? undefined,
+        agentId: this.activeAgentId ?? undefined,
+      });
+      online = !!status?.connected;
+    } catch { online = false; }
+    this.setTeamsButtonState(online);
+  }
+
+  private setTeamsButtonState(online: boolean, pending = false): void {
+    if (!this.teamsRemoteBtn) return;
+    if (pending) {
+      this.teamsRemoteBtn.textContent = '💬 Connecting…';
+      this.teamsRemoteBtn.disabled = true;
+      return;
+    }
+    this.teamsRemoteBtn.disabled = false;
+    this.teamsRemoteBtn.textContent = online ? '🟢 Teams Online' : '💬 Teams Remote';
+  }
+
+  private async handleTeamsRemote(): Promise<void> {
+    if (!this.activeOptions || !this.activeOfficeId || !this.activeAgentId || !window.copilotBridge) return;
+    const officeId = this.activeOfficeId;
+    const agentId = this.activeAgentId;
+
+    let online = false;
+    try {
+      const status = await window.copilotBridge.teamsStatus({ officeId, agentId });
+      online = !!status?.connected;
+    } catch { /* offline */ }
+
+    if (online) {
+      this.setTeamsButtonState(false, true);
+      await window.copilotBridge.teamsStop({ officeId, agentId });
+      this.setTeamsButtonState(false);
+      return;
+    }
+
+    this.setTeamsButtonState(false, true);
+    const officeChannelUrl = officeManager.getOffice(officeId)?.config.teamsChannelUrl;
+    const workingDir = this.activeOptions.workingDir || officeManager.getCurrentWorkingDirectory();
+    const res = await window.copilotBridge.teamsRegister({
+      officeId,
+      agentId,
+      displayName: this.activeOptions.name,
+      workingDir,
+      officeChannelUrl,
+    });
+    if (res?.success) {
+      this.setTeamsButtonState(true);
+      return;
+    }
+    this.setTeamsButtonState(false);
+    if (res?.error === 'no-channel') {
+      void this.teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
+      return;
+    }
+    if (res?.error) showClipboardToast(`Teams: ${res.error}`, 'error');
   }
 
   private async handleClearHistory(): Promise<void> {

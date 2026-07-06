@@ -11,6 +11,7 @@ import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiv
 import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
 import { ToastNotificationManager } from './ui/ToastNotification';
+import { showClipboardToast } from './ui/clipboardToast';
 import { NotificationService } from './ui/NotificationService';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
@@ -1265,6 +1266,8 @@ seriousTerminalController = new SeriousTerminalController(terminalHost, {
     updateStatusBar();
     updateTerminalContent();
   },
+  onOverlayOpen: () => { phaserGameRef?.events.emit('settings:open'); },
+  onOverlayClose: () => { phaserGameRef?.events.emit('settings:close'); },
 });
 
 // Spec 009 e2e diag: count how many times the auto-start headless warm
@@ -2026,6 +2029,13 @@ if (window.copilotBridge) {
     cachedSessionMeta[agentId] = meta;
     setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
     updateTerminalContent();
+  });
+
+  // Teams Remote Agents (011): surface service toasts (GC cleanup, auth/online).
+  window.copilotBridge.onTeamsToast?.((toast: { level?: string; message?: string }) => {
+    if (!toast?.message) return;
+    const kind = toast.level === 'error' ? 'error' : toast.level === 'warn' ? 'error' : 'info';
+    showClipboardToast(toast.message, kind);
   });
 
   window.copilotBridge.onTerminalPreloadStatus((agentId, status) => {
