@@ -54,6 +54,10 @@ const activeAgentViewers: Set<string> = new Set();
 // Composite keys whose copilot-events must be mirrored to main-process consumers
 // (e.g. the Teams service) even when no renderer is viewing the agent.
 const agentForwardKeys: Set<string> = new Set();
+// Last time (ms epoch) each composite key's PTY produced output. Used by the
+// programmatic-submit path to detect when the Ink TUI has settled (output idle)
+// before injecting Enter, so a second queued prompt isn't submitted mid-render.
+const lastPtyDataAt: Map<string, number> = new Map();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
@@ -301,26 +305,48 @@ function getTerminalKey(officeId: string, agentId: string): string | null {
  *   2. Bracketed paste (`ESC[200~ … ESC[201~`) inserts the text as one unit —
  *      this stops `@`/`/` from triggering the TUI's file/command menus and stops
  *      the re-render storm from dropping characters.
- *   3. Staggered triple-Enter. Ink briefly detaches stdin while it re-renders,
- *      so a single Enter is unreliable; the reference (agency-cowork) empirically
- *      found that Enter at `min(2000, 800 + len/3)` ms, then +400 ms, then +500 ms
- *      hits ~100%. Extra Enters land on an empty prompt (harmless no-ops) if the
- *      first already submitted.
+ *   3. Idle-gated Enter. Ink detaches stdin while it re-renders, so an Enter sent
+ *      mid-render is silently dropped. This is the failure mode for a SECOND
+ *      queued turn: turn N's `turn_end` (from events.jsonl) resolves the dispatch
+ *      and immediately drains turn N+1, but the TUI is still painting turn N's
+ *      final frame, so blind fixed-offset Enters land during the render storm and
+ *      the pasted text just sits there unsubmitted. Instead of guessing offsets we
+ *      wait for the PTY output to go quiet (render settled → stdin re-attached)
+ *      before pasting and again before Enter, with time caps so we never wedge.
+ *      A couple of backup Enters cover a cursor-blink re-render eating the first.
  *
  * Response capture is unaffected — it comes from the EventsWatcher tailing
  * events.jsonl (assistant.message → turn_end), not from this input path.
  */
-function submitViaKeystrokes(proc: TerminalProcess, prompt: string): void {
+function submitViaKeystrokes(proc: TerminalProcess, prompt: string, ck: string): void {
   const text = prompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const safeWrite = (data: string) => {
     try { proc.write(data); } catch { /* pty may have exited */ }
   };
-  safeWrite('\x15'); // Ctrl+U — clear the input line
-  safeWrite(`\x1b[200~${text}\x1b[201~`); // bracketed paste
-  const firstDelay = Math.min(2000, 800 + Math.floor(text.length / 3));
-  setTimeout(() => safeWrite('\r'), firstDelay);
-  setTimeout(() => safeWrite('\r'), firstDelay + 400);
-  setTimeout(() => safeWrite('\r'), firstDelay + 900);
+  // Resolve once the PTY has produced no output for `quietMs`, or `capMs` elapses.
+  const waitForIdle = (quietMs: number, capMs: number): Promise<void> =>
+    new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        const last = lastPtyDataAt.get(ck) ?? 0;
+        if (Date.now() - last >= quietMs || Date.now() - start >= capMs) resolve();
+        else setTimeout(tick, 50);
+      };
+      tick();
+    });
+  void (async () => {
+    // Let any prior turn's final render settle before touching the input line.
+    await waitForIdle(300, 3000);
+    safeWrite('\x15'); // Ctrl+U — clear the input line
+    safeWrite(`\x1b[200~${text}\x1b[201~`); // bracketed paste
+    // Let the paste's echo/re-render settle so the Enter isn't dropped mid-render.
+    await waitForIdle(250, 2000);
+    safeWrite('\r'); // submit
+    // Backups: if a cursor-blink re-render swallowed the first Enter, these land
+    // on the (now attached) input; extra Enters on an empty prompt are no-ops.
+    setTimeout(() => safeWrite('\r'), 450);
+    setTimeout(() => safeWrite('\r'), 1000);
+  })();
 }
 
 function killAllPtyProcesses(): void {
@@ -611,6 +637,7 @@ async function startTerminalForAgent(
     };
 
     proc.onData((data: string) => {
+      lastPtyDataAt.set(ck, Date.now());
       appendToScrollback(ck, data);
       // Ready signal from PTY output. Newer CLI builds do not always emit the old
       // "Environment loaded" marker, so accept either the legacy marker or the
@@ -642,6 +669,7 @@ async function startTerminalForAgent(
       agentScrollbackBytes.delete(ck);
       agentReadyState.delete(ck);
       agentInTurn.delete(ck);
+      lastPtyDataAt.delete(ck);
       const w = agentWatchers.get(ck);
       if (w) { w.stop(); agentWatchers.delete(ck); }
     });
@@ -711,9 +739,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // node-pty backend: the real Copilot CLI is an Ink/React TUI. It has no
           // programmatic submit — inject keystrokes. Bracketed paste avoids @ / //
           // triggering TUI menus and re-render char drops; but Ink detaches stdin
-          // during re-renders, so a single Enter is unreliable. Use the reference-
-          // tuned sequence: Ctrl+U (clear) → paste → staggered triple-Enter.
-          submitViaKeystrokes(backendProc, msg.prompt);
+          // during re-renders, so a single Enter is unreliable. Use the idle-gated
+          // sequence: Ctrl+U (clear) → paste → wait-for-render-idle → Enter. Key
+          // idle tracking by the resolved terminal `key` (not the office composite
+          // key) so it stays correct for transferred/aliased sessions where the
+          // PTY's onData writes timestamps under its original terminal key.
+          submitViaKeystrokes(backendProc, msg.prompt, key!);
         }
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } else {
