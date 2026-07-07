@@ -322,6 +322,14 @@ function submitViaKeystrokes(proc: TerminalProcess, prompt: string, ck: string):
   const text = prompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   const safeWrite = (data: string) => {
     try { proc.write(data); } catch { /* pty may have exited */ }
+    // Count our own writes as PTY activity so the idle clock resets here. Without
+    // this, a stale session (e.g. after an office switch left it idle) has a very
+    // old `lastPtyDataAt`, so the pre-Enter `waitForIdle` reads it, resolves
+    // instantly, and fires Enter before the bracketed paste has finished rendering
+    // — Ink drops the Enter mid-render and the text sits typed-but-unsubmitted.
+    // Resetting on write forces `waitForIdle` to wait for the paste's echo/render
+    // to settle (or at least a full `quietMs` floor) before Enter.
+    lastPtyDataAt.set(ck, Date.now());
   };
   // Resolve once the PTY has produced no output for `quietMs`, or `capMs` elapses.
   const waitForIdle = (quietMs: number, capMs: number): Promise<void> =>
