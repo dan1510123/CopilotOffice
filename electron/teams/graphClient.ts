@@ -4,6 +4,7 @@
 // no ChannelMessage.Send consent needed). HTML body supported.
 
 import type { TokenProvider } from './auth';
+import type { HostedImage } from './imageMarker';
 import { embedMarker } from './marker';
 
 export interface CreateThreadParams {
@@ -11,6 +12,8 @@ export interface CreateThreadParams {
   channelId: string;
   subject: string;
   html: string;
+  /** Optional inline images referenced by the html via `../hostedContents/{id}/$value`. */
+  hostedImages?: HostedImage[];
 }
 
 export interface ReplyParams {
@@ -18,6 +21,18 @@ export interface ReplyParams {
   channelId: string;
   threadRootId: string;
   html: string;
+  /** Optional inline images referenced by the html via `../hostedContents/{id}/$value`. */
+  hostedImages?: HostedImage[];
+}
+
+/** Build the Graph `hostedContents` array (temporaryId + base64 bytes) for inline images. */
+function buildHostedContents(images?: HostedImage[]): Array<Record<string, unknown>> | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.map((img) => ({
+    '@microsoft.graph.temporaryId': img.id,
+    contentBytes: img.contentBytesBase64,
+    contentType: img.contentType,
+  }));
 }
 
 export interface GraphSender {
@@ -43,10 +58,12 @@ export class GraphClient implements GraphSender {
     const url = `${GRAPH_BASE}/teams/${encodeURIComponent(p.teamId)}/channels/${encodeURIComponent(
       p.channelId,
     )}/messages`;
-    const body = {
+    const body: Record<string, unknown> = {
       subject: p.subject,
       body: { contentType: 'html', content: embedMarker(p.html) },
     };
+    const hostedContents = buildHostedContents(p.hostedImages);
+    if (hostedContents) body.hostedContents = hostedContents;
     const res = await fetch(url, {
       method: 'POST',
       headers: await this.authHeaders(),
@@ -64,7 +81,9 @@ export class GraphClient implements GraphSender {
     const url = `${GRAPH_BASE}/teams/${encodeURIComponent(p.teamId)}/channels/${encodeURIComponent(
       p.channelId,
     )}/messages/${encodeURIComponent(p.threadRootId)}/replies`;
-    const body = { body: { contentType: 'html', content: embedMarker(p.html) } };
+    const body: Record<string, unknown> = { body: { contentType: 'html', content: embedMarker(p.html) } };
+    const hostedContents = buildHostedContents(p.hostedImages);
+    if (hostedContents) body.hostedContents = hostedContents;
     const res = await fetch(url, {
       method: 'POST',
       headers: await this.authHeaders(),
