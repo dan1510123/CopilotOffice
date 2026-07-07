@@ -16,6 +16,7 @@ function baseSettings(over: Partial<TeamsSettings> = {}): TeamsSettings {
   return {
     enabled: true,
     defaultChannelUrl: URL_A,
+    ackEnabled: false,
     checkInEnabled: false,
     checkInThresholdMs: 120000,
     checkInThrottleMs: 60000,
@@ -111,6 +112,63 @@ describe('teams check-ins (US5, FR-016)', () => {
     h.agent()({ agentId: 'generalist', kind: 'tool-start', toolName: 'grep' });
     await new Promise((r) => setTimeout(r, 20));
     expect(h.replies.some((r) => /still working/i.test(r.html))).toBe(false);
+  });
+});
+
+describe('teams acknowledgment + agent-name prefix (US5)', () => {
+  it('posts an immediate hourglass ack on dispatch when enabled, with a bold agent-name prefix', async () => {
+    const h = makeHarness({ settings: baseSettings({ ackEnabled: true }) });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+
+    h.inbound()(inbound(CH_A, 'root-1', 'do a task'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const ack = h.replies.find((r) => /message received/i.test(r.html));
+    expect(ack).toBeDefined();
+    expect(ack!.html).toContain('⌛');
+    expect(ack!.html).toContain('<b>Gene</b>');
+  });
+
+  it('does not ack when disabled', async () => {
+    const h = makeHarness({ settings: baseSettings({ ackEnabled: false }) });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    h.inbound()(inbound(CH_A, 'root-1', 'do a task'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.replies.some((r) => /message received/i.test(r.html))).toBe(false);
+  });
+
+  it('prefixes the assistant reply with the bold agent name', async () => {
+    const h = makeHarness({ settings: baseSettings({ ackEnabled: false }) });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    h.inbound()(inbound(CH_A, 'root-1', 'what is 2+2'));
+    await new Promise((r) => setTimeout(r, 20));
+    h.agent()({ agentId: 'generalist', kind: 'message', content: '4' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    await new Promise((r) => setTimeout(r, 20));
+    const reply = h.replies.find((r) => r.html.includes('4'));
+    expect(reply).toBeDefined();
+    expect(reply!.html.startsWith('<b>Gene</b>')).toBe(true);
+  });
+
+  it('never re-dispatches its own ack echo (self-loop guard)', async () => {
+    const h = makeHarness({ settings: baseSettings({ ackEnabled: true }) });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    h.inbound()(inbound(CH_A, 'root-1', 'hello'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.submitted).toHaveLength(1);
+
+    // Simulate Teams echoing our ack back (replyToThread returns messageId 'x').
+    h.inbound()({
+      messageId: 'x', channelId: CH_A, threadRootId: 'root-1', senderName: 'Gene (app identity)',
+      content: 'Gene ⌛ Working on this… (message received)', composeTime: new Date().toISOString(), hasMarker: false,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    // No second dispatch — the echo was dropped by the message-id guard.
+    expect(h.submitted).toHaveLength(1);
   });
 });
 

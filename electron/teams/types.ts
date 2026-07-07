@@ -7,6 +7,8 @@ export interface TeamsSettings {
   enabled: boolean;
   /** Default channel deep-link URL (parsed → team/channel/tenant). */
   defaultChannelUrl: string;
+  /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
+  ackEnabled: boolean;
   /** Long-running check-ins on/off. */
   checkInEnabled: boolean;
   /** Turn duration (ms) before the first check-in is posted. */

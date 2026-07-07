@@ -317,6 +317,7 @@ declare global {
   interface TeamsSettingsShape {
     enabled: boolean;
     defaultChannelUrl: string;
+    ackEnabled: boolean;
     checkInEnabled: boolean;
     checkInThresholdMs: number;
     checkInThrottleMs: number;

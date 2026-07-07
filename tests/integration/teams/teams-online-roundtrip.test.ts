@@ -11,6 +11,7 @@ const settings: TeamsSettings = {
   enabled: true,
   defaultChannelUrl:
     'https://teams.microsoft.com/l/channel/19%3Aabc%40thread.tacv2/Agent%20Hub?groupId=team-1&tenantId=tenant-1',
+  ackEnabled: false,
   checkInEnabled: false,
   checkInThresholdMs: 120000,
   checkInThrottleMs: 60000,

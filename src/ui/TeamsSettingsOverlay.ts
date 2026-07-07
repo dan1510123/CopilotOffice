@@ -126,8 +126,12 @@ export class TeamsSettingsOverlay {
     channelHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
     wrap.appendChild(channelHint);
 
+    const ack = this.toggleRow('Acknowledge received messages (⌛)', settings.ackEnabled);
+    ack.row.style.marginTop = '16px';
+    wrap.appendChild(ack.row);
+
     const checkIn = this.toggleRow('Post interim check-ins on long turns', settings.checkInEnabled);
-    checkIn.row.style.marginTop = '16px';
+    checkIn.row.style.marginTop = '10px';
     wrap.appendChild(checkIn.row);
 
     const error = document.createElement('div');
@@ -149,6 +153,7 @@ export class TeamsSettingsOverlay {
         ...settings,
         enabled: enabled.input.checked,
         defaultChannelUrl: channelInput.value.trim(),
+        ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,
       };
       try {

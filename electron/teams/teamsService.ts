@@ -310,6 +310,13 @@ export class TeamsService {
       prompt: msg.content,
       senderName: msg.senderName,
     });
+
+    // Immediately acknowledge receipt so the sender knows the message landed, even
+    // if a prior turn is still draining. Routed through safeReply so its own Teams
+    // echo is recorded in postedMessageIds and never dispatched back (self-loop guard).
+    if (this.deps.getSettings().ackEnabled) {
+      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ Working on this… <i>(message received)</i>`);
+    }
   }
 
   private async postOrphanedNotice(msg: InboundMessage): Promise<void> {
@@ -411,13 +418,23 @@ export class TeamsService {
     if (t - rec.lastCheckIn < settings.checkInThrottleMs) return;
     rec.lastCheckIn = t;
     const label = toolName ? ` (running: ${escapeHtml(toolName)})` : '';
-    await this.safeReply(rec.binding, `⏳ Still working…${label}`);
+    await this.safeReply(rec.binding, `${this.agentLabel(rec.binding)} ⏳ Still working…${label}`);
+  }
+
+  /**
+   * Bold agent-name prefix for every app-posted message. Since replies are posted
+   * under the operator's own Teams identity, this makes automated agent output
+   * visually distinct from messages the operator typed by hand.
+   */
+  private agentLabel(binding: OnlineAgentBinding): string {
+    return `<b>${escapeHtml(binding.displayName)}</b>`;
   }
 
   private async postReply(binding: OnlineAgentBinding, text: string): Promise<void> {
     const chunks = chunkReply(text, 3500);
+    const prefix = this.agentLabel(binding);
     for (const chunk of chunks) {
-      await this.safeReply(binding, escapeHtml(chunk).replace(/\n/g, '<br>'));
+      await this.safeReply(binding, `${prefix}<br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`);
     }
   }
 
