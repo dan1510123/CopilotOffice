@@ -289,6 +289,37 @@ function getTerminalKey(officeId: string, agentId: string): string | null {
   return null;
 }
 
+/**
+ * Inject a full prompt into the interactive Copilot CLI (Ink/React TUI) running
+ * under node-pty, and submit it. There is no programmatic submit for a raw PTY,
+ * so we simulate a paste + Enter the way a human would:
+ *
+ *   1. Ctrl+U clears any half-typed input.
+ *   2. Bracketed paste (`ESC[200~ … ESC[201~`) inserts the text as one unit —
+ *      this stops `@`/`/` from triggering the TUI's file/command menus and stops
+ *      the re-render storm from dropping characters.
+ *   3. Staggered triple-Enter. Ink briefly detaches stdin while it re-renders,
+ *      so a single Enter is unreliable; the reference (agency-cowork) empirically
+ *      found that Enter at `min(2000, 800 + len/3)` ms, then +400 ms, then +500 ms
+ *      hits ~100%. Extra Enters land on an empty prompt (harmless no-ops) if the
+ *      first already submitted.
+ *
+ * Response capture is unaffected — it comes from the EventsWatcher tailing
+ * events.jsonl (assistant.message → turn_end), not from this input path.
+ */
+function submitViaKeystrokes(proc: TerminalProcess, prompt: string): void {
+  const text = prompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const safeWrite = (data: string) => {
+    try { proc.write(data); } catch { /* pty may have exited */ }
+  };
+  safeWrite('\x15'); // Ctrl+U — clear the input line
+  safeWrite(`\x1b[200~${text}\x1b[201~`); // bracketed paste
+  const firstDelay = Math.min(2000, 800 + Math.floor(text.length / 3));
+  setTimeout(() => safeWrite('\r'), firstDelay);
+  setTimeout(() => safeWrite('\r'), firstDelay + 400);
+  setTimeout(() => safeWrite('\r'), firstDelay + 900);
+}
+
 function killAllPtyProcesses(): void {
   console.log(`[TermServer] Killing ${ptyProcesses.size} PTY processes`);
   ptyProcesses.forEach((proc) => killPtyProcess(proc));
@@ -660,13 +691,15 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (proc) {
         const backendProc = proc.process;
         if (typeof backendProc.submitPrompt === 'function') {
+          // SDK backend: atomic programmatic submit (session.send enqueue).
           backendProc.submitPrompt(msg.prompt, msg.label);
         } else {
-          // Raw PTY: bracketed paste (no separate display channel, so the label
-          // is intentionally dropped rather than injected into the agent input).
-          const text = msg.prompt.replace(/\r?\n/g, '\n');
-          backendProc.write(`\x1b[200~${text}\x1b[201~`);
-          setTimeout(() => backendProc.write('\r'), 40);
+          // node-pty backend: the real Copilot CLI is an Ink/React TUI. It has no
+          // programmatic submit — inject keystrokes. Bracketed paste avoids @ / //
+          // triggering TUI menus and re-render char drops; but Ink detaches stdin
+          // during re-renders, so a single Enter is unreliable. Use the reference-
+          // tuned sequence: Ctrl+U (clear) → paste → staggered triple-Enter.
+          submitViaKeystrokes(backendProc, msg.prompt);
         }
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } else {
