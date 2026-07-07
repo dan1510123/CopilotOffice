@@ -187,5 +187,11 @@ describe('teams reconnect (FR-024, SC-010)', () => {
     expect(status?.online).toBe(true);
     // No new thread created on reconnect.
     // (createThread is only called by register(), never on reconnect.)
+
+    // A reconnect notice is posted into the existing thread, prefixed with the bold agent name.
+    const notice = h.replies.find((r) => /reconnected/i.test(r.html));
+    expect(notice).toBeDefined();
+    expect(notice!.threadRootId).toBe('root-seed');
+    expect(notice!.html).toContain('<b>Gene</b>');
   });
 });

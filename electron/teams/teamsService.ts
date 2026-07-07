@@ -482,6 +482,7 @@ export class TeamsService {
           b.lastConnected = this.now();
           this.deps.emitStatus(this.toStatus(b));
           tlog(`Reconnected @${b.handle} to its persisted thread (session ${b.sessionId}).`);
+          void this.safeReply(b, `${this.agentLabel(b)} 🔄 Reconnected — back online and ready. Reply here to continue.`);
           changed = true;
         }
       }
