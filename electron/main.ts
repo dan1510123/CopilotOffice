@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, Notification, safeStorage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
@@ -8,6 +8,7 @@ import { registerNonTerminalIpc } from './nonTerminalIpc';
 import { reapRegisteredPtys } from './terminal/pty-registry';
 import { TeamsService } from './teams/teamsService';
 import { AzTokenProvider } from './teams/auth';
+import { createSafeStorageTokenPersistence } from './teams/tokenCacheStore';
 import { GraphClient } from './teams/graphClient';
 import { TrouterClient } from './teams/trouterClient';
 import { RelaySessionGateway } from './teams/sessionGateway';
@@ -165,7 +166,14 @@ app.whenReady().then(async () => {
   // dispatch into existing terminal sessions. Feature-gated by settings.enabled.
   try {
     const settingsStore = createTeamsSettingsStore(process.cwd());
-    const tokens = new AzTokenProvider();
+    // Persist cached tokens encrypted at rest (OS safeStorage/DPAPI) so a still-valid
+    // token survives app restarts and skips the slow `az` cold-start. Fails safe:
+    // nothing is written when OS encryption is unavailable.
+    const tokenPersistence = createSafeStorageTokenPersistence(
+      path.join(process.cwd(), '.data', 'teams-token.enc'),
+      safeStorage,
+    );
+    const tokens = new AzTokenProvider(undefined, tokenPersistence);
     // Hard outbound gate: the app may only POST to the configured channels — the
     // global default plus per-office overrides. Enforced at the GraphSender boundary
     // so every send path (threads, replies, acks, check-ins, notices) is validated.

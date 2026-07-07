@@ -29,6 +29,18 @@ interface CachedToken {
   expiresAt: number; // unix ms
 }
 
+/**
+ * Optional persistence for cached tokens across app restarts. Implementations must
+ * store tokens ENCRYPTED at rest (e.g. Electron safeStorage / OS DPAPI-Keychain).
+ * Injected so `auth.ts` stays free of any electron/fs dependency and unit-testable.
+ */
+export interface TokenPersistence {
+  /** Load any persisted, still-usable tokens keyed by resource. Best-effort ({} on error). */
+  load(): Partial<Record<TokenResource, CachedToken>>;
+  /** Persist the current token cache (encrypted). Best-effort (never throws). */
+  save(all: Partial<Record<TokenResource, CachedToken>>): void;
+}
+
 /** Decode a JWT `exp` (seconds) → unix ms. Returns 0 when unparseable. */
 export function decodeJwtExpMs(token: string): number {
   try {
@@ -47,7 +59,7 @@ export function decodeJwtExpMs(token: string): number {
 type AzRunner = (resourceUrl: string) => Promise<string>;
 
 /** Run `az account get-access-token --resource <url>` and return the accessToken. */
-const defaultAzRunner: AzRunner = (resourceUrl: string) =>
+export const defaultAzRunner: AzRunner = (resourceUrl: string) =>
   new Promise<string>((resolve, reject) => {
     // Node 20.12+/22+ (Electron 40) reject spawning `.cmd`/`.bat` files directly
     // (CVE-2024-27980 hardening → EINVAL). On Windows we therefore invoke the
@@ -88,8 +100,40 @@ const defaultAzRunner: AzRunner = (resourceUrl: string) =>
 export class AzTokenProvider implements TokenProvider {
   private cache = new Map<TokenResource, CachedToken>();
 
-  /** `runner` is injectable for tests (defaults to the real `az` CLI). */
-  constructor(private readonly runner: AzRunner = defaultAzRunner) {}
+  /**
+   * `runner` is injectable for tests (defaults to the real `az` CLI). `persistence`
+   * (optional) seeds the in-memory cache from an encrypted on-disk store at startup
+   * and is updated on every successful acquisition, so a still-valid token survives
+   * app restarts and avoids a slow `az` cold-start.
+   */
+  constructor(
+    private readonly runner: AzRunner = defaultAzRunner,
+    private readonly persistence?: TokenPersistence,
+  ) {
+    if (persistence) {
+      try {
+        const loaded = persistence.load();
+        for (const [res, ct] of Object.entries(loaded)) {
+          if (ct && typeof ct.token === 'string' && ct.token && typeof ct.expiresAt === 'number') {
+            this.cache.set(res as TokenResource, ct);
+          }
+        }
+      } catch {
+        /* ignore — fall back to acquiring fresh tokens via the runner */
+      }
+    }
+  }
+
+  private saveCache(): void {
+    if (!this.persistence) return;
+    try {
+      const all: Partial<Record<TokenResource, CachedToken>> = {};
+      for (const [res, ct] of this.cache.entries()) all[res] = ct;
+      this.persistence.save(all);
+    } catch {
+      /* best-effort persistence; never block token acquisition on a write failure */
+    }
+  }
 
   async getToken(resource: TokenResource): Promise<string> {
     const now = Date.now();
@@ -104,6 +148,7 @@ export class AzTokenProvider implements TokenProvider {
       // Fall back to a short TTL when exp can't be decoded.
       const expiresAt = expMs > 0 ? expMs : now + 30 * 60 * 1000;
       this.cache.set(resource, { token, expiresAt });
+      this.saveCache();
       // Log the acquisition + expiry only — NEVER the token itself.
       tlog(`Acquired ${resource} token (expires ${new Date(expiresAt).toISOString()}).`);
       return token;

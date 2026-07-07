@@ -69,3 +69,55 @@ describe('AzTokenProvider', () => {
     spy.mockRestore();
   });
 });
+
+describe('AzTokenProvider persistence', () => {
+  it('seeds the cache from persistence and skips the runner for a valid token', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const persisted = fakeJwt(future);
+    const runner = vi.fn(async () => fakeJwt(future));
+    const persistence = {
+      load: () => ({ graph: { token: persisted, expiresAt: future * 1000 } }),
+      save: vi.fn(),
+    };
+    const provider = new AzTokenProvider(runner, persistence);
+    const t = await provider.getToken('graph');
+    expect(t).toBe(persisted);
+    expect(runner).not.toHaveBeenCalled(); // served from persisted cache
+  });
+
+  it('saves to persistence after acquiring a fresh token', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const runner = vi.fn(async () => fakeJwt(future));
+    const save = vi.fn();
+    const provider = new AzTokenProvider(runner, { load: () => ({}), save });
+    await provider.getToken('ic3');
+    expect(save).toHaveBeenCalledOnce();
+    const savedArg = save.mock.calls[0][0];
+    expect(savedArg.ic3?.token).toBe(await runner.mock.results[0].value);
+  });
+
+  it('ignores a persistence.load() that throws (falls back to runner)', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const runner = vi.fn(async () => fakeJwt(future));
+    const provider = new AzTokenProvider(runner, {
+      load: () => {
+        throw new Error('decrypt failed');
+      },
+      save: vi.fn(),
+    });
+    await expect(provider.getToken('graph')).resolves.toBeTruthy();
+    expect(runner).toHaveBeenCalledOnce();
+  });
+
+  it('does not throw if persistence.save() throws', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const runner = vi.fn(async () => fakeJwt(future));
+    const provider = new AzTokenProvider(runner, {
+      load: () => ({}),
+      save: () => {
+        throw new Error('write failed');
+      },
+    });
+    await expect(provider.getToken('graph')).resolves.toBeTruthy();
+  });
+});
