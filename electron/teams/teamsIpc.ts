@@ -37,6 +37,11 @@ export function registerTeamsIpc(hooks: TeamsIpcHooks): void {
     service.goOffline(args.officeId, args.agentId, true),
   );
 
+  ipcMain.handle('teams:reconcile', async () => {
+    await service.reconcileNow();
+    return { success: true };
+  });
+
   ipcMain.handle('teams:getSettings', () => {
     return { success: true, settings: settingsStore.load() };
   });

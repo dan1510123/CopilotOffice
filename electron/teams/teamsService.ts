@@ -457,6 +457,16 @@ export class TeamsService {
 
   // ── Reconnect / teardown reconcile (FR-022/024) ──────────────
 
+  /**
+   * Run a reconcile pass on demand (e.g. right after the renderer re-attaches
+   * terminal sessions on startup / office switch), so Teams bindings re-online
+   * immediately instead of waiting for the next periodic tick. No-op until started.
+   */
+  async reconcileNow(): Promise<void> {
+    if (!this.started) return;
+    await this.reconcile();
+  }
+
   private async reconcile(): Promise<void> {
     let changed = false;
     for (const b of [...this.bindings]) {

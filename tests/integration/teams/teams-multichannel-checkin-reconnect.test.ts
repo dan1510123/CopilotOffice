@@ -194,4 +194,29 @@ describe('teams reconnect (FR-024, SC-010)', () => {
     expect(notice!.threadRootId).toBe('root-seed');
     expect(notice!.html).toContain('<b>Gene</b>');
   });
+
+  it('reconcileNow() re-onlines a binding whose session reappears after start', async () => {
+    const seed: OnlineAgentBinding[] = [{
+      agentId: 'generalist', officeId: 'office-0', sessionId: 'session-1', handle: 'gene',
+      displayName: 'Gene', workingDir: '.', sessionTitle: '', teamId: 'team-a', channelId: CH_A,
+      tenantId: 'tn', threadRootId: 'root-seed', threadWebUrl: 'https://web', online: true,
+      lastConnected: Date.now(),
+    }];
+    // Session not available yet at start → binding stays offline after the initial reconcile.
+    const h = makeHarness({ seed });
+    h.sessionByAgent.generalist = null;
+    await h.service.start();
+    expect(h.service.getStatus('office-0', 'generalist')?.online).toBe(false);
+
+    // Session reappears (terminal reconnect), then an on-demand reconcile re-onlines it
+    // immediately — no waiting for the periodic tick.
+    h.sessionByAgent.generalist = 'session-1';
+    await h.service.reconcileNow();
+    expect(h.service.getStatus('office-0', 'generalist')?.online).toBe(true);
+  });
+
+  it('reconcileNow() is a no-op before start()', async () => {
+    const h = makeHarness();
+    await expect(h.service.reconcileNow()).resolves.toBeUndefined();
+  });
 });

@@ -189,6 +189,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   teamsStop: (args: { officeId: string; agentId: string }): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('teams:stop', args);
   },
+  teamsReconcile: (): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('teams:reconcile');
+  },
   teamsGetSettings: (): Promise<{ success: boolean; settings: unknown }> => {
     return ipcRenderer.invoke('teams:getSettings');
   },
@@ -298,6 +301,7 @@ declare global {
       teamsStatus: (args?: { officeId?: string; agentId?: string }) => Promise<{ success: boolean; connected: boolean; bindings: TeamsAgentStatus[] }>;
       teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string }) => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
       teamsStop: (args: { officeId: string; agentId: string }) => Promise<{ success: boolean }>;
+      teamsReconcile: () => Promise<{ success: boolean }>;
       teamsGetSettings: () => Promise<{ success: boolean; settings: TeamsSettingsShape }>;
       teamsSaveSettings: (settings: TeamsSettingsShape) => Promise<{ success: boolean; parsed?: unknown; error?: string }>;
       onTeamsStatusChanged: (callback: (status: TeamsAgentStatus) => void) => void;

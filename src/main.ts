@@ -2355,6 +2355,13 @@ async function reconnectAgentStatuses(): Promise<void> {
   } catch (e) {
     console.warn('[Office] Failed to reconnect agent viewers:', e);
   }
+  // Sessions are back — poke the Teams service to reconcile now (instead of waiting
+  // for its periodic tick) so per-agent Teams remote buttons reflect re-onlined
+  // bindings promptly, then refresh the renderer's cached online set.
+  try {
+    await window.copilotBridge.teamsReconcile?.();
+  } catch { /* best-effort */ }
+  void refreshTeamsDashboardState();
   await syncAgentStatuses(true);
 }
 
