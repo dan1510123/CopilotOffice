@@ -114,6 +114,9 @@ export class TeamsService {
     this.bindings = kept.map((b) => ({ ...b, online: false })); // reconnect is event-driven
     this.knownThreads = state.knownThreads;
     tlog(`Loaded ${this.bindings.length} persisted binding(s), ${this.knownThreads.length} known thread(s).`);
+    // Initialize the receive transport's channel gate before it starts delivering,
+    // so foreign-channel firehose traffic is dropped from the very first message.
+    this.updateSourceChannels();
     if (removed.length > 0) {
       await this.persist();
       tlog(`GC removed ${removed.length} stale binding(s) (>30 days).`);

@@ -110,6 +110,21 @@ export function parseEventMessage(body: unknown): InboundMessage | null {
   };
 }
 
+/**
+ * Decide whether a pushed message's channel should be processed. Trouter delivers
+ * the whole account firehose, so once the active-channel set is known we drop any
+ * channel without an online agent. Before initialization (setChannels never called)
+ * the gate stays open so nothing is black-holed by unforeseen wiring.
+ */
+export function passesChannelGate(
+  channelId: string,
+  activeChannels: Set<string>,
+  initialized: boolean,
+): boolean {
+  if (!initialized) return true;
+  return activeChannels.has(channelId);
+}
+
 export class TrouterClient implements MessageSource {
   public health: 'connected' | 'disconnected' | 'error' = 'disconnected';
   private ws: WebSocket | null = null;
@@ -122,6 +137,8 @@ export class TrouterClient implements MessageSource {
   private reregisterTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private onMessage: ((m: InboundMessage) => void) | null = null;
+  private activeChannels: Set<string> = new Set();
+  private channelsInitialized = false;
 
   constructor(
     private readonly tokens: TokenProvider,
@@ -132,6 +149,18 @@ export class TrouterClient implements MessageSource {
     this.onMessage = onMessage;
     this.running = true;
     await this.connect();
+  }
+
+  /**
+   * Restrict processing to channels that currently have an online agent. Trouter is
+   * an account-wide firehose (no server-side channel scoping), so this is our only
+   * lever to stop foreign-channel traffic from being parsed, logged, or routed.
+   * Called by teamsService.updateSourceChannels whenever bindings change. Until this
+   * is first called, the gate stays open (avoids black-holing traffic if unwired).
+   */
+  setChannels(channels: string[]): void {
+    this.activeChannels = new Set(channels);
+    this.channelsInitialized = true;
   }
 
   async stop(): Promise<void> {
@@ -273,12 +302,17 @@ export class TrouterClient implements MessageSource {
         this.send(`3:::${ack}`);
       }
       const inbound = parseEventMessage(msg.body);
-      if (inbound && this.onMessage) {
-        if (inbound.threadRootId) {
-          tlog(`Push: "${inbound.senderName}" in ${inbound.channelId.slice(0, 24)}… thread ${inbound.threadRootId}${inbound.hasMarker ? ' [self]' : ''}`);
-        }
-        this.onMessage(inbound);
+      if (!inbound || !this.onMessage) return;
+      // Channel gate: Trouter pushes every message the signed-in user can see. Once
+      // we know which channels have an online agent, silently drop pushes for any
+      // other channel — no logging, no routing — so foreign traffic never surfaces.
+      if (!passesChannelGate(inbound.channelId, this.activeChannels, this.channelsInitialized)) {
+        return;
       }
+      if (inbound.threadRootId) {
+        tlog(`Push: "${inbound.senderName}" in ${inbound.channelId.slice(0, 24)}… thread ${inbound.threadRootId}${inbound.hasMarker ? ' [self]' : ''}`);
+      }
+      this.onMessage(inbound);
     }
   }
 

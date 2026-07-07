@@ -14,6 +14,8 @@ export interface MessageSource {
   start(onMessage: (m: InboundMessage) => void): Promise<void>;
   stop(): Promise<void>;
   readonly health: 'connected' | 'disconnected' | 'error';
+  /** Optional: restrict processing to the given channelIds (those with an online agent). */
+  setChannels?(channels: string[]): void;
 }
 
 interface ChatsvcMessage {
