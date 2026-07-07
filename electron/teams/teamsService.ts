@@ -17,6 +17,7 @@ import { parseChannelLink } from './channelLink';
 import { resolveChannel, activeChannelSet } from './channelResolver';
 import { chunkReply } from './chunk';
 import { escapeHtml } from './htmlText';
+import { pickAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import type {
   TeamsSettings,
@@ -315,7 +316,7 @@ export class TeamsService {
     // if a prior turn is still draining. Routed through safeReply so its own Teams
     // echo is recorded in postedMessageIds and never dispatched back (self-loop guard).
     if (this.deps.getSettings().ackEnabled) {
-      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ Working on this… <i>(message received)</i>`);
+      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ ${escapeHtml(pickAckQuip())} <i>(message received)</i>`);
     }
   }
 
