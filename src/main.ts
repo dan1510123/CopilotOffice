@@ -1422,6 +1422,7 @@ function notifyAgent(agentId: string, eventType: import('./config/notifications'
 const teamsSettingsOverlay = new TeamsSettingsOverlay({
   onOpen: () => { phaserGameRef?.events.emit('settings:open'); },
   onClose: () => { phaserGameRef?.events.emit('settings:close'); },
+  onSaved: () => { void refreshTeamsDashboardState(); },
 });
 
 const settingsPanel = new SettingsPanel(
@@ -1472,6 +1473,60 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
 let cachedSessionMeta: Record<string, { title: string }> = {};
+
+// ── Teams Remote (011) dashboard state ──────────────────────────
+// Cached so the synchronous dashboard renderer can gate the per-tile
+// "Teams Remote" button on the feature flag + per-agent online state.
+let teamsFeatureEnabled = false;
+const teamsOnlineAgentIds = new Set<string>();
+
+/** Refresh the cached Teams feature flag + online set, then re-render if changed. */
+async function refreshTeamsDashboardState(): Promise<void> {
+  if (!window.copilotBridge?.teamsGetSettings) return;
+  try {
+    const settingsRes = await window.copilotBridge.teamsGetSettings();
+    teamsFeatureEnabled = !!(settingsRes?.success && (settingsRes.settings as { enabled?: boolean })?.enabled);
+    const statusRes = await window.copilotBridge.teamsStatus();
+    teamsOnlineAgentIds.clear();
+    if (statusRes?.success) {
+      for (const b of statusRes.bindings as Array<{ agentId: string; online: boolean }>) {
+        if (b.online) teamsOnlineAgentIds.add(b.agentId);
+      }
+    }
+  } catch { /* leave caches as-is */ }
+  updateTerminalContent();
+}
+
+/** Toggle an agent online/offline in Teams from an overview dashboard tile. */
+async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
+  if (!window.copilotBridge?.teamsRegister) return;
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  if (teamsOnlineAgentIds.has(agentId)) {
+    await window.copilotBridge.teamsStop({ officeId, agentId });
+    teamsOnlineAgentIds.delete(agentId);
+    updateTerminalContent();
+    return;
+  }
+  const agent = getSeriousLaunchConfig(agentId);
+  if (!agent) return;
+  const officeChannelUrl = officeManager.getOffice(officeId)?.config.teamsChannelUrl;
+  const res = await window.copilotBridge.teamsRegister({
+    officeId,
+    agentId,
+    displayName: agent.name,
+    workingDir: agent.workingDir || officeManager.getCurrentWorkingDirectory(),
+    officeChannelUrl,
+  });
+  if (res?.success) {
+    teamsOnlineAgentIds.add(agentId);
+    updateTerminalContent();
+  } else if (res?.error === 'no-channel') {
+    void teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
+  } else if (res?.error) {
+    showClipboardToast(`Teams: ${res.error}`, 'error');
+  }
+}
+
 
 // Fetch session meta from backend (fire-and-forget, updates cache + UI)
 function fetchSessionMeta() {
@@ -1524,6 +1579,8 @@ function updateTerminalContentNow() {
     agentTools,
     formatElapsed,
     formatRelativeTime,
+    teamsEnabled: teamsFeatureEnabled,
+    teamsOnlineAgentIds,
   });
 
   if (html !== lastTerminalContentHtml) {
@@ -1720,6 +1777,7 @@ function setupTerminalClickHandler() {
         startSessionMetaEdit,
         startNewSession: (id) => { void startSessionFromOverview(id); },
         closeSession: (id) => { void closeSessionFromOverview(id); },
+        toggleTeamsRemote: (id) => { void toggleTeamsRemoteFromOverview(id); },
       });
       return;
     }
@@ -2052,6 +2110,18 @@ if (window.copilotBridge) {
     const kind = toast.level === 'error' ? 'error' : toast.level === 'warn' ? 'error' : 'info';
     showClipboardToast(toast.message, kind);
   });
+
+  // Teams Remote Agents (011): keep the dashboard tile buttons in sync with
+  // the service's per-agent online state.
+  window.copilotBridge.onTeamsStatusChanged?.((status: { agentId?: string; online?: boolean }) => {
+    if (!status?.agentId) return;
+    if (status.online) teamsOnlineAgentIds.add(status.agentId);
+    else teamsOnlineAgentIds.delete(status.agentId);
+    updateTerminalContent();
+  });
+
+  // Initial load of the Teams feature flag + online set for the dashboard.
+  void refreshTeamsDashboardState();
 
   window.copilotBridge.onTerminalPreloadStatus((agentId, status) => {
     console.log(`[Office] Preload status for ${agentId}: ${status}`);

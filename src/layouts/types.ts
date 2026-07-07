@@ -19,6 +19,10 @@ export interface DashboardRenderContext {
   agentTools: Map<string, { toolId: string; name: string; status: string }[]>;
   formatElapsed: (startTime: number | null) => string;
   formatRelativeTime: (timestamp: number) => string;
+  /** Teams Remote (011): whether the feature flag is enabled (gates the tile button). */
+  teamsEnabled?: boolean;
+  /** Teams Remote (011): agent ids currently online in Teams (for button state). */
+  teamsOnlineAgentIds?: Set<string>;
 }
 
 /** Renders the right-pane agent overview cards for a specific layout. */
@@ -39,6 +43,8 @@ export interface CardClickHandler {
     startSessionMetaEdit: (agentId: string) => void;
     startNewSession: (agentId: string) => void;
     closeSession: (agentId: string) => void;
+    /** Teams Remote (011): toggle the agent online/offline in Teams. */
+    toggleTeamsRemote?: (agentId: string) => void;
   }): void;
 }
 

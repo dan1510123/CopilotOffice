@@ -7,6 +7,8 @@ import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } fro
 export const defaultDashboard: DashboardRenderer = {
   renderCards(ctx: DashboardRenderContext): string {
     const { agents, office, selectedAgentId, cachedSessionMeta, agentTools, formatElapsed, formatRelativeTime } = ctx;
+    const teamsEnabled = ctx.teamsEnabled ?? false;
+    const teamsOnline = ctx.teamsOnlineAgentIds ?? new Set<string>();
     const t = getDashboardTypography();
     let html = '';
 
@@ -224,6 +226,14 @@ export const defaultDashboard: DashboardRenderer = {
             font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
             cursor: pointer; transition: background 0.15s, border-color 0.15s;
           " title="Close this agent's session (agent returns to slacking)">✖ Close Session</button>
+          ${teamsEnabled ? `<button class="session-teams-btn" data-agent="${agent.id}" style="
+            align-self: flex-start;
+            background: ${teamsOnline.has(agent.id) ? '#1a3a2a' : '#1a2a3a'};
+            border: 1px solid ${teamsOnline.has(agent.id) ? '#4a8a6a' : '#356'};
+            color: ${teamsOnline.has(agent.id) ? '#8fffaa' : '#8ccfff'};
+            font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
+            cursor: pointer; transition: background 0.15s, border-color 0.15s;
+          " title="${teamsOnline.has(agent.id) ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'}">${teamsOnline.has(agent.id) ? '🟢 Teams Online' : '💬 Teams Remote'}</button>` : ''}
           <div style="display: flex; justify-content: flex-end;">
             <button class="session-edit-btn" data-agent="${agent.id}" style="
               background: none; border: 1px solid #333; color: #667;
