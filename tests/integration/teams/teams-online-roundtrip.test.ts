@@ -65,6 +65,7 @@ function makeHarness() {
     getSettings: () => settings,
     emitStatus: () => {},
     emitToast: () => {},
+    turnSettleMs: 5,
   });
 
   return { service, graph, replies, submitted, inbound: () => emit, agent: () => agentCb };
@@ -106,6 +107,44 @@ describe('teams online round-trip (US1)', () => {
 
     await new Promise((r) => setTimeout(r, 20));
     expect(h.replies.some((r) => r.includes('4'))).toBe(true);
+  });
+
+  it('does not drop post-tool turns — multi-turn reply is forwarded whole (office-image regression)', async () => {
+    // Regression: a tool-using response is split into two copilot turns
+    // (message → tool → turn_end, then turn_start → message → turn_end). Finalizing
+    // on the first turn-end posted only the pre-tool text and dropped the real answer
+    // (e.g. one carrying an office-image sentinel). Every turn's text must be posted.
+    const h = makeHarness();
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: 'C:/repo' });
+
+    h.inbound()({
+      messageId: 'm-multi',
+      channelId: '19:abc@thread.tacv2',
+      threadRootId: 'root-1',
+      senderName: 'Alice',
+      content: 'render something',
+      composeTime: new Date().toISOString(),
+      hasMarker: false,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Turn 1: preamble text, a tool call, then the turn ends.
+    h.agent()({ agentId: 'generalist', kind: 'turn-start' });
+    h.agent()({ agentId: 'generalist', kind: 'message', content: 'Working on it…' });
+    h.agent()({ agentId: 'generalist', kind: 'tool-start', toolName: 'shell' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    // Turn 2: the real answer arrives AFTER the tool (previously dropped).
+    h.agent()({ agentId: 'generalist', kind: 'turn-start' });
+    h.agent()({ agentId: 'generalist', kind: 'message', content: 'Here is the final answer.' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+
+    // Exceed the (test) settle window so the dispatch closes out.
+    await new Promise((r) => setTimeout(r, 40));
+
+    const joined = h.replies.join('\n');
+    expect(joined).toContain('Working on it');
+    expect(joined).toContain('Here is the final answer');
   });
 
   it('continues the same session across follow-ups (US2)', async () => {

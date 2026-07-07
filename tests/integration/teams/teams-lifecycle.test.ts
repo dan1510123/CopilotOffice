@@ -50,6 +50,7 @@ function makeHarness() {
     getSettings: () => settings,
     emitStatus: () => {},
     emitToast: () => {},
+    turnSettleMs: 5,
   });
   return { service, replies, inbound: () => emit, exit: () => exitCb };
 }

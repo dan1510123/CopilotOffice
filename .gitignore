@@ -49,3 +49,6 @@ yarn-error.log*
 
 # Spec 009: transient e2e .data backup pointer
 .e2e-data-backup.txt
+
+# Rendered markdown images for Teams (office-image-reply skill output)
+.office-images/

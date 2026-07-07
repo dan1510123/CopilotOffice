@@ -16,7 +16,9 @@ import { normalizeHandle, assignHandle } from './handleRegistry';
 import { parseChannelLink } from './channelLink';
 import { resolveChannel, activeChannelSet } from './channelResolver';
 import { chunkReply } from './chunk';
-import { escapeHtml } from './htmlText';
+import { escapeHtml, markdownToTeamsHtml } from './htmlText';
+import { extractImageMarkers, loadHostedImages, hostedImagesHtml } from './imageMarker';
+import type { HostedImage } from './imageMarker';
 import { pickAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import type {
@@ -60,6 +62,12 @@ export interface TeamsServiceDeps {
   /** Emit a toast to the renderer. */
   emitToast: (t: TeamsToast) => void;
   now?: () => number;
+  /**
+   * Quiet period (ms) after a turn-end before a dispatch is closed out (forwarding
+   * stopped, queue released). Bridges the gap between a tool-using response's turns
+   * so no later turn is missed. Defaults to {@link TURN_SETTLE_MS}; tests may lower it.
+   */
+  turnSettleMs?: number;
 }
 
 interface PendingTurn {
@@ -70,9 +78,25 @@ interface PendingTurn {
   resolve: () => void;
   startedAt: number;
   lastCheckIn: number;
+  /**
+   * Debounce timer armed on each `turn-end` and cancelled if the agent resumes
+   * (new message/turn/tool) before it fires. Null when not waiting to settle.
+   */
+  settleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 const RECONCILE_MS = 15_000;
+
+/**
+ * A single Teams-driven prompt can span MULTIPLE copilot turns: an agent that uses
+ * a tool emits `message → tool → turn_end` and then resumes in a fresh
+ * `turn_start → message → turn_end`. Finalizing on the first `turn_end` would post
+ * only the pre-tool text and silently drop the real answer (and any office-image
+ * sentinel it carries). Instead we debounce finalization by this quiet period on
+ * each `turn_end`, cancelling if the agent produces more output first, so the whole
+ * multi-turn response is accumulated and posted once the agent truly goes idle.
+ */
+const TURN_SETTLE_MS = 2500;
 
 export class TeamsService {
   private bindings: OnlineAgentBinding[] = [];
@@ -94,9 +118,11 @@ export class TeamsService {
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private readonly now: () => number;
+  private readonly settleMs: number;
 
   constructor(private readonly deps: TeamsServiceDeps) {
     this.now = deps.now ?? Date.now;
+    this.settleMs = deps.turnSettleMs ?? TURN_SETTLE_MS;
     this.filter = new MessageFilter(this.now);
     this.queue = new DispatchQueue((item) => this.processDispatch(item));
   }
@@ -257,6 +283,7 @@ export class TeamsService {
     // the per-agent queue can't wedge (finalizeTurn would otherwise never run).
     const inFlight = this.pending.get(agentId);
     if (inFlight) {
+      this.cancelSettle(inFlight);
       this.pending.delete(agentId);
       this.deps.gateway.setForwarding(officeId, agentId, false);
       inFlight.resolve();
@@ -358,6 +385,7 @@ export class TeamsService {
         resolve,
         startedAt: this.now(),
         lastCheckIn: this.now(),
+        settleTimer: null,
       };
       this.pending.set(item.agentId, record);
 
@@ -376,7 +404,7 @@ export class TeamsService {
       // Safety timeout so the queue never wedges if turn-end is missed.
       setTimeout(() => {
         if (this.pending.get(item.agentId) === record) {
-          void this.finalizeTurn(item.agentId);
+          void this.finalizeDispatch(item.agentId);
         }
       }, 10 * 60 * 1000);
     });
@@ -386,28 +414,73 @@ export class TeamsService {
     const rec = this.pending.get(e.agentId);
     if (!rec) return;
     if (e.kind === 'message' && e.content) {
+      // Agent produced more output — it hasn't gone idle. Cancel any pending
+      // dispatch close-out and accumulate this chunk for the current turn.
+      this.cancelSettle(rec);
       rec.chunks.push(e.content);
+    } else if (e.kind === 'turn-start') {
+      // A new turn began (e.g. resuming after a tool). Keep forwarding open.
+      this.cancelSettle(rec);
     } else if (e.kind === 'turn-end') {
-      void this.finalizeTurn(e.agentId);
+      // Forward everything up to this turn-end NOW (as its own Teams message, like
+      // long-session chunking) instead of holding it until the whole response ends.
+      // Then arm the idle debounce: a tool-using response continues in a later turn,
+      // so we keep pending + forwarding alive and only close out once the agent is
+      // quiet. This guarantees no post-tool turn (e.g. one carrying an office-image
+      // sentinel) is ever dropped.
+      void this.flushTurn(rec);
+      this.scheduleSettle(e.agentId, rec);
     } else if (e.kind === 'tool-start') {
+      // A tool means more work is coming; don't let a stale close-out fire.
+      this.cancelSettle(rec);
       void this.maybeCheckIn(rec, e.toolName);
     }
   }
 
-  private async finalizeTurn(agentId: string): Promise<void> {
+  /** Clear the pending dispatch close-out timer, if armed. */
+  private cancelSettle(rec: PendingTurn): void {
+    if (rec.settleTimer) {
+      clearTimeout(rec.settleTimer);
+      rec.settleTimer = null;
+    }
+  }
+
+  /** (Re)arm the debounce that closes out the dispatch once the agent goes idle. */
+  private scheduleSettle(agentId: string, rec: PendingTurn): void {
+    this.cancelSettle(rec);
+    rec.settleTimer = setTimeout(() => {
+      rec.settleTimer = null;
+      void this.finalizeDispatch(agentId);
+    }, this.settleMs);
+  }
+
+  /**
+   * Post everything accumulated for the current turn as a Teams reply, then clear
+   * the buffer. Does NOT stop forwarding or end the dispatch — a multi-turn
+   * response keeps flushing per turn. No-op when the turn produced no text.
+   */
+  private async flushTurn(rec: PendingTurn): Promise<void> {
+    const text = rec.chunks.join('\n\n').trim();
+    rec.chunks = [];
+    if (!text) return;
+    const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
+    tlog(`Reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
+    await this.postReply(rec.binding, text);
+  }
+
+  /**
+   * Close out a dispatch once the agent has gone idle: flush any residual text,
+   * stop event mirroring, drop the pending record, and resolve the dispatch promise
+   * so the per-agent queue advances.
+   */
+  private async finalizeDispatch(agentId: string): Promise<void> {
     const rec = this.pending.get(agentId);
     if (!rec) return;
+    this.cancelSettle(rec);
     this.pending.delete(agentId);
-    // Stop mirroring events for this agent now that the turn is complete.
     this.deps.gateway.setForwarding(rec.officeId, agentId, false);
-    const text = rec.chunks.join('\n\n').trim();
-    const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
-    if (text) {
-      tlog(`Reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
-      await this.postReply(rec.binding, text);
-    } else {
-      tlog(`Turn ended for @${rec.binding.handle} with no assistant text (${elapsed}s) — nothing to post.`);
-    }
+    // Flush anything that arrived without a trailing turn-end (defensive).
+    await this.flushTurn(rec);
     rec.resolve();
   }
 
@@ -432,21 +505,48 @@ export class TeamsService {
   }
 
   private async postReply(binding: OnlineAgentBinding, text: string): Promise<void> {
-    const chunks = chunkReply(text, 3500);
     const prefix = this.agentLabel(binding);
-    for (const chunk of chunks) {
-      await this.safeReply(binding, `${prefix}<br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`);
+    // Recognize `<!--office-image:PATH-->` sentinels: pull them out of the reply
+    // text (before markdown→HTML conversion) and attach the referenced files as
+    // inline Graph hosted-content images. Paths resolve against the agent's cwd.
+    const { text: cleaned, paths } = extractImageMarkers(text);
+    let images: HostedImage[] = [];
+    if (paths.length) {
+      tlog(`office-image: @${binding.handle} reply has ${paths.length} sentinel(s): ${paths.join(', ')} (baseDir=${binding.workingDir})`);
+      images = await loadHostedImages(paths, { baseDir: binding.workingDir, warn: (m) => twarn(m) });
+      if (images.length) {
+        tlog(`office-image: loaded ${images.length}/${paths.length} image(s) for @${binding.handle} — will attach inline.`);
+      } else {
+        twarn(`office-image: no images loaded for @${binding.handle} despite ${paths.length} sentinel(s) — all paths rejected (see warnings above).`);
+      }
+    }
+
+    if (cleaned) {
+      const chunks = chunkReply(cleaned, 3500);
+      for (const chunk of chunks) {
+        await this.safeReply(binding, `${prefix}<br>${markdownToTeamsHtml(chunk)}`);
+      }
+    }
+
+    if (images.length) {
+      tlog(`office-image: posting ${images.length} inline image reply to @${binding.handle} thread.`);
+      await this.safeReply(binding, `${prefix}<br>${hostedImagesHtml(images)}`, images);
     }
   }
 
   /** Reply to a thread, swallowing errors (logs only) so the queue keeps moving. */
-  private async safeReply(binding: OnlineAgentBinding, html: string): Promise<void> {
+  private async safeReply(
+    binding: OnlineAgentBinding,
+    html: string,
+    hostedImages?: HostedImage[],
+  ): Promise<void> {
     try {
       const posted = await this.deps.graph.replyToThread({
         teamId: binding.teamId,
         channelId: binding.channelId,
         threadRootId: binding.threadRootId,
         html,
+        hostedImages,
       });
       // Record our own reply id so its Trouter echo is dropped (self-loop guard).
       if (posted?.messageId) this.rememberPosted(posted.messageId);

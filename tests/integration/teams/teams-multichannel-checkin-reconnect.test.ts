@@ -55,6 +55,7 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
     getSettings: () => opts.settings ?? baseSettings(),
     emitStatus: () => {}, emitToast: () => {},
     now: opts.now,
+    turnSettleMs: 5,
   });
   return { service, replies, submitted, sessionByAgent, readyByAgent, inbound: () => emit, agent: () => agentCb };
 }
