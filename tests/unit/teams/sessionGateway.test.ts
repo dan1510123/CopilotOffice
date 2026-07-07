@@ -18,8 +18,8 @@ describe('RelaySessionGateway.submitPrompt', () => {
   it('uses the atomic submit-prompt path, not raw write', async () => {
     const relay = makeRelay();
     const gw = new RelaySessionGateway(relay);
-    await gw.submitPrompt('office-0', 'generalist', 'what is 2+2');
-    expect(relay.mainSubmitPrompt).toHaveBeenCalledWith('office-0', 'generalist', 'what is 2+2');
+    await gw.submitPrompt('office-0', 'generalist', 'what is 2+2', 'Teams · Alice');
+    expect(relay.mainSubmitPrompt).toHaveBeenCalledWith('office-0', 'generalist', 'what is 2+2', 'Teams · Alice');
     expect(relay.mainWrite).not.toHaveBeenCalled();
   });
 

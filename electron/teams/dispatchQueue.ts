@@ -12,6 +12,8 @@ export interface DispatchItem {
   sessionId: string;
   threadRootId: string;
   prompt: string;
+  /** Teams sender display name — used only for the terminal echo tag. */
+  senderName?: string;
 }
 
 type ProcessFn = (item: DispatchItem) => Promise<void>;

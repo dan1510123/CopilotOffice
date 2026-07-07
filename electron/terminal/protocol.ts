@@ -31,6 +31,8 @@ export interface MsgSubmitPrompt {
   officeId: string;
   agentId: string;
   prompt: string;
+  /** Optional display-only tag echoed before the prompt (never sent to the agent). */
+  label?: string;
 }
 
 export interface MsgResize {

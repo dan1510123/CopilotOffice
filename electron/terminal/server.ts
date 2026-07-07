@@ -660,8 +660,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (proc) {
         const backendProc = proc.process;
         if (typeof backendProc.submitPrompt === 'function') {
-          backendProc.submitPrompt(msg.prompt);
+          backendProc.submitPrompt(msg.prompt, msg.label);
         } else {
+          // Raw PTY: bracketed paste (no separate display channel, so the label
+          // is intentionally dropped rather than injected into the agent input).
           const text = msg.prompt.replace(/\r?\n/g, '\n');
           backendProc.write(`\x1b[200~${text}\x1b[201~`);
           setTimeout(() => backendProc.write('\r'), 40);

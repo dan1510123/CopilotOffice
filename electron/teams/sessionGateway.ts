@@ -25,7 +25,7 @@ export interface TerminalRelayLike {
   mainGetSessionId(officeId: string, agentId: string): Promise<string | null>;
   mainGetSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
   mainWrite(officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }>;
-  mainSubmitPrompt(officeId: string, agentId: string, prompt: string): Promise<{ success: boolean; error?: string }>;
+  mainSubmitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<{ success: boolean; error?: string }>;
   mainEvents: {
     on(event: string, listener: (...args: unknown[]) => void): unknown;
     off(event: string, listener: (...args: unknown[]) => void): unknown;
@@ -35,7 +35,7 @@ export interface TerminalRelayLike {
 export interface SessionGateway {
   getSessionId(officeId: string, agentId: string): Promise<string | null>;
   getSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
-  submitPrompt(officeId: string, agentId: string, prompt: string): Promise<void>;
+  submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void>;
   onAgentEvent(cb: (e: AgentEvent) => void): () => void;
   /** Fires when a session ends (agentId's PTY exits). */
   onSessionExit(cb: (agentId: string) => void): () => void;
@@ -52,10 +52,11 @@ export class RelaySessionGateway implements SessionGateway {
     return this.relay.mainGetSessionMeta(officeId, agentId);
   }
 
-  async submitPrompt(officeId: string, agentId: string, prompt: string): Promise<void> {
+  async submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void> {
     // Use the backend's atomic submit (SDK enqueue) rather than simulating
     // keystrokes; the server falls back to bracketed-paste for raw PTY backends.
-    const res = await this.relay.mainSubmitPrompt(officeId, agentId, prompt);
+    // `label` is a display-only tag echoed in the terminal (never sent to the agent).
+    const res = await this.relay.mainSubmitPrompt(officeId, agentId, prompt, label);
     if (!res.success) {
       throw new Error(res.error || `Failed to submit prompt to ${officeId}:${agentId}`);
     }

@@ -284,6 +284,7 @@ export class TeamsService {
       sessionId: binding.sessionId,
       threadRootId: binding.threadRootId,
       prompt: msg.content,
+      senderName: msg.senderName,
     });
   }
 
@@ -327,7 +328,8 @@ export class TeamsService {
       };
       this.pending.set(item.agentId, record);
 
-      this.deps.gateway.submitPrompt(item.officeId, item.agentId, item.prompt).catch((e) => {
+      const label = item.senderName ? `Teams · ${item.senderName}` : 'Teams';
+      this.deps.gateway.submitPrompt(item.officeId, item.agentId, item.prompt, label).catch((e) => {
         twarn('submitPrompt failed:', (e as Error).message);
         this.pending.delete(item.agentId);
         resolve();

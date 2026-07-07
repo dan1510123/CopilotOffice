@@ -18,8 +18,12 @@ export interface TerminalProcess {
    * the character-by-character line editor. Implemented by SDK-backed processes
    * (calls `session.send({ prompt, mode: 'enqueue' })` directly). Backends that
    * omit it (raw PTY) are driven via bracketed-paste `write()` instead.
+   *
+   * `label`, when provided, is rendered as a display-only tag in front of the
+   * echoed prompt (e.g. "[Teams · Alice]"). It is NEVER included in the text
+   * sent to the agent — the model receives only `text`.
    */
-  submitPrompt?(text: string): void;
+  submitPrompt?(text: string, label?: string): void;
 }
 
 export interface StartTerminalOptions {
@@ -218,13 +222,15 @@ class CopilotSdkProcess implements TerminalProcess {
    * if typed. This is the robust path used by programmatic drivers (e.g. Teams
    * remote dispatch) instead of racing keystrokes through `write()`.
    */
-  submitPrompt(text: string): void {
+  submitPrompt(text: string, label?: string): void {
     if (this.closed) return;
     const prompt = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
     if (!prompt) return;
-    // Discard any half-typed line and echo the submitted prompt.
+    // Discard any half-typed line and echo the submitted prompt. The optional
+    // label is a DISPLAY-ONLY tag (dimmed cyan) — it is never sent to the agent.
     this.lineBuffer = '';
-    this.emitData(`${prompt.replace(/\n/g, '\r\n')}\r\n`);
+    const tag = label ? `\x1b[2;36m[${label}]\x1b[0m ` : '';
+    this.emitData(`${tag}${prompt.replace(/\n/g, '\r\n')}\r\n`);
     this.enqueuePrompt(prompt);
   }
 
