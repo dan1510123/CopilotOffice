@@ -69,6 +69,20 @@ const agentReadyState: Map<string, boolean> = new Map();
 // Track per-agent turn activity (between turn_start and turn_end)
 const agentInTurn: Map<string, boolean> = new Map();
 
+// Monotonic count of `user.message` events seen per terminal key, plus the text of
+// the most recent one. Together they let the programmatic-submit path confirm that
+// the CLI accepted OUR specific prompt: it snapshots the count, presses Enter, and
+// re-presses until the count advances AND the latest user.message text matches the
+// prompt we pasted — a closed-loop confirm that beats guessing render timing, and
+// won't false-positive on a human typing concurrently in the same session.
+const userMessageSeq: Map<string, number> = new Map();
+const lastUserMessageText: Map<string, string> = new Map();
+
+/** Normalize prompt/user-message text for tolerant equality (collapse whitespace). */
+function normalizePromptText(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
 // Per-agent raw scrollback buffer (preserves ANSI escape sequences)
 const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB
 const agentScrollbackBuffers: Map<string, string[]> = new Map();
@@ -305,15 +319,14 @@ function getTerminalKey(officeId: string, agentId: string): string | null {
  *   2. Bracketed paste (`ESC[200~ … ESC[201~`) inserts the text as one unit —
  *      this stops `@`/`/` from triggering the TUI's file/command menus and stops
  *      the re-render storm from dropping characters.
- *   3. Idle-gated Enter. Ink detaches stdin while it re-renders, so an Enter sent
- *      mid-render is silently dropped. This is the failure mode for a SECOND
- *      queued turn: turn N's `turn_end` (from events.jsonl) resolves the dispatch
- *      and immediately drains turn N+1, but the TUI is still painting turn N's
- *      final frame, so blind fixed-offset Enters land during the render storm and
- *      the pasted text just sits there unsubmitted. Instead of guessing offsets we
- *      wait for the PTY output to go quiet (render settled → stdin re-attached)
- *      before pasting and again before Enter, with time caps so we never wedge.
- *      A couple of backup Enters cover a cursor-blink re-render eating the first.
+ *   3. Closed-loop Enter. Ink detaches stdin while it re-renders, so an Enter sent
+ *      mid-render is silently dropped — the failure mode where the prompt is pasted
+ *      but never submitted (a second queued turn, or a stale/unviewed session after
+ *      an office switch). Blind timed Enters can't reliably tell when the TUI is
+ *      ready. Instead we snapshot the `user.message` counter (which the CLI bumps
+ *      only when it actually accepts a prompt), press Enter, and re-press on an
+ *      interval until that counter advances — positive confirmation the prompt was
+ *      accepted — capped so we never wedge. Extra Enters on an empty input are no-ops.
  *
  * Response capture is unaffected — it comes from the EventsWatcher tailing
  * events.jsonl (assistant.message → turn_end), not from this input path.
@@ -349,11 +362,33 @@ function submitViaKeystrokes(proc: TerminalProcess, prompt: string, ck: string):
     safeWrite(`\x1b[200~${text}\x1b[201~`); // bracketed paste
     // Let the paste's echo/re-render settle so the Enter isn't dropped mid-render.
     await waitForIdle(250, 2000);
-    safeWrite('\r'); // submit
-    // Backups: if a cursor-blink re-render swallowed the first Enter, these land
-    // on the (now attached) input; extra Enters on an empty prompt are no-ops.
-    setTimeout(() => safeWrite('\r'), 450);
-    setTimeout(() => safeWrite('\r'), 1000);
+
+    // Closed-loop submit. Blind timed Enters are unreliable: if the Ink TUI is
+    // still re-rendering (e.g. a stale/unviewed session after an office switch, or
+    // the tail end of a prior turn), an Enter is silently dropped and the pasted
+    // text sits unsubmitted. Instead, press Enter and wait for the CLI to write a
+    // `user.message` event whose text matches this prompt (proof OUR prompt was
+    // accepted — a bare counter could be advanced by a human typing concurrently in
+    // the same session). If not yet accepted, press Enter again. Requiring the count
+    // to advance too means an identical re-send still submits. Extra Enters on an
+    // already-empty input are harmless no-ops.
+    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const want = normalizePromptText(text);
+    const baseline = userMessageSeq.get(ck) ?? 0;
+    const accepted = () =>
+      (userMessageSeq.get(ck) ?? 0) > baseline && lastUserMessageText.get(ck) === want;
+    const MAX_ATTEMPTS = 12; // ~6s worst case at 500ms spacing
+    const POLL_MS = 500;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS && !accepted(); attempt++) {
+      safeWrite('\r'); // submit
+      // Poll in small slices so we react quickly once the event lands.
+      for (let waited = 0; waited < POLL_MS && !accepted(); waited += 50) {
+        await delay(50);
+      }
+    }
+    if (!accepted()) {
+      console.warn(`[TermServer] submitViaKeystrokes: prompt not confirmed accepted after ${MAX_ATTEMPTS} Enter attempts for ${ck} — it may not have submitted.`);
+    }
   })();
 }
 
@@ -567,6 +602,12 @@ async function startTerminalForAgent(
           console.log(`[TermServer] Forwarding turn_start for ${ck}`);
           send({ type: 'copilot-turn-start', agentId });
         } else if (event.type === 'user.message') {
+          userMessageSeq.set(ck, (userMessageSeq.get(ck) ?? 0) + 1);
+          {
+            const d = (event.data ?? {}) as Record<string, unknown>;
+            const raw = d.content || d.message || d.text || d.input || d.prompt || d.body || '';
+            lastUserMessageText.set(ck, normalizePromptText(String(raw)));
+          }
           console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
           send({ type: 'copilot-user-message', agentId });
 
@@ -678,6 +719,8 @@ async function startTerminalForAgent(
       agentReadyState.delete(ck);
       agentInTurn.delete(ck);
       lastPtyDataAt.delete(ck);
+      userMessageSeq.delete(ck);
+      lastUserMessageText.delete(ck);
       const w = agentWatchers.get(ck);
       if (w) { w.stop(); agentWatchers.delete(ck); }
     });
