@@ -48,11 +48,20 @@ type AzRunner = (resourceUrl: string) => Promise<string>;
 /** Run `az account get-access-token --resource <url>` and return the accessToken. */
 const defaultAzRunner: AzRunner = (resourceUrl: string) =>
   new Promise<string>((resolve, reject) => {
+    // Node 20.12+/22+ (Electron 40) reject spawning `.cmd`/`.bat` files directly
+    // (CVE-2024-27980 hardening → EINVAL). On Windows we therefore invoke the
+    // Azure CLI through cmd.exe (a real .exe), which resolves `az.cmd` from PATH.
+    // `resourceUrl` is a fixed constant from RESOURCE_URLS (no user input), so
+    // string interpolation into the command is safe. On POSIX we exec `az`
+    // directly with an argv array (no shell).
     const isWin = process.platform === 'win32';
-    const cmd = isWin ? 'az.cmd' : 'az';
+    const azArgs = ['account', 'get-access-token', '--resource', resourceUrl, '--output', 'json'];
+    const [file, args] = isWin
+      ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `az ${azArgs.join(' ')}`]]
+      : ['az', azArgs];
     execFile(
-      cmd,
-      ['account', 'get-access-token', '--resource', resourceUrl, '--output', 'json'],
+      file,
+      args,
       { windowsHide: true, maxBuffer: 1024 * 1024 },
       (err, stdout) => {
         if (err) {
