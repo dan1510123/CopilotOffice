@@ -14,6 +14,7 @@ import { ToastNotificationManager } from './ui/ToastNotification';
 import { showClipboardToast } from './ui/clipboardToast';
 import { NotificationService } from './ui/NotificationService';
 import { SettingsPanel } from './ui/SettingsPanel';
+import { TeamsSettingsOverlay } from './ui/TeamsSettingsOverlay';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
@@ -1418,6 +1419,11 @@ function notifyAgent(agentId: string, eventType: import('./config/notifications'
 }
 
 
+const teamsSettingsOverlay = new TeamsSettingsOverlay({
+  onOpen: () => { phaserGameRef?.events.emit('settings:open'); },
+  onClose: () => { phaserGameRef?.events.emit('settings:close'); },
+});
+
 const settingsPanel = new SettingsPanel(
   notificationService,
   {
@@ -1437,6 +1443,7 @@ const settingsPanel = new SettingsPanel(
     onClose: () => {
       phaserGameRef?.events.emit('settings:close');
     },
+    onOpenTeamsSettings: () => { void teamsSettingsOverlay.open(); },
   },
 );
 

@@ -44,6 +44,8 @@ export interface SettingsPanelCallbacks {
   onOpen?: () => void;
   /** Called when settings panel closes — re-enable game input */
   onClose?: () => void;
+  /** Open the Teams Remote settings overlay (panel closes itself first). */
+  onOpenTeamsSettings?: () => void;
 }
 
 export class SettingsPanel {
@@ -143,7 +145,26 @@ export class SettingsPanel {
       ${this.renderAudioSection()}
       ${this.renderAgentsSection()}
       ${this.renderNotificationsSection()}
+      ${this.renderTeamsSection()}
       ${this.renderAboutSection()}
+    `;
+  }
+
+  private renderTeamsSection(): string {
+    return `
+      <div class="settings-section" style="margin-bottom: 20px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+          💬 Teams Remote
+        </h3>
+        <p style="margin: 0 0 12px; font-size: 11px; color: #778;">
+          Bring agents online in a Microsoft Teams channel so you can drive them from a thread.
+          Configure the feature flag and default channel here.
+        </p>
+        <button id="settings-teams-btn" style="
+          background: #1a2a3a; border: 1px solid #356; border-radius: 6px;
+          padding: 6px 12px; color: #8cf; cursor: pointer; font-family: inherit; font-size: 12px;
+        ">💬 Open Teams Remote settings…</button>
+      </div>
     `;
   }
 
@@ -370,6 +391,13 @@ export class SettingsPanel {
     this.bindAudioEvents(panel);
     this.bindAgentsEvents(panel);
     this.bindNotificationEvents(panel);
+
+    // Teams Remote: close this panel first (its z-index sits above the Teams
+    // overlay), then open the Teams settings overlay via the host callback.
+    panel.querySelector('#settings-teams-btn')?.addEventListener('click', () => {
+      this.close();
+      this.callbacks.onOpenTeamsSettings?.();
+    });
   }
 
   private bindAgentsEvents(panel: HTMLElement): void {
