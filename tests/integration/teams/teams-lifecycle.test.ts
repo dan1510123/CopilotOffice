@@ -39,6 +39,7 @@ function makeHarness() {
   const gateway: SessionGateway = {
     getSessionId: async () => 'session-1',
     getSessionMeta: async () => ({ title: '' }),
+    isAgentReady: async () => true,
     submitPrompt: async () => {},
     setForwarding: () => {},
     onAgentEvent: () => () => {},

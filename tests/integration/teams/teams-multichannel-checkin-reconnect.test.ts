@@ -40,9 +40,11 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
   let agentCb: (e: AgentEvent) => void = () => {};
   const submitted: Array<{ agentId: string; prompt: string }> = [];
   const sessionByAgent: Record<string, string | null> = { generalist: 'session-1', debugger: 'session-2' };
+  const readyByAgent: Record<string, boolean> = { generalist: true, debugger: true };
   const gateway: SessionGateway = {
     getSessionId: async (_o, a) => sessionByAgent[a] ?? null,
     getSessionMeta: async () => ({ title: '' }),
+    isAgentReady: async (_o, a) => readyByAgent[a] ?? true,
     submitPrompt: async (_o, a, prompt) => { submitted.push({ agentId: a, prompt }); },
     setForwarding: () => {},
     onAgentEvent: (cb) => { agentCb = cb; return () => {}; },
@@ -54,7 +56,7 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
     emitStatus: () => {}, emitToast: () => {},
     now: opts.now,
   });
-  return { service, replies, submitted, sessionByAgent, inbound: () => emit, agent: () => agentCb };
+  return { service, replies, submitted, sessionByAgent, readyByAgent, inbound: () => emit, agent: () => agentCb };
 }
 
 const inbound = (channelId: string, threadRootId: string, content: string): InboundMessage => ({
@@ -182,6 +184,7 @@ describe('teams reconnect (FR-024, SC-010)', () => {
     }];
     const h = makeHarness({ seed });
     await h.service.start(); // loads as offline, reconcile() re-binds since session-1 matches
+    await new Promise((r) => setTimeout(r, 20)); // let the fire-and-forget reconcile() settle
 
     const status = h.service.getStatus('office-0', 'generalist');
     expect(status?.online).toBe(true);
@@ -218,5 +221,29 @@ describe('teams reconnect (FR-024, SC-010)', () => {
   it('reconcileNow() is a no-op before start()', async () => {
     const h = makeHarness();
     await expect(h.service.reconcileNow()).resolves.toBeUndefined();
+  });
+
+  it('does NOT online or post a reconnect notice while the session is not ready', async () => {
+    const seed: OnlineAgentBinding[] = [{
+      agentId: 'generalist', officeId: 'office-0', sessionId: 'session-1', handle: 'gene',
+      displayName: 'Gene', workingDir: '.', sessionTitle: '', teamId: 'team-a', channelId: CH_A,
+      tenantId: 'tn', threadRootId: 'root-seed', threadWebUrl: 'https://web', online: true,
+      lastConnected: Date.now(),
+    }];
+    const h = makeHarness({ seed });
+    // Session id is persisted (getSessionId returns it) but the agent is NOT ready.
+    h.readyByAgent.generalist = false;
+    await h.service.start();
+    await new Promise((r) => setTimeout(r, 20)); // let the initial reconcile() run (with ready=false)
+
+    // Stays offline; no premature "reconnected" notice posted to the thread.
+    expect(h.service.getStatus('office-0', 'generalist')?.online).toBe(false);
+    expect(h.replies.some((r) => /reconnected/i.test(r.html))).toBe(false);
+
+    // Once the agent becomes ready, an on-demand reconcile onlines + notifies.
+    h.readyByAgent.generalist = true;
+    await h.service.reconcileNow();
+    expect(h.service.getStatus('office-0', 'generalist')?.online).toBe(true);
+    expect(h.replies.some((r) => /reconnected/i.test(r.html))).toBe(true);
   });
 });

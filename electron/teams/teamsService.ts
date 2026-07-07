@@ -486,8 +486,14 @@ export class TeamsService {
           b.lastConnected = this.now();
         }
       } else {
-        // Event-driven reconnect (FR-024): the stored session reappeared.
+        // Event-driven reconnect (FR-024): the stored session reappeared. Only
+        // re-online (and post the "reconnected" notice) once the agent's PTY is
+        // actually alive AND the CLI has signalled ready — get-session-id returns
+        // the disk-persisted id even before the PTY is running, so a bare id match
+        // would prematurely notify the thread for a session that can't yet answer.
         if (current && current === b.sessionId) {
+          const ready = await this.deps.gateway.isAgentReady(b.officeId, b.agentId).catch(() => false);
+          if (!ready) continue; // session exists but not ready yet — wait for a later pass
           b.online = true;
           b.lastConnected = this.now();
           this.deps.emitStatus(this.toStatus(b));

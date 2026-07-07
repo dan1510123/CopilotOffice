@@ -198,6 +198,18 @@ export class TerminalRelay {
     return this.request({ type: 'get-session-id', requestId: this.id(), officeId, agentId }) as Promise<string | null>;
   }
 
+  /** True only when the agent's PTY is alive AND the CLI has signalled ready. */
+  mainIsAgentReady(officeId: string, agentId: string): Promise<boolean> {
+    return (
+      this.request({ type: 'query-agent-statuses', requestId: this.id(), officeId }) as Promise<
+        Record<string, { alive: boolean; ready: boolean; inTurn: boolean }>
+      >
+    ).then((statuses) => {
+      const s = statuses?.[agentId];
+      return !!(s && s.alive && s.ready);
+    });
+  }
+
   mainGetSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null> {
     return this.request({ type: 'get-session-meta', requestId: this.id(), officeId, agentId }) as Promise<{ title?: string } | null>;
   }

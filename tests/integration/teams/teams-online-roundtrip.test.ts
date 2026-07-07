@@ -44,6 +44,7 @@ function makeHarness() {
   const gateway: SessionGateway = {
     getSessionId: async () => 'session-1',
     getSessionMeta: async () => ({ title: 'Fixing scroll' }),
+    isAgentReady: async () => true,
     submitPrompt: async (_o, _a, prompt) => {
       submitted.push(prompt);
     },

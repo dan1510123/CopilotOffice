@@ -27,6 +27,7 @@ export interface TerminalRelayLike {
   mainWrite(officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }>;
   mainSubmitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<{ success: boolean; error?: string }>;
   mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void;
+  mainIsAgentReady(officeId: string, agentId: string): Promise<boolean>;
   mainEvents: {
     on(event: string, listener: (...args: unknown[]) => void): unknown;
     off(event: string, listener: (...args: unknown[]) => void): unknown;
@@ -36,6 +37,8 @@ export interface TerminalRelayLike {
 export interface SessionGateway {
   getSessionId(officeId: string, agentId: string): Promise<string | null>;
   getSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
+  /** True only when the agent's PTY is alive AND the CLI has signalled ready. */
+  isAgentReady(officeId: string, agentId: string): Promise<boolean>;
   submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void>;
   /**
    * Enable/disable mirroring of copilot-events to the main process for an agent
@@ -57,6 +60,10 @@ export class RelaySessionGateway implements SessionGateway {
 
   getSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null> {
     return this.relay.mainGetSessionMeta(officeId, agentId);
+  }
+
+  isAgentReady(officeId: string, agentId: string): Promise<boolean> {
+    return this.relay.mainIsAgentReady(officeId, agentId);
   }
 
   async submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void> {

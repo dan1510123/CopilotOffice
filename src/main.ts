@@ -1479,6 +1479,8 @@ let cachedSessionMeta: Record<string, { title: string }> = {};
 // "Teams Remote" button on the feature flag + per-agent online state.
 let teamsFeatureEnabled = false;
 const teamsOnlineAgentIds = new Set<string>();
+/** All agent ids with a Teams binding (online or pending reconnect) for the current office. */
+const teamsBoundAgentIds = new Set<string>();
 
 /** Refresh the cached Teams feature flag + online set, then re-render if changed. */
 async function refreshTeamsDashboardState(): Promise<void> {
@@ -1488,13 +1490,34 @@ async function refreshTeamsDashboardState(): Promise<void> {
     teamsFeatureEnabled = !!(settingsRes?.success && (settingsRes.settings as { enabled?: boolean })?.enabled);
     const statusRes = await window.copilotBridge.teamsStatus();
     teamsOnlineAgentIds.clear();
+    teamsBoundAgentIds.clear();
     if (statusRes?.success) {
       for (const b of statusRes.bindings as Array<{ agentId: string; online: boolean }>) {
+        teamsBoundAgentIds.add(b.agentId);
         if (b.online) teamsOnlineAgentIds.add(b.agentId);
       }
     }
   } catch { /* leave caches as-is */ }
   updateTerminalContent();
+}
+
+/**
+ * Ask the Teams service to reconcile, debounced. Called when a Teams-bound agent
+ * finishes starting (becomes ready) so the service re-onlines it — and posts its
+ * thread "reconnected" notice — promptly, instead of waiting for the periodic tick.
+ */
+let teamsReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleTeamsReconcile(): void {
+  if (teamsReconcileTimer) return;
+  teamsReconcileTimer = setTimeout(() => {
+    teamsReconcileTimer = null;
+    void (async () => {
+      try {
+        await window.copilotBridge.teamsReconcile?.();
+      } catch { /* best-effort */ }
+      void refreshTeamsDashboardState();
+    })();
+  }, 300);
 }
 
 /** Toggle an agent online/offline in Teams from an overview dashboard tile. */
@@ -2137,6 +2160,12 @@ if (window.copilotBridge) {
       } else if (status === 'ready') {
         // This is the ONLY path allowed to transition out of starting state
         officeManager.setAgentReady(officeId, agentId, 'preload_ready');
+        // A Teams-bound agent that just became ready can now be re-onlined — poke
+        // the service so it posts the thread "reconnected" notice only once the
+        // agent is actually up (not merely because its session id was persisted).
+        if (teamsFeatureEnabled && teamsBoundAgentIds.has(agentId)) {
+          scheduleTeamsReconcile();
+        }
         // Clear any stale tool state accumulated from historical events during startup
         const agentTools = getCurrentAgentTools();
         if (agentTools.has(agentId)) {
@@ -2347,6 +2376,21 @@ async function reconnectAgentStatuses(): Promise<void> {
   await waitForSyncIdle();
   try {
     const statuses = await window.copilotBridge.queryAgentStatuses(officeId);
+    // Requirement: auto-start agents that have Teams remote on BEFORE reconnecting,
+    // so their sessions are coming up and the Teams service can re-online them.
+    // get-session-id alone returns the disk-persisted id, so we key off live
+    // aliveness (queryAgentStatuses) and warm any bound agent that isn't running.
+    try {
+      const teamsRes = await window.copilotBridge.teamsStatus?.();
+      if (teamsRes?.success && Array.isArray(teamsRes.bindings)) {
+        for (const b of teamsRes.bindings as Array<{ officeId: string; agentId: string }>) {
+          if (b.officeId !== officeId) continue;
+          if (!statuses[b.agentId]?.alive) {
+            await warmAgentSession(officeId, b.agentId).catch(() => {});
+          }
+        }
+      }
+    } catch { /* best-effort — Teams may be disabled */ }
     for (const [agentId, info] of Object.entries(statuses)) {
       if (info.alive) {
         await window.copilotBridge.terminalAttach(officeId, agentId).catch(() => {});
