@@ -17,6 +17,7 @@ import { parseChannelLink } from './channelLink';
 import { resolveChannel, activeChannelSet } from './channelResolver';
 import { chunkReply } from './chunk';
 import { escapeHtml } from './htmlText';
+import { tlog, twarn } from './log';
 import type {
   TeamsSettings,
   OnlineAgentBinding,
@@ -95,14 +96,17 @@ export class TeamsService {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    tlog('Service starting…');
 
     const state = await this.deps.store.load();
     // 30-day GC (FR-024a).
     const { kept, removed } = gcStale(state.bindings, this.now());
     this.bindings = kept.map((b) => ({ ...b, online: false })); // reconnect is event-driven
     this.knownThreads = state.knownThreads;
+    tlog(`Loaded ${this.bindings.length} persisted binding(s), ${this.knownThreads.length} known thread(s).`);
     if (removed.length > 0) {
       await this.persist();
+      tlog(`GC removed ${removed.length} stale binding(s) (>30 days).`);
       this.deps.emitToast({
         level: 'info',
         message: `Teams: cleaned up ${removed.length} stale agent binding(s) (>30 days).`,
@@ -115,6 +119,7 @@ export class TeamsService {
     await this.deps.source.start((m) => {
       void this.handleInbound(m);
     });
+    tlog(`Receive transport started (health=${this.deps.source.health}).`);
 
     this.reconcileTimer = setInterval(() => void this.reconcile(), RECONCILE_MS);
     // Attempt immediate reconnect for persisted bindings.
@@ -129,6 +134,7 @@ export class TeamsService {
     this.unsubExit?.();
     this.unsubEvent = this.unsubExit = null;
     await this.deps.source.stop();
+    tlog('Service stopped.');
   }
 
   // ── Public API (invoked from IPC) ────────────────────────────
@@ -155,6 +161,7 @@ export class TeamsService {
     if (!coords) {
       return { success: false, error: 'no-channel' };
     }
+    tlog(`Register requested: ${ctx.displayName} (${officeId}:${agentId}) → channel ${coords.channelId}`);
 
     const sessionId = await this.deps.gateway.getSessionId(officeId, agentId);
     if (!sessionId) {
@@ -195,6 +202,7 @@ export class TeamsService {
     } catch (e) {
       return { success: false, error: `Failed to create Teams thread: ${(e as Error).message}` };
     }
+    tlog(`Thread created (root=${thread.threadRootId}) for @${handle}.`);
 
     const binding: OnlineAgentBinding = {
       agentId,
@@ -219,6 +227,7 @@ export class TeamsService {
     await this.persist();
     this.updateSourceChannels();
     this.deps.emitStatus(this.toStatus(binding));
+    tlog(`ONLINE: @${handle} (${officeId}:${agentId}). Active channels: ${activeChannelSet(this.bindings).size}.`);
 
     return { success: true, handle, threadWebUrl: thread.webUrl };
   }
@@ -227,6 +236,7 @@ export class TeamsService {
   async goOffline(officeId: string, agentId: string, postNotice = true): Promise<{ success: boolean }> {
     const b = this.findBinding(officeId, agentId);
     if (!b) return { success: true };
+    tlog(`OFFLINE: @${b.handle} (${officeId}:${agentId}).`);
     if (postNotice && b.online && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
@@ -243,9 +253,15 @@ export class TeamsService {
 
   async handleInbound(msg: InboundMessage): Promise<void> {
     const result = this.filter.evaluate(msg, this.bindings, this.knownThreads);
-    if (result.action === 'ignore') return;
+    if (result.action === 'ignore') {
+      if (result.reason && result.reason !== 'duplicate' && result.reason !== 'root-message' && result.reason !== 'inactive-channel') {
+        tlog(`Ignored inbound (${result.reason}) from "${msg.senderName}".`);
+      }
+      return;
+    }
 
     if (result.action === 'orphaned-notice') {
+      tlog(`Orphaned thread ${msg.threadRootId} messaged by "${msg.senderName}" — posting inactive notice.`);
       await this.postOrphanedNotice(msg);
       return;
     }
@@ -256,10 +272,12 @@ export class TeamsService {
 
     const content = msg.content.trim();
     if (content === '/stop') {
+      tlog(`/stop received in @${binding.handle}'s thread — taking offline.`);
       await this.goOffline(binding.officeId, binding.agentId, true);
       return;
     }
 
+    tlog(`Dispatch: "${msg.senderName}" → @${binding.handle} (queued=${this.queue.pending(binding.officeId, binding.agentId)}): ${truncate(msg.content, 80)}`);
     this.queue.enqueue({
       officeId: binding.officeId,
       agentId: binding.agentId,
@@ -285,7 +303,7 @@ export class TeamsService {
         html: 'ℹ️ This thread is no longer active and will not receive responses.',
       });
     } catch (e) {
-      console.warn('[Teams] Failed to post orphaned-thread notice:', (e as Error).message);
+      twarn('Failed to post orphaned-thread notice:', (e as Error).message);
     }
   }
 
@@ -310,7 +328,7 @@ export class TeamsService {
       this.pending.set(item.agentId, record);
 
       this.deps.gateway.submitPrompt(item.officeId, item.agentId, item.prompt).catch((e) => {
-        console.warn('[Teams] submitPrompt failed:', (e as Error).message);
+        twarn('submitPrompt failed:', (e as Error).message);
         this.pending.delete(item.agentId);
         resolve();
       });
@@ -341,8 +359,12 @@ export class TeamsService {
     if (!rec) return;
     this.pending.delete(agentId);
     const text = rec.chunks.join('\n\n').trim();
+    const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
     if (text) {
+      tlog(`Reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
       await this.postReply(rec.binding, text);
+    } else {
+      tlog(`Turn ended for @${rec.binding.handle} with no assistant text (${elapsed}s) — nothing to post.`);
     }
     rec.resolve();
   }
@@ -375,7 +397,7 @@ export class TeamsService {
         html,
       });
     } catch (e) {
-      console.warn('[Teams] replyToThread failed:', (e as Error).message);
+      twarn('replyToThread failed:', (e as Error).message);
     }
   }
 
@@ -393,6 +415,7 @@ export class TeamsService {
       if (b.online) {
         if (current !== b.sessionId) {
           // Session was replaced or ended → tear down Teams (FR-022).
+          tlog(`Session changed for @${b.handle} (${b.sessionId} → ${current ?? 'none'}) — taking offline (FR-022).`);
           await this.goOffline(b.officeId, b.agentId, true);
           changed = true;
         } else {
@@ -404,6 +427,7 @@ export class TeamsService {
           b.online = true;
           b.lastConnected = this.now();
           this.deps.emitStatus(this.toStatus(b));
+          tlog(`Reconnected @${b.handle} to its persisted thread (session ${b.sessionId}).`);
           changed = true;
         }
       }
@@ -416,7 +440,10 @@ export class TeamsService {
 
   private async onSessionExit(agentId: string): Promise<void> {
     const b = this.bindings.find((x) => x.agentId === agentId && x.online);
-    if (b) await this.goOffline(b.officeId, b.agentId, true);
+    if (b) {
+      tlog(`Session exited for @${b.handle} — taking offline.`);
+      await this.goOffline(b.officeId, b.agentId, true);
+    }
   }
 
   // ── Helpers ──────────────────────────────────────────────────
@@ -477,3 +504,10 @@ export class TeamsService {
     await this.deps.store.save({ bindings: this.bindings, knownThreads: this.knownThreads });
   }
 }
+
+/** Single-line, length-capped preview of message text for logs (never a secret). */
+function truncate(text: string, max: number): string {
+  const oneLine = (text ?? '').replace(/\s+/g, ' ').trim();
+  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max)}…`;
+}
+

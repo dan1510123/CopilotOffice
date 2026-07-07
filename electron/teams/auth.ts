@@ -7,6 +7,7 @@
 // reused (graceful degradation). Secrets are NEVER logged or persisted.
 
 import { execFile } from 'child_process';
+import { tlog, twarn } from './log';
 
 export type TokenResource = 'graph' | 'ic3';
 
@@ -103,11 +104,13 @@ export class AzTokenProvider implements TokenProvider {
       // Fall back to a short TTL when exp can't be decoded.
       const expiresAt = expMs > 0 ? expMs : now + 30 * 60 * 1000;
       this.cache.set(resource, { token, expiresAt });
+      // Log the acquisition + expiry only — NEVER the token itself.
+      tlog(`Acquired ${resource} token (expires ${new Date(expiresAt).toISOString()}).`);
       return token;
     } catch (e) {
       // Graceful degradation: reuse a still-valid cached token if we have one.
       if (cached && cached.expiresAt > now) {
-        console.warn(`[Teams] Token refresh failed for ${resource}; reusing cached token.`);
+        twarn(`Token refresh failed for ${resource}; reusing cached token.`);
         return cached.token;
       }
       throw e;

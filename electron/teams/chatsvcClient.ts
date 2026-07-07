@@ -7,6 +7,7 @@ import type { TokenProvider } from './auth';
 import type { InboundMessage } from './types';
 import { hasMarker } from './marker';
 import { stripHtml } from './htmlText';
+import { twarn } from './log';
 
 export interface MessageSource {
   /** Emits normalized InboundMessage objects. */
@@ -55,7 +56,7 @@ export class ChatsvcPollSource implements MessageSource {
         }
       } catch (e) {
         this.health = 'error';
-        console.warn('[Teams] chatsvc poll error:', (e as Error).message);
+        twarn('chatsvc poll error:', (e as Error).message);
       }
     };
     this.timer = setInterval(tick, this.pollIntervalMs);

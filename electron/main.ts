@@ -198,6 +198,8 @@ app.whenReady().then(async () => {
     // Only spin up the receive transport when the feature is enabled.
     if (settingsStore.load().enabled) {
       await teamsService.start();
+    } else {
+      console.log('[TeamsRemote] Feature disabled — service idle (enable it in Settings → Teams Remote).');
     }
   } catch (e) {
     console.error('[Main] Failed to initialize Teams service:', e);

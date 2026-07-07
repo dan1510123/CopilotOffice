@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { TeamsStoreState, OnlineAgentBinding } from './types';
+import { terror } from './log';
 
 /** Persistence port. */
 export interface TeamsOnlineStore {
@@ -56,7 +57,7 @@ export class FileTeamsOnlineStore implements TeamsOnlineStore {
       };
     } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return emptyState();
-      console.error('[Teams] Failed to load online store — starting empty:', e);
+      terror('Failed to load online store — starting empty:', e);
       return emptyState();
     }
   }

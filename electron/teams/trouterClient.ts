@@ -18,6 +18,7 @@ import type { InboundMessage } from './types';
 import type { MessageSource } from './chatsvcClient';
 import { hasMarker } from './marker';
 import { stripHtml } from './htmlText';
+import { tlog, twarn } from './log';
 
 const DEFAULT_GATEWAY = 'go-msit.trouter.teams.microsoft.com';
 const V2_REGISTRAR = 'https://teams.cloud.microsoft/registrar/prod/V2/registrations';
@@ -159,7 +160,7 @@ export class TrouterClient implements MessageSource {
     if (!this.running || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.running) this.connect().catch((e) => console.warn('[Teams] Trouter reconnect failed:', e.message));
+      if (this.running) this.connect().catch((e) => twarn('Trouter reconnect failed:', e.message));
     }, 5000);
   }
 
@@ -188,13 +189,13 @@ export class TrouterClient implements MessageSource {
 
     ws.on('message', (data: WebSocket.RawData) => {
       this.handleRaw(String(data), token, epid).catch((e) =>
-        console.warn('[Teams] Trouter frame handler error:', (e as Error).message),
+        twarn('Trouter frame handler error:', (e as Error).message),
       );
     });
 
     ws.on('error', (err) => {
       this.health = 'error';
-      console.warn('[Teams] Trouter socket error:', err.message);
+      twarn('Trouter socket error:', err.message);
     });
 
     ws.on('close', () => {
@@ -246,6 +247,7 @@ export class TrouterClient implements MessageSource {
         this.surl = info.surl || '';
         this.registrarUrl = info.registrarUrl || V2_REGISTRAR;
         this.health = 'connected';
+        tlog('Trouter connected — registering for channel push…');
         await this.register(token);
         this.startHeartbeat(token);
         return;
@@ -271,7 +273,12 @@ export class TrouterClient implements MessageSource {
         this.send(`3:::${ack}`);
       }
       const inbound = parseEventMessage(msg.body);
-      if (inbound && this.onMessage) this.onMessage(inbound);
+      if (inbound && this.onMessage) {
+        if (inbound.threadRootId) {
+          tlog(`Push: "${inbound.senderName}" in ${inbound.channelId.slice(0, 24)}… thread ${inbound.threadRootId}${inbound.hasMarker ? ' [self]' : ''}`);
+        }
+        this.onMessage(inbound);
+      }
     }
   }
 
@@ -282,7 +289,7 @@ export class TrouterClient implements MessageSource {
       this.send(`5:${this.frameCounter}+::{"name":"ping"}`);
     }, HEARTBEAT_MS);
     this.reregisterTimer = setInterval(() => {
-      this.register(token).catch((e) => console.warn('[Teams] Trouter re-register failed:', e.message));
+      this.register(token).catch((e) => twarn('Trouter re-register failed:', e.message));
     }, REREGISTER_MS);
   }
 
@@ -310,10 +317,10 @@ export class TrouterClient implements MessageSource {
       try {
         const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
         if (!res.ok && res.status !== 202) {
-          console.warn(`[Teams] Registrar ${url.slice(0, 60)} returned ${res.status}`);
+          twarn(`Registrar ${url.slice(0, 60)} returned ${res.status}`);
         }
       } catch (e) {
-        console.warn(`[Teams] Registrar ${url.slice(0, 60)} failed:`, (e as Error).message);
+        twarn(`Registrar ${url.slice(0, 60)} failed:`, (e as Error).message);
       }
     }
   }

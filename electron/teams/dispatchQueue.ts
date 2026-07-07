@@ -4,6 +4,8 @@
 // SessionGateway; the next item is dequeued only after the current turn ends. Exactly one
 // reply is produced per prompt.
 
+import { twarn } from './log';
+
 export interface DispatchItem {
   agentId: string;
   officeId: string;
@@ -54,7 +56,7 @@ export class DispatchQueue {
         try {
           await this.process(item);
         } catch (e) {
-          console.warn('[Teams] dispatch item failed:', (e as Error).message);
+          twarn('dispatch item failed:', (e as Error).message);
         }
       }
     } finally {
