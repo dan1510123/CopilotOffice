@@ -13,6 +13,7 @@ import { TrouterClient } from './teams/trouterClient';
 import { RelaySessionGateway } from './teams/sessionGateway';
 import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
+import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
@@ -165,7 +166,18 @@ app.whenReady().then(async () => {
   try {
     const settingsStore = createTeamsSettingsStore(process.cwd());
     const tokens = new AzTokenProvider();
-    const graph = new GraphClient(tokens);
+    // Hard outbound gate: the app may only POST to the configured channels — the
+    // global default plus per-office overrides. Enforced at the GraphSender boundary
+    // so every send path (threads, replies, acks, check-ins, notices) is validated.
+    // Cached with a short TTL so the disk-backed settings/office reads don't run on
+    // every send (and to shrink the mid-write file-lock window).
+    const getAllowedChannels = createCachedAllowedChannels(() =>
+      allowedChannelIdSet(
+        settingsStore.load().defaultChannelUrl,
+        officeChannelOverridesFromJson(officeStore.load().data),
+      ),
+    );
+    const graph = createAllowlistedGraphSender(new GraphClient(tokens), getAllowedChannels);
     const source = new TrouterClient(tokens);
     const gateway = new RelaySessionGateway(relay);
     const store = new FileTeamsOnlineStore(
