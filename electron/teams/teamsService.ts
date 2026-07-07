@@ -79,6 +79,15 @@ export class TeamsService {
   private readonly filter: MessageFilter;
   private readonly queue: DispatchQueue;
   private readonly pending = new Map<string, PendingTurn>(); // key = agentId
+  /**
+   * Message ids of every message the app has posted (thread roots + replies).
+   * Primary self-loop guard: an inbound message whose id is here is our own echo
+   * and is dropped before all other processing. Deterministic — does not depend on
+   * content markers surviving Teams' sanitizer. Capped FIFO to bound memory.
+   */
+  private readonly postedMessageIds = new Set<string>();
+  private readonly postedOrder: string[] = [];
+  private static readonly MAX_POSTED_IDS = 2000;
   private unsubEvent: (() => void) | null = null;
   private unsubExit: (() => void) | null = null;
   private reconcileTimer: ReturnType<typeof setInterval> | null = null;
@@ -203,6 +212,8 @@ export class TeamsService {
       return { success: false, error: `Failed to create Teams thread: ${(e as Error).message}` };
     }
     tlog(`Thread created (root=${thread.threadRootId}) for @${handle}.`);
+    // Record our own post id so its Trouter echo is dropped (self-loop guard, D9).
+    this.rememberPosted(thread.threadRootId);
 
     const binding: OnlineAgentBinding = {
       agentId,
@@ -252,6 +263,12 @@ export class TeamsService {
   // ── Inbound handling ─────────────────────────────────────────
 
   async handleInbound(msg: InboundMessage): Promise<void> {
+    // Primary self-loop guard (research D9): drop the Trouter echo of any message
+    // this app posted, keyed on message id. Deterministic — does not rely on the
+    // content marker surviving Teams' sanitizer.
+    if (msg.messageId && this.postedMessageIds.has(msg.messageId)) {
+      return;
+    }
     const result = this.filter.evaluate(msg, this.bindings, this.knownThreads);
     if (result.action === 'ignore') {
       if (result.reason && result.reason !== 'duplicate' && result.reason !== 'root-message' && result.reason !== 'inactive-channel') {
@@ -297,12 +314,13 @@ export class TeamsService {
     const coords = this.coordsForChannel(msg.channelId);
     if (!coords) return;
     try {
-      await this.deps.graph.replyToThread({
+      const posted = await this.deps.graph.replyToThread({
         teamId: coords.teamId,
         channelId: msg.channelId,
         threadRootId: msg.threadRootId,
         html: 'ℹ️ This thread is no longer active and will not receive responses.',
       });
+      if (posted?.messageId) this.rememberPosted(posted.messageId);
     } catch (e) {
       twarn('Failed to post orphaned-thread notice:', (e as Error).message);
     }
@@ -392,12 +410,14 @@ export class TeamsService {
   /** Reply to a thread, swallowing errors (logs only) so the queue keeps moving. */
   private async safeReply(binding: OnlineAgentBinding, html: string): Promise<void> {
     try {
-      await this.deps.graph.replyToThread({
+      const posted = await this.deps.graph.replyToThread({
         teamId: binding.teamId,
         channelId: binding.channelId,
         threadRootId: binding.threadRootId,
         html,
       });
+      // Record our own reply id so its Trouter echo is dropped (self-loop guard).
+      if (posted?.messageId) this.rememberPosted(posted.messageId);
     } catch (e) {
       twarn('replyToThread failed:', (e as Error).message);
     }
@@ -485,6 +505,17 @@ export class TeamsService {
   private rememberThread(threadRootId: string): void {
     if (!this.knownThreads.some((t) => t.threadRootId === threadRootId)) {
       this.knownThreads.push({ threadRootId, noticePosted: false });
+    }
+  }
+
+  /** Record a message id the app posted, so its Trouter echo is dropped (D9). Capped FIFO. */
+  private rememberPosted(messageId: string): void {
+    if (!messageId || this.postedMessageIds.has(messageId)) return;
+    this.postedMessageIds.add(messageId);
+    this.postedOrder.push(messageId);
+    if (this.postedOrder.length > TeamsService.MAX_POSTED_IDS) {
+      const old = this.postedOrder.shift();
+      if (old) this.postedMessageIds.delete(old);
     }
   }
 

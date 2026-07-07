@@ -1,13 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { embedMarker, hasMarker, TEAMS_MARKER } from '../../../electron/teams/marker';
 
+const ZW = '\u200B\u200C\u200D\u200B\u200C\u200D';
+
 describe('marker round-trip', () => {
-  it('embeds and detects the marker', () => {
+  it('embeds a zero-width marker and detects it', () => {
     const html = '<p>hello</p>';
     const marked = embedMarker(html);
     expect(marked).not.toBe(html);
     expect(hasMarker(marked)).toBe(true);
-    expect(marked).toContain(TEAMS_MARKER);
+    expect(marked).toContain(ZW);
+  });
+
+  it('does NOT use an HTML comment (Teams strips those)', () => {
+    expect(embedMarker('<p>hi</p>')).not.toContain('<!--');
+  });
+
+  it('inserts the marker inside the first element so it is not leading-trimmed', () => {
+    expect(embedMarker('<p>hi</p>')).toBe(`<p>${ZW}hi</p>`);
+  });
+
+  it('prepends when there is no leading tag', () => {
+    expect(embedMarker('plain')).toBe(`${ZW}plain`);
   });
 
   it('is idempotent — does not double-embed', () => {
@@ -21,8 +35,11 @@ describe('marker round-trip', () => {
     expect(hasMarker('')).toBe(false);
   });
 
-  it('detects the marker even after HTML round-trips through content', () => {
-    // Simulates the app self-post echoing back over Trouter/chatsvc.
+  it('still detects the legacy token marker for back-compat', () => {
+    expect(hasMarker(`something ${TEAMS_MARKER} here`)).toBe(true);
+  });
+
+  it('detects the marker after the app self-post echoes back', () => {
     const appPost = embedMarker('<p>🔌 offline notice</p>');
     expect(hasMarker(appPost)).toBe(true);
   });

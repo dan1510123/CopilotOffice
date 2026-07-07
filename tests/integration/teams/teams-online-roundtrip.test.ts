@@ -154,6 +154,27 @@ describe('teams online round-trip (US1)', () => {
     expect(h.submitted).toHaveLength(0);
   });
 
+  it('ignores the intro-post echo by message id even when the marker was stripped', async () => {
+    // Regression: Teams strips HTML comments, so the old marker vanished and the
+    // app's own intro post got dispatched. The message-id guard (D9) must drop it
+    // even with hasMarker=false. The intro's message id === the thread root id.
+    const h = makeHarness();
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+
+    h.inbound()({
+      messageId: 'root-1', // echo of our own createThread post
+      channelId: '19:abc@thread.tacv2',
+      threadRootId: 'root-1',
+      senderName: 'Me (app identity)',
+      content: 'Gene is now online via Copilot Office. Reply in this thread…',
+      composeTime: new Date().toISOString(),
+      hasMarker: false, // marker was stripped by Teams
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.submitted).toHaveLength(0);
+  });
+
   it('/stop takes the agent offline (session untouched)', async () => {
     const h = makeHarness();
     await h.service.start();

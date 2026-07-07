@@ -91,14 +91,22 @@ All items below were resolved before design; several were **validated by live sp
 
 ## D9. Self-loop & marker
 
-- **Decision**: Embed a stable, low-visibility **marker** in every app-posted message (intro,
-  reply, check-in, offline/inactive notices) — e.g. a zero-width-tagged HTML comment or a hidden
-  token in the message HTML. On receive, any message containing the marker is dropped before all
-  other filtering.
+- **Decision**: Use TWO independent self-loop guards, both applied before any other filtering:
+  1. **Message-id tracking (primary, deterministic)** — record the id of every message the app
+     posts (thread root from `createThread`, reply id from `replyToThread`); drop any inbound
+     message whose id matches. Independent of content sanitization.
+  2. **Zero-width content marker (secondary)** — embed a distinctive zero-width character
+     sequence (`\u200B\u200C\u200D…`) inside the message body text; detect and drop on receive.
 - **Rationale**: The app posts under the user's own identity, so sender identity can't
-  distinguish app posts; a content marker can. Prevents the notice-triggers-itself loop (FR-007a).
-- **Alternatives**: Match a visible reply prefix (reference approach) — brittle and user-visible;
-  a marker is cleaner. Track our own posted message ids — also works, kept as a secondary guard.
+  distinguish app posts. Two guards cover each other: id-tracking is deterministic but assumes the
+  Graph-returned id equals the Trouter `resource.id`; the content marker covers any id mismatch.
+- **PITFALL (fixed 2026-07-06)**: The first implementation used an **HTML comment**
+  (`<!--marker-->`) as the marker. **Teams strips HTML comments** from channel message content, so
+  the marker vanished on the Trouter echo and the app's own intro post was mis-dispatched into the
+  agent session. HTML comments are NOT a viable content marker for Teams; the zero-width sequence
+  survives sanitization, and message-id tracking (the "secondary guard" this doc originally named)
+  is now implemented as the primary guard.
+- **Alternatives**: Match a visible reply prefix (reference approach) — brittle and user-visible.
 
 ## D10. Message filter pipeline (order)
 

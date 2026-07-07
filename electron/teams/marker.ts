@@ -6,22 +6,37 @@
 // receive, any message containing the marker is dropped before all other filtering,
 // preventing the "notice-triggers-itself" loop (FR-007a).
 //
-// The marker is a zero-width-tagged HTML comment: invisible in the Teams UI, survives
-// round-trip through the message body, and is easy to detect in received content.
+// IMPORTANT: the marker must survive Teams' message sanitizer. HTML comments do NOT —
+// Teams strips `<!-- ... -->` from channel message content, so a comment marker vanishes
+// on the Trouter echo and the app's own posts get mis-dispatched (the intro-post bug).
+// Instead we embed a distinctive ZERO-WIDTH character sequence into the visible body
+// text: it renders invisibly in the Teams UI but is preserved as ordinary text content
+// on round-trip. (Message-id tracking in the service is the deterministic primary guard;
+// this marker is the content-based secondary guard, covering ids that don't round-trip.)
 
-/** Stable marker token embedded in every app post. */
+/** Legacy token (kept for detection of any old comment-marked posts). */
 export const TEAMS_MARKER = 'copilotoffice-agent-post-v1';
 
-const MARKER_HTML = `<!--${TEAMS_MARKER}-->`;
+// Zero-width sequence: ZWSP, ZWNJ, ZWJ repeated — six chars, vanishingly unlikely to
+// occur naturally, invisible when rendered, preserved as text through Teams.
+const ZW_MARKER = '\u200B\u200C\u200D\u200B\u200C\u200D';
 
 /** Add the hidden self-loop marker to an outgoing HTML body (idempotent). */
 export function embedMarker(html: string): string {
   if (hasMarker(html)) return html;
-  return `${MARKER_HTML}${html ?? ''}`;
+  // Insert the zero-width marker just inside the first element (when present) to avoid
+  // any leading-whitespace trimming; otherwise prepend it.
+  const body = html ?? '';
+  const firstTag = body.match(/^\s*<[a-zA-Z][^>]*>/);
+  if (firstTag) {
+    const insertAt = firstTag.index! + firstTag[0].length;
+    return body.slice(0, insertAt) + ZW_MARKER + body.slice(insertAt);
+  }
+  return ZW_MARKER + body;
 }
 
 /** True when content contains the app self-post marker → drop before all processing. */
 export function hasMarker(content: string): boolean {
   if (!content) return false;
-  return content.includes(TEAMS_MARKER);
+  return content.includes(ZW_MARKER) || content.includes(TEAMS_MARKER);
 }
