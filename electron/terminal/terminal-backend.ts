@@ -13,6 +13,13 @@ export interface TerminalProcess {
   onData(callback: (data: string) => void): void;
   onExit(callback: (event: TerminalExitEvent) => void): void;
   kill(): void;
+  /**
+   * Optional: submit a full prompt to the underlying agent atomically, bypassing
+   * the character-by-character line editor. Implemented by SDK-backed processes
+   * (calls `session.send({ prompt, mode: 'enqueue' })` directly). Backends that
+   * omit it (raw PTY) are driven via bracketed-paste `write()` instead.
+   */
+  submitPrompt?(text: string): void;
 }
 
 export interface StartTerminalOptions {
@@ -187,15 +194,7 @@ class CopilotSdkProcess implements TerminalProcess {
           continue;
         }
 
-        this.promptPending = true;
-        this.queuedSend = this.queuedSend
-          .then(async () => {
-            await this.session.send({ prompt, mode: 'enqueue' });
-          })
-          .catch((error: unknown) => {
-            this.emitData(`\x1b[31m[SDK send failed: ${String(error)}]\x1b[0m\r\n`);
-            this.emitPrompt();
-          });
+        this.enqueuePrompt(prompt);
         continue;
       }
 
@@ -210,6 +209,36 @@ class CopilotSdkProcess implements TerminalProcess {
       this.lineBuffer += ch;
       this.emitData(ch);
     }
+  }
+
+  /**
+   * Submit a complete prompt directly to the SDK session, bypassing the
+   * line-editor. Handles multi-line prompts atomically (no premature submit on
+   * embedded newlines) and echoes the prompt so it appears in the terminal as
+   * if typed. This is the robust path used by programmatic drivers (e.g. Teams
+   * remote dispatch) instead of racing keystrokes through `write()`.
+   */
+  submitPrompt(text: string): void {
+    if (this.closed) return;
+    const prompt = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    if (!prompt) return;
+    // Discard any half-typed line and echo the submitted prompt.
+    this.lineBuffer = '';
+    this.emitData(`${prompt.replace(/\n/g, '\r\n')}\r\n`);
+    this.enqueuePrompt(prompt);
+  }
+
+  /** Queue a prompt for the SDK session, serialized after any in-flight send. */
+  private enqueuePrompt(prompt: string): void {
+    this.promptPending = true;
+    this.queuedSend = this.queuedSend
+      .then(async () => {
+        await this.session.send({ prompt, mode: 'enqueue' });
+      })
+      .catch((error: unknown) => {
+        this.emitData(`\x1b[31m[SDK send failed: ${String(error)}]\x1b[0m\r\n`);
+        this.emitPrompt();
+      });
   }
 
   resize(_cols: number, _rows: number): void {

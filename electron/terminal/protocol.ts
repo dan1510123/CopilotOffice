@@ -25,6 +25,14 @@ export interface MsgWrite {
   data: string;
 }
 
+export interface MsgSubmitPrompt {
+  type: 'submit-prompt';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  prompt: string;
+}
+
 export interface MsgResize {
   type: 'resize';
   officeId: string;
@@ -179,6 +187,7 @@ export interface MsgTransferSession {
 export type MainToServer =
   | MsgStart
   | MsgWrite
+  | MsgSubmitPrompt
   | MsgResize
   | MsgKill
   | MsgAttach

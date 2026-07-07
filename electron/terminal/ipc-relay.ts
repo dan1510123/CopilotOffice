@@ -206,6 +206,10 @@ export class TerminalRelay {
     return this.request({ type: 'write', requestId: this.id(), officeId, agentId, data }) as Promise<{ success: boolean; error?: string }>;
   }
 
+  mainSubmitPrompt(officeId: string, agentId: string, prompt: string): Promise<{ success: boolean; error?: string }> {
+    return this.request({ type: 'submit-prompt', requestId: this.id(), officeId, agentId, prompt }) as Promise<{ success: boolean; error?: string }>;
+  }
+
   private handleServerMessage(
     msg: ServerToMain,
     readyTimeout: ReturnType<typeof setTimeout>,

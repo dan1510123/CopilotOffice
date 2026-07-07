@@ -650,6 +650,31 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       break;
     }
 
+    case 'submit-prompt': {
+      // Programmatic prompt submission (e.g. Teams remote). Prefer the backend's
+      // atomic submit (SDK: session.send enqueue). Fall back to a bracketed-paste
+      // write for raw PTY backends so multi-line prompts aren't submitted early
+      // and TUI re-render storms don't drop characters.
+      const key = getTerminalKey(msg.officeId, msg.agentId);
+      const proc = key ? ptyProcesses.get(key) : null;
+      if (proc) {
+        const backendProc = proc.process;
+        if (typeof backendProc.submitPrompt === 'function') {
+          backendProc.submitPrompt(msg.prompt);
+        } else {
+          const text = msg.prompt.replace(/\r?\n/g, '\n');
+          backendProc.write(`\x1b[200~${text}\x1b[201~`);
+          setTimeout(() => backendProc.write('\r'), 40);
+        }
+        send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      } else {
+        const ck = compositeKey(msg.officeId, msg.agentId);
+        console.log(`[TermServer] SUBMIT-PROMPT FAILED — no PTY for ${ck}`);
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
+      }
+      break;
+    }
+
     case 'resize': {
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;

@@ -25,6 +25,7 @@ export interface TerminalRelayLike {
   mainGetSessionId(officeId: string, agentId: string): Promise<string | null>;
   mainGetSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
   mainWrite(officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }>;
+  mainSubmitPrompt(officeId: string, agentId: string, prompt: string): Promise<{ success: boolean; error?: string }>;
   mainEvents: {
     on(event: string, listener: (...args: unknown[]) => void): unknown;
     off(event: string, listener: (...args: unknown[]) => void): unknown;
@@ -52,7 +53,9 @@ export class RelaySessionGateway implements SessionGateway {
   }
 
   async submitPrompt(officeId: string, agentId: string, prompt: string): Promise<void> {
-    const res = await this.relay.mainWrite(officeId, agentId, prompt + '\r');
+    // Use the backend's atomic submit (SDK enqueue) rather than simulating
+    // keystrokes; the server falls back to bracketed-paste for raw PTY backends.
+    const res = await this.relay.mainSubmitPrompt(officeId, agentId, prompt);
     if (!res.success) {
       throw new Error(res.error || `Failed to submit prompt to ${officeId}:${agentId}`);
     }
