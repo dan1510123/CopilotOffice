@@ -210,6 +210,11 @@ export class TerminalRelay {
     return this.request({ type: 'submit-prompt', requestId: this.id(), officeId, agentId, prompt, label }) as Promise<{ success: boolean; error?: string }>;
   }
 
+  /** Fire-and-forget: control whether copilot-events are mirrored to main for an agent without a viewer. */
+  mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void {
+    this.send({ type: 'set-agent-forwarding', officeId, agentId, enabled });
+  }
+
   private handleServerMessage(
     msg: ServerToMain,
     readyTimeout: ReturnType<typeof setTimeout>,
@@ -279,7 +284,7 @@ export class TerminalRelay {
         win.webContents.send('terminal-exit', msg.agentId, msg.exitCode);
         break;
       case 'copilot-event':
-        win.webContents.send('copilot-event', msg.agentId, msg.event);
+        if (!msg.mainOnly) win.webContents.send('copilot-event', msg.agentId, msg.event);
         break;
       case 'copilot-tool-start':
         win.webContents.send('copilot-tool-start', msg.agentId, msg.toolName, msg.toolId, msg.status);

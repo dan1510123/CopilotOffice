@@ -35,6 +35,14 @@ export interface MsgSubmitPrompt {
   label?: string;
 }
 
+export interface MsgSetAgentForwarding {
+  type: 'set-agent-forwarding';
+  officeId: string;
+  agentId: string;
+  /** When true, copilot-event payloads are mirrored to main even without an active viewer. */
+  enabled: boolean;
+}
+
 export interface MsgResize {
   type: 'resize';
   officeId: string;
@@ -190,6 +198,7 @@ export type MainToServer =
   | MsgStart
   | MsgWrite
   | MsgSubmitPrompt
+  | MsgSetAgentForwarding
   | MsgResize
   | MsgKill
   | MsgAttach
@@ -236,6 +245,13 @@ export interface SrvCopilotEvent {
   type: 'copilot-event';
   agentId: string;
   event: CopilotEvent;
+  /**
+   * When true, the relay mirrors this event to main-process consumers (e.g. the
+   * Teams service) but does NOT forward it to the renderer. Used to deliver
+   * assistant.message events to Teams-online agents that currently have no active
+   * viewer, without causing the renderer to render output for an unviewed session.
+   */
+  mainOnly?: boolean;
 }
 
 export interface SrvCopilotToolStart {

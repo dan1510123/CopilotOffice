@@ -26,6 +26,7 @@ export interface TerminalRelayLike {
   mainGetSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
   mainWrite(officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }>;
   mainSubmitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<{ success: boolean; error?: string }>;
+  mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void;
   mainEvents: {
     on(event: string, listener: (...args: unknown[]) => void): unknown;
     off(event: string, listener: (...args: unknown[]) => void): unknown;
@@ -36,6 +37,12 @@ export interface SessionGateway {
   getSessionId(officeId: string, agentId: string): Promise<string | null>;
   getSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
   submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void>;
+  /**
+   * Enable/disable mirroring of copilot-events to the main process for an agent
+   * that has no active renderer viewer. Must be enabled around a Teams-driven turn
+   * so the assistant's reply can be captured and posted back to the thread.
+   */
+  setForwarding(officeId: string, agentId: string, enabled: boolean): void;
   onAgentEvent(cb: (e: AgentEvent) => void): () => void;
   /** Fires when a session ends (agentId's PTY exits). */
   onSessionExit(cb: (agentId: string) => void): () => void;
@@ -60,6 +67,10 @@ export class RelaySessionGateway implements SessionGateway {
     if (!res.success) {
       throw new Error(res.error || `Failed to submit prompt to ${officeId}:${agentId}`);
     }
+  }
+
+  setForwarding(officeId: string, agentId: string, enabled: boolean): void {
+    this.relay.mainSetAgentForwarding(officeId, agentId, enabled);
   }
 
   onAgentEvent(cb: (e: AgentEvent) => void): () => void {

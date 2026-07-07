@@ -46,6 +46,7 @@ function makeHarness() {
     submitPrompt: async (_o, _a, prompt) => {
       submitted.push(prompt);
     },
+    setForwarding: () => {},
     onAgentEvent: (cb) => {
       agentCb = cb;
       return () => {};

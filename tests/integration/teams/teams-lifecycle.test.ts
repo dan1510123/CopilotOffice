@@ -39,6 +39,7 @@ function makeHarness() {
     getSessionId: async () => 'session-1',
     getSessionMeta: async () => ({ title: '' }),
     submitPrompt: async () => {},
+    setForwarding: () => {},
     onAgentEvent: () => () => {},
     onSessionExit: (cb) => { exitCb = cb; return () => {}; },
   };

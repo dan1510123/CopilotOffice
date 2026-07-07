@@ -43,6 +43,7 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
     getSessionId: async (_o, a) => sessionByAgent[a] ?? null,
     getSessionMeta: async () => ({ title: '' }),
     submitPrompt: async (_o, a, prompt) => { submitted.push({ agentId: a, prompt }); },
+    setForwarding: () => {},
     onAgentEvent: (cb) => { agentCb = cb; return () => {}; },
     onSessionExit: () => () => {},
   };

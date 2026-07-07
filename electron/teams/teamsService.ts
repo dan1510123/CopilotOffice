@@ -252,7 +252,14 @@ export class TeamsService {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
     this.queue.clear(officeId, agentId);
-    this.pending.delete(agentId);
+    // If a turn is in flight, disable forwarding and resolve its dispatch promise so
+    // the per-agent queue can't wedge (finalizeTurn would otherwise never run).
+    const inFlight = this.pending.get(agentId);
+    if (inFlight) {
+      this.pending.delete(agentId);
+      this.deps.gateway.setForwarding(officeId, agentId, false);
+      inFlight.resolve();
+    }
     this.bindings = this.bindings.filter((x) => !(x.officeId === officeId && x.agentId === agentId));
     await this.persist();
     this.updateSourceChannels();
@@ -346,9 +353,14 @@ export class TeamsService {
       };
       this.pending.set(item.agentId, record);
 
+      // Ensure the assistant's reply events reach the main process even if no one
+      // is viewing this agent's session in the UI (else the reply is never captured).
+      this.deps.gateway.setForwarding(item.officeId, item.agentId, true);
+
       const label = item.senderName ? `Teams · ${item.senderName}` : 'Teams';
       this.deps.gateway.submitPrompt(item.officeId, item.agentId, item.prompt, label).catch((e) => {
         twarn('submitPrompt failed:', (e as Error).message);
+        this.deps.gateway.setForwarding(item.officeId, item.agentId, false);
         this.pending.delete(item.agentId);
         resolve();
       });
@@ -378,6 +390,8 @@ export class TeamsService {
     const rec = this.pending.get(agentId);
     if (!rec) return;
     this.pending.delete(agentId);
+    // Stop mirroring events for this agent now that the turn is complete.
+    this.deps.gateway.setForwarding(rec.officeId, agentId, false);
     const text = rec.chunks.join('\n\n').trim();
     const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
     if (text) {

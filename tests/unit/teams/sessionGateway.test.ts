@@ -9,6 +9,7 @@ function makeRelay(overrides: Partial<TerminalRelayLike> = {}): TerminalRelayLik
     mainGetSessionMeta: vi.fn(async () => ({ title: 'T' })),
     mainWrite: vi.fn(async () => ({ success: true })),
     mainSubmitPrompt: vi.fn(async () => ({ success: true })),
+    mainSetAgentForwarding: vi.fn(() => {}),
     mainEvents: emitter as unknown as TerminalRelayLike['mainEvents'],
     ...overrides,
   };
@@ -27,5 +28,14 @@ describe('RelaySessionGateway.submitPrompt', () => {
     const relay = makeRelay({ mainSubmitPrompt: vi.fn(async () => ({ success: false, error: 'No PTY' })) });
     const gw = new RelaySessionGateway(relay);
     await expect(gw.submitPrompt('o', 'a', 'hi')).rejects.toThrow(/No PTY/);
+  });
+
+  it('routes setForwarding to the relay', () => {
+    const relay = makeRelay();
+    const gw = new RelaySessionGateway(relay);
+    gw.setForwarding('office-0', 'generalist', true);
+    expect(relay.mainSetAgentForwarding).toHaveBeenCalledWith('office-0', 'generalist', true);
+    gw.setForwarding('office-0', 'generalist', false);
+    expect(relay.mainSetAgentForwarding).toHaveBeenCalledWith('office-0', 'generalist', false);
   });
 });

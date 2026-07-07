@@ -51,6 +51,9 @@ const DEBUG_COLD_START = process.env.COPILOT_OFFICE_DEBUG_COLD_START === '1';
 // reset-session, shutdown) where the dual-key contract does not apply.
 const agentToTerminal: Map<string, string> = new Map();
 const activeAgentViewers: Set<string> = new Set();
+// Composite keys whose copilot-events must be mirrored to main-process consumers
+// (e.g. the Teams service) even when no renderer is viewing the agent.
+const agentForwardKeys: Set<string> = new Set();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
@@ -578,6 +581,11 @@ async function startTerminalForAgent(
 
         if (isFleetCriticalEvent || hasActiveViewer(ck)) {
           send({ type: 'copilot-event', agentId, event });
+        } else if (agentForwardKeys.has(ck)) {
+          // Teams-online agent with no active renderer viewer: mirror the event to
+          // main-process consumers (the Teams service captures assistant.message to
+          // post the reply back to the thread) but keep it out of the renderer.
+          send({ type: 'copilot-event', agentId, event, mainOnly: true });
         } else {
           console.warn(`[TermServer] Dropped copilot-event ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
         }
@@ -689,6 +697,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
+        // A programmatic submit implies a main-process consumer (Teams) is driving
+        // this turn and needs the resulting assistant.message events, even if no
+        // renderer is viewing the session. Enable forwarding here so it can't be
+        // lost if the separate set-agent-forwarding message was dropped (e.g. across
+        // a terminal-server reconnect); this rides the reliable request path.
+        agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
         if (typeof backendProc.submitPrompt === 'function') {
           // SDK backend: atomic programmatic submit (session.send enqueue).
@@ -707,6 +721,15 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         console.log(`[TermServer] SUBMIT-PROMPT FAILED — no PTY for ${ck}`);
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
       }
+      break;
+    }
+
+    case 'set-agent-forwarding': {
+      // Teams remote: keep copilot-event flowing to main-process consumers for an
+      // agent even when no renderer is viewing it, so replies can be posted back.
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      if (msg.enabled) agentForwardKeys.add(ck);
+      else agentForwardKeys.delete(ck);
       break;
     }
 
