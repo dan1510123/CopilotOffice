@@ -126,24 +126,71 @@ export class TeamsSettingsOverlay {
     channelHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
     wrap.appendChild(channelHint);
 
-    const webhookLabel = document.createElement('label');
-    webhookLabel.textContent = 'Bot webhook URL (optional)';
-    webhookLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
-    wrap.appendChild(webhookLabel);
+    const relayLabel = document.createElement('label');
+    relayLabel.textContent = 'Relay Dump channel link (optional)';
+    relayLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    wrap.appendChild(relayLabel);
 
-    const webhookInput = document.createElement('input');
-    webhookInput.type = 'text';
-    webhookInput.value = settings.webhookUrl;
-    webhookInput.placeholder = 'https://prod-XX.westus.logic.azure.com:443/workflows/...';
-    webhookInput.style.cssText =
+    const relayInput = document.createElement('input');
+    relayInput.type = 'text';
+    relayInput.value = settings.relayChannelUrl;
+    relayInput.placeholder = 'https://teams.microsoft.com/l/channel/19%3A...';
+    relayInput.style.cssText =
       'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
-    wrap.appendChild(webhookInput);
+    wrap.appendChild(relayInput);
 
-    const webhookHint = document.createElement('p');
-    webhookHint.textContent =
-      'Set a Power Automate "Workflows" webhook to post under a distinct bot identity (so you get notified). Leave blank to post as your signed-in user. Note: webhook posts are send-only (no threaded replies).';
-    webhookHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
-    wrap.appendChild(webhookHint);
+    const relayHint = document.createElement('p');
+    relayHint.textContent =
+      'Set a dedicated Dump channel watched by a Power Automate "When a new channel message is added" flow that re-posts each message to its real destination with an @mention, so you get notified under a distinct bot identity. Leave blank to post as your signed-in user. Note: relay posts are send-only (no threaded replies).';
+    relayHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    wrap.appendChild(relayHint);
+
+    // Mention target for the relay flow: a person or a Teams tag (resolved by the app).
+    const mentionLabel = document.createElement('label');
+    mentionLabel.textContent = 'Relay @mention target (optional)';
+    mentionLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    wrap.appendChild(mentionLabel);
+
+    const mentionRow = document.createElement('div');
+    mentionRow.style.cssText = 'display: flex; gap: 8px;';
+
+    const mentionType = document.createElement('select');
+    mentionType.style.cssText =
+      'flex: 0 0 110px; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+    for (const [val, label] of [
+      ['none', 'None'],
+      ['user', 'User'],
+      ['tag', 'Tag'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (settings.relayMentionType === val) opt.selected = true;
+      mentionType.appendChild(opt);
+    }
+    mentionRow.appendChild(mentionType);
+
+    const mentionValue = document.createElement('input');
+    mentionValue.type = 'text';
+    mentionValue.value = settings.relayMentionValue;
+    mentionValue.placeholder = 'Name or ID (user UPN / display name, or tag name)';
+    mentionValue.style.cssText =
+      'flex: 1; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+    mentionRow.appendChild(mentionValue);
+    wrap.appendChild(mentionRow);
+
+    const mentionHint = document.createElement('p');
+    mentionHint.textContent =
+      'Who the Flow bot @mentions in the destination channel. User: a UPN, object id, or display name. Tag: a Teams tag name (resolved per destination team). None: no mention.';
+    mentionHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    wrap.appendChild(mentionHint);
+
+    const syncMentionEnabled = () => {
+      mentionValue.disabled = mentionType.value === 'none';
+      mentionValue.style.opacity = mentionValue.disabled ? '0.5' : '1';
+    };
+    mentionType.onchange = syncMentionEnabled;
+    syncMentionEnabled();
 
     const ack = this.toggleRow('Acknowledge received messages (⌛)', settings.ackEnabled);
     ack.row.style.marginTop = '16px';
@@ -172,7 +219,9 @@ export class TeamsSettingsOverlay {
         ...settings,
         enabled: enabled.input.checked,
         defaultChannelUrl: channelInput.value.trim(),
-        webhookUrl: webhookInput.value.trim(),
+        relayChannelUrl: relayInput.value.trim(),
+        relayMentionType: mentionType.value as 'user' | 'tag' | 'none',
+        relayMentionValue: mentionValue.value.trim(),
         ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,
       };

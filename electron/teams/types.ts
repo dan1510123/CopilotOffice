@@ -8,13 +8,19 @@ export interface TeamsSettings {
   /** Default channel deep-link URL (parsed → team/channel/tenant). */
   defaultChannelUrl: string;
   /**
-   * Optional incoming-webhook URL (e.g. a Power Automate "Workflows" webhook). When
-   * non-empty it acts as a feature flag: all outbound Teams posts are routed through
-   * the webhook so they appear under a distinct bot identity (so YOU get notified,
-   * since Teams never notifies you about your own messages). Send-only — no threaded
-   * reply routing on this path. Empty ⇒ fall back to the signed-in-user Graph sender.
+   * Optional relay/trigger channel deep-link (a dedicated Teams channel watched by a
+   * Power Automate "When a new channel message is added" flow). When non-empty it acts
+   * as a feature flag: all outbound Teams posts are posted to this trigger channel so
+   * the flow re-posts them under a distinct bot identity with an @mention (so YOU get
+   * notified, since Teams never notifies you about your own messages). Send-only — no
+   * threaded reply routing on this path. Empty ⇒ fall back to the signed-in-user Graph
+   * sender.
    */
-  webhookUrl: string;
+  relayChannelUrl: string;
+  /** Mention target kind for the relay flow: 'user' (person), 'tag' (Teams tag), or 'none'. */
+  relayMentionType: 'user' | 'tag' | 'none';
+  /** Mention target value — a UPN/oid/display-name (user) or tag display-name/tagId (tag). */
+  relayMentionValue: string;
   /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
   ackEnabled: boolean;
   /** Long-running check-ins on/off. */

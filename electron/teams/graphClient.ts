@@ -103,6 +103,39 @@ export class GraphClient implements GraphSender {
     const json = (await res.json()) as { value?: Array<{ id: string; displayName: string }> };
     return json.value || [];
   }
+
+  /** List a team's tags (id + displayName) — used to resolve a tag name to its tagId. */
+  async listTags(teamId: string): Promise<Array<{ id: string; displayName: string }>> {
+    const url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/tags?$select=id,displayName`;
+    const res = await fetch(url, { headers: await this.authHeaders() });
+    if (!res.ok) throw new Error(`Graph listTags failed: ${res.status} ${await safeText(res)}`);
+    const json = (await res.json()) as { value?: Array<{ id: string; displayName: string }> };
+    return json.value || [];
+  }
+
+  /**
+   * Resolve a user reference to an AAD object id. A UPN (contains '@') or a GUID is
+   * looked up / passed through directly; anything else is treated as a display name and
+   * matched (exact, case-insensitive) against Graph. Returns '' when unresolved.
+   */
+  async findUserId(query: string): Promise<string> {
+    const q = query.trim();
+    if (!q) return '';
+    const isGuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(q);
+    const isUpn = q.includes('@');
+    if (isGuid || isUpn) {
+      const url = `${GRAPH_BASE}/users/${encodeURIComponent(q)}?$select=id`;
+      const res = await fetch(url, { headers: await this.authHeaders() });
+      if (!res.ok) return '';
+      const json = (await res.json()) as { id?: string };
+      return json.id || '';
+    }
+    const url = `${GRAPH_BASE}/users?$filter=displayName eq '${q.replace(/'/g, "''")}'&$select=id&$top=1`;
+    const res = await fetch(url, { headers: await this.authHeaders() });
+    if (!res.ok) return '';
+    const json = (await res.json()) as { value?: Array<{ id: string }> };
+    return json.value?.[0]?.id || '';
+  }
 }
 
 async function safeText(res: Response): Promise<string> {

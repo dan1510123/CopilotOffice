@@ -8,7 +8,9 @@ import type { TeamsSettings } from './types';
 export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   enabled: false,
   defaultChannelUrl: '',
-  webhookUrl: '',
+  relayChannelUrl: '',
+  relayMentionType: 'none',
+  relayMentionValue: '',
   ackEnabled: true,
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
@@ -19,7 +21,9 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
   return {
     enabled: partial?.enabled ?? DEFAULT_TEAMS_SETTINGS.enabled,
     defaultChannelUrl: partial?.defaultChannelUrl ?? DEFAULT_TEAMS_SETTINGS.defaultChannelUrl,
-    webhookUrl: partial?.webhookUrl ?? DEFAULT_TEAMS_SETTINGS.webhookUrl,
+    relayChannelUrl: partial?.relayChannelUrl ?? DEFAULT_TEAMS_SETTINGS.relayChannelUrl,
+    relayMentionType: partial?.relayMentionType ?? DEFAULT_TEAMS_SETTINGS.relayMentionType,
+    relayMentionValue: partial?.relayMentionValue ?? DEFAULT_TEAMS_SETTINGS.relayMentionValue,
     ackEnabled: partial?.ackEnabled ?? DEFAULT_TEAMS_SETTINGS.ackEnabled,
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,

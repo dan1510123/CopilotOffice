@@ -57,16 +57,10 @@ export function registerTeamsIpc(hooks: TeamsIpcHooks): void {
       }
       parsed = coords;
     }
-    // Validate the webhook URL if provided (must be an https URL).
-    if (settings.webhookUrl.trim()) {
-      let ok = false;
-      try {
-        ok = new URL(settings.webhookUrl.trim()).protocol === 'https:';
-      } catch {
-        ok = false;
-      }
-      if (!ok) {
-        return { success: false, error: 'The Teams webhook URL must be a valid https:// URL.' };
+    // Validate the relay/trigger channel link if provided (must parse as a channel deep-link).
+    if (settings.relayChannelUrl.trim()) {
+      if (!parseChannelLink(settings.relayChannelUrl)) {
+        return { success: false, error: 'The relay trigger channel link could not be parsed.' };
       }
     }
     settingsStore.save(settings);

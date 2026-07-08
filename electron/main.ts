@@ -15,7 +15,7 @@ import { RelaySessionGateway } from './teams/sessionGateway';
 import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
-import { createWebhookSender, createRoutingGraphSender } from './teams/webhookSender';
+import { createRelaySender, createRoutingGraphSender, type MentionResolver } from './teams/relaySender';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
@@ -200,7 +200,7 @@ app.whenReady().then(async () => {
         officeChannelOverridesFromJson(officeStore.load().data),
       ),
     );
-    // Short-TTL cache of the disk-backed settings so the per-send webhook lookups
+    // Short-TTL cache of the disk-backed settings so the per-send relay lookups
     // (URL + active check) don't re-read the file on every outbound post.
     let cachedTeamsSettings = settingsStore.load();
     let teamsSettingsAt = Date.now();
@@ -212,17 +212,53 @@ app.whenReady().then(async () => {
       }
       return cachedTeamsSettings;
     };
-    // Outbound routing: when a webhook URL is configured it acts as a feature flag —
-    // all posts go through the webhook under a distinct bot identity (so the operator
-    // gets notified). With no URL, fall back to the allowlisted signed-in-user sender.
-    const allowlistedGraph = createAllowlistedGraphSender(new GraphClient(tokens), getAllowedChannels);
-    const webhookSender = createWebhookSender({
-      getWebhookUrl: () => getTeamsSettingsCached().webhookUrl,
+    // Outbound routing: when a relay/trigger channel URL is configured it acts as a
+    // feature flag — all posts go to that trigger channel so a Power Automate flow
+    // re-posts them under a distinct bot identity (so the operator gets notified). The
+    // relay uses a RAW GraphClient (not the allowlisted one) because the trigger channel
+    // is intentionally outside the allowlist; its destination is fixed by operator
+    // settings. With no URL, fall back to the allowlisted signed-in-user sender.
+    const rawGraph = new GraphClient(tokens);
+    const allowlistedGraph = createAllowlistedGraphSender(rawGraph, getAllowedChannels);
+    // Resolve the operator's mention target to a concrete id per destination team.
+    // Tags are team-scoped, so tag names resolve against the message's destination team.
+    // Never throws — unresolved targets degrade to no mention.
+    const resolveMention: MentionResolver = async (ref, destTeamId) => {
+      try {
+        if (ref.type === 'user') {
+          const id = await rawGraph.findUserId(ref.value);
+          return id ? { mentionType: 'user', mentionId: id } : { mentionType: 'none', mentionId: '' };
+        }
+        if (ref.type === 'tag') {
+          // Pass through an explicit tagId; otherwise match a tag display name in the team.
+          if (!destTeamId) return { mentionType: 'none', mentionId: '' };
+          const tags = await rawGraph.listTags(destTeamId);
+          const wanted = ref.value.trim().toLowerCase();
+          const hit =
+            tags.find((t) => t.id === ref.value.trim()) ||
+            tags.find((t) => (t.displayName || '').toLowerCase() === wanted);
+          return hit ? { mentionType: 'tag', mentionId: hit.id } : { mentionType: 'none', mentionId: '' };
+        }
+      } catch {
+        /* fall through to none */
+      }
+      return { mentionType: 'none', mentionId: '' };
+    };
+    const relaySender = createRelaySender({
+      primary: rawGraph,
+      getDumpChannelUrl: () => getTeamsSettingsCached().relayChannelUrl,
+      getMention: () => ({
+        type: getTeamsSettingsCached().relayMentionType,
+        value: getTeamsSettingsCached().relayMentionValue,
+      }),
+      resolveMention,
+      // The fan-out destination must satisfy the same outbound allowlist as the direct path.
+      isDestinationAllowed: (channelId) => getAllowedChannels().has(channelId),
     });
     const graph = createRoutingGraphSender(
       allowlistedGraph,
-      webhookSender,
-      () => !!getTeamsSettingsCached().webhookUrl.trim(),
+      relaySender,
+      () => !!getTeamsSettingsCached().relayChannelUrl.trim(),
     );
     const source = new TrouterClient(tokens);
     const gateway = new RelaySessionGateway(relay);

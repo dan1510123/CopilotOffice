@@ -7,11 +7,16 @@ export interface TeamsSettings {
   /** Default channel deep-link URL. */
   defaultChannelUrl: string;
   /**
-   * Optional incoming-webhook URL (e.g. Power Automate "Workflows"). Non-empty ⇒
-   * outbound Teams posts route through the webhook under a distinct bot identity
-   * (so you get notified). Empty ⇒ fall back to the signed-in-user Graph sender.
+   * Optional relay/trigger channel deep-link (watched by a Power Automate flow).
+   * Non-empty ⇒ outbound Teams posts go to this trigger channel and the flow re-posts
+   * them under a distinct bot identity (so you get notified). Empty ⇒ fall back to the
+   * signed-in-user Graph sender.
    */
-  webhookUrl: string;
+  relayChannelUrl: string;
+  /** Mention target kind for the relay flow: 'user' (person), 'tag' (Teams tag), or 'none'. */
+  relayMentionType: 'user' | 'tag' | 'none';
+  /** Mention target value — a UPN/oid/display-name (user) or tag display-name/tagId (tag). */
+  relayMentionValue: string;
   /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
   ackEnabled: boolean;
   /** Long-running check-ins on/off. */
@@ -25,7 +30,9 @@ export interface TeamsSettings {
 export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   enabled: false,
   defaultChannelUrl: '',
-  webhookUrl: '',
+  relayChannelUrl: '',
+  relayMentionType: 'none',
+  relayMentionValue: '',
   ackEnabled: true,
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
@@ -37,7 +44,9 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
   return {
     enabled: partial?.enabled ?? DEFAULT_TEAMS_SETTINGS.enabled,
     defaultChannelUrl: partial?.defaultChannelUrl ?? DEFAULT_TEAMS_SETTINGS.defaultChannelUrl,
-    webhookUrl: partial?.webhookUrl ?? DEFAULT_TEAMS_SETTINGS.webhookUrl,
+    relayChannelUrl: partial?.relayChannelUrl ?? DEFAULT_TEAMS_SETTINGS.relayChannelUrl,
+    relayMentionType: partial?.relayMentionType ?? DEFAULT_TEAMS_SETTINGS.relayMentionType,
+    relayMentionValue: partial?.relayMentionValue ?? DEFAULT_TEAMS_SETTINGS.relayMentionValue,
     ackEnabled: partial?.ackEnabled ?? DEFAULT_TEAMS_SETTINGS.ackEnabled,
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,
