@@ -52,3 +52,6 @@ yarn-error.log*
 
 # Rendered markdown images for Teams (office-image-reply skill output)
 .office-images/
+
+# Skill dependency installs (office-image-reply etc.)
+.github/skills/**/node_modules/
