@@ -16,7 +16,7 @@ import { normalizeHandle, assignHandle } from './handleRegistry';
 import { parseChannelLink } from './channelLink';
 import { resolveChannel, activeChannelSet } from './channelResolver';
 import { chunkReply } from './chunk';
-import { escapeHtml, markdownToTeamsHtml } from './htmlText';
+import { escapeHtml } from './htmlText';
 import { extractImageMarkers, loadHostedImages, hostedImagesHtml } from './imageMarker';
 import type { HostedImage } from './imageMarker';
 import { pickAckQuip } from './ackQuips';
@@ -524,7 +524,7 @@ export class TeamsService {
     if (cleaned) {
       const chunks = chunkReply(cleaned, 3500);
       for (const chunk of chunks) {
-        await this.safeReply(binding, `${prefix}<br>${markdownToTeamsHtml(chunk)}`);
+        await this.safeReply(binding, `${prefix}<br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`);
       }
     }
 

@@ -161,6 +161,20 @@ app.whenReady().then(async () => {
 
   await relay.spawnServer(__dirname);
 
+  // Show the UI as soon as the terminal server is ready. The Teams service below
+  // starts its receive transport in the background (fire-and-forget) so its token
+  // acquisition never blocks window creation.
+  if (ENABLE_FILE_WATCHER) {
+    startFileWatcher();
+  } else {
+    console.log('[Main] File watcher disabled');
+  }
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+
   // ── Teams Remote Agents service ───────────────────────────────
   // Main-process background service: real-time receive (Trouter) + Graph send +
   // dispatch into existing terminal sessions. Feature-gated by settings.enabled.
@@ -216,25 +230,16 @@ app.whenReady().then(async () => {
     });
 
     // Only spin up the receive transport when the feature is enabled.
+    // Fire-and-forget: do NOT await, so token acquisition runs in the
+    // background after the window is already visible.
     if (settingsStore.load().enabled) {
-      await teamsService.start();
+      teamsService.start().catch((e) => console.error('[Main] Teams start failed:', e));
     } else {
       console.log('[TeamsRemote] Feature disabled — service idle (enable it in Settings → Teams Remote).');
     }
   } catch (e) {
     console.error('[Main] Failed to initialize Teams service:', e);
   }
-
-  if (ENABLE_FILE_WATCHER) {
-    startFileWatcher();
-  } else {
-    console.log('[Main] File watcher disabled');
-  }
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
 });
 
 app.on('window-all-closed', () => {

@@ -8,9 +8,9 @@
 // CopilotOffice extracts these markers from the captured reply text BEFORE the
 // text is converted to Teams HTML, reads the referenced file, and posts it as an
 // inline Microsoft Graph `hostedContents` image (see graphClient.ts). The marker
-// itself never reaches Teams — and even if extraction were skipped,
-// `markdownToTeamsHtml` strips HTML comments, so a missed marker degrades to
-// nothing rather than visible junk.
+// itself never reaches Teams — and even if extraction were skipped, the reply
+// text is HTML-escaped, so a missed marker degrades to inert escaped text rather
+// than an active HTML comment.
 //
 // HTML-comment form is chosen to match the codebase's existing control-marker
 // style (electron/teams/marker.ts) and because it is inert if it ever leaks.
