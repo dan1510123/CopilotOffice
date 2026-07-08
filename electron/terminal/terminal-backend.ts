@@ -28,6 +28,7 @@ export interface TerminalProcess {
 
 export interface StartTerminalOptions {
   sessionId: string;
+  officeId?: string;
   shell: string;
   cols: number;
   rows: number;
@@ -483,6 +484,397 @@ export class CopilotSdkBackend implements TerminalBackend {
         ...sharedConfig,
       });
     }
+  }
+}
+
+type UiServerStatus = 'launching' | 'listening' | 'ready' | 'crashed' | 'stopped';
+
+type UiServerPty = import('node-pty').IPty;
+
+type UiServerSession = {
+  send(request: { prompt: string; mode: 'enqueue' }): Promise<unknown>;
+  disconnect(): Promise<void> | void;
+};
+
+type UiServerClient = {
+  start(): Promise<void>;
+  createSession(options: Record<string, unknown>): Promise<UiServerSession>;
+  resumeSession(sessionId: string, options: Record<string, unknown>): Promise<UiServerSession>;
+  setForegroundSessionId(sessionId: string): Promise<void>;
+  listSessions(): Promise<unknown>;
+  stop?(): Promise<void>;
+};
+
+type UiServerClientConstructor = new (options?: Record<string, unknown>) => UiServerClient;
+
+type RuntimeConnectionForUri = {
+  forUri(uri: string): unknown;
+};
+
+function buildUiServerEnv(env: { [key: string]: string }, repoRoot: string): { [key: string]: string } {
+  const sanitizedPath = sanitizeCopilotPath(env.PATH ?? env.Path ?? process.env.PATH, repoRoot);
+  return {
+    ...env,
+    PATH: sanitizedPath,
+    Path: sanitizedPath,
+  };
+}
+
+/**
+ * Hosts one real Copilot TUI runtime for an office by launching
+ * `copilot --ui-server --port 0` inside node-pty.
+ *
+ * The PTY remains the source of terminal bytes and human keystroke input; the
+ * discovered local control port is used only by {@link ControlPlaneClient}.
+ */
+export class UiServerHostRuntime {
+  private readonly proc: UiServerPty;
+  private readonly listeningPromise: Promise<number>;
+  private readonly listeningTimeout: NodeJS.Timeout;
+  private resolveListening!: (port: number) => void;
+  private rejectListening!: (error: Error) => void;
+  private controlPort: number | null = null;
+
+  status: UiServerStatus = 'launching';
+
+  constructor(
+    readonly officeId: string,
+    pty: typeof import('node-pty'),
+    cliPath: string,
+    repoRoot: string,
+    options: Pick<StartTerminalOptions, 'cols' | 'rows' | 'cwd' | 'env'>,
+    listeningTimeoutMs = 15_000,
+  ) {
+    const launch = createSdkCliLaunchConfig(cliPath);
+    this.listeningPromise = new Promise<number>((resolve, reject) => {
+      this.resolveListening = resolve;
+      this.rejectListening = reject;
+    });
+    this.listeningTimeout = setTimeout(() => {
+      this.status = 'crashed';
+      this.rejectListening(new Error(`Timed out waiting for Copilot UI server port for office ${officeId}`));
+    }, listeningTimeoutMs);
+
+    this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, '--ui-server', '--port', '0'], {
+      name: 'xterm-256color',
+      cols: options.cols,
+      rows: options.rows,
+      cwd: options.cwd,
+      env: buildUiServerEnv(options.env, repoRoot),
+    });
+
+    this.proc.onData((data) => {
+      const match = /listening on port (\d+)/i.exec(data);
+      if (match && this.controlPort === null) {
+        this.controlPort = Number(match[1]);
+        this.status = 'listening';
+        clearTimeout(this.listeningTimeout);
+        this.resolveListening(this.controlPort);
+      }
+    });
+
+    this.proc.onExit((event) => {
+      clearTimeout(this.listeningTimeout);
+      if (this.status !== 'stopped') {
+        this.status = 'crashed';
+        this.rejectListening(new Error(`Copilot UI server exited before ready (code ${event.exitCode})`));
+      }
+    });
+  }
+
+  get pid(): number {
+    return this.proc.pid;
+  }
+
+  get rawPty(): UiServerPty {
+    return this.proc;
+  }
+
+  whenListening(): Promise<number> {
+    return this.listeningPromise;
+  }
+
+  markReady(): void {
+    if (this.status === 'listening') {
+      this.status = 'ready';
+    }
+  }
+
+  stop(): void {
+    if (this.status === 'stopped') return;
+    this.status = 'stopped';
+    clearTimeout(this.listeningTimeout);
+    try {
+      if (os.platform() === 'win32') {
+        try {
+          execSync(`taskkill /T /F /PID ${this.proc.pid}`, { stdio: 'ignore' });
+        } catch {
+          this.proc.kill();
+        }
+      } else {
+        this.proc.kill();
+      }
+    } catch {
+      // Runtime is already gone.
+    }
+  }
+}
+
+/**
+ * SDK control-plane client attached to an already-running UI-server runtime.
+ *
+ * This intentionally does not pass auth options: `RuntimeConnection.forUri`
+ * connects to a hosted runtime that owns authentication and GitHub identity.
+ */
+export class ControlPlaneClient {
+  private client: UiServerClient | null = null;
+  private startPromise: Promise<void> | null = null;
+  private CopilotClient: UiServerClientConstructor | null = null;
+  private RuntimeConnection: RuntimeConnectionForUri | null = null;
+  private approveAll: unknown;
+
+  constructor(private readonly runtime: UiServerHostRuntime) {}
+
+  async start(): Promise<void> {
+    if (!this.startPromise) {
+      this.startPromise = this.startClient();
+    }
+
+    await this.startPromise;
+  }
+
+  async createOrResumeSession(sessionId: string, cwd: string): Promise<UiServerSession> {
+    const client = await this.getStartedClient();
+    const sharedConfig: Record<string, unknown> = {
+      streaming: true,
+      workingDirectory: cwd,
+      onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
+    };
+
+    try {
+      return await client.resumeSession(sessionId, sharedConfig);
+    } catch {
+      return client.createSession({
+        sessionId,
+        ...sharedConfig,
+      });
+    }
+  }
+
+  async setForeground(sessionId: string): Promise<void> {
+    const client = await this.getStartedClient();
+    await client.setForegroundSessionId(sessionId);
+  }
+
+  async listSessions(): Promise<unknown> {
+    const client = await this.getStartedClient();
+    return client.listSessions();
+  }
+
+  async stop(): Promise<void> {
+    if (this.client?.stop) {
+      await this.client.stop();
+    }
+  }
+
+  private async getStartedClient(): Promise<UiServerClient> {
+    await this.start();
+    if (!this.client) {
+      throw new Error('Control plane client did not initialize');
+    }
+
+    return this.client;
+  }
+
+  private async startClient(): Promise<void> {
+    const port = await this.runtime.whenListening();
+    await this.loadSdk();
+    if (!this.CopilotClient || !this.RuntimeConnection) {
+      throw new Error('Copilot SDK did not expose required ui-server APIs');
+    }
+
+    this.client = new this.CopilotClient({
+      connection: this.RuntimeConnection.forUri(`localhost:${port}`),
+    });
+    await this.client.start();
+    this.runtime.markReady();
+  }
+
+  private async loadSdk(): Promise<void> {
+    if (this.CopilotClient && this.RuntimeConnection) return;
+
+    const sdk = await import('@github/copilot-sdk') as unknown as {
+      CopilotClient?: UiServerClientConstructor;
+      RuntimeConnection?: RuntimeConnectionForUri;
+      approveAll?: unknown;
+    };
+    if (!sdk.CopilotClient || !sdk.RuntimeConnection?.forUri) {
+      throw new Error('Installed Copilot SDK lacks RuntimeConnection.forUri support');
+    }
+
+    this.CopilotClient = sdk.CopilotClient;
+    this.RuntimeConnection = sdk.RuntimeConnection;
+    this.approveAll = sdk.approveAll;
+  }
+}
+
+export class UiServerProcess implements TerminalProcess {
+  private static nextSyntheticPid = 1_000_000;
+  private readonly dataDisposables: Array<{ dispose(): void }> = [];
+  private readonly exitDisposables: Array<{ dispose(): void }> = [];
+  private readonly exitListeners: Array<(event: TerminalExitEvent) => void> = [];
+  private queuedSend: Promise<void> = Promise.resolve();
+  private closed = false;
+
+  readonly pid: number;
+
+  constructor(
+    private readonly sessionId: string,
+    private readonly session: UiServerSession,
+    private readonly runtime: UiServerHostRuntime,
+    private readonly client: ControlPlaneClient,
+  ) {
+    this.pid = UiServerProcess.nextSyntheticPid++;
+  }
+
+  write(data: string): void {
+    if (this.closed || this.runtime.status === 'launching' || this.runtime.status === 'crashed' || this.runtime.status === 'stopped') {
+      return;
+    }
+
+    this.runtime.rawPty.write(data);
+  }
+
+  resize(cols: number, rows: number): void {
+    if (this.closed) return;
+    this.runtime.rawPty.resize(cols, rows);
+  }
+
+  onData(callback: (data: string) => void): void {
+    const disposable = this.runtime.rawPty.onData(callback);
+    this.dataDisposables.push(disposable);
+  }
+
+  onExit(callback: (event: TerminalExitEvent) => void): void {
+    this.exitListeners.push(callback);
+    const disposable = this.runtime.rawPty.onExit((event) => {
+      callback({ exitCode: event.exitCode });
+    });
+    this.exitDisposables.push(disposable);
+  }
+
+  /**
+   * Submit a full prompt through the SDK control plane. The optional label is
+   * intentionally not sent; server/UI wiring may render it separately later.
+   */
+  submitPrompt(text: string, _label?: string): void {
+    if (this.closed) return;
+    const prompt = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    if (!prompt) return;
+
+    this.queuedSend = this.queuedSend
+      .then(async () => {
+        await this.session.send({ prompt, mode: 'enqueue' });
+      })
+      .catch((error: unknown) => {
+        console.warn(`[UiServerProcess] Failed to submit prompt for ${this.sessionId}: ${String(error)}`);
+      });
+  }
+
+  kill(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const disposable of this.dataDisposables) {
+      disposable.dispose();
+    }
+    for (const disposable of this.exitDisposables) {
+      disposable.dispose();
+    }
+
+    Promise.resolve(this.session.disconnect())
+      .catch((error: unknown) => {
+        console.warn(`[UiServerProcess] Failed to disconnect session ${this.sessionId}: ${String(error)}`);
+      })
+      .finally(() => {
+        this.emitExit({ exitCode: 0 });
+      });
+  }
+
+  setForeground(): Promise<void> {
+    return this.client.setForeground(this.sessionId);
+  }
+
+  private emitExit(event: TerminalExitEvent): void {
+    for (const listener of this.exitListeners) {
+      listener(event);
+    }
+  }
+}
+
+type UiServerOfficeEntry = {
+  runtime: UiServerHostRuntime;
+  client: ControlPlaneClient;
+};
+
+const DEFAULT_UI_SERVER_OFFICE_ID = '__default__';
+
+/**
+ * Terminal backend for SDK Control Plane Variant 1: one shared Copilot
+ * TUI+server runtime per office, with per-agent SDK sessions multiplexed onto
+ * that runtime.
+ *
+ * TODO(T008): wire server.ts backend selection/fallback to instantiate this.
+ * TODO(T011): call UiServerProcess.setForeground() on terminal/viewer switch.
+ * TODO(T024): route SDK session events through the terminal event pipeline.
+ */
+export class UiServerBackend implements TerminalBackend {
+  readonly name = 'ui-server';
+  private readonly offices = new Map<string, UiServerOfficeEntry>();
+
+  constructor(
+    private readonly pty: typeof import('node-pty'),
+    private readonly cliPath: string | null,
+    private readonly repoRoot = process.cwd(),
+  ) {}
+
+  static tryCreate(cliPath: string | null, repoRoot = process.cwd()): UiServerBackend | null {
+    try {
+      const pty = require('node-pty') as typeof import('node-pty');
+      return new UiServerBackend(pty, cliPath, repoRoot);
+    } catch {
+      return null;
+    }
+  }
+
+  isAvailable(): boolean {
+    return probeUiServerSupport(this.cliPath);
+  }
+
+  async start(options: StartTerminalOptions): Promise<TerminalProcess> {
+    if (!this.cliPath) {
+      throw new Error('Cannot start ui-server backend without a resolved Copilot CLI path');
+    }
+
+    const officeId = options.officeId ?? DEFAULT_UI_SERVER_OFFICE_ID;
+    const entry = this.getOrCreateOfficeEntry(officeId, options);
+    await entry.client.start();
+    const session = await entry.client.createOrResumeSession(options.sessionId, options.cwd);
+    const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
+    await process.setForeground();
+    return process;
+  }
+
+  private getOrCreateOfficeEntry(officeId: string, options: StartTerminalOptions): UiServerOfficeEntry {
+    const existing = this.offices.get(officeId);
+    if (existing && existing.runtime.status !== 'crashed' && existing.runtime.status !== 'stopped') {
+      return existing;
+    }
+
+    const runtime = new UiServerHostRuntime(officeId, this.pty, this.cliPath!, this.repoRoot, options);
+    const client = new ControlPlaneClient(runtime);
+    const entry = { runtime, client };
+    this.offices.set(officeId, entry);
+    return entry;
   }
 }
 
