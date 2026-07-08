@@ -131,8 +131,15 @@ correct agent, with no duplicated or missing scrollback.
 - **Office switch**: Switching offices must detach (not kill) sessions and reattach cleanly,
   preserving session continuity (Constitution III, BL-004).
 - **Port allocation failure / bind conflict**: The runtime cannot open its local control port.
-- **Human input during a programmatic turn**: A user types while a programmatic prompt is being
-  delivered to the same agent.
+- **Human input during a programmatic turn (verified 2026-07-08)**: A programmatic SDK prompt and a
+  human's keystrokes travel on separate channels (SDK control connection vs TUI stdin) and converge
+  as independent, ordered turns. A spike confirmed that sending a programmatic prompt while a human
+  has an unsubmitted input line **preserves** the human's line (it is neither cleared nor merged);
+  the programmatic prompt runs as its own turn, and the human's line submits as a separate turn only
+  when the human presses Enter. `mode: 'enqueue'` preserves submission order without splicing text.
+- **Keystrokes during session load (verified 2026-07-08)**: Keystrokes typed before a session has
+  finished loading can be dropped. Input (human or programmatic) MUST NOT be routed to a session
+  until it signals ready.
 - **Session GUID continuity**: A resumed agent must map to the same session identity used for
   persistence and history.
 
@@ -187,6 +194,15 @@ correct agent, with no duplicated or missing scrollback.
   SDK control plane and legacy backend coexist (dual-backend), selected by config/feature flag
   (FR-011), with automatic fallback to legacy when `--ui-server` is unavailable (FR-010). This is a
   deliberate hedge because `--ui-server` is currently undocumented. (Clarified 2026-07-08.)
+- **FR-019**: When a programmatic prompt is submitted while a human has an unsubmitted input line on
+  the same session, the system MUST preserve the human's unsubmitted text and deliver both as
+  independent, ordered turns (no merge, no loss). (Verified behavior, 2026-07-08.)
+- **FR-020**: The system MUST NOT route human keystrokes or deliver programmatic prompts to a
+  session until that session has signaled ready, to avoid input dropped during session load.
+- **FR-021**: When a programmatic turn triggers an interactive modal (permission / ask_user /
+  plan-mode) on a session a human is also viewing, the system MUST resolve the collision without
+  losing the human's unsubmitted input, and this case MUST be covered by an explicit test in the
+  plan. (Residual risk flagged 2026-07-08 — not yet verified.)
 
 ### Key Entities *(include if feature involves data)*
 
@@ -216,6 +232,8 @@ correct agent, with no duplicated or missing scrollback.
   backend with no user-facing error.
 - **SC-006**: No regression in terminal copy/paste, office switching, or fleet/meeting flows, as
   verified by existing repository test scripts for the impacted areas.
+- **SC-007**: Concurrent human typing and programmatic sends never lose or merge input: a human's
+  unsubmitted line is preserved across a programmatic turn in 100% of a repeated test batch.
 
 ## Assumptions
 

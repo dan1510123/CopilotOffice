@@ -37,4 +37,7 @@
 - Content-quality note: this is an architecture-migration feature, so the spec necessarily names
   the `--ui-server` mechanism and node-pty render host in the Overview/Assumptions to bound scope
   (Variant 1 vs Variant 2). Requirements themselves remain outcome-focused.
+- Concurrency behavior for SDK-send-while-human-typing was empirically verified 2026-07-08 and
+  encoded as FR-019/FR-020 + SC-007; the modal-collision case (FR-021) remains an explicit,
+  unverified residual risk for the plan.
 - Spec is ready for `/speckit.plan`.
