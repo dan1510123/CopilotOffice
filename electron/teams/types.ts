@@ -7,6 +7,14 @@ export interface TeamsSettings {
   enabled: boolean;
   /** Default channel deep-link URL (parsed → team/channel/tenant). */
   defaultChannelUrl: string;
+  /**
+   * Optional incoming-webhook URL (e.g. a Power Automate "Workflows" webhook). When
+   * non-empty it acts as a feature flag: all outbound Teams posts are routed through
+   * the webhook so they appear under a distinct bot identity (so YOU get notified,
+   * since Teams never notifies you about your own messages). Send-only — no threaded
+   * reply routing on this path. Empty ⇒ fall back to the signed-in-user Graph sender.
+   */
+  webhookUrl: string;
   /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
   ackEnabled: boolean;
   /** Long-running check-ins on/off. */

@@ -126,6 +126,25 @@ export class TeamsSettingsOverlay {
     channelHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
     wrap.appendChild(channelHint);
 
+    const webhookLabel = document.createElement('label');
+    webhookLabel.textContent = 'Bot webhook URL (optional)';
+    webhookLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    wrap.appendChild(webhookLabel);
+
+    const webhookInput = document.createElement('input');
+    webhookInput.type = 'text';
+    webhookInput.value = settings.webhookUrl;
+    webhookInput.placeholder = 'https://prod-XX.westus.logic.azure.com:443/workflows/...';
+    webhookInput.style.cssText =
+      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+    wrap.appendChild(webhookInput);
+
+    const webhookHint = document.createElement('p');
+    webhookHint.textContent =
+      'Set a Power Automate "Workflows" webhook to post under a distinct bot identity (so you get notified). Leave blank to post as your signed-in user. Note: webhook posts are send-only (no threaded replies).';
+    webhookHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    wrap.appendChild(webhookHint);
+
     const ack = this.toggleRow('Acknowledge received messages (⌛)', settings.ackEnabled);
     ack.row.style.marginTop = '16px';
     wrap.appendChild(ack.row);
@@ -153,6 +172,7 @@ export class TeamsSettingsOverlay {
         ...settings,
         enabled: enabled.input.checked,
         defaultChannelUrl: channelInput.value.trim(),
+        webhookUrl: webhookInput.value.trim(),
         ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,
       };

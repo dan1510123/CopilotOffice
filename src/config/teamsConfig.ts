@@ -6,6 +6,12 @@ export interface TeamsSettings {
   enabled: boolean;
   /** Default channel deep-link URL. */
   defaultChannelUrl: string;
+  /**
+   * Optional incoming-webhook URL (e.g. Power Automate "Workflows"). Non-empty ⇒
+   * outbound Teams posts route through the webhook under a distinct bot identity
+   * (so you get notified). Empty ⇒ fall back to the signed-in-user Graph sender.
+   */
+  webhookUrl: string;
   /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
   ackEnabled: boolean;
   /** Long-running check-ins on/off. */
@@ -19,6 +25,7 @@ export interface TeamsSettings {
 export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   enabled: false,
   defaultChannelUrl: '',
+  webhookUrl: '',
   ackEnabled: true,
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
@@ -30,6 +37,7 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
   return {
     enabled: partial?.enabled ?? DEFAULT_TEAMS_SETTINGS.enabled,
     defaultChannelUrl: partial?.defaultChannelUrl ?? DEFAULT_TEAMS_SETTINGS.defaultChannelUrl,
+    webhookUrl: partial?.webhookUrl ?? DEFAULT_TEAMS_SETTINGS.webhookUrl,
     ackEnabled: partial?.ackEnabled ?? DEFAULT_TEAMS_SETTINGS.ackEnabled,
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,

@@ -15,6 +15,7 @@ import { RelaySessionGateway } from './teams/sessionGateway';
 import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
+import { createWebhookSender, createRoutingGraphSender } from './teams/webhookSender';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
@@ -199,7 +200,30 @@ app.whenReady().then(async () => {
         officeChannelOverridesFromJson(officeStore.load().data),
       ),
     );
-    const graph = createAllowlistedGraphSender(new GraphClient(tokens), getAllowedChannels);
+    // Short-TTL cache of the disk-backed settings so the per-send webhook lookups
+    // (URL + active check) don't re-read the file on every outbound post.
+    let cachedTeamsSettings = settingsStore.load();
+    let teamsSettingsAt = Date.now();
+    const getTeamsSettingsCached = () => {
+      const now = Date.now();
+      if (now - teamsSettingsAt >= 2000) {
+        cachedTeamsSettings = settingsStore.load();
+        teamsSettingsAt = now;
+      }
+      return cachedTeamsSettings;
+    };
+    // Outbound routing: when a webhook URL is configured it acts as a feature flag —
+    // all posts go through the webhook under a distinct bot identity (so the operator
+    // gets notified). With no URL, fall back to the allowlisted signed-in-user sender.
+    const allowlistedGraph = createAllowlistedGraphSender(new GraphClient(tokens), getAllowedChannels);
+    const webhookSender = createWebhookSender({
+      getWebhookUrl: () => getTeamsSettingsCached().webhookUrl,
+    });
+    const graph = createRoutingGraphSender(
+      allowlistedGraph,
+      webhookSender,
+      () => !!getTeamsSettingsCached().webhookUrl.trim(),
+    );
     const source = new TrouterClient(tokens);
     const gateway = new RelaySessionGateway(relay);
     const store = new FileTeamsOnlineStore(

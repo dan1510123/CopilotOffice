@@ -57,6 +57,18 @@ export function registerTeamsIpc(hooks: TeamsIpcHooks): void {
       }
       parsed = coords;
     }
+    // Validate the webhook URL if provided (must be an https URL).
+    if (settings.webhookUrl.trim()) {
+      let ok = false;
+      try {
+        ok = new URL(settings.webhookUrl.trim()).protocol === 'https:';
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        return { success: false, error: 'The Teams webhook URL must be a valid https:// URL.' };
+      }
+    }
     settingsStore.save(settings);
     hooks.onSettingsChanged?.(settings);
     return { success: true, parsed };
