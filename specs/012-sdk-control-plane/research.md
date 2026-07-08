@@ -57,6 +57,11 @@ the design phase and tasks inherit them.
 - Prefer the SDK's exported `approveAll` permission handler over the hand-rolled `{ kind: 'approved' }`.
 - New capabilities available: `setForegroundSessionId`/`getForegroundSessionId`, `listSessions`,
   `session.on` typed handlers, `sendAndWait`.
+- **Target version: `1.0.5` (stable GA)** — validated 2026-07-08 (send round-trip + full API surface
+  present: `RuntimeConnection.forUri/forStdio`, `send`/`sendAndWait`/`on`/`disconnect`,
+  `setForegroundSessionId`/`listSessions`/`resumeSession`). ⚠️ Pin explicitly: the npm `latest`
+  dist-tag currently points to a **prerelease** (`1.0.6-preview.1`), so `@latest` must NOT be used;
+  `1.0.5` is the newest clean release with no prerelease suffix.
 
 ## Current codebase baseline (main branch)
 
@@ -69,8 +74,8 @@ the design phase and tasks inherit them.
   `submitViaKeystrokes` (Ctrl+U → bracketed paste → idle-gated Enter → poll for `user.message`).
 - `event-source.ts` already abstracts `CopilotEventSource`/`Factory` — the seam for adding an
   `SdkEventSource`.
-- SDK pinned at `^0.1.32` (upgrade to `1.0.4` is a prerequisite; `1.0.5` GA is blocked by the
-  registry's 6/30 date cutoff).
+- SDK pinned at `^0.1.32` (upgrade to `1.0.5` GA is a prerequisite; `1.0.6` has no stable release
+  yet — only `1.0.6-preview.1`).
 
 ## Open risks carried into design
 

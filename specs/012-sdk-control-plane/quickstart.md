@@ -7,7 +7,9 @@ proved the approach (A–E3).
 
 ## Prerequisites
 
-- SDK upgraded to stable: `npm install @github/copilot-sdk@1.0.4` (blast radius: `terminal-backend.ts`).
+- SDK upgraded to stable GA: `npm install @github/copilot-sdk@1.0.5` (blast radius:
+  `terminal-backend.ts`). Pin the exact version — do NOT use `@latest` (it currently resolves to the
+  prerelease `1.0.6-preview.1`).
 - A Copilot CLI whose `--ui-server` flag is accepted (verify with the capability probe below).
 - Build the worktree before testing (Constitution VII — verify the bundle you run is the rebuilt one):
   `npm run build`.

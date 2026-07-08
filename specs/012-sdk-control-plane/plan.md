@@ -19,7 +19,7 @@ Primary requirement: replace the fragile `submitViaKeystrokes` programmatic repl
 ## Technical Context
 
 **Language/Version**: TypeScript (strict), Node.js on Electron 40+ (main process); esbuild bundling
-**Primary Dependencies**: `@github/copilot-sdk` (upgrade `^0.1.32` → `1.0.4` stable), `node-pty`,
+**Primary Dependencies**: `@github/copilot-sdk` (upgrade `^0.1.32` → `1.0.5` stable GA), `node-pty`,
 `@xterm/xterm`, `ws`
 **Storage**: `.data/*.json` (offices, per-office session GUID maps, teams settings); Copilot session
 state under `~/.copilot` keyed by session GUID
