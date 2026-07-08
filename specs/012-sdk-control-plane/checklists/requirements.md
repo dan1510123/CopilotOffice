@@ -13,7 +13,7 @@
 
 ## Requirement Completeness
 
-- [ ] No [NEEDS CLARIFICATION] markers remain
+- [x] No [NEEDS CLARIFICATION] markers remain
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [x] Success criteria are technology-agnostic (no implementation details)
@@ -31,11 +31,10 @@
 
 ## Notes
 
-- Three intentional `[NEEDS CLARIFICATION]` markers remain (FR-016 isolation granularity,
-  FR-017 SDK input scope, FR-018 cutover/fallback posture). These are the pivotal scope decisions
-  and are deferred to the `/speckit.clarify` pass rather than guessed, because each materially
-  changes architecture and blast radius.
+- All three previously-open `[NEEDS CLARIFICATION]` markers were resolved in the 2026-07-08 clarify
+  session (recorded in spec.md `## Clarifications`): FR-016 = one runtime per office; FR-017 = SDK
+  carries programmatic prompts only; FR-018 = permanent dual-backend with fallback.
 - Content-quality note: this is an architecture-migration feature, so the spec necessarily names
   the `--ui-server` mechanism and node-pty render host in the Overview/Assumptions to bound scope
   (Variant 1 vs Variant 2). Requirements themselves remain outcome-focused.
-- Items marked incomplete require resolution before `/speckit.plan`.
+- Spec is ready for `/speckit.plan`.

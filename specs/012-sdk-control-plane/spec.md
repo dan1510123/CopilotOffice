@@ -19,6 +19,20 @@ own only what it is best at — rendering the authentic terminal UI.
 This is explicitly **Variant 1** (SDK as control plane + node-pty as render host). Fully headless
 rendering (reconstructing the TUI ourselves from events) is a **non-goal**.
 
+## Clarifications
+
+### Session 2026-07-08
+
+- Q: How many agents share one hosted `--ui-server` runtime (and control port)? → A: **One runtime
+  per office** — all of an office's agent sessions are multiplexed on that office's single runtime;
+  a crash is contained to that office.
+- Q: Does the SDK control plane carry only programmatic prompts, or also human input? → A: **Only
+  programmatic prompts** (Teams remote, fleet orchestration). Human keyboard input continues to go
+  directly to the agent's real TUI via node-pty.
+- Q: Given `--ui-server` is undocumented, is the migration a hard cutover or a permanent fallback?
+  → A: **Permanent dual-backend** — legacy node-pty is retained as a supported fallback, selected
+  by feature flag, with automatic fallback when `--ui-server` is unavailable.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Reliable programmatic agent replies (Priority: P1)
@@ -104,9 +118,10 @@ correct agent, with no duplicated or missing scrollback.
 
 ### Edge Cases
 
-- **Runtime crash (shared crash domain)**: If the shared CLI runtime hosting sessions exits
-  unexpectedly, how are affected agents surfaced and recovered? [NEEDS CLARIFICATION: see FR-016 —
-  isolation granularity determines blast radius]
+- **Runtime crash (per-office crash domain)**: If an office's hosted runtime exits unexpectedly,
+  all of that office's agent sessions are affected (other offices are unaffected). Affected agents
+  MUST be surfaced via error channels and be recoverable by relaunching the office runtime and
+  resuming sessions by GUID.
 - **`--ui-server` unavailable**: The installed CLI build does not support the mode (it is
   undocumented/hidden). The system MUST detect this and fall back rather than fail silently.
 - **Permission / plan-mode modal collision**: A programmatically driven turn triggers a permission
@@ -161,16 +176,17 @@ correct agent, with no duplicated or missing scrollback.
   failure is not acceptable.
 - **FR-015**: The system MUST NOT regress terminal selection/clipboard behavior across both
   terminal surfaces (Constitution VI).
-- **FR-016**: The system MUST define the isolation granularity of the hosted runtime (how many
-  agents/sessions share one runtime and control port). [NEEDS CLARIFICATION: one shared runtime
-  for all agents vs one runtime per office vs one per agent — trades simplicity against crash
-  blast radius]
-- **FR-017**: The scope of what routes through the SDK MUST be defined. [NEEDS CLARIFICATION:
-  does the SDK carry ONLY programmatic prompts (humans type into the TUI directly), or is human
-  input also expected to be consolidated through the control plane?]
-- **FR-018**: The migration's cutover posture MUST be defined given `--ui-server` is currently
-  undocumented/hidden. [NEEDS CLARIFICATION: retain legacy node-pty as a permanent, supported
-  fallback (dual-backend) vs treat SDK control plane as the sole path once proven?]
+- **FR-016**: The system MUST host one runtime per office: all agent sessions belonging to an
+  office share that office's single `--ui-server` runtime and control port. A runtime crash is
+  contained to its office; other offices' agents are unaffected. (Clarified 2026-07-08.)
+- **FR-017**: The SDK control plane MUST carry only programmatic prompts (e.g., Teams remote,
+  fleet orchestration). Human keyboard input MUST continue to go directly to the agent's real TUI
+  via node-pty, preserving native slash commands, autocomplete, and interactive modals.
+  (Clarified 2026-07-08.)
+- **FR-018**: The legacy node-pty backend MUST be retained as a permanent, supported fallback. The
+  SDK control plane and legacy backend coexist (dual-backend), selected by config/feature flag
+  (FR-011), with automatic fallback to legacy when `--ui-server` is unavailable (FR-010). This is a
+  deliberate hedge because `--ui-server` is currently undocumented. (Clarified 2026-07-08.)
 
 ### Key Entities *(include if feature involves data)*
 
@@ -216,6 +232,10 @@ correct agent, with no duplicated or missing scrollback.
   files.
 - The SDK version will be upgraded to the current stable release as a prerequisite; API surface
   for send/resume/events is stable across that upgrade.
+- Each office hosts its own runtime; an office's agent sessions are multiplexed on that runtime and
+  the foreground TUI shows one of them at a time (per FR-016).
+- Human input remains native to the real TUI; only programmatic prompts use the SDK (per FR-017).
+- The legacy node-pty backend is retained permanently as a supported fallback (per FR-018).
 
 ## Constitution Alignment *(mandatory)*
 
