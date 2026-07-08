@@ -10,7 +10,7 @@ import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
-import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess } from './terminal-backend';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -498,6 +498,7 @@ async function startTerminalForAgent(
       rows: rows ?? 30,
       cwd,
       env: taggedEnv,
+      officeId,
     });
 
     ptyProcesses.set(terminalKey, {
@@ -552,10 +553,12 @@ async function startTerminalForAgent(
       // EventsWatcher — defer start so the preloading signal has time to reach
       // the renderer and render 'starting' before the watcher processes historical
       // events and potentially fires signalReady() (which sends 'ready').
-      const watcher = eventSourceFactory.create(sessionId);
+      // T011: SDK-backed processes (ui-server) supply their own event source
+      // (session.on → normalized CopilotEvent); others use the file watcher.
+      const watcher = proc.createEventSource ? proc.createEventSource() : eventSourceFactory.create(sessionId);
       agentWatchers.set(ck, watcher);
 
-      if (terminalBackend.name === 'copilot-sdk') {
+      if (terminalBackend.name === 'copilot-sdk' || terminalBackend.name === 'ui-server') {
         setTimeout(signalReady, 50);
       }
 
@@ -1211,8 +1214,20 @@ async function main(): Promise<void> {
   console.log('[TermServer] Starting...');
 
   const resolvedCopilotCliPath = resolveCopilotCliPath(process.cwd(), process.env.PATH);
+  // Backend selection (T008). Values mirror src/config/terminalBackend.ts
+  // ('node-pty' | 'ui-server' | 'sdk'); the renderer decides and passes the choice
+  // via COPILOT_TERMINAL_BACKEND. Default and permanent fallback is node-pty.
   const preferredBackend = (process.env.COPILOT_TERMINAL_BACKEND || 'node-pty').toLowerCase();
-  if (preferredBackend === 'sdk') {
+  if (preferredBackend === 'ui-server') {
+    const candidate = UiServerBackend.tryCreate(resolvedCopilotCliPath);
+    // isAvailable() runs the --ui-server capability probe (undocumented flag);
+    // on any failure we fall back to node-pty rather than surfacing an error.
+    if (candidate && candidate.isAvailable()) {
+      terminalBackend = candidate;
+    } else {
+      console.warn('[lifecycle] backend=ui-server requested but --ui-server is unavailable on this CLI; falling back to node-pty');
+    }
+  } else if (preferredBackend === 'sdk') {
     terminalBackend = await CopilotSdkBackend.tryCreate(resolvedCopilotCliPath);
     if (!terminalBackend) {
       console.warn('[TermServer] COPILOT_TERMINAL_BACKEND=sdk requested but the SDK backend could not initialize; falling back to node-pty');

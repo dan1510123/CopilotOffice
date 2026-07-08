@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
+import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
 
 export interface TerminalExitEvent {
   exitCode: number;
@@ -24,6 +25,14 @@ export interface TerminalProcess {
    * sent to the agent — the model receives only `text`.
    */
   submitPrompt?(text: string, label?: string): void;
+
+  /**
+   * Optional: build the {@link CopilotEventSource} for this process's agent.
+   * SDK-backed processes (ui-server) return an {@link SdkEventSource} bound to the
+   * live session so status/tool/turn events come from `session.on(...)` instead of
+   * tailing `events.jsonl`. Backends that omit it are driven by the file watcher.
+   */
+  createEventSource?(): CopilotEventSource;
 }
 
 export interface StartTerminalOptions {
@@ -802,6 +811,15 @@ export class UiServerProcess implements TerminalProcess {
 
   setForeground(): Promise<void> {
     return this.client.setForeground(this.sessionId);
+  }
+
+  /**
+   * Build the SDK-backed event source for this agent (T011). Status/tool/turn
+   * events flow from `session.on(...)` via {@link SdkEventSource}, normalized to
+   * the shared `CopilotEvent` shape, instead of tailing `events.jsonl`.
+   */
+  createEventSource(): CopilotEventSource {
+    return new SdkEventSource(this.sessionId, this.session as unknown as SdkCopilotSession);
   }
 
   private emitExit(event: TerminalExitEvent): void {
