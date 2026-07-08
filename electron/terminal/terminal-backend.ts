@@ -83,6 +83,58 @@ export function resolveCopilotCliPath(repoRoot: string, pathValue: string | unde
   }
 }
 
+/**
+ * Interpret the raw output of a `copilot --ui-server` probe.
+ *
+ * The Copilot CLI's argument parser is strict: an unrecognized flag produces
+ * `error: unknown option '...'`. `--ui-server` is an undocumented-but-recognized
+ * flag (TUI + local control server mode), so a CLI that supports it does NOT emit
+ * that error — in a non-interactive context it falls through to a normal path
+ * (e.g. "No prompt provided. Run in an interactive terminal ..."). Returns true
+ * when the flag is recognized (supported), false when reported unknown.
+ *
+ * Pure and unit-testable — kept separate from the process-spawning probe below.
+ */
+export function interpretUiServerProbe(output: string): boolean {
+  return !/unknown option/i.test(output);
+}
+
+const uiServerProbeCache = new Map<string, boolean>();
+
+/**
+ * Probe whether the resolved Copilot CLI supports the (undocumented) `--ui-server`
+ * TUI+server mode. Runs the CLI with the flag in a non-interactive context (no TTY,
+ * piped stdio) and inspects the output via {@link interpretUiServerProbe}. Results
+ * are cached per `cliPath`. Never throws.
+ *
+ * A timeout (the CLI started a server and did not exit) is treated as supported,
+ * since a hang implies the flag was accepted rather than rejected.
+ */
+export function probeUiServerSupport(cliPath: string | null): boolean {
+  if (!cliPath) return false;
+  const cached = uiServerProbeCache.get(cliPath);
+  if (cached !== undefined) return cached;
+
+  const launch = createSdkCliLaunchConfig(cliPath);
+  const command = [`"${launch.cliPath}"`, ...launch.cliArgs, '--ui-server'].join(' ');
+
+  let supported = false;
+  try {
+    execSync(command, { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    supported = true; // exited 0 → flag accepted
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; killed?: boolean; signal?: string };
+    if (e.killed || e.signal) {
+      supported = true; // timed out because a server started → flag accepted
+    } else {
+      supported = interpretUiServerProbe(`${e.stdout ?? ''}${e.stderr ?? ''}`);
+    }
+  }
+
+  uiServerProbeCache.set(cliPath, supported);
+  return supported;
+}
+
 class NodePtyProcess implements TerminalProcess {
   constructor(
     private readonly proc: {
@@ -348,6 +400,8 @@ export class CopilotSdkBackend implements TerminalBackend {
 
   constructor(
     private readonly CopilotClient: new (options?: Record<string, unknown>) => any,
+    private readonly RuntimeConnection: { forStdio: (opts?: { path?: string; args?: readonly string[] }) => unknown },
+    private readonly approveAll: unknown,
     private readonly cliPath: string,
     private readonly cliArgs: string[],
   ) {}
@@ -358,10 +412,20 @@ export class CopilotSdkBackend implements TerminalBackend {
     }
 
     try {
-      const sdk = await import('@github/copilot-sdk') as { CopilotClient?: new (options?: Record<string, unknown>) => any };
-      if (!sdk.CopilotClient) return null;
+      const sdk = await import('@github/copilot-sdk') as {
+        CopilotClient?: new (options?: Record<string, unknown>) => any;
+        RuntimeConnection?: { forStdio: (opts?: { path?: string; args?: readonly string[] }) => unknown };
+        approveAll?: unknown;
+      };
+      if (!sdk.CopilotClient || !sdk.RuntimeConnection) return null;
       const launchConfig = createSdkCliLaunchConfig(cliPath);
-      return new CopilotSdkBackend(sdk.CopilotClient, launchConfig.cliPath, launchConfig.cliArgs);
+      return new CopilotSdkBackend(
+        sdk.CopilotClient,
+        sdk.RuntimeConnection,
+        sdk.approveAll,
+        launchConfig.cliPath,
+        launchConfig.cliArgs,
+      );
     } catch {
       return null;
     }
@@ -390,11 +454,12 @@ export class CopilotSdkBackend implements TerminalBackend {
     }
 
     if (!this.startPromise) {
+      // SDK 1.x: connection mode is expressed via RuntimeConnection rather than
+      // the legacy cliPath/cliArgs/autoStart options. This backend spawns its own
+      // headless runtime over stdio using the resolved (non-local) CLI binary.
       this.client = new this.CopilotClient({
         useLoggedInUser: true,
-        autoStart: false,
-        cliPath: this.cliPath,
-        cliArgs: this.cliArgs,
+        connection: this.RuntimeConnection.forStdio({ path: this.cliPath, args: this.cliArgs }),
       });
       this.startPromise = this.client.start();
     }
@@ -404,16 +469,10 @@ export class CopilotSdkBackend implements TerminalBackend {
   }
 
   private async resumeOrCreateSession(client: any, options: StartTerminalOptions): Promise<any> {
-    const sharedConfig = {
+    const sharedConfig: Record<string, unknown> = {
       streaming: true,
       workingDirectory: options.cwd,
-      onPermissionRequest: async () => ({ kind: 'approved' }),
-      hooks: {
-        onPreToolUse: async (input: any) => ({
-          permissionDecision: 'allow',
-          modifiedArgs: input.toolArgs,
-        }),
-      },
+      onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
     };
 
     try {
