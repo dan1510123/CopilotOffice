@@ -61,6 +61,19 @@ const lastPtyDataAt: Map<string, number> = new Map();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
+// Lazily-created node-pty backend used as a start-time fallback when the
+// ui-server backend fails to bring an office runtime online (FR-010 / T039):
+// selection-time probe success is necessary but not sufficient (the resolved
+// CLI may not actually host --ui-server), so a failed start must never leave an
+// agent unstarted — we transparently retry once with node-pty.
+let nodePtyFallbackBackend: TerminalBackend | null = null;
+function getNodePtyFallbackBackend(): TerminalBackend | null {
+  if (terminalBackend && terminalBackend.name === 'node-pty') return terminalBackend;
+  if (!nodePtyFallbackBackend) {
+    nodePtyFallbackBackend = NodePtyBackend.tryCreate();
+  }
+  return nodePtyFallbackBackend;
+}
 const eventSourceFactory = new FileWatcherEventSourceFactory();
 
 // Track per-agent ready state so it can be queried by the renderer
@@ -491,7 +504,7 @@ async function startTerminalForAgent(
   } as { [key: string]: string };
 
   try {
-    const proc = await terminalBackend.start({
+    const startOptions = {
       sessionId,
       shell,
       cols: cols ?? 120,
@@ -499,7 +512,28 @@ async function startTerminalForAgent(
       cwd,
       env: taggedEnv,
       officeId,
-    });
+    };
+
+    // Backend used for THIS session — may differ from the selected backend if the
+    // ui-server start fails and we fall back to node-pty (T039).
+    let activeBackend: TerminalBackend = terminalBackend;
+    let proc: TerminalProcess;
+    try {
+      proc = await terminalBackend.start(startOptions);
+    } catch (startError) {
+      if (terminalBackend.name === 'ui-server' && !shellOnlyMode) {
+        const fallback = getNodePtyFallbackBackend();
+        if (fallback && fallback.isAvailable()) {
+          console.warn(`[lifecycle] ui-server start failed for ${ck} (${String(startError)}); falling back to node-pty for this session`);
+          activeBackend = fallback;
+          proc = await fallback.start(startOptions);
+        } else {
+          throw startError;
+        }
+      } else {
+        throw startError;
+      }
+    }
 
     ptyProcesses.set(terminalKey, {
       pid: proc.pid,
@@ -515,7 +549,7 @@ async function startTerminalForAgent(
     // reaped on the next launch (see electron/terminal/pty-registry.ts). Only
     // real OS PIDs from node-pty are tracked — the SDK backend hands out
     // synthetic PIDs (1_000_000+) that must never be force-killed.
-    if (terminalBackend.name === 'node-pty') {
+    if (activeBackend.name === 'node-pty') {
       registerPty({ pid: proc.pid, agentId, sessionId, startedAt: Date.now() });
     }
 
@@ -558,7 +592,7 @@ async function startTerminalForAgent(
       const watcher = proc.createEventSource ? proc.createEventSource() : eventSourceFactory.create(sessionId);
       agentWatchers.set(ck, watcher);
 
-      if (terminalBackend.name === 'copilot-sdk' || terminalBackend.name === 'ui-server') {
+      if (activeBackend.name === 'copilot-sdk' || activeBackend.name === 'ui-server') {
         setTimeout(signalReady, 50);
       }
 
@@ -696,7 +730,7 @@ async function startTerminalForAgent(
       // Ready signal from PTY output. Newer CLI builds do not always emit the old
       // "Environment loaded" marker, so accept either the legacy marker or the
       // interactive help footer that appears once startup finishes.
-      if (!shellOnlyMode && terminalBackend?.name === 'node-pty' && !hasSignalledReady) {
+      if (!shellOnlyMode && activeBackend?.name === 'node-pty' && !hasSignalledReady) {
         const hasLegacyReadyMarker = data.includes('Environment loaded');
         const hasInteractiveFooter = data.includes('/ commands') || data.includes('? help');
         if (hasLegacyReadyMarker || hasInteractiveFooter) {
@@ -730,7 +764,7 @@ async function startTerminalForAgent(
       if (w) { w.stop(); agentWatchers.delete(ck); }
     });
 
-    if (!shellOnlyMode && terminalBackend.name === 'node-pty') {
+    if (!shellOnlyMode && activeBackend.name === 'node-pty') {
       // Start copilot CLI
       setTimeout(() => {
         const yoloFlag = yoloEnabled ? ' --yolo' : '';

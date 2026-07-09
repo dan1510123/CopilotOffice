@@ -113,3 +113,22 @@ Ran the BUILT terminal server (`dist/electron/terminal/server.js`) forked exactl
    **start-time fallback to node-pty** so a ui-server `start()` failure never leaves an agent
    unstarted (FR-010 spirit). Until then the `ui-server` backend cannot complete a real turn in this
    environment, which reinforces keeping `node-pty` the default.
+
+## Start-time fallback validation (T039, 2026-07-09)
+
+Implemented start-time fallback: when the `ui-server` backend's `start()` fails (e.g. the resolved
+CLI cannot host `--ui-server`), `startTerminalForAgent` transparently retries once with a
+lazily-created node-pty backend, and the rest of the start path uses that `activeBackend`.
+
+Verified in-app (forked built server, `COPILOT_TERMINAL_BACKEND=ui-server`): ui-server start failed
+with Win32 error 193 (the extensionless wrapper CLI is not a spawnable executable), the
+`[lifecycle] ui-server start failed ... falling back to node-pty` log fired, and the start
+**succeeded** with a real node-pty pid — the agent was NOT left unstarted. This validates **SC-005**
+("when `--ui-server` is unavailable, the app operates via the legacy backend with no user-facing
+error") end-to-end through the real server wiring.
+
+Net reliability posture: the `ui-server` backend is now **safe to enable** even where the flag/CLI
+is not fully capable — it degrades to node-pty per-session with no user-facing failure. A full turn
+*through* `ui-server` still requires an environment whose resolved copilot CLI is a real,
+ui-server-capable executable (documented; the remaining half of T039 — preferring a capable exe — is
+optional given the fallback).
