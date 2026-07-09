@@ -603,13 +603,15 @@ async function startTerminalForAgent(
           send({ type: 'copilot-turn-start', agentId });
         } else if (event.type === 'user.message') {
           userMessageSeq.set(ck, (userMessageSeq.get(ck) ?? 0) + 1);
+          let rawUserText = '';
           {
             const d = (event.data ?? {}) as Record<string, unknown>;
             const raw = d.content || d.message || d.text || d.input || d.prompt || d.body || '';
-            lastUserMessageText.set(ck, normalizePromptText(String(raw)));
+            rawUserText = String(raw);
+            lastUserMessageText.set(ck, normalizePromptText(rawUserText));
           }
           console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
-          send({ type: 'copilot-user-message', agentId });
+          send({ type: 'copilot-user-message', agentId, text: rawUserText });
 
           // Auto-set session title from first non-empty user message while title is empty.
           const existing = officeData.sessionMeta.get(agentId);

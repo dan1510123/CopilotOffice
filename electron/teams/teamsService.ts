@@ -213,6 +213,24 @@ export class TeamsService {
       if (rec.settleTimer) clearTimeout(rec.settleTimer);
     }
     this.ambient.clear();
+    // Forwarding is enabled for an agent's whole online lifetime (register/reconnect),
+    // so stopping the service — e.g. when Teams remote is disabled in settings, which
+    // calls stop() WITHOUT goOffline — must disable it for every online binding, else
+    // the terminal server keeps mirroring events for agents that are no longer served.
+    for (const b of this.bindings) {
+      if (b.online) this.deps.gateway.setForwarding(b.officeId, b.agentId, false);
+    }
+    // Drop all queued work BEFORE resolving in-flight dispatches: resolving a dispatch
+    // promise lets DispatchQueue.drain() advance, so a non-empty queue would otherwise
+    // start a NEW dispatch mid-shutdown (re-enabling forwarding + submitting a prompt).
+    // With queues cleared, the drain loop simply finds nothing and exits. (started is
+    // already false above, so processDispatch also self-guards as defense in depth.)
+    for (const [agentId, rec] of this.pending) {
+      this.queue.clear(rec.officeId, agentId);
+      this.cancelSettle(rec);
+      rec.resolve();
+      this.pending.delete(agentId);
+    }
     await this.deps.source.stop();
     tlog('Service stopped.');
   }
@@ -428,7 +446,7 @@ export class TeamsService {
   private processDispatch(item: DispatchItem): Promise<void> {
     return new Promise<void>((resolve) => {
       const binding = this.findBinding(item.officeId, item.agentId);
-      if (!binding || !binding.online) {
+      if (!this.started || !binding || !binding.online) {
         resolve();
         return;
       }
@@ -770,12 +788,16 @@ export class TeamsService {
   private async reconcile(): Promise<void> {
     let changed = false;
     for (const b of [...this.bindings]) {
+      // Abort cleanly if the service is stopping — a reconnect below would otherwise
+      // re-enable forwarding / post a "Reconnected" notice after shutdown began.
+      if (!this.started) return;
       let current: string | null = null;
       try {
         current = await this.deps.gateway.getSessionId(b.officeId, b.agentId);
       } catch {
         continue;
       }
+      if (!this.started) return; // re-check after the await
       if (b.online) {
         if (current !== b.sessionId) {
           // Session was replaced or ended → tear down Teams (FR-022).
@@ -794,6 +816,7 @@ export class TeamsService {
         if (current && current === b.sessionId) {
           const ready = await this.deps.gateway.isAgentReady(b.officeId, b.agentId).catch(() => false);
           if (!ready) continue; // session exists but not ready yet — wait for a later pass
+          if (!this.started) return; // service stopped during the await — don't reconnect
           b.online = true;
           b.lastConnected = this.now();
           // Re-enable online-lifetime event mirroring (see register).

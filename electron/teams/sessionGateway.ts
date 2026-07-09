@@ -11,7 +11,7 @@
 
 import type { CopilotEvent } from '../terminal/events-watcher';
 
-export type AgentEventKind = 'message' | 'turn-start' | 'turn-end' | 'tool-start';
+export type AgentEventKind = 'message' | 'turn-start' | 'turn-end' | 'tool-start' | 'user-message';
 
 export interface AgentEvent {
   agentId: string;
@@ -93,17 +93,21 @@ export class RelaySessionGateway implements SessionGateway {
     const onTurnEnd = (...args: unknown[]) => cb({ agentId: args[0] as string, kind: 'turn-end' });
     const onToolStart = (...args: unknown[]) =>
       cb({ agentId: args[0] as string, kind: 'tool-start', toolName: args[1] as string });
+    const onUserMessage = (...args: unknown[]) =>
+      cb({ agentId: args[0] as string, kind: 'user-message', content: (args[1] as string) ?? '' });
 
     this.relay.mainEvents.on('copilot-event', onCopilotEvent);
     this.relay.mainEvents.on('copilot-turn-start', onTurnStart);
     this.relay.mainEvents.on('copilot-turn-end', onTurnEnd);
     this.relay.mainEvents.on('copilot-tool-start', onToolStart);
+    this.relay.mainEvents.on('copilot-user-message', onUserMessage);
 
     return () => {
       this.relay.mainEvents.off('copilot-event', onCopilotEvent);
       this.relay.mainEvents.off('copilot-turn-start', onTurnStart);
       this.relay.mainEvents.off('copilot-turn-end', onTurnEnd);
       this.relay.mainEvents.off('copilot-tool-start', onToolStart);
+      this.relay.mainEvents.off('copilot-user-message', onUserMessage);
     };
   }
 

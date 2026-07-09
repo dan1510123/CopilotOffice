@@ -274,6 +274,11 @@ export class TerminalRelay {
       case 'copilot-turn-end':
         this.mainEvents.emit('copilot-turn-end', msg.agentId);
         break;
+      case 'copilot-user-message':
+        // Mirror to main-process consumers (the Teams service streams locally-typed
+        // requests into an online thread) — the renderer path is handled below.
+        this.mainEvents.emit('copilot-user-message', msg.agentId, msg.text);
+        break;
       case 'copilot-tool-start':
         this.mainEvents.emit('copilot-tool-start', msg.agentId, msg.toolName, msg.toolId, msg.status);
         break;
@@ -311,7 +316,7 @@ export class TerminalRelay {
         win.webContents.send('copilot-turn-start', msg.agentId);
         break;
       case 'copilot-user-message':
-        win.webContents.send('copilot-user-message', msg.agentId);
+        win.webContents.send('copilot-user-message', msg.agentId, msg.text);
         break;
       case 'session-meta-updated':
         win.webContents.send('session-meta-updated', msg.agentId, msg.meta);

@@ -39,3 +39,25 @@ describe('RelaySessionGateway.submitPrompt', () => {
     expect(relay.mainSetAgentForwarding).toHaveBeenCalledWith('office-0', 'generalist', false);
   });
 });
+
+describe('RelaySessionGateway.onAgentEvent', () => {
+  it('maps copilot-user-message (with text) to a user-message AgentEvent', () => {
+    const relay = makeRelay();
+    const emitter = relay.mainEvents as unknown as EventEmitter;
+    const gw = new RelaySessionGateway(relay);
+    const events: unknown[] = [];
+    const off = gw.onAgentEvent((e) => events.push(e));
+
+    emitter.emit('copilot-user-message', 'generalist', 'refactor the parser');
+    expect(events).toContainEqual({ agentId: 'generalist', kind: 'user-message', content: 'refactor the parser' });
+
+    // Missing text degrades to an empty string (not undefined).
+    emitter.emit('copilot-user-message', 'generalist');
+    expect(events).toContainEqual({ agentId: 'generalist', kind: 'user-message', content: '' });
+
+    off();
+    events.length = 0;
+    emitter.emit('copilot-user-message', 'generalist', 'after-unsub');
+    expect(events).toHaveLength(0);
+  });
+});

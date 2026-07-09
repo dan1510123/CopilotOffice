@@ -282,6 +282,12 @@ export interface SrvCopilotTurnStart {
 export interface SrvCopilotUserMessage {
   type: 'copilot-user-message';
   agentId: string;
+  /**
+   * Raw prompt text the user submitted (the CLI's `user.message` → `data.content`).
+   * Optional for backward compatibility; empty when the CLI omitted it. Consumed by
+   * the Teams service to mirror locally-typed requests into the online thread.
+   */
+  text?: string;
 }
 
 export interface SrvTerminalPreloadStatus {
