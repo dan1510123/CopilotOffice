@@ -559,6 +559,11 @@ export class UiServerHostRuntime {
       this.resolveListening = resolve;
       this.rejectListening = reject;
     });
+    // Defensive: guarantee the stored promise always has a handler so a
+    // port-discovery timeout/exit can NEVER surface as a fatal unhandled
+    // rejection that crashes the whole terminal server. Consumers still receive
+    // the rejection through their own `await whenListening()`.
+    this.listeningPromise.catch(() => { /* handled by awaiters */ });
     this.listeningTimeout = setTimeout(() => {
       this.status = 'crashed';
       this.rejectListening(new Error(`Timed out waiting for Copilot UI server port for office ${officeId}`));
@@ -875,11 +880,22 @@ export class UiServerBackend implements TerminalBackend {
 
     const officeId = options.officeId ?? DEFAULT_UI_SERVER_OFFICE_ID;
     const entry = this.getOrCreateOfficeEntry(officeId, options);
-    await entry.client.start();
-    const session = await entry.client.createOrResumeSession(options.sessionId, options.cwd);
-    const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
-    await process.setForeground();
-    return process;
+    try {
+      await entry.client.start();
+      const session = await entry.client.createOrResumeSession(options.sessionId, options.cwd);
+      const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
+      await process.setForeground();
+      return process;
+    } catch (error) {
+      // Any failure bringing the office runtime online (e.g. the resolved CLI
+      // does not emit a control port) must not leave a half-broken cached entry
+      // or a stray PTY. Tear it down and rethrow so the server can return a
+      // clean failure (and the app can fall back to node-pty).
+      try { void Promise.resolve(entry.client.stop()).catch(() => { /* best effort */ }); } catch { /* best effort */ }
+      try { entry.runtime.stop(); } catch { /* best effort */ }
+      this.offices.delete(officeId);
+      throw error instanceof Error ? error : new Error(String(error));
+    }
   }
 
   private getOrCreateOfficeEntry(officeId: string, options: StartTerminalOptions): UiServerOfficeEntry {

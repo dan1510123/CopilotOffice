@@ -85,3 +85,31 @@ the design phase and tasks inherit them.
   exit; surface via error channels.
 - **Auth**: the PTY-hosted `--ui-server` runtime must be launched with the app's existing auth
   environment (the `forUri` client can't supply it).
+
+## In-app validation findings (T037, 2026-07-09)
+
+Ran the BUILT terminal server (`dist/electron/terminal/server.js`) forked exactly as the app does
+(`ipc-relay.ts`), with `COPILOT_TERMINAL_BACKEND=ui-server`, and drove a real `start` +
+`submit-prompt`. This exercised the actual server wiring, not a standalone spike. Findings:
+
+1. **Backend selection wiring works**: server logged `ui-server backend loaded`, accepted `start`,
+   and created the per-office session GUID — the T008/T009 path is correct end to end.
+2. **CRITICAL bug found + fixed**: when port discovery failed, `whenListening()`'s rejection was an
+   **unhandled rejection that crashed the entire terminal server** (Node 25 treats unhandled
+   rejections as fatal). Fixed by (a) a defensive `.catch` on the stored `listeningPromise` in the
+   `UiServerHostRuntime` constructor, and (b) `UiServerBackend.start` now tears down a failed office
+   entry (stop client + runtime, evict from registry) and rethrows a clean error. The server now
+   fails gracefully and stays alive (verified: clean shutdown, exit 0). Regression test:
+   `tests/unit/terminal/uiServerHostRuntime.test.ts`.
+3. **CLI-resolution/capability gap (environmental, NOT yet fixed)**: on this machine
+   `resolveCopilotCliPath` resolved the VS Code-bundled CLI
+   (`...github.copilot-chat/copilotCli/copilot` — a 124-byte extensionless wrapper script), which
+   `pty.spawn` cannot launch (only `.bat`/`.cmd` are wrapped by `createSdkCliLaunchConfig`) and
+   which does not emit `listening on port`. So the capability probe passing (`--ui-server` not
+   rejected) is **necessary but not sufficient** — the resolved binary must also be a real,
+   ui-server-capable executable. The spikes worked only because they used the SDK-cache
+   `copilot.exe` explicitly. **Follow-up (new task T039):** resolve/prefer a ui-server-capable
+   executable (e.g. SDK-cache `copilot.exe`, or wrap extensionless/`.ps1` shims), and add
+   **start-time fallback to node-pty** so a ui-server `start()` failure never leaves an agent
+   unstarted (FR-010 spirit). Until then the `ui-server` backend cannot complete a real turn in this
+   environment, which reinforces keeping `node-pty` the default.
