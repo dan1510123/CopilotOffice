@@ -1,6 +1,6 @@
 # Quickstart: Enable & Validate the UI-Server SDK Backend
 
-**Feature**: `012-sdk-control-plane` | **Date**: 2026-07-08
+**Feature**: `013-sdk-control-plane` | **Date**: 2026-07-08
 
 How to turn on and validate the Variant-1 backend during development. This mirrors the spikes that
 proved the approach (A–E3).

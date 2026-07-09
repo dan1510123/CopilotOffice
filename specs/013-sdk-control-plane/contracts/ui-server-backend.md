@@ -1,6 +1,6 @@
 # Contract: UI-Server Terminal Backend
 
-**Feature**: `012-sdk-control-plane` | **Date**: 2026-07-08
+**Feature**: `013-sdk-control-plane` | **Date**: 2026-07-08
 
 Defines the behavior the new `UiServerBackend` must satisfy to plug into the existing
 `electron/terminal/terminal-backend.ts` `TerminalBackend` / `TerminalProcess` abstraction, plus the

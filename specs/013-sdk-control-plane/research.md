@@ -1,6 +1,6 @@
 # Phase 0 Research: SDK Control Plane (Variant 1)
 
-**Feature**: `012-sdk-control-plane` | **Date**: 2026-07-08
+**Feature**: `013-sdk-control-plane` | **Date**: 2026-07-08
 
 All major unknowns were resolved empirically via spikes A–E3 (run in this worktree, isolated with
 fresh session GUIDs and own-PID cleanup, then deleted). This document consolidates the findings so

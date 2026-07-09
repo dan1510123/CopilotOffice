@@ -1,6 +1,6 @@
 # Contract: SDK Event → CopilotEvent Normalization
 
-**Feature**: `012-sdk-control-plane` | **Date**: 2026-07-08
+**Feature**: `013-sdk-control-plane` | **Date**: 2026-07-08
 
 For `ui-server`-hosted agents, status/tool/turn signals come from the SDK's `session.on(...)`
 instead of tailing `events.jsonl`. To avoid changing downstream consumers, SDK events MUST be

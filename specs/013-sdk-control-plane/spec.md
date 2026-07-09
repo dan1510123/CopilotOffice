@@ -1,6 +1,6 @@
 # Feature Specification: SDK Control Plane for Agent Terminals (Variant 1)
 
-**Feature Branch**: `012-sdk-control-plane`
+**Feature Branch**: `013-sdk-control-plane`
 **Created**: 2026-07-08
 **Status**: Draft
 **Input**: User description: "Migrate agent terminal control plane to the Copilot SDK over a node-pty-hosted `--ui-server` TUI (Variant 1): the SDK owns send, events, and foreground switching while node-pty keeps rendering the real Copilot TUI. Goal: a more consistent and cohesive terminal experience."

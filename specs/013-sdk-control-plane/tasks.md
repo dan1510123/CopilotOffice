@@ -4,7 +4,7 @@ description: "Task list for SDK Control Plane (Variant 1) implementation"
 
 # Tasks: SDK Control Plane for Agent Terminals (Variant 1)
 
-**Input**: Design documents from `/specs/012-sdk-control-plane/`
+**Input**: Design documents from `/specs/013-sdk-control-plane/`
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/ (all present)
 
 **Tests**: INCLUDED. Not explicitly requested in the spec, but Constitution IV (Regression-Safe

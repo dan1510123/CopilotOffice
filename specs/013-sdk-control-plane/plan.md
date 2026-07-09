@@ -1,7 +1,7 @@
 # Implementation Plan: SDK Control Plane for Agent Terminals (Variant 1)
 
-**Branch**: `012-sdk-control-plane` | **Date**: 2026-07-08 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `/specs/012-sdk-control-plane/spec.md`
+**Branch**: `013-sdk-control-plane` | **Date**: 2026-07-08 | **Spec**: [spec.md](./spec.md)
+**Input**: Feature specification from `/specs/013-sdk-control-plane/spec.md`
 
 ## Summary
 
@@ -62,7 +62,7 @@ office; one foreground TUI visible at a time (already true today)
 ### Documentation (this feature)
 
 ```text
-specs/012-sdk-control-plane/
+specs/013-sdk-control-plane/
 ├── plan.md              # This file
 ├── research.md          # Phase 0 — decisions, spike evidence, API deltas
 ├── data-model.md        # Phase 1 — control-plane entities & state

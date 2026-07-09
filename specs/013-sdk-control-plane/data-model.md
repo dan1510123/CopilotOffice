@@ -1,6 +1,6 @@
 # Phase 1 Data Model: SDK Control Plane (Variant 1)
 
-**Feature**: `012-sdk-control-plane` | **Date**: 2026-07-08
+**Feature**: `013-sdk-control-plane` | **Date**: 2026-07-08
 
 This feature is control-plane state, not persisted business data. Entities below describe in-memory
 runtime state in the Electron terminal server plus the existing persisted session identity.
