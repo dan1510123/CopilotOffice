@@ -913,6 +913,19 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
       }
 
+      // T024: bring this agent's session to the foreground of its office's hosted
+      // TUI runtime so the real terminal renders the selected agent. Only the
+      // ui-server backend implements setForeground; other backends own a PTY per
+      // agent and need no switch. Best-effort — a foreground failure must not fail
+      // the attach.
+      const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
+      const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
+      if (attachedProc && typeof attachedProc.process.setForeground === 'function') {
+        void Promise.resolve(attachedProc.process.setForeground()).catch((err: unknown) => {
+          console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
+        });
+      }
+
       const chunks = agentScrollbackBuffers.get(ck) || [];
       const rawScrollback = chunks.join('');
       send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback: rawScrollback } });

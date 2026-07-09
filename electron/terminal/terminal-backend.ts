@@ -33,6 +33,14 @@ export interface TerminalProcess {
    * tailing `events.jsonl`. Backends that omit it are driven by the file watcher.
    */
   createEventSource?(): CopilotEventSource;
+
+  /**
+   * Optional: make this agent's session the one the hosted runtime's TUI renders
+   * (T024). Called when a viewer attaches / the visible agent switches. Implemented
+   * by the ui-server backend (`client.setForegroundSessionId`); a no-op concept for
+   * backends where each agent already owns its own PTY.
+   */
+  setForeground?(): Promise<void>;
 }
 
 export interface StartTerminalOptions {
@@ -846,9 +854,8 @@ const DEFAULT_UI_SERVER_OFFICE_ID = '__default__';
  * TUI+server runtime per office, with per-agent SDK sessions multiplexed onto
  * that runtime.
  *
- * TODO(T008): wire server.ts backend selection/fallback to instantiate this.
- * TODO(T011): call UiServerProcess.setForeground() on terminal/viewer switch.
- * TODO(T024): route SDK session events through the terminal event pipeline.
+ * Wired into server.ts: backend selection + start-time fallback (T008/T039),
+ * SDK event source (T011), and foreground-switch on viewer attach (T024).
  */
 export class UiServerBackend implements TerminalBackend {
   readonly name = 'ui-server';
