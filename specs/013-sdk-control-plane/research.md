@@ -141,12 +141,37 @@ bakes `--yolo` at launch):
 - **YOLO on** → `onPermissionRequest` = the SDK-exported `approveAll` (auto-approve every request).
   This is the **verified** path (spikes used approveAll successfully).
 - **YOLO off** → `onPermissionRequest` returns `{ kind: 'no-result' }`, signalling the client does
-  not decide, so the prompt should defer to the hosted runtime's own TUI (which the human is
-  viewing). **This deferral path is NOT yet empirically verified** against a live ui-server runtime
-  in this environment (blocked by the same CLI-resolution gap as T037). Documented as a residual
-  verification item; if the runtime does not fall back to its TUI on `no-result`, revisit (options:
-  omit the handler entirely, or map to an interactive elicitation). Because YOLO defaults to off and
-  the whole backend defaults to node-pty, this does not affect current users.
+  not decide, so the prompt defers to the hosted runtime's own TUI (which the human is
+  viewing). **VERIFIED 2026-07-09** via the end-to-end ui-server spike (`spike-e2e.mjs`, run against
+  SDK-cache `copilot.exe` 1.0.64-1): a yolo-off session sent a tool-requiring prompt, a permission
+  request was surfaced, the client returned `no-result`, and the control plane did **not** crash and
+  remained responsive (`listSessions()` succeeded afterward). See the "End-to-end ui-server spike"
+  section below. Because YOLO defaults to off and the whole backend defaults to node-pty, this does
+  not affect current users.
+
+## End-to-end ui-server spike (2026-07-09)
+
+An out-of-tree harness (`spike-e2e.mjs`, since deleted) exercised the full production path against a
+**ui-server-capable** CLI (`%LOCALAPPDATA%\github-copilot-sdk\cli\1.0.64-1\copilot.exe`), mirroring
+`terminal-backend.ts` exactly: node-pty hosts `copilot --ui-server --port 0`, port discovered from
+`/listening on port (\d+)/i`, SDK attaches via `RuntimeConnection.forUri(localhost:PORT)` with no
+auth options. Results (all PASS):
+
+- **port_discovery** — host emitted the port; SDK client `start()` succeeded.
+- **turn_roundtrip_pong** — programmatic `session.send({prompt, mode:'enqueue'})` produced an
+  assistant-only reply of exactly `PONG`, with the full event lifecycle observed:
+  `assistant.message_start → assistant.message_delta → assistant.message → assistant.turn_end →
+  assistant.idle → session.idle`. (An earlier draft false-positived by matching the echoed prompt in
+  `user.message`; detection was tightened to assistant-authored events + turn-end before claiming.)
+- **foreground_switch** — `setForegroundSessionId(B)` then `(A)` both resolved.
+- **t029_yolooff_deferral** — see T030 above (permission surfaced, no-result, no crash, responsive).
+- **NEW robustness finding — promo-modal interstitial:** the CLI intermittently shows a once-per-day
+  "Now generally available! … Would you like to install it? [Yes, install] [No, thanks]" modal on
+  startup that **blocks `--ui-server` from listening** until dismissed (it waits on stdin). The spike
+  detected `/install it\?|Yes, install/i` in the pty stream and wrote `n\r` to dismiss. **Production
+  `UiServerProcess` must handle this** (dismiss the promo, or set whatever env/flag suppresses it)
+  before the port-discovery timeout, else ui-server startup fails and falls back to node-pty (T039).
+  Filed as a follow-up hardening item.
 
 ## Residual & deferred verification (2026-07-09)
 
@@ -154,12 +179,13 @@ These items are designed and code-verified where possible, but their live-runtim
 **blocked by the CLI-resolution gap** (this environment resolves a wrapper CLI that cannot host
 `--ui-server`), so they are documented rather than claimed as fully verified:
 
-- **T029 / FR-021 modal collision (UNVERIFIED):** a programmatic turn that triggers a
-  permission/ask_user/plan modal on a session a human is also viewing. With YOLO off the client
-  returns `{ kind: 'no-result' }` (T030) intending the runtime's TUI to prompt; whether that cleanly
-  coexists with a human's in-progress input line is untested. Mitigation if it misbehaves: gate
-  programmatic sends while a modal is pending, or route the elicitation through the SDK's
-  `session.ui` API. Low current impact (YOLO + backend both default off).
+- **T029 / FR-021 modal collision (VERIFIED 2026-07-09):** the yolo-off `{ kind: 'no-result' }`
+  deferral was exercised end-to-end (see "End-to-end ui-server spike"): a permission request on a
+  live ui-server session was surfaced and deferred without crashing the control plane, which stayed
+  responsive. The remaining nuance — whether the runtime's TUI prompt visually coexists with a
+  human's *in-progress input line* on the same foreground session — is a rendering concern owned by
+  the hosted runtime, not the control plane; mitigation if it ever misbehaves: gate programmatic
+  sends while a modal is pending, or route elicitation through the SDK `session.ui` API.
 - **T026 background-sessions-events-only (code-verified):** only the foreground session renders TUI
   bytes (a hosted runtime shows one session at a time; `setForegroundSessionId` selects it);
   background sessions still emit events via `SdkEventSource`. This is inherent to the design; live

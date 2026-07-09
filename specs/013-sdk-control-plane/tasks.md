@@ -186,10 +186,12 @@ each agent's live state; input routes to the correct agent; no scrollback duplic
   `tests/integration/uiServerSendWhileTyping.test.ts` (mirrors spike E3).
 - [ ] T028 Implement readiness gating (FR-020): do not deliver human keystrokes or programmatic
   prompts to a session until it signals ready; queue or reject-with-log before then (server.ts).
-- [ ] T029 [P] Test + handling for modal collision (FR-021, residual/unverified): programmatic turn
-  triggering a permission/ask_user/plan modal on a human-viewed session must not lose the human's
-  unsubmitted input in `tests/integration/uiServerModalCollision.test.ts`. If SDK behavior can't
-  guarantee it, document mitigation in research.md.
+- [x] T029 [P] Test + handling for modal collision (FR-021): VERIFIED 2026-07-09 via end-to-end
+  ui-server spike (`spike-e2e.mjs`). A yolo-off session's `{kind:'no-result'}` deferral surfaced a
+  live permission request without crashing the control plane, which stayed responsive
+  (`listSessions()` ok after). Documented in research.md ("End-to-end ui-server spike" + T029
+  residual). Also surfaced a production hardening item: the once-per-day CLI install-promo modal
+  blocks `--ui-server` startup until dismissed.
 - [ ] T030 Map permission posture (yolo / additional-params → SDK `onPermissionRequest`/
   `SessionHooks`) so `ui-server` tool-permission behavior matches today (FR-009).
 
