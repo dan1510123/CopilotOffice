@@ -438,6 +438,10 @@ let yoloEnabled = false;
  *  non-empty (e.g. "--model gpt-5.4"). Applies to the next launch. */
 let additionalParams = '';
 
+/** Offices for which a ui-server SDK control plane has come online, so the
+ *  `backend-online` confirmation is emitted at most once per office. */
+const uiServerOnlineOffices = new Set<string>();
+
 /** Stores pre-seeded prompts to send once the agent signals ready. */
 const pendingPreseededPrompts = new Map<string, string>();
 
@@ -513,11 +517,16 @@ async function startTerminalForAgent(
       env: taggedEnv,
       officeId,
       yolo: yoloEnabled,
+      // Additional-parameters setting (e.g. "--model gpt-5.4"). node-pty appends
+      // these to its `copilot --session-id` launch below; the ui-server backend
+      // appends them to the per-office host launch (once per office).
+      extraArgs: additionalParams ? additionalParams.split(/\s+/).filter(Boolean) : [],
     };
 
     // Backend used for THIS session — may differ from the selected backend if the
     // ui-server start fails and we fall back to node-pty (T039).
     let activeBackend: TerminalBackend = terminalBackend;
+    let sessionFallbackReason: string | undefined;
     let proc: TerminalProcess;
     try {
       proc = await terminalBackend.start(startOptions);
@@ -527,6 +536,7 @@ async function startTerminalForAgent(
         if (fallback && fallback.isAvailable()) {
           console.warn(`[lifecycle] ui-server start failed for ${ck} (${String(startError)}); falling back to node-pty for this session`);
           activeBackend = fallback;
+          sessionFallbackReason = String((startError as Error)?.message ?? startError);
           proc = await fallback.start(startOptions);
         } else {
           throw startError;
@@ -545,6 +555,21 @@ async function startTerminalForAgent(
     });
 
     agentToTerminal.set(ck, terminalKey);
+
+    // Per-agent ui-server → node-pty fallback (T039). Surface it so a broken SDK
+    // attach is never silent (a stale/incompatible SDK once masked itself this way).
+    if (sessionFallbackReason) {
+      send({ type: 'backend-session-fallback', officeId, agentId, reason: sessionFallbackReason });
+    }
+
+    // Announce (once per office) that the ui-server SDK control plane is online
+    // for this office — i.e. the `copilot --ui-server` host is up and the SDK
+    // client attached. Only when the session actually runs on ui-server (not a
+    // T039 node-pty fallback), so the renderer's confirmation toast is accurate.
+    if (activeBackend.name === 'ui-server' && !uiServerOnlineOffices.has(officeId)) {
+      uiServerOnlineOffices.add(officeId);
+      send({ type: 'backend-online', officeId, backend: activeBackend.name });
+    }
 
     // Persist the PTY root PID so a crashed/ungracefully-killed session can be
     // reaped on the next launch (see electron/terminal/pty-registry.ts). Only
@@ -1264,8 +1289,11 @@ async function main(): Promise<void> {
   const resolvedCopilotCliPath = resolveCopilotCliPath(process.cwd(), process.env.PATH);
   // Backend selection (T008). Values mirror src/config/terminalBackend.ts
   // ('node-pty' | 'ui-server' | 'sdk'); the renderer decides and passes the choice
-  // via COPILOT_TERMINAL_BACKEND. Default and permanent fallback is node-pty.
-  const preferredBackend = (process.env.COPILOT_TERMINAL_BACKEND || 'node-pty').toLowerCase();
+  // via COPILOT_TERMINAL_BACKEND. Default is ui-server (auto-probes and falls back
+  // to node-pty when the CLI can't host --ui-server); node-pty remains the
+  // permanent fallback.
+  const preferredBackend = (process.env.COPILOT_TERMINAL_BACKEND || 'ui-server').toLowerCase();
+  let backendFallbackReason: string | undefined;
   if (preferredBackend === 'ui-server') {
     const candidate = UiServerBackend.tryCreate(resolvedCopilotCliPath);
     // isAvailable() runs the --ui-server capability probe (undocumented flag);
@@ -1273,11 +1301,13 @@ async function main(): Promise<void> {
     if (candidate && candidate.isAvailable()) {
       terminalBackend = candidate;
     } else {
+      backendFallbackReason = 'UI-server is unavailable on this Copilot CLI';
       console.warn('[lifecycle] backend=ui-server requested but --ui-server is unavailable on this CLI; falling back to node-pty');
     }
   } else if (preferredBackend === 'sdk') {
     terminalBackend = await CopilotSdkBackend.tryCreate(resolvedCopilotCliPath);
     if (!terminalBackend) {
+      backendFallbackReason = 'SDK backend could not initialize';
       console.warn('[TermServer] COPILOT_TERMINAL_BACKEND=sdk requested but the SDK backend could not initialize; falling back to node-pty');
     }
   }
@@ -1313,8 +1343,21 @@ async function main(): Promise<void> {
     process.exit(0);
   });
 
-  // Signal ready
-  send({ type: 'ready' });
+  // Signal ready, including the backend-selection outcome so the renderer can
+  // surface a toast when a requested backend (e.g. ui-server) fell back to node-pty.
+  const loadedBackendName = terminalBackend?.name ?? 'none';
+  const fellBack =
+    (preferredBackend === 'ui-server' || preferredBackend === 'sdk') &&
+    loadedBackendName === 'node-pty';
+  send({
+    type: 'ready',
+    backend: {
+      name: loadedBackendName,
+      requested: preferredBackend,
+      fellBack,
+      reason: backendFallbackReason,
+    },
+  });
   console.log('[TermServer] Ready');
 }
 

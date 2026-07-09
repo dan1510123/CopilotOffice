@@ -2134,6 +2134,38 @@ if (window.copilotBridge) {
     showClipboardToast(toast.message, kind);
   });
 
+  // Terminal backend fallback notice (013): if a requested backend (default
+  // ui-server) couldn't load and we fell back to node-pty, surface a toast.
+  // Pull once on init (race-free: the server is ready before the window loads)
+  // and also listen for a push (covers server respawn after a crash). Dedupe so
+  // the two paths never double-toast for the same startup.
+  let backendFallbackToastShown = false;
+  const showBackendFallbackToast = (info: { name: string; requested: string; fellBack: boolean; reason?: string } | null) => {
+    if (!info || !info.fellBack || backendFallbackToastShown) return;
+    backendFallbackToastShown = true;
+    const detail = info.reason ? ` (${info.reason})` : '';
+    showClipboardToast(`Terminal: ${info.requested} unavailable — using ${info.name}${detail}`, 'error', 10_000);
+  };
+  window.copilotBridge.onBackendFallback?.((info) => showBackendFallbackToast(info));
+  void window.copilotBridge.getBackendInfo?.().then((info) => showBackendFallbackToast(info));
+
+  // Success notice (013): when the ui-server SDK control plane comes online for
+  // an office (host up + SDK client attached), confirm it with a toast. Emitted
+  // at most once per office by the server.
+  window.copilotBridge.onBackendOnline?.((officeId: string, _backend: string) => {
+    const officeName = officeManager.getOffice(officeId)?.config.name ?? officeId;
+    showClipboardToast(`GitHub Copilot SDK server online for ${officeName}`, 'success', 10_000);
+  });
+
+  // Per-agent fallback notice (013): a specific agent was requested on ui-server
+  // but its start failed and fell back to node-pty (T039). Surface it so a broken
+  // SDK attach is never silent.
+  window.copilotBridge.onBackendSessionFallback?.((_officeId: string, agentId: string, reason: string) => {
+    const agentName = getAgentConfig(agentId)?.name ?? agentId;
+    const detail = reason ? ` (${reason})` : '';
+    showClipboardToast(`${agentName}: UI-server unavailable — using node-pty${detail}`, 'error', 10_000);
+  });
+
   // Teams Remote Agents (011): keep the dashboard tile buttons in sync with
   // the service's per-agent online state.
   window.copilotBridge.onTeamsStatusChanged?.((status: { agentId?: string; online?: boolean }) => {

@@ -131,3 +131,54 @@ describe('UiServerHostRuntime promo-modal dismissal', () => {
     expect(runtime.status).toBe('listening');
   });
 });
+
+/**
+ * Additional-parameters passthrough: the app's override string (e.g.
+ * "--model gpt-5.4") must be appended to the ui-server host launch, positioned
+ * BEFORE the `--ui-server --port 0` control flags.
+ */
+function makeArgCapturingPty() {
+  const captured: { cmd?: string; args?: string[] } = {};
+  const pty = {
+    spawn: (cmd: string, args: string[]) => {
+      captured.cmd = cmd;
+      captured.args = args;
+      return {
+        pid: 555,
+        onData: () => { /* never emits */ },
+        onExit: () => { /* never */ },
+        write: () => {}, resize: () => {}, kill: () => {},
+      };
+    },
+  } as unknown as typeof import('node-pty');
+  return { pty, captured };
+}
+
+describe('UiServerHostRuntime extra-args passthrough', () => {
+  it('appends extraArgs before the --ui-server control flags', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-a', pty, 'copilot', process.cwd(), {
+      ...opts,
+      extraArgs: ['--model', 'gpt-5.4'],
+    }, 5000);
+    expect(captured.args).toEqual(['--model', 'gpt-5.4', '--ui-server', '--port', '0']);
+  });
+
+  it('spawns bare --ui-server flags when no extraArgs are provided', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-b', pty, 'copilot', process.cwd(), opts, 5000);
+    expect(captured.args).toEqual(['--ui-server', '--port', '0']);
+  });
+
+  it('filters out empty/whitespace-only extraArgs entries', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-c', pty, 'copilot', process.cwd(), {
+      ...opts,
+      extraArgs: ['--allow-all-tools', '', '   '],
+    }, 5000);
+    expect(captured.args).toEqual(['--allow-all-tools', '--ui-server', '--port', '0']);
+  });
+});

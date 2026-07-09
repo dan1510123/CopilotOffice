@@ -50,7 +50,7 @@ All sprites generated in code (BootScene + SpriteGenerator) — no external imag
 Renderer → `window.copilotBridge` (preload context bridge) → Electron main → terminal server child process → node-pty.
 
 ### Terminal Backends
-`electron/terminal/server.ts` selects the terminal backend from `COPILOT_TERMINAL_BACKEND` (default `node-pty`) and always keeps node-pty as the permanent fallback.
+`electron/terminal/server.ts` selects the terminal backend from `COPILOT_TERMINAL_BACKEND` (default `ui-server`, auto-falls back to `node-pty` when the CLI can't host `--ui-server`) and always keeps node-pty as the permanent fallback.
 
 - `node-pty` (default/fallback): spawns the real Copilot TUI directly per agent; programmatic prompts use the raw PTY path.
 - `ui-server` (spec 013 Variant 1): node-pty hosts one `copilot --ui-server` runtime per office. An SDK `CopilotClient` attaches with `RuntimeConnection.forUri('localhost:<port>')`; programmatic prompts use `session.send({ prompt, mode: 'enqueue' })`; status/tool/turn events come from `session.on(...)` normalized to `CopilotEvent`; viewer attach calls `setForegroundSessionId` to choose the visible agent.

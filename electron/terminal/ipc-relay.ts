@@ -7,7 +7,7 @@ import { fork, ChildProcess, execSync } from 'child_process';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import type { MainToServer, ServerToMain, MsgQueryAgentStatuses } from './protocol';
+import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo } from './protocol';
 import { reapRegisteredPtys } from './pty-registry';
 
 export class TerminalRelay {
@@ -29,6 +29,8 @@ export class TerminalRelay {
   private queuedRequests: Array<{ msg: MainToServer & { requestId: string }; resolve: (v: unknown) => void }> = [];
   /** Timeout for IPC request/response round-trips (ms). */
   private static readonly REQUEST_TIMEOUT_MS = 10_000;
+  /** Latest backend-selection outcome reported by the server on 'ready'. */
+  private backendInfo: BackendSelectionInfo | null = null;
 
   constructor(getWindow: () => BrowserWindow | null) {
     this.getWindow = getWindow;
@@ -238,6 +240,19 @@ export class TerminalRelay {
       this.shuttingDown = false;
       console.log('[Relay] Terminal server ready');
 
+      if (msg.backend) {
+        this.backendInfo = msg.backend;
+        // Push a fallback notice to the renderer if it's already loaded (covers
+        // server respawn after a crash). On first boot the window may not exist
+        // yet — the renderer also pulls via getBackendInfo() during init.
+        if (msg.backend.fellBack) {
+          const win = this.getWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('backend-fallback', this.backendInfo);
+          }
+        }
+      }
+
       // Flush any requests that arrived while the server was down
       if (this.queuedRequests.length > 0) {
         console.log(`[Relay] Flushing ${this.queuedRequests.length} queued request(s)`);
@@ -324,12 +339,20 @@ export class TerminalRelay {
       case 'terminal-preload-status':
         win.webContents.send('terminal-preload-status', msg.agentId, msg.status);
         break;
+      case 'backend-online':
+        win.webContents.send('backend-online', msg.officeId, msg.backend);
+        break;
+      case 'backend-session-fallback':
+        win.webContents.send('backend-session-fallback', msg.officeId, msg.agentId, msg.reason);
+        break;
     }
   }
 
   // ── IPC Handler Registration ──────────────────────────────────
 
   registerIpc(): void {
+    ipcMain.handle('terminal-backend-info', () => this.backendInfo);
+
     ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') =>
       this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode })
     );

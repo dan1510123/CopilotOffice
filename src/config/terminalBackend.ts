@@ -4,10 +4,12 @@
 export type TerminalBackendKind = 'node-pty' | 'ui-server' | 'sdk';
 
 /**
- * Legacy node-pty backend. This remains the default behavior and permanent
- * fallback when an experimental backend is unavailable.
+ * Default terminal backend. `ui-server` runs the Variant-1 SDK control plane
+ * (node-pty hosts the real TUI via `--ui-server`) and auto-probes capability,
+ * falling back to node-pty when the CLI cannot host it. node-pty remains the
+ * permanent fallback and can be forced via `COPILOT_TERMINAL_BACKEND=node-pty`.
  */
-export const DEFAULT_TERMINAL_BACKEND: TerminalBackendKind = 'node-pty';
+export const DEFAULT_TERMINAL_BACKEND: TerminalBackendKind = 'ui-server';
 
 const TERMINAL_BACKEND_ALIASES: Record<string, TerminalBackendKind> = {
   'node-pty': 'node-pty',

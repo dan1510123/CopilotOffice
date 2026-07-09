@@ -53,6 +53,14 @@ export interface StartTerminalOptions {
   env: { [key: string]: string };
   /** YOLO/auto-approve posture for this session (FR-009). Defaults to false. */
   yolo?: boolean;
+  /**
+   * Extra CLI arguments from the app's "additional parameters" setting
+   * (e.g. ['--model', 'gpt-5.4']). For the ui-server backend these are appended
+   * to the per-office host launch (`copilot <extraArgs> --ui-server --port 0`);
+   * the host is created once per office, so the args are captured from the first
+   * agent that starts it. Empty/omitted = none.
+   */
+  extraArgs?: string[];
 }
 
 export interface TerminalBackend {
@@ -589,7 +597,7 @@ export class UiServerHostRuntime {
     pty: typeof import('node-pty'),
     cliPath: string,
     repoRoot: string,
-    options: Pick<StartTerminalOptions, 'cols' | 'rows' | 'cwd' | 'env'>,
+    options: Pick<StartTerminalOptions, 'cols' | 'rows' | 'cwd' | 'env' | 'extraArgs'>,
     listeningTimeoutMs = 15_000,
   ) {
     const launch = createSdkCliLaunchConfig(cliPath);
@@ -607,7 +615,8 @@ export class UiServerHostRuntime {
       this.rejectListening(new Error(`Timed out waiting for Copilot UI server port for office ${officeId}`));
     }, listeningTimeoutMs);
 
-    this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, '--ui-server', '--port', '0'], {
+    const extraArgs = (options.extraArgs ?? []).filter((a) => a && a.trim().length > 0);
+    this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, ...extraArgs, '--ui-server', '--port', '0'], {
       name: 'xterm-256color',
       cols: options.cols,
       rows: options.rows,

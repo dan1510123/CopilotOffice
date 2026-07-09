@@ -53,7 +53,11 @@ const KIND_BG: Record<ClipboardToastKind, string> = {
   error: '#7a2230',
 };
 
-export function showClipboardToast(message: string, kind: ClipboardToastKind = 'info'): void {
+export function showClipboardToast(
+  message: string,
+  kind: ClipboardToastKind = 'info',
+  durationMs: number = TOAST_DURATION_MS,
+): void {
   const el = ensureToastElement();
   if (!el) return;
   el.textContent = message;
@@ -62,7 +66,7 @@ export function showClipboardToast(message: string, kind: ClipboardToastKind = '
   if (dismissTimer) clearTimeout(dismissTimer);
   dismissTimer = setTimeout(() => {
     el.style.opacity = '0';
-  }, TOAST_DURATION_MS);
+  }, durationMs);
 }
 
 // Test helper: remove the toast element entirely so tests don't leak DOM.

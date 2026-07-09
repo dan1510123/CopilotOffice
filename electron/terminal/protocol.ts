@@ -225,8 +225,22 @@ export type MainToServer =
 
 // ── Server → Main ───────────────────────────────────────────────
 
+/** Result of terminal-backend selection at server startup (T008). */
+export interface BackendSelectionInfo {
+  /** The backend actually loaded (e.g. 'node-pty' | 'ui-server' | 'sdk'). */
+  name: string;
+  /** The backend that was requested via COPILOT_TERMINAL_BACKEND. */
+  requested: string;
+  /** True when a non-default backend was requested but we fell back to node-pty. */
+  fellBack: boolean;
+  /** Human-readable reason for the fallback, when one occurred. */
+  reason?: string;
+}
+
 export interface SrvReady {
   type: 'ready';
+  /** Backend selection outcome, so the renderer can surface a fallback notice. */
+  backend?: BackendSelectionInfo;
 }
 
 export interface SrvTerminalData {
@@ -296,6 +310,31 @@ export interface SrvTerminalPreloadStatus {
   status: 'preloading' | 'ready' | 'failed';
 }
 
+/**
+ * Emitted once per office the first time a ui-server (SDK control-plane) session
+ * starts successfully for it — i.e. the `copilot --ui-server` host is online and
+ * the SDK client attached. Lets the renderer surface a confirmation toast.
+ * NOT emitted when a session falls back to node-pty (T039).
+ */
+export interface SrvBackendOnline {
+  type: 'backend-online';
+  officeId: string;
+  /** The backend that came online (always 'ui-server' for this message). */
+  backend: string;
+}
+
+/**
+ * Emitted when a specific agent session was requested on ui-server but its start
+ * failed and it fell back to node-pty (T039). Lets the renderer surface a toast
+ * so a broken SDK attach is never silent.
+ */
+export interface SrvBackendSessionFallback {
+  type: 'backend-session-fallback';
+  officeId: string;
+  agentId: string;
+  reason: string;
+}
+
 export interface SrvSessionMetaUpdated {
   type: 'session-meta-updated';
   agentId: string;
@@ -319,5 +358,7 @@ export type ServerToMain =
   | SrvCopilotTurnStart
   | SrvCopilotUserMessage
   | SrvTerminalPreloadStatus
+  | SrvBackendOnline
+  | SrvBackendSessionFallback
   | SrvSessionMetaUpdated
   | SrvResponse;

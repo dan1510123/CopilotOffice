@@ -1,9 +1,12 @@
 // T015 — SessionGateway: adapter over the existing terminal server (via TerminalRelay).
 //
 // Bridges the Teams service to CopilotOffice's terminal infrastructure without touching
-// `activeAgentViewers` or introducing a new session lifecycle. Prompt submission reuses the
-// PTY write path (`write` = `proc.write(prompt + '\r')`, the same mechanism as pre-seeded
-// prompts). Response capture consumes the server's structured copilot events.
+// `activeAgentViewers` or introducing a new session lifecycle. Prompt submission goes through
+// the backend's atomic submit (`TerminalRelay.mainSubmitPrompt` → server `submit-prompt`):
+// the ui-server/SDK backend enqueues programmatically (`session.send({ mode: 'enqueue' })`),
+// and the node-pty backend falls back to keystroke injection via `submitViaKeystrokes`
+// (idle-gated Ctrl+U → bracketed paste → Enter — not a bare `write(prompt + '\r')`).
+// Response capture consumes the server's structured copilot events.
 //
 // NOTE: server→main events carry only `agentId` (not officeId). The Teams service maps an
 // agentId to its single online binding; concurrent online bindings for the same agentId

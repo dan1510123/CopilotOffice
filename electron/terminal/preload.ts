@@ -166,6 +166,20 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('show-native-notification', title, body);
   },
 
+  // Terminal backend selection (ui-server / node-pty / sdk).
+  getBackendInfo: (): Promise<{ name: string; requested: string; fellBack: boolean; reason?: string } | null> => {
+    return ipcRenderer.invoke('terminal-backend-info');
+  },
+  onBackendFallback: (callback: (info: { name: string; requested: string; fellBack: boolean; reason?: string }) => void) => {
+    ipcRenderer.on('backend-fallback', (_event, info) => callback(info));
+  },
+  onBackendOnline: (callback: (officeId: string, backend: string) => void) => {
+    ipcRenderer.on('backend-online', (_event, officeId, backend) => callback(officeId, backend));
+  },
+  onBackendSessionFallback: (callback: (officeId: string, agentId: string, reason: string) => void) => {
+    ipcRenderer.on('backend-session-fallback', (_event, officeId, agentId, reason) => callback(officeId, agentId, reason));
+  },
+
   // Spec 003 follow-up: write to OS clipboard via Electron main process.
   // Bypasses Permissions API + focus restrictions that make
   // navigator.clipboard.writeText unreliable in xterm-focused contexts.
@@ -294,6 +308,10 @@ declare global {
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
       showNativeNotification: (title: string, body: string) => Promise<{ success: boolean }>;
+      getBackendInfo: () => Promise<{ name: string; requested: string; fellBack: boolean; reason?: string } | null>;
+      onBackendFallback: (callback: (info: { name: string; requested: string; fellBack: boolean; reason?: string }) => void) => void;
+      onBackendOnline: (callback: (officeId: string, backend: string) => void) => void;
+      onBackendSessionFallback: (callback: (officeId: string, agentId: string, reason: string) => void) => void;
       clipboardWriteText: (text: string) => Promise<{ success: boolean; verified?: boolean; error?: string }>;
       clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
