@@ -100,3 +100,17 @@ describe('UiServerProcess.write readiness gating (T028 / FR-020)', () => {
     expect(rawWrite).toHaveBeenCalledWith('hello');
   });
 });
+
+describe('UiServerProcess.setForeground (T023 / US3)', () => {
+  it('asks the control-plane client to foreground this session', async () => {
+    const setForeground = vi.fn(() => Promise.resolve());
+    const proc = new UiServerProcess(
+      'sess-fg',
+      { send: vi.fn(() => Promise.resolve('id')), disconnect: vi.fn() } as never,
+      { status: 'ready', rawPty: { write: vi.fn() } } as never,
+      { setForeground } as never,
+    );
+    await proc.setForeground!();
+    expect(setForeground).toHaveBeenCalledWith('sess-fg');
+  });
+});

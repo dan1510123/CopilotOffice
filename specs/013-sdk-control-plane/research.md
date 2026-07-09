@@ -147,3 +147,28 @@ bakes `--yolo` at launch):
   verification item; if the runtime does not fall back to its TUI on `no-result`, revisit (options:
   omit the handler entirely, or map to an interactive elicitation). Because YOLO defaults to off and
   the whole backend defaults to node-pty, this does not affect current users.
+
+## Residual & deferred verification (2026-07-09)
+
+These items are designed and code-verified where possible, but their live-runtime behavior is
+**blocked by the CLI-resolution gap** (this environment resolves a wrapper CLI that cannot host
+`--ui-server`), so they are documented rather than claimed as fully verified:
+
+- **T029 / FR-021 modal collision (UNVERIFIED):** a programmatic turn that triggers a
+  permission/ask_user/plan modal on a session a human is also viewing. With YOLO off the client
+  returns `{ kind: 'no-result' }` (T030) intending the runtime's TUI to prompt; whether that cleanly
+  coexists with a human's in-progress input line is untested. Mitigation if it misbehaves: gate
+  programmatic sends while a modal is pending, or route the elicitation through the SDK's
+  `session.ui` API. Low current impact (YOLO + backend both default off).
+- **T026 background-sessions-events-only (code-verified):** only the foreground session renders TUI
+  bytes (a hosted runtime shows one session at a time; `setForegroundSessionId` selects it);
+  background sessions still emit events via `SdkEventSource`. This is inherent to the design; live
+  multi-session rendering behavior was shown in spike D but not re-run in-app.
+- **T031 office-switch continuity (code-verified):** `UiServerProcess.kill()` calls
+  `session.disconnect()` (NOT `deleteSession`), preserving on-disk history so the session resumes by
+  GUID; the office detach path is unchanged. End-to-end office-switch on `ui-server` not re-run
+  in-app (same CLI gap).
+- **T025/T033/T034/T035 (verified via diff):** the feature touches neither `TerminalOverlay`,
+  `SeriousTerminalController`, `src/util/toolStatus`, `src/scenes`, `src/entities`, nor `src/input`
+  — so Phaser-first rendering (I), InputManager focus (II), and clipboard/selection discipline (VI)
+  are structurally preserved for the default path; `ui-server` adds behavior additively.
