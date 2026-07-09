@@ -88,6 +88,10 @@ export interface OnlineAgentStatus {
   handle: string;
   threadWebUrl?: string;
   health: 'connected' | 'disconnected' | 'error';
+  /** Working dir captured at register time. Lets the renderer warm a binding's
+   *  session even when the agent belongs to a non-current office (whose roster
+   *  is not in the active global AGENTS list). */
+  workingDir: string;
 }
 
 /** Normalized inbound message under evaluation (not persisted). */

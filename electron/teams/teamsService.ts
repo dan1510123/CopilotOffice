@@ -364,7 +364,7 @@ export class TeamsService {
     this.bindings = this.bindings.filter((x) => !(x.officeId === officeId && x.agentId === agentId));
     await this.persist();
     this.updateSourceChannels();
-    this.deps.emitStatus({ agentId, officeId, online: false, handle: b.handle, health: 'disconnected' });
+    this.deps.emitStatus({ agentId, officeId, online: false, handle: b.handle, health: 'disconnected', workingDir: b.workingDir });
     return { success: true };
   }
 
@@ -865,6 +865,7 @@ export class TeamsService {
       handle: b.handle,
       threadWebUrl: b.threadWebUrl,
       health: b.online ? this.deps.source.health : 'disconnected',
+      workingDir: b.workingDir,
     };
   }
 

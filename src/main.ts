@@ -1363,12 +1363,28 @@ let autoStartTerminalStartCount = 0;
 // status-badge transitions still flow through the existing per-agent
 // status event channel which the dashboard subscribes to regardless of
 // overlay state. (research.md §R5)
-async function warmAgentSession(officeId: string, agentId: string): Promise<void> {
-  if (!window.copilotBridge) return;
-  const launchConfig = getSeriousLaunchConfig(agentId);
-  if (!launchConfig) return;
-  const workingDir = launchConfig.workingDir;
-  const launchMode = launchConfig.launchMode;
+/** Warm (spawn/reattach) an agent's terminal session. Returns true only if a
+ *  session was actually requested and the server reported success — callers
+ *  that gate one-shot/retry logic (warmAllTeamsBoundAgents) rely on this so a
+ *  no-op early-return or a soft `success:false` isn't mistaken for a real warm. */
+async function warmAgentSession(
+  officeId: string,
+  agentId: string,
+  fallback?: { workingDir: string; launchMode: 'copilot' | 'shell' },
+): Promise<boolean> {
+  if (!window.copilotBridge) return false;
+  // getSeriousLaunchConfig resolves against the CURRENT office's active roster
+  // and defaults workingDir to the current office's cwd, so it is only valid
+  // for the current office. Crucially, default-layout agent IDs (generalist /
+  // debugger / admin) are reused across offices, so calling it for a
+  // non-current office would silently warm that binding with the WRONG working
+  // directory. For any non-current office we therefore ignore it and rely on
+  // the caller's fallback (the persisted Teams binding's authoritative dir).
+  const isCurrentOffice = officeId === officeManager.currentOfficeId;
+  const launchConfig = isCurrentOffice ? getSeriousLaunchConfig(agentId) : null;
+  const workingDir = launchConfig?.workingDir ?? fallback?.workingDir;
+  const launchMode = launchConfig?.launchMode ?? fallback?.launchMode ?? 'copilot';
+  if (!workingDir) return false;
   // Surface the "starting" transition on the badge (FR-004). Same call the
   // manual openAgentTerminal path makes; safe to repeat — the office status
   // map tolerates idempotent transitions.
@@ -1380,7 +1396,7 @@ async function warmAgentSession(officeId: string, agentId: string): Promise<void
     updateTerminalContent();
   }
   autoStartTerminalStartCount += 1;
-  await window.copilotBridge.terminalStart(
+  const res = await window.copilotBridge.terminalStart(
     officeId,
     agentId,
     workingDir,
@@ -1389,6 +1405,111 @@ async function warmAgentSession(officeId: string, agentId: string): Promise<void
     undefined,
     launchMode,
   );
+  return res?.success !== false;
+}
+
+/** Cold-warm one-shot state — see warmAllTeamsBoundAgents. */
+let teamsColdWarmDone = false;
+let teamsColdWarmInFlight = false;
+let teamsColdWarmAttempts = 0;
+const TEAMS_COLD_WARM_MAX_ATTEMPTS = 5;
+const TEAMS_COLD_WARM_RETRY_MS = 1500;
+
+/** Re-arm a bounded cold-warm retry (used when the Teams service isn't ready
+ *  yet, so an empty/failed status fetch doesn't permanently skip cold warm). */
+function scheduleTeamsColdWarmRetry(): void {
+  if (teamsColdWarmDone) return;
+  if (teamsColdWarmAttempts >= TEAMS_COLD_WARM_MAX_ATTEMPTS) return;
+  setTimeout(() => { void warmAllTeamsBoundAgents(); }, TEAMS_COLD_WARM_RETRY_MS);
+}
+
+/**
+ * Cold-launch: warm the terminal session for EVERY persisted Teams-bound agent,
+ * regardless of which office is currently in view. The per-office reconnect
+ * (reconnectAgentStatuses) only warms bindings in the current office, so bound
+ * agents in other offices would otherwise stay offline until the user manually
+ * switched to their tab — defeating the office-agnostic Teams "online agents"
+ * list. Warming spawns (or reattaches to) each binding's PTY so the main-process
+ * TeamsService.reconcile() can re-online it and post its thread "reconnected"
+ * notice. Server-side dedup guarantees no second PTY if one is already alive.
+ *
+ * Runs at most once successfully per app session (teamsColdWarmDone). The flag
+ * is committed ONLY after at least one binding actually warms — because the
+ * renderer's cold-boot trigger (onOfficesUpdated) can race the async
+ * TeamsService.start() bindings load, neither an empty result nor an all-failed
+ * warm pass may lock out cold warm. Empty/failed passes leave the flag false and
+ * re-arm a bounded retry so a slow or transiently-down service is still caught,
+ * while a genuinely empty binding list simply exhausts the retry budget cheaply.
+ * teamsColdWarmInFlight prevents overlapping passes.
+ */
+async function warmAllTeamsBoundAgents(): Promise<void> {
+  if (teamsColdWarmDone || teamsColdWarmInFlight) return;
+  if (!window.copilotBridge?.teamsStatus) return;
+  teamsColdWarmInFlight = true;
+  teamsColdWarmAttempts += 1;
+  try {
+    const teamsRes = await window.copilotBridge.teamsStatus();
+    if (!teamsRes?.success || !Array.isArray(teamsRes.bindings)) {
+      scheduleTeamsColdWarmRetry();
+      return;
+    }
+    const bindings = teamsRes.bindings as Array<{
+      officeId: string;
+      agentId: string;
+      workingDir?: string;
+    }>;
+    if (bindings.length === 0) {
+      // Could be genuinely empty OR the service hasn't finished loading its
+      // persisted bindings yet — retry (bounded) before giving up.
+      scheduleTeamsColdWarmRetry();
+      return;
+    }
+    const results = await Promise.all(
+      bindings.map(async (b) => {
+        try {
+          return await warmAgentSession(
+            b.officeId,
+            b.agentId,
+            b.workingDir
+              ? {
+                  workingDir: b.workingDir,
+                  // A raw shell can't be Teams-bound (nothing to resume), but
+                  // guard defensively so PC_TERMINAL never resumes as copilot.
+                  launchMode: b.agentId === PC_TERMINAL_ID ? 'shell' : 'copilot',
+                }
+              : undefined,
+          );
+        } catch (err) {
+          console.warn(
+            `[Teams] cold-launch warm failed for ${b.officeId}/${b.agentId}:`,
+            err,
+          );
+          return false;
+        }
+      }),
+    );
+    if (!results.some(Boolean)) {
+      // No binding actually warmed — a soft `success:false`, a missing
+      // workingDir, or a transiently-down terminal server. Do NOT burn the
+      // one-shot; re-arm a bounded retry so a recovered server is caught.
+      scheduleTeamsColdWarmRetry();
+      return;
+    }
+    // At least one binding warmed — commit the one-shot so a later trigger
+    // can't warm again this session.
+    teamsColdWarmDone = true;
+    // Poke the Teams service to reconcile now so re-onlined bindings and their
+    // thread "reconnected" notices surface promptly instead of on the next tick.
+    try {
+      await window.copilotBridge.teamsReconcile?.();
+    } catch { /* best-effort */ }
+    void refreshTeamsDashboardState();
+  } catch (e) {
+    console.warn('[Teams] warmAllTeamsBoundAgents failed:', e);
+    scheduleTeamsColdWarmRetry();
+  } finally {
+    teamsColdWarmInFlight = false;
+  }
 }
 
 function buildCanonicalAgentIdsForOffice(officeId: string): string[] {
@@ -1454,7 +1575,9 @@ const autoStartCoordinator = new AutoStartCoordinator({
     if (!window.copilotBridge) return;
     await window.copilotBridge.resetSession(oid, aid);
   },
-  warmAgentSession: (oid, aid) => warmAgentSession(oid, aid),
+  warmAgentSession: async (oid, aid) => {
+    await warmAgentSession(oid, aid);
+  },
   getSettings: () => getAgentAutoStartSettings(),
 });
 
@@ -2863,6 +2986,10 @@ officeManager.onOfficesUpdated = () => {
   // even if cachedSessionMeta is briefly stale the qualifying filter is
   // correct.
   void autoStartCoordinator.tryWarmCurrentOffice();
+  // Warm every persisted Teams-bound agent across ALL offices (once per app
+  // session), so bound agents in non-current offices come online at launch
+  // instead of only when their tab is visited.
+  void warmAllTeamsBoundAgents();
 };
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.

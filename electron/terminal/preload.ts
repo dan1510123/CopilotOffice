@@ -358,6 +358,7 @@ declare global {
     handle: string;
     threadWebUrl?: string;
     health: 'connected' | 'disconnected' | 'error';
+    workingDir: string;
   }
 
   interface TeamsSettingsShape {
