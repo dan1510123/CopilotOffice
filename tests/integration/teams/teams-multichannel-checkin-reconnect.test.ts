@@ -50,10 +50,11 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
   let agentCb: (e: AgentEvent) => void = () => {};
   const submitted: Array<{ agentId: string; prompt: string }> = [];
   const sessionByAgent: Record<string, string | null> = { generalist: 'session-1', debugger: 'session-2' };
+  const sessionTitleByAgent: Record<string, string> = {};
   const readyByAgent: Record<string, boolean> = { generalist: true, debugger: true };
   const gateway: SessionGateway = {
     getSessionId: async (_o, a) => sessionByAgent[a] ?? null,
-    getSessionMeta: async () => ({ title: '' }),
+    getSessionMeta: async (_o, a) => ({ title: sessionTitleByAgent[a] ?? '' }),
     isAgentReady: async (_o, a) => readyByAgent[a] ?? true,
     submitPrompt: async (_o, a, prompt) => { submitted.push({ agentId: a, prompt }); },
     setForwarding: () => {},
@@ -69,7 +70,7 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
     now: opts.now,
     turnSettleMs: 5,
   });
-  return { service, replies, notifies, submitted, sessionByAgent, readyByAgent, inbound: () => emit, agent: () => agentCb };
+  return { service, replies, notifies, submitted, sessionByAgent, sessionTitleByAgent, readyByAgent, inbound: () => emit, agent: () => agentCb };
 }
 
 const inbound = (channelId: string, threadRootId: string, content: string): InboundMessage => ({
@@ -286,6 +287,16 @@ describe('teams completion notification (distinct-identity ping at idle)', () =>
     expect(h.notifies[0].html).not.toContain('42');
     // The ping targets the agent's own thread root so the flow replies in-thread.
     expect(h.notifies[0].threadRootId).toBe('root-1');
+  });
+
+  it('includes the session title in the completion ping when known', async () => {
+    const h = makeHarness({ settings: baseSettings({ notifyOnCompleteEnabled: true }), notify: true });
+    h.sessionTitleByAgent.generalist = 'Bot in Teams';
+    await runReply(h, 'The answer is 42');
+
+    expect(h.notifies).toHaveLength(1);
+    expect(h.notifies[0].html).toContain('<b>Gene</b>');
+    expect(h.notifies[0].html).toContain('has finished responding in “Bot in Teams”');
   });
 
   it('does NOT ping when the notification is inactive', async () => {

@@ -100,6 +100,21 @@ interface PendingTurn {
   settleTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Accumulator for a locally-driven (non-Teams) turn on an online agent. Mirrors the
+ * subset of {@link PendingTurn} the ambient stream needs. No `resolve` (there is no
+ * dispatch-queue promise to settle) and no completion-notification bookkeeping — a
+ * local turn just streams its text into the thread.
+ */
+interface AmbientTurn {
+  officeId: string;
+  agentId: string;
+  binding: OnlineAgentBinding;
+  chunks: string[];
+  startedAt: number;
+  settleTimer: ReturnType<typeof setTimeout> | null;
+}
+
 const RECONCILE_MS = 15_000;
 
 /**
@@ -119,6 +134,15 @@ export class TeamsService {
   private readonly filter: MessageFilter;
   private readonly queue: DispatchQueue;
   private readonly pending = new Map<string, PendingTurn>(); // key = agentId
+  /**
+   * Ambient (locally-driven) turn accumulators, keyed by agentId. Populated only
+   * when an online agent produces output that was NOT triggered by a Teams dispatch
+   * (i.e. someone drove the agent in the app's own terminal). Streams those turns
+   * into the bound thread so the channel mirrors everything the online agent does,
+   * not just replies to Teams-originated requests. Disjoint from {@link pending}:
+   * an agent with an in-flight Teams dispatch never uses this map.
+   */
+  private readonly ambient = new Map<string, AmbientTurn>(); // key = agentId
   /**
    * Message ids of every message the app has posted (thread roots + replies).
    * Primary self-loop guard: an inbound message whose id is here is our own echo
@@ -184,6 +208,11 @@ export class TeamsService {
     this.unsubEvent?.();
     this.unsubExit?.();
     this.unsubEvent = this.unsubExit = null;
+    // Clear any in-flight ambient turn timers so nothing fires after stop.
+    for (const rec of this.ambient.values()) {
+      if (rec.settleTimer) clearTimeout(rec.settleTimer);
+    }
+    this.ambient.clear();
     await this.deps.source.stop();
     tlog('Service stopped.');
   }
@@ -279,6 +308,10 @@ export class TeamsService {
     this.rememberThread(thread.threadRootId);
     await this.persist();
     this.updateSourceChannels();
+    // Keep event mirroring on for the WHOLE time the agent is online (not just during
+    // a Teams-driven turn) so locally-driven turns are captured and streamed to the
+    // thread too. Disabled again in goOffline.
+    this.deps.gateway.setForwarding(officeId, agentId, true);
     this.deps.emitStatus(this.toStatus(binding));
     tlog(`ONLINE: @${handle} (${officeId}:${agentId}). Active channels: ${activeChannelSet(this.bindings).size}.`);
 
@@ -294,13 +327,20 @@ export class TeamsService {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
     this.queue.clear(officeId, agentId);
-    // If a turn is in flight, disable forwarding and resolve its dispatch promise so
-    // the per-agent queue can't wedge (finalizeTurn would otherwise never run).
+    // Stop event mirroring now that the agent is leaving (enabled for the whole online
+    // lifetime in register/reconnect). Also discard any in-flight ambient turn.
+    this.deps.gateway.setForwarding(officeId, agentId, false);
+    const amb = this.ambient.get(agentId);
+    if (amb) {
+      if (amb.settleTimer) clearTimeout(amb.settleTimer);
+      this.ambient.delete(agentId);
+    }
+    // If a turn is in flight, resolve its dispatch promise so the per-agent queue
+    // can't wedge (finalizeDispatch would otherwise never run).
     const inFlight = this.pending.get(agentId);
     if (inFlight) {
       this.cancelSettle(inFlight);
       this.pending.delete(agentId);
-      this.deps.gateway.setForwarding(officeId, agentId, false);
       inFlight.resolve();
     }
     this.bindings = this.bindings.filter((x) => !(x.officeId === officeId && x.agentId === agentId));
@@ -404,14 +444,13 @@ export class TeamsService {
       };
       this.pending.set(item.agentId, record);
 
-      // Ensure the assistant's reply events reach the main process even if no one
-      // is viewing this agent's session in the UI (else the reply is never captured).
+      // Forwarding is already enabled for the agent's whole online lifetime (register/
+      // reconnect); re-assert it here defensively in case a set message was dropped.
       this.deps.gateway.setForwarding(item.officeId, item.agentId, true);
 
       const label = item.senderName ? `Teams · ${item.senderName}` : 'Teams';
       this.deps.gateway.submitPrompt(item.officeId, item.agentId, item.prompt, label).catch((e) => {
         twarn('submitPrompt failed:', (e as Error).message);
-        this.deps.gateway.setForwarding(item.officeId, item.agentId, false);
         this.pending.delete(item.agentId);
         resolve();
       });
@@ -427,7 +466,12 @@ export class TeamsService {
 
   private onAgentEvent(e: AgentEvent): void {
     const rec = this.pending.get(e.agentId);
-    if (!rec) return;
+    if (!rec) {
+      // No in-flight Teams dispatch → this output was driven locally (app terminal).
+      // Stream it into the thread if the agent is online.
+      this.onAmbientEvent(e);
+      return;
+    }
     if (e.kind === 'message' && e.content) {
       // Agent produced more output — it hasn't gone idle. Cancel any pending
       // dispatch close-out and accumulate this chunk for the current turn.
@@ -436,6 +480,11 @@ export class TeamsService {
     } else if (e.kind === 'turn-start') {
       // A new turn began (e.g. resuming after a tool). Keep forwarding open.
       this.cancelSettle(rec);
+    } else if (e.kind === 'user-message') {
+      // The Teams prompt was accepted by the CLI. It already appears in the thread as
+      // the sender's own message, so don't echo it back. (Only local user-messages,
+      // handled in the ambient path, are mirrored.)
+      return;
     } else if (e.kind === 'turn-end') {
       // Forward everything up to this turn-end NOW (as its own Teams message, like
       // long-session chunking) instead of holding it until the whole response ends.
@@ -484,17 +533,117 @@ export class TeamsService {
     await this.postReply(rec.binding, text);
   }
 
+  // ── Ambient (locally-driven) turn streaming ──────────────────
+
+  /**
+   * Handle a copilot event for an online agent that has NO in-flight Teams dispatch —
+   * i.e. the agent was driven from the app's own terminal. Streams the resulting
+   * request + reply into the bound thread so the channel mirrors everything the online
+   * agent does. Silently ignores agents that are offline / not bound.
+   */
+  private onAmbientEvent(e: AgentEvent): void {
+    const binding = this.bindings.find((b) => b.agentId === e.agentId && b.online);
+    if (!binding) return;
+
+    if (e.kind === 'user-message') {
+      // Mirror the locally-typed request into the thread (clean prompt text only —
+      // empty when the CLI omitted content, in which case we skip silently).
+      const text = (e.content ?? '').trim();
+      if (text) void this.postLocalRequest(binding, text);
+      return;
+    }
+
+    if (e.kind === 'message' && e.content) {
+      const rec = this.ensureAmbient(e.agentId, binding);
+      this.cancelAmbientSettle(rec);
+      rec.chunks.push(e.content);
+    } else if (e.kind === 'turn-start') {
+      const rec = this.ensureAmbient(e.agentId, binding);
+      this.cancelAmbientSettle(rec);
+    } else if (e.kind === 'turn-end') {
+      const rec = this.ambient.get(e.agentId);
+      if (!rec) return;
+      // Flush this turn now (per-turn posting, like Teams dispatches), then debounce
+      // close-out so a tool-using multi-turn response streams whole.
+      void this.flushAmbient(rec);
+      this.scheduleAmbientSettle(e.agentId, rec);
+    }
+    // tool-start is intentionally not mirrored for ambient turns (no check-ins) — a
+    // local operator is already watching the terminal.
+  }
+
+  private ensureAmbient(agentId: string, binding: OnlineAgentBinding): AmbientTurn {
+    let rec = this.ambient.get(agentId);
+    if (!rec) {
+      rec = {
+        officeId: binding.officeId,
+        agentId,
+        binding,
+        chunks: [],
+        startedAt: this.now(),
+        settleTimer: null,
+      };
+      this.ambient.set(agentId, rec);
+    }
+    return rec;
+  }
+
+  private cancelAmbientSettle(rec: AmbientTurn): void {
+    if (rec.settleTimer) {
+      clearTimeout(rec.settleTimer);
+      rec.settleTimer = null;
+    }
+  }
+
+  private scheduleAmbientSettle(agentId: string, rec: AmbientTurn): void {
+    this.cancelAmbientSettle(rec);
+    rec.settleTimer = setTimeout(() => {
+      rec.settleTimer = null;
+      void this.finalizeAmbient(agentId);
+    }, this.settleMs);
+  }
+
+  /** Post the current ambient turn's accumulated text; clears the buffer. No-op when empty. */
+  private async flushAmbient(rec: AmbientTurn): Promise<void> {
+    const text = rec.chunks.join('\n\n').trim();
+    rec.chunks = [];
+    if (!text) return;
+    const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
+    tlog(`Local reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
+    await this.postReply(rec.binding, text);
+  }
+
+  /** Close out an ambient turn once the agent goes idle: flush residual text, drop record. */
+  private async finalizeAmbient(agentId: string): Promise<void> {
+    const rec = this.ambient.get(agentId);
+    if (!rec) return;
+    this.cancelAmbientSettle(rec);
+    this.ambient.delete(agentId);
+    await this.flushAmbient(rec);
+  }
+
+  /** Post a locally-typed user request into the thread, tagged so it's distinct from replies. */
+  private async postLocalRequest(binding: OnlineAgentBinding, text: string): Promise<void> {
+    const chunks = chunkReply(text, 3500);
+    for (const chunk of chunks) {
+      await this.safeReply(
+        binding,
+        `${this.agentLabel(binding)} 💬 <i>local request:</i><br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`,
+      );
+    }
+  }
+
   /**
    * Close out a dispatch once the agent has gone idle: flush any residual text,
-   * stop event mirroring, drop the pending record, and resolve the dispatch promise
-   * so the per-agent queue advances.
+   * drop the pending record, and resolve the dispatch promise so the per-agent
+   * queue advances. Event mirroring stays on for the agent's whole online lifetime
+   * (it's toggled in register/reconnect ↔ goOffline), so it is NOT disabled here.
    */
   private async finalizeDispatch(agentId: string): Promise<void> {
     const rec = this.pending.get(agentId);
     if (!rec) return;
     this.cancelSettle(rec);
     this.pending.delete(agentId);
-    this.deps.gateway.setForwarding(rec.officeId, agentId, false);
     // Flush anything that arrived without a trailing turn-end (defensive).
     await this.flushTurn(rec);
     // One distinct-identity completion ping per response (via the relay/Dump channel),
@@ -517,7 +666,11 @@ export class TeamsService {
     if (!rec.lastReplyText) return; // nothing was said this dispatch → nothing to notify
     // The reply content itself already posted directly in the thread; this ping only
     // signals completion (a distinct-identity notification), so no preview is needed.
-    const html = `${this.agentLabel(rec.binding)} has finished responding`;
+    // Include the session title when known so a notification for one of several agents
+    // is self-identifying, e.g. "<b>Alice</b> has finished responding in "Bot in Teams"".
+    const title = (rec.binding.sessionTitle || '').trim();
+    const where = title ? ` in “${escapeHtml(title)}”` : '';
+    const html = `${this.agentLabel(rec.binding)} has finished responding${where}`;
     try {
       const posted = await notifier.replyToThread({
         teamId: rec.binding.teamId,
@@ -643,6 +796,8 @@ export class TeamsService {
           if (!ready) continue; // session exists but not ready yet — wait for a later pass
           b.online = true;
           b.lastConnected = this.now();
+          // Re-enable online-lifetime event mirroring (see register).
+          this.deps.gateway.setForwarding(b.officeId, b.agentId, true);
           this.deps.emitStatus(this.toStatus(b));
           tlog(`Reconnected @${b.handle} to its persisted thread (session ${b.sessionId}).`);
           void this.safeReply(b, `${this.agentLabel(b)} 🔄 Reconnected — back online and ready. Reply here to continue.`);
