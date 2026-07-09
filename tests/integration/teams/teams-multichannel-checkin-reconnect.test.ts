@@ -166,7 +166,7 @@ describe('teams acknowledgment + agent-name prefix (US5)', () => {
     await new Promise((r) => setTimeout(r, 20));
     const reply = h.replies.find((r) => r.html.includes('4'));
     expect(reply).toBeDefined();
-    expect(reply!.html.startsWith('<b>Gene</b>')).toBe(true);
+    expect(reply!.html.startsWith('🤖 <b>Gene</b>')).toBe(true);
   });
 
   it('never re-dispatches its own ack echo (self-loop guard)', async () => {

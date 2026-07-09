@@ -111,6 +111,8 @@ describe('teams ambient (locally-driven) streaming', () => {
     const joined = h.replies.join('\n');
     expect(joined).toContain('refactor the parser'); // local request mirrored
     expect(joined).toContain('local request');
+    expect(joined).toContain('👤 <b>Human</b>'); // local request attributed to Human, not the agent
+    expect(joined).toContain('🤖 <b>Gene</b>'); // the agent's reply is attributed to the agent
     expect(joined).toContain('Done refactoring.'); // reply streamed
     // The agent never received a Teams-originated prompt.
     expect(h.submitted).toHaveLength(0);

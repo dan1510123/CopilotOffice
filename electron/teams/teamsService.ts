@@ -646,7 +646,7 @@ export class TeamsService {
     for (const chunk of chunks) {
       await this.safeReply(
         binding,
-        `${this.agentLabel(binding)} 💬 <i>local request:</i><br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`,
+        `👤 <b>Human</b> 💬 <i>local request:</i><br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`,
       );
     }
   }
@@ -719,7 +719,7 @@ export class TeamsService {
    * visually distinct from messages the operator typed by hand.
    */
   private agentLabel(binding: OnlineAgentBinding): string {
-    return `<b>${escapeHtml(binding.displayName)}</b>`;
+    return `🤖 <b>${escapeHtml(binding.displayName)}</b>`;
   }
 
   private async postReply(binding: OnlineAgentBinding, text: string): Promise<void> {
