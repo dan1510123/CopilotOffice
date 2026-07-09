@@ -84,7 +84,33 @@ export function sanitizeCopilotPath(pathValue: string | undefined, repoRoot: str
     .join(path.delimiter);
 }
 
+/**
+ * Resolve the Copilot CLI binary that ships as a transitive dependency of
+ * `@github/copilot-sdk` (`@github/copilot` → `@github/copilot-<platform>-<arch>`).
+ *
+ * This binary is a real native `copilot` executable (not the extensionless VS
+ * Code wrapper), so it can be `pty.spawn`'d directly AND can host `--ui-server`.
+ * Preferring it makes CLI resolution deterministic and npm-managed instead of
+ * depending on whatever `copilot` happens to be first on the user's PATH (which
+ * on dev machines is often the VS Code copilot-chat shim that cannot host
+ * ui-server). Returns null if the platform package isn't installed.
+ */
+export function resolveBundledCopilotCliPath(): string | null {
+  try {
+    const platformPackage = `@github/copilot-${process.platform}-${process.arch}`;
+    const resolved = require.resolve(platformPackage);
+    return resolved || null;
+  } catch {
+    return null;
+  }
+}
+
 export function resolveCopilotCliPath(repoRoot: string, pathValue: string | undefined): string | null {
+  const bundled = resolveBundledCopilotCliPath();
+  if (bundled) {
+    return bundled;
+  }
+
   const sanitizedPath = sanitizeCopilotPath(pathValue, repoRoot);
   const env = { ...process.env, PATH: sanitizedPath };
 
