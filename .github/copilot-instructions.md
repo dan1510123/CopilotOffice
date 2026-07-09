@@ -49,6 +49,15 @@ All sprites generated in code (BootScene + SpriteGenerator) — no external imag
 ### IPC Communication
 Renderer → `window.copilotBridge` (preload context bridge) → Electron main → terminal server child process → node-pty.
 
+### Terminal Backends
+`electron/terminal/server.ts` selects the terminal backend from `COPILOT_TERMINAL_BACKEND` (default `node-pty`) and always keeps node-pty as the permanent fallback.
+
+- `node-pty` (default/fallback): spawns the real Copilot TUI directly per agent; programmatic prompts use the raw PTY path.
+- `ui-server` (spec 013 Variant 1): node-pty hosts one `copilot --ui-server` runtime per office. An SDK `CopilotClient` attaches with `RuntimeConnection.forUri('localhost:<port>')`; programmatic prompts use `session.send({ prompt, mode: 'enqueue' })`; status/tool/turn events come from `session.on(...)` normalized to `CopilotEvent`; viewer attach calls `setForegroundSessionId` to choose the visible agent.
+- `sdk` (legacy headless): SDK spawns its own headless runtime over stdio; retained for compatibility, not the Variant 1 target.
+
+`--ui-server` is undocumented/hidden. A capability probe and per-session start-time fallback to node-pty are mandatory; do not make `ui-server` the default without revisiting that invariant.
+
 ### Input Focus
 Two mutually exclusive states: `game` and `terminal`. All transitions through `InputManager` — never manipulate Phaser keyboard directly.
 

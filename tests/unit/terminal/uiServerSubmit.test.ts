@@ -68,3 +68,35 @@ describe('UiServerProcess.submitPrompt (T012)', () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe('UiServerProcess.write readiness gating (T028 / FR-020)', () => {
+  function makeWithStatus(status: string) {
+    const rawWrite = vi.fn();
+    const runtime = { status, rawPty: { write: rawWrite } };
+    const proc = new UiServerProcess(
+      'sess-w',
+      { send: vi.fn(() => Promise.resolve('id')), disconnect: vi.fn() } as never,
+      runtime as never,
+      { setForeground: vi.fn(() => Promise.resolve()) } as never,
+    );
+    return { proc, rawWrite };
+  }
+
+  it('drops human input while the runtime is still launching (not yet ready)', () => {
+    const { proc, rawWrite } = makeWithStatus('launching');
+    proc.write('keystrokes');
+    expect(rawWrite).not.toHaveBeenCalled();
+  });
+
+  it.each(['crashed', 'stopped'])('drops input when the runtime is %s', (status) => {
+    const { proc, rawWrite } = makeWithStatus(status);
+    proc.write('x');
+    expect(rawWrite).not.toHaveBeenCalled();
+  });
+
+  it.each(['listening', 'ready'])('forwards input once the runtime is %s', (status) => {
+    const { proc, rawWrite } = makeWithStatus(status);
+    proc.write('hello');
+    expect(rawWrite).toHaveBeenCalledWith('hello');
+  });
+});

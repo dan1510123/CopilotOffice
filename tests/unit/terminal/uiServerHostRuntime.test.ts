@@ -42,4 +42,21 @@ describe('UiServerHostRuntime port-discovery failure (T037 regression)', () => {
     expect(onUnhandled).not.toHaveBeenCalled();
     process.removeListener('unhandledRejection', onUnhandled);
   });
+
+  it('transitions to crashed status when the runtime exits before listening', async () => {
+    let exitCb: ((e: { exitCode: number }) => void) | undefined;
+    const pty = {
+      spawn: () => ({
+        pid: 1,
+        onData: () => { /* never */ },
+        onExit: (cb: (e: { exitCode: number }) => void) => { exitCb = cb; },
+        write: () => {}, resize: () => {}, kill: () => {},
+      }),
+    } as unknown as typeof import('node-pty');
+    const runtime = new UiServerHostRuntime('office-z', pty, 'copilot', process.cwd(), opts, 5000);
+    const rejected = expect(runtime.whenListening()).rejects.toThrow(/exited before ready/i);
+    exitCb?.({ exitCode: 193 });
+    await rejected;
+    expect(runtime.status).toBe('crashed');
+  });
 });

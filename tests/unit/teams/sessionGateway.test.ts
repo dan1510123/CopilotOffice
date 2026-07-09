@@ -41,6 +41,48 @@ describe('RelaySessionGateway.submitPrompt', () => {
 });
 
 describe('RelaySessionGateway.onAgentEvent', () => {
+  it('maps assistant.message copilot-events to message AgentEvents for Teams reply capture', () => {
+    const relay = makeRelay();
+    const emitter = relay.mainEvents as unknown as EventEmitter;
+    const gw = new RelaySessionGateway(relay);
+    const events: unknown[] = [];
+    const off = gw.onAgentEvent((e) => events.push(e));
+
+    emitter.emit('copilot-event', 'generalist', {
+      type: 'assistant.message',
+      data: { content: 'Here is the Teams reply.' },
+      id: 'evt-sdk-assistant-message',
+      timestamp: '2026-07-09T08:06:39.857Z',
+      parentId: null,
+    });
+
+    expect(events).toEqual([
+      { agentId: 'generalist', kind: 'message', content: 'Here is the Teams reply.' },
+    ]);
+
+    off();
+  });
+
+  it('does not emit message AgentEvents for non-assistant copilot-events', () => {
+    const relay = makeRelay();
+    const emitter = relay.mainEvents as unknown as EventEmitter;
+    const gw = new RelaySessionGateway(relay);
+    const events: unknown[] = [];
+    const off = gw.onAgentEvent((e) => events.push(e));
+
+    emitter.emit('copilot-event', 'generalist', {
+      type: 'tool.execution_start',
+      data: { toolName: 'task', toolCallId: 'tool-1', arguments: {} },
+      id: 'evt-tool-start',
+      timestamp: '2026-07-09T08:06:39.857Z',
+      parentId: null,
+    });
+
+    expect(events).toHaveLength(0);
+
+    off();
+  });
+
   it('maps copilot-user-message (with text) to a user-message AgentEvent', () => {
     const relay = makeRelay();
     const emitter = relay.mainEvents as unknown as EventEmitter;
