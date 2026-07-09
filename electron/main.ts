@@ -230,14 +230,13 @@ app.whenReady().then(async () => {
           return id ? { mentionType: 'user', mentionId: id } : { mentionType: 'none', mentionId: '' };
         }
         if (ref.type === 'tag') {
-          // Pass through an explicit tagId; otherwise match a tag display name in the team.
-          if (!destTeamId) return { mentionType: 'none', mentionId: '' };
-          const tags = await rawGraph.listTags(destTeamId);
-          const wanted = ref.value.trim().toLowerCase();
-          const hit =
-            tags.find((t) => t.id === ref.value.trim()) ||
-            tags.find((t) => (t.displayName || '').toLowerCase() === wanted);
-          return hit ? { mentionType: 'tag', mentionId: hit.id } : { mentionType: 'none', mentionId: '' };
+          // Tags are team-scoped and resolving a name → tagId needs TeamworkTag.Read,
+          // which the az-CLI token may lack. So we DON'T resolve here — pass the operator's
+          // configured value (a tag display name or an explicit tagId) through as-is, and
+          // let the Power Automate flow resolve it via GetTags using its Teams connection
+          // (which has full delegated Teams scopes). Empty ⇒ no mention.
+          const raw = ref.value.trim();
+          return raw ? { mentionType: 'tag', mentionId: raw } : { mentionType: 'none', mentionId: '' };
         }
       } catch {
         /* fall through to none */

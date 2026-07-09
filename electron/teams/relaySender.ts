@@ -49,7 +49,12 @@ export interface MentionRef {
 /** Mention resolved to the concrete id the flow's connector op needs. */
 export interface ResolvedMention {
   mentionType: MentionType;
-  /** UPN/oid for a user, tagId for a tag, '' for none. */
+  /**
+   * The @mention target. For a user this is the resolved UPN/oid. For a tag this is the
+   * operator's configured value — a tag DISPLAY NAME or an explicit tagId — which the
+   * Power Automate flow resolves to a tagId via GetTags (the app doesn't need the
+   * TeamworkTag scope). Empty for 'none'.
+   */
   mentionId: string;
 }
 
