@@ -517,6 +517,9 @@ async function startTerminalForAgent(
       env: taggedEnv,
       officeId,
       yolo: yoloEnabled,
+      // Live getter so toggling YOLO in the app takes effect on already-running
+      // ui-server sessions (the permission handler evaluates this per request).
+      isYoloEnabled: () => yoloEnabled,
       // Additional-parameters setting (e.g. "--model gpt-5.4"). node-pty appends
       // these to its `copilot --session-id` launch below; the ui-server backend
       // appends them to the per-office host launch (once per office).

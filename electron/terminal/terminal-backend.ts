@@ -2,6 +2,7 @@ import { execSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
+import type { PermissionHandler } from '@github/copilot-sdk';
 
 export interface TerminalExitEvent {
   exitCode: number;
@@ -53,6 +54,13 @@ export interface StartTerminalOptions {
   env: { [key: string]: string };
   /** YOLO/auto-approve posture for this session (FR-009). Defaults to false. */
   yolo?: boolean;
+  /**
+   * Live YOLO/auto-approve getter (ui-server backend). Unlike the `yolo` boolean
+   * — captured once at session-create time and used for the node-pty `--yolo`
+   * launch flag — this is evaluated on every permission request so toggling YOLO
+   * takes effect on already-running ui-server sessions. Falls back to `yolo`.
+   */
+  isYoloEnabled?: () => boolean;
   /**
    * Extra CLI arguments from the app's "additional parameters" setting
    * (e.g. ['--model', 'gpt-5.4']). For the ui-server backend these are appended
@@ -731,7 +739,11 @@ export class ControlPlaneClient {
     await this.startPromise;
   }
 
-  async createOrResumeSession(sessionId: string, cwd: string, yolo = false): Promise<UiServerSession> {
+  async createOrResumeSession(
+    sessionId: string,
+    cwd: string,
+    isYoloEnabled: () => boolean = () => false,
+  ): Promise<UiServerSession> {
     const client = await this.getStartedClient();
     // FR-009: map the app's YOLO posture onto the SDK permission handler.
     // - YOLO on  → auto-approve every request (SDK-exported `approveAll`).
@@ -739,9 +751,15 @@ export class ControlPlaneClient {
     //   deferring the prompt to the hosted runtime's own TUI (which the human is
     //   viewing). NOTE: the deferral path is not yet empirically verified against a
     //   live ui-server runtime in this environment — see research.md T030 note.
-    const onPermissionRequest = yolo
-      ? (this.approveAll ?? (async () => ({ kind: 'approved' })))
-      : (async () => ({ kind: 'no-result' }));
+    // `isYoloEnabled` is evaluated PER REQUEST (not captured), so toggling YOLO in
+    // the app takes effect on already-running ui-server sessions without a reopen.
+    const approveAll = this.approveAll as PermissionHandler | undefined;
+    const onPermissionRequest: PermissionHandler = async (request, invocation) => {
+      if (isYoloEnabled()) {
+        return approveAll ? approveAll(request, invocation) : { kind: 'approved' };
+      }
+      return { kind: 'no-result' };
+    };
     const sharedConfig: Record<string, unknown> = {
       streaming: true,
       workingDirectory: cwd,
@@ -964,7 +982,11 @@ export class UiServerBackend implements TerminalBackend {
     const entry = this.getOrCreateOfficeEntry(officeId, options);
     try {
       await entry.client.start();
-      const session = await entry.client.createOrResumeSession(options.sessionId, options.cwd, options.yolo ?? false);
+      const session = await entry.client.createOrResumeSession(
+        options.sessionId,
+        options.cwd,
+        options.isYoloEnabled ?? (() => options.yolo ?? false),
+      );
       const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
       await process.setForeground();
       return process;
