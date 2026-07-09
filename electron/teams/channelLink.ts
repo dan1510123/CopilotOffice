@@ -2,7 +2,7 @@
 //
 // Example deep-link:
 //   https://teams.microsoft.com/l/channel/19%3A0123456789abcdef0123456789abcdef%40thread.tacv2/
-//     Agent%20Hub?groupId=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&tenantId=00000000-0000-0000-0000-000000000000
+//     Agent%20Hub?groupId=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&tenantId=00000000-...
 //
 // The channel id sits in the path segment after `/l/channel/` (URL-encoded, `%3A`→`:`,
 // `%40`→`@`); the team id is the `groupId` query param and the tenant is `tenantId`.

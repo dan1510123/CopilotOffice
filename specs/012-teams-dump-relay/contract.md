@@ -64,8 +64,8 @@ The JSON payload (base64-encoded so Teams HTML-encoding can't corrupt it):
 
 ## Power Automate flow
 
-- **Environment:** `11111111-1111-1111-1111-111111111111`
-- **Flow:** `22222222-2222-2222-2222-222222222222` — "CopilotOffice Dump Relay (metadata-driven)"
+- **Environment:** `<power-automate-environment-id>`
+- **Flow:** `<flow-id>` — "CopilotOffice Dump Relay (metadata-driven)"
 - **API:** `GET/PATCH https://api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/{env}/flows/{flow}?api-version=2016-11-01`
   (token resource `https://service.flow.microsoft.com/`). Note: PATCH body is
   `{ properties: { definition, connectionReferences } }`.
@@ -73,8 +73,8 @@ The JSON payload (base64-encoded so Teams HTML-encoding can't corrupt it):
 ### Flow structure
 
 1. **Trigger** `OnNewChannelMessage` on the Dump channel (Agent Hub:
-   team `aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`, channel
-   `19:0123456789abcdef0123456789abcdef@thread.tacv2`), `splitOn` per message.
+   team `<dump-team-id>`, channel
+   `19:<dump-channel-id>@thread.tacv2`), `splitOn` per message.
 2. `Initialize_mentionToken` (string, `""`) — must be top-level (Logic Apps constraint).
 3. `Check_has_meta` — `If contains(triggerOutputs()?['body/body/content'], '[[CO-META]]')`.
    True branch:
@@ -102,8 +102,8 @@ the Dump channel.
   poster+location). For **Flow bot / Channel** the flattened params are:
   `body/recipient/groupId`, `body/recipient/channelId`, `body/messageBody`.
 
-## Verification (2026-07-08)
-Run `REDACTED-RUN-ID`: all actions Succeeded; `AtMentionUser` OK,
+## Verification
+A verification run had all actions Succeeded; `AtMentionUser` OK,
 `AtMentionTag` Skipped, `Post_to_channel` code=Created; resolved body
 `<at>user@example.com</at> <p>…</p>`. Operator confirmed receipt of the Flow-bot
 @mention notification.

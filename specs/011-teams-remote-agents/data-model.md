@@ -118,7 +118,7 @@ Normalized push/poll message under evaluation (not persisted).
       "displayName": "Gene",
       "workingDir": "C:/path/to/agent",
       "sessionTitle": "Fixing terminal scroll",
-      "teamId": "ba7b4ed7-...",
+      "teamId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
       "channelId": "19:0123456789abcdef0123456789abcdef@thread.tacv2",
       "tenantId": "00000000-0000-0000-0000-000000000000",
       "threadRootId": "1783371733113",

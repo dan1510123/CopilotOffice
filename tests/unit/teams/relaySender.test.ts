@@ -10,7 +10,7 @@ import type { GraphSender, CreateThreadParams, ReplyParams } from '../../../elec
 import { hasMarker } from '../../../electron/teams/marker';
 
 const CH = '19:aaa@thread.tacv2';
-// A real Dump-channel deep-link (teamId in groupId, channelId in the path).
+// A synthetic Dump-channel deep-link (teamId in groupId, channelId in the path).
 const DUMP_URL =
   'https://teams.microsoft.com/l/channel/19%3A0123456789abcdef0123456789abcdef%40thread.tacv2/Agent%20Hub?groupId=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee&tenantId=00000000-0000-0000-0000-000000000000';
 const DUMP_TEAM = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
