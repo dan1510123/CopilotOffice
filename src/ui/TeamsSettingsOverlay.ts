@@ -192,6 +192,13 @@ export class TeamsSettingsOverlay {
     mentionType.onchange = syncMentionEnabled;
     syncMentionEnabled();
 
+    const notifyComplete = this.toggleRow(
+      'Notify me when an agent finishes (distinct identity, needs relay Dump channel)',
+      settings.notifyOnCompleteEnabled,
+    );
+    notifyComplete.row.style.marginTop = '10px';
+    wrap.appendChild(notifyComplete.row);
+
     const ack = this.toggleRow('Acknowledge received messages (⌛)', settings.ackEnabled);
     ack.row.style.marginTop = '16px';
     wrap.appendChild(ack.row);
@@ -222,6 +229,7 @@ export class TeamsSettingsOverlay {
         relayChannelUrl: relayInput.value.trim(),
         relayMentionType: mentionType.value as 'user' | 'tag' | 'none',
         relayMentionValue: mentionValue.value.trim(),
+        notifyOnCompleteEnabled: notifyComplete.input.checked,
         ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,
       };

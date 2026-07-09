@@ -16,6 +16,10 @@ function baseSettings(over: Partial<TeamsSettings> = {}): TeamsSettings {
   return {
     enabled: true,
     defaultChannelUrl: URL_A,
+    relayChannelUrl: '',
+    relayMentionType: 'none',
+    relayMentionValue: '',
+    notifyOnCompleteEnabled: false,
     ackEnabled: false,
     checkInEnabled: false,
     checkInThresholdMs: 120000,
@@ -24,7 +28,7 @@ function baseSettings(over: Partial<TeamsSettings> = {}): TeamsSettings {
   };
 }
 
-function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?: OnlineAgentBinding[] } = {}) {
+function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?: OnlineAgentBinding[]; notify?: boolean } = {}) {
   const store = new InMemoryTeamsOnlineStore(
     opts.seed ? { bindings: opts.seed, knownThreads: opts.seed.map((b) => ({ threadRootId: b.threadRootId, noticePosted: false })) } : undefined,
   );
@@ -34,6 +38,12 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
   const graph: GraphSender = {
     createThread: vi.fn(async () => ({ threadRootId: `root-${++threadSeq}`, webUrl: 'https://web' })),
     replyToThread: vi.fn(async (p) => { replies.push({ threadRootId: p.threadRootId, html: p.html }); return { messageId: 'x' }; }),
+  };
+  // Distinct-identity notifier (relay/Dump channel) used only for the completion ping.
+  const notifies: Array<{ threadRootId: string; html: string }> = [];
+  const notifier: GraphSender = {
+    createThread: vi.fn(async () => ({ threadRootId: 'dump', webUrl: 'https://web' })),
+    replyToThread: vi.fn(async (p) => { notifies.push({ threadRootId: p.threadRootId, html: p.html }); return { messageId: '' }; }),
   };
   let emit: (m: InboundMessage) => void = () => {};
   const source: MessageSource = { health: 'connected', start: async (cb) => { emit = cb; }, stop: async () => {} };
@@ -52,12 +62,14 @@ function makeHarness(opts: { settings?: TeamsSettings; now?: () => number; seed?
   };
   const service = new TeamsService({
     store, tokens, graph, source, gateway,
+    notifier,
+    isNotifyActive: () => opts.notify ?? false,
     getSettings: () => opts.settings ?? baseSettings(),
     emitStatus: () => {}, emitToast: () => {},
     now: opts.now,
     turnSettleMs: 5,
   });
-  return { service, replies, submitted, sessionByAgent, readyByAgent, inbound: () => emit, agent: () => agentCb };
+  return { service, replies, notifies, submitted, sessionByAgent, readyByAgent, inbound: () => emit, agent: () => agentCb };
 }
 
 const inbound = (channelId: string, threadRootId: string, content: string): InboundMessage => ({
@@ -246,5 +258,43 @@ describe('teams reconnect (FR-024, SC-010)', () => {
     await h.service.reconcileNow();
     expect(h.service.getStatus('office-0', 'generalist')?.online).toBe(true);
     expect(h.replies.some((r) => /reconnected/i.test(r.html))).toBe(true);
+  });
+});
+
+describe('teams completion notification (distinct-identity ping at idle)', () => {
+  async function runReply(h: ReturnType<typeof makeHarness>, content?: string) {
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    h.inbound()(inbound(CH_A, 'root-1', 'what is the answer'));
+    await new Promise((r) => setTimeout(r, 20));
+    if (content) h.agent()({ agentId: 'generalist', kind: 'message', content });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    await new Promise((r) => setTimeout(r, 40)); // let the settle debounce → finalizeDispatch fire
+  }
+
+  it('fires exactly ONE completion ping via the notifier once the agent goes idle', async () => {
+    const h = makeHarness({ settings: baseSettings({ notifyOnCompleteEnabled: true }), notify: true });
+    await runReply(h, 'The answer is 42');
+
+    // Content posted directly (as the signed-in user) via graph, NOT via the notifier.
+    expect(h.replies.some((r) => r.html.includes('42'))).toBe(true);
+    // Exactly one distinct-identity completion ping, with the agent name + a preview.
+    expect(h.notifies).toHaveLength(1);
+    expect(h.notifies[0].html).toMatch(/finished replying/i);
+    expect(h.notifies[0].html).toContain('<b>Gene</b>');
+    expect(h.notifies[0].html).toContain('42');
+  });
+
+  it('does NOT ping when the notification is inactive', async () => {
+    const h = makeHarness({ settings: baseSettings({ notifyOnCompleteEnabled: false }), notify: false });
+    await runReply(h, 'hello there');
+    expect(h.replies.some((r) => r.html.includes('hello there'))).toBe(true);
+    expect(h.notifies).toHaveLength(0);
+  });
+
+  it('does NOT ping when the response produced no text', async () => {
+    const h = makeHarness({ settings: baseSettings({ notifyOnCompleteEnabled: true }), notify: true });
+    await runReply(h); // turn-end with no message content
+    expect(h.notifies).toHaveLength(0);
   });
 });

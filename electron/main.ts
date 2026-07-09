@@ -15,7 +15,7 @@ import { RelaySessionGateway } from './teams/sessionGateway';
 import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
-import { createRelaySender, createRoutingGraphSender, type MentionResolver } from './teams/relaySender';
+import { createRelaySender, type MentionResolver } from './teams/relaySender';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
@@ -255,11 +255,15 @@ app.whenReady().then(async () => {
       // The fan-out destination must satisfy the same outbound allowlist as the direct path.
       isDestinationAllowed: (channelId) => getAllowedChannels().has(channelId),
     });
-    const graph = createRoutingGraphSender(
-      allowlistedGraph,
-      relaySender,
-      () => !!getTeamsSettingsCached().relayChannelUrl.trim(),
-    );
+    // Content ALWAYS posts directly as the signed-in user (allowlisted sender), exactly
+    // as it did before the relay feature existed. The relay/Dump channel is used ONLY for
+    // the end-of-response completion NOTIFICATION (a single distinct-identity Flow-bot
+    // @mention), gated by notifyOnCompleteEnabled + a configured relay Dump channel URL.
+    const graph = allowlistedGraph;
+    const isNotifyActive = () => {
+      const s = getTeamsSettingsCached();
+      return s.notifyOnCompleteEnabled && !!s.relayChannelUrl.trim();
+    };
     const source = new TrouterClient(tokens);
     const gateway = new RelaySessionGateway(relay);
     const store = new FileTeamsOnlineStore(
@@ -272,6 +276,8 @@ app.whenReady().then(async () => {
       store,
       tokens,
       graph,
+      notifier: relaySender,
+      isNotifyActive,
       source,
       gateway,
       getSettings: () => settingsStore.load(),

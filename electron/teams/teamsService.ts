@@ -53,6 +53,15 @@ export interface TeamsServiceDeps {
   store: TeamsOnlineStore;
   tokens: TokenProvider;
   graph: GraphSender;
+  /**
+   * Optional distinct-identity notifier used ONLY for the end-of-response completion
+   * ping (the relay/Dump-channel sender). Reply content always posts via {@link graph}
+   * (the signed-in user); this sends one message per response so a Power Automate flow
+   * re-posts it under a distinct bot identity with an @mention. Omit to disable.
+   */
+  notifier?: GraphSender;
+  /** Whether the completion notification is active (relay Dump channel configured + flag on). */
+  isNotifyActive?: () => boolean;
   source: MessageSource;
   gateway: SessionGateway;
   /** Current global Teams settings. */
@@ -78,6 +87,12 @@ interface PendingTurn {
   resolve: () => void;
   startedAt: number;
   lastCheckIn: number;
+  /**
+   * Text of the most recent non-empty turn flushed during this dispatch. Drives the
+   * end-of-response completion notification's preview. Undefined ⇒ the agent produced
+   * no text this dispatch, so no completion ping is sent.
+   */
+  lastReplyText?: string;
   /**
    * Debounce timer armed on each `turn-end` and cancelled if the agent resumes
    * (new message/turn/tool) before it fires. Null when not waiting to settle.
@@ -465,6 +480,7 @@ export class TeamsService {
     if (!text) return;
     const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
     tlog(`Reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
+    rec.lastReplyText = text;
     await this.postReply(rec.binding, text);
   }
 
@@ -481,7 +497,44 @@ export class TeamsService {
     this.deps.gateway.setForwarding(rec.officeId, agentId, false);
     // Flush anything that arrived without a trailing turn-end (defensive).
     await this.flushTurn(rec);
+    // One distinct-identity completion ping per response (via the relay/Dump channel),
+    // now that the agent is idle — so the operator gets notified even though the reply
+    // content itself was posted under their own identity.
+    await this.maybeNotifyComplete(rec);
     rec.resolve();
+  }
+
+  /**
+   * Post a single end-of-response notification via the distinct-identity {@link
+   * TeamsServiceDeps.notifier} (relay/Dump channel) so a Power Automate flow re-posts it
+   * under the Flow-bot identity with an @mention. Active only when a notifier is wired and
+   * {@link TeamsServiceDeps.isNotifyActive} is true. Skips silently when the dispatch
+   * produced no text. Never throws — a notification failure must not wedge the queue.
+   */
+  private async maybeNotifyComplete(rec: PendingTurn): Promise<void> {
+    const notifier = this.deps.notifier;
+    if (!notifier || !(this.deps.isNotifyActive?.() ?? false)) return;
+    if (!rec.lastReplyText) return; // nothing was said this dispatch → nothing to notify
+    const preview = this.previewOf(rec.lastReplyText);
+    const html = `${this.agentLabel(rec.binding)} ✅ finished replying${preview ? ` ▸ ${preview}` : ''}`;
+    try {
+      const posted = await notifier.replyToThread({
+        teamId: rec.binding.teamId,
+        channelId: rec.binding.channelId,
+        threadRootId: rec.binding.threadRootId,
+        html,
+      });
+      if (posted?.messageId) this.rememberPosted(posted.messageId);
+    } catch (e) {
+      twarn('completion notify failed:', (e as Error).message);
+    }
+  }
+
+  /** Build a short, single-line, HTML-escaped preview of a reply for the completion ping. */
+  private previewOf(raw: string): string {
+    const { text } = extractImageMarkers(raw);
+    const flat = text.replace(/\s+/g, ' ').trim();
+    return flat ? escapeHtml(truncate(flat, 180)) : '';
   }
 
   private async maybeCheckIn(rec: PendingTurn, toolName?: string): Promise<void> {

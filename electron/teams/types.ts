@@ -21,6 +21,14 @@ export interface TeamsSettings {
   relayMentionType: 'user' | 'tag' | 'none';
   /** Mention target value — a UPN/oid/display-name (user) or tag display-name/tagId (tag). */
   relayMentionValue: string;
+  /**
+   * When true (and a relay Dump channel is configured), post ONE distinct-identity
+   * @mention notification via the relay flow each time an agent finishes replying to a
+   * Teams message — once per response, when the agent goes idle. The reply content itself
+   * always posts directly as the signed-in user; this only controls the end-of-response
+   * ping. No effect when {@link relayChannelUrl} is empty.
+   */
+  notifyOnCompleteEnabled: boolean;
   /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
   ackEnabled: boolean;
   /** Long-running check-ins on/off. */

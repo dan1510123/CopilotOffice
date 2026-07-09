@@ -17,6 +17,12 @@ export interface TeamsSettings {
   relayMentionType: 'user' | 'tag' | 'none';
   /** Mention target value — a UPN/oid/display-name (user) or tag display-name/tagId (tag). */
   relayMentionValue: string;
+  /**
+   * When true (and a relay Dump channel is configured), post one distinct-identity
+   * @mention notification via the relay flow when an agent finishes replying (once per
+   * response, at idle). Reply content always posts directly as the signed-in user.
+   */
+  notifyOnCompleteEnabled: boolean;
   /** Post an immediate "message received" acknowledgment when a turn is dispatched. */
   ackEnabled: boolean;
   /** Long-running check-ins on/off. */
@@ -33,6 +39,7 @@ export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   relayChannelUrl: '',
   relayMentionType: 'none',
   relayMentionValue: '',
+  notifyOnCompleteEnabled: true,
   ackEnabled: true,
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
@@ -47,6 +54,7 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
     relayChannelUrl: partial?.relayChannelUrl ?? DEFAULT_TEAMS_SETTINGS.relayChannelUrl,
     relayMentionType: partial?.relayMentionType ?? DEFAULT_TEAMS_SETTINGS.relayMentionType,
     relayMentionValue: partial?.relayMentionValue ?? DEFAULT_TEAMS_SETTINGS.relayMentionValue,
+    notifyOnCompleteEnabled: partial?.notifyOnCompleteEnabled ?? DEFAULT_TEAMS_SETTINGS.notifyOnCompleteEnabled,
     ackEnabled: partial?.ackEnabled ?? DEFAULT_TEAMS_SETTINGS.ackEnabled,
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,
