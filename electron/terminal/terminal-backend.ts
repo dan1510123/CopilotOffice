@@ -553,6 +553,8 @@ export class UiServerHostRuntime {
   private resolveListening!: (port: number) => void;
   private rejectListening!: (error: Error) => void;
   private controlPort: number | null = null;
+  private promoDismissed = false;
+  private startupBuffer = '';
 
   status: UiServerStatus = 'launching';
 
@@ -588,12 +590,34 @@ export class UiServerHostRuntime {
     });
 
     this.proc.onData((data) => {
+      // Parse the control port FIRST so that if a single PTY chunk ever carries
+      // both late startup noise and the "listening on port" line, we never write
+      // stray input into an already-live runtime.
       const match = /listening on port (\d+)/i.exec(data);
       if (match && this.controlPort === null) {
         this.controlPort = Number(match[1]);
         this.status = 'listening';
+        this.startupBuffer = '';
         clearTimeout(this.listeningTimeout);
         this.resolveListening(this.controlPort);
+        return;
+      }
+
+      // Before the server is listening, watch for the CLI's once-per-day
+      // "install the desktop app?" promo modal, which blocks --ui-server
+      // startup by waiting on stdin. Dismiss it once with "n" so the runtime
+      // proceeds to bind its port. Detection uses a bounded rolling buffer
+      // because the prompt text can straddle PTY chunk boundaries.
+      if (this.controlPort === null && !this.promoDismissed) {
+        this.startupBuffer = (this.startupBuffer + data).slice(-4000);
+        if (/install it\?|Yes, install/i.test(this.startupBuffer)) {
+          this.promoDismissed = true;
+          try {
+            this.proc.write('n\r');
+          } catch {
+            // PTY already gone; onExit will surface the failure.
+          }
+        }
       }
     });
 

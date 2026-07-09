@@ -60,3 +60,74 @@ describe('UiServerHostRuntime port-discovery failure (T037 regression)', () => {
     expect(runtime.status).toBe('crashed');
   });
 });
+
+/**
+ * Promo-modal dismissal: the CLI's once-per-day "install the desktop app?"
+ * interstitial blocks --ui-server startup by waiting on stdin. The host runtime
+ * must dismiss it with "n" so the runtime proceeds to bind its port.
+ */
+function makeDrivablePty() {
+  let dataCb: ((d: string) => void) | undefined;
+  const writes: string[] = [];
+  const pty = {
+    spawn: () => ({
+      pid: 4242,
+      onData: (cb: (d: string) => void) => { dataCb = cb; },
+      onExit: () => { /* never */ },
+      write: (d: string) => { writes.push(d); },
+      resize: () => {}, kill: () => {},
+    }),
+  } as unknown as typeof import('node-pty');
+  return { pty, emit: (d: string) => dataCb?.(d), writes };
+}
+
+describe('UiServerHostRuntime promo-modal dismissal', () => {
+  it('sends "n" once when the install promo appears, then resolves on the port', async () => {
+    const { pty, emit, writes } = makeDrivablePty();
+    const runtime = new UiServerHostRuntime('office-p', pty, 'copilot', process.cwd(), opts, 5000);
+
+    emit('Now generally available! Would you like to install it?');
+    expect(writes).toEqual(['n\r']);
+
+    // A second promo-ish chunk must NOT trigger another dismissal.
+    emit('Yes, install');
+    expect(writes).toEqual(['n\r']);
+
+    emit('listening on port 51234\r\n');
+    await expect(runtime.whenListening()).resolves.toBe(51234);
+    expect(runtime.status).toBe('listening');
+  });
+
+  it('detects the promo even when the prompt straddles PTY chunk boundaries', async () => {
+    const { pty, emit, writes } = makeDrivablePty();
+    const runtime = new UiServerHostRuntime('office-q', pty, 'copilot', process.cwd(), opts, 5000);
+
+    emit('...would you like to inst');
+    emit('all it? [Yes] [No]');
+    expect(writes).toEqual(['n\r']);
+
+    emit('listening on port 6000\r\n');
+    await expect(runtime.whenListening()).resolves.toBe(6000);
+  });
+
+  it('does not write anything when no promo appears', async () => {
+    const { pty, emit, writes } = makeDrivablePty();
+    const runtime = new UiServerHostRuntime('office-r', pty, 'copilot', process.cwd(), opts, 5000);
+
+    emit('starting up...\r\n');
+    emit('listening on port 7000\r\n');
+    await expect(runtime.whenListening()).resolves.toBe(7000);
+    expect(writes).toEqual([]);
+  });
+
+  it('does NOT dismiss if a single chunk carries both promo text and the port (server already live)', async () => {
+    const { pty, emit, writes } = makeDrivablePty();
+    const runtime = new UiServerHostRuntime('office-s', pty, 'copilot', process.cwd(), opts, 5000);
+
+    // Port must win: no stray "n\r" injected into an already-listening runtime.
+    emit('Would you like to install it?\r\nlistening on port 8080\r\n');
+    await expect(runtime.whenListening()).resolves.toBe(8080);
+    expect(writes).toEqual([]);
+    expect(runtime.status).toBe('listening');
+  });
+});
