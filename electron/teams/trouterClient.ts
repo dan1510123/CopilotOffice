@@ -104,6 +104,7 @@ export function parseEventMessage(body: unknown): InboundMessage | null {
     channelId: extractChannelId(convLink),
     threadRootId: extractThreadRootId(convLink),
     senderName: String(resource.imdisplayname || ''),
+    senderId: String(resource.from || ''),
     content: stripHtml(content),
     composeTime: String(resource.composetime || ''),
     hasMarker: hasMarker(content),

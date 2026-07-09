@@ -21,6 +21,7 @@ interface ChatsvcMessage {
   messagetype?: string;
   sequenceId?: number;
   imdisplayname?: string;
+  from?: string;
   content?: string;
   composetime?: string;
   properties?: { parentMessageId?: string };
@@ -89,6 +90,7 @@ export class ChatsvcPollSource implements MessageSource {
         channelId,
         threadRootId,
         senderName: m.imdisplayname || '',
+        senderId: m.from || '',
         content: stripHtml(m.content || ''),
         composeTime: m.composetime || '',
         hasMarker: hasMarker(m.content || ''),

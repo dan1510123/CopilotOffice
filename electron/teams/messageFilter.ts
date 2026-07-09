@@ -25,6 +25,24 @@ export function scanInjection(content: string): boolean {
   return INJECTION_PATTERNS.some((re) => re.test(content));
 }
 
+/** Known relay/automation bot display names (locale-stable fallback when no MRI). */
+const BOT_DISPLAY_NAMES = /^(flow bot|power automate|microsoft power automate)$/i;
+
+/**
+ * True when a message was authored by a bot/app rather than a person. Primary signal is
+ * the sender MRI: Teams bot/app identities use the `28:` prefix (users are `8:orgid:…`),
+ * so a `28:` anywhere in the id (bare MRI or a resource URL containing it) marks a bot.
+ * Falls back to matching a known relay bot display name when the transport gave no MRI.
+ */
+export function isBotSender(msg: InboundMessage): boolean {
+  const id = (msg.senderId || '').trim();
+  // When an MRI is present, trust it exclusively: `28:` = bot/app, anything else (e.g.
+  // `8:orgid:…`) is a real user — so a human who happens to be named "Flow bot" is safe.
+  if (id) return id.includes('28:');
+  // No MRI from this transport → fall back to a known relay bot display name.
+  return BOT_DISPLAY_NAMES.test((msg.senderName || '').trim());
+}
+
 export class MessageFilter {
   private seen = new Set<string>();
   private seenOrder: string[] = [];
@@ -60,6 +78,12 @@ export class MessageFilter {
 
     // 2. marker-drop (app self-post)
     if (msg.hasMarker) return { action: 'ignore', reason: 'self-post' };
+
+    // 2b. bot-drop (relay Flow bot re-posts, and any other bot/app author). The relay
+    // fans the completion notification into the agent's own thread as the Flow bot; that
+    // echo must never route back into the agent. Detect by sender MRI (`28:` = bot/app)
+    // or a known relay bot display name. Belt-and-suspenders with the marker above.
+    if (isBotSender(msg)) return { action: 'ignore', reason: 'bot-sender' };
 
     // 3. stale
     if (msg.composeTime) {

@@ -515,8 +515,9 @@ export class TeamsService {
     const notifier = this.deps.notifier;
     if (!notifier || !(this.deps.isNotifyActive?.() ?? false)) return;
     if (!rec.lastReplyText) return; // nothing was said this dispatch → nothing to notify
-    const preview = this.previewOf(rec.lastReplyText);
-    const html = `${this.agentLabel(rec.binding)} ✅ finished replying${preview ? ` ▸ ${preview}` : ''}`;
+    // The reply content itself already posted directly in the thread; this ping only
+    // signals completion (a distinct-identity notification), so no preview is needed.
+    const html = `${this.agentLabel(rec.binding)} has finished responding`;
     try {
       const posted = await notifier.replyToThread({
         teamId: rec.binding.teamId,
@@ -528,13 +529,6 @@ export class TeamsService {
     } catch (e) {
       twarn('completion notify failed:', (e as Error).message);
     }
-  }
-
-  /** Build a short, single-line, HTML-escaped preview of a reply for the completion ping. */
-  private previewOf(raw: string): string {
-    const { text } = extractImageMarkers(raw);
-    const flat = text.replace(/\s+/g, ' ').trim();
-    return flat ? escapeHtml(truncate(flat, 180)) : '';
   }
 
   private async maybeCheckIn(rec: PendingTurn, toolName?: string): Promise<void> {

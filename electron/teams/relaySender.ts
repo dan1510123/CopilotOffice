@@ -33,6 +33,7 @@ import type { GraphSender, CreateThreadParams, ReplyParams } from './graphClient
 
 type HostedImages = CreateThreadParams['hostedImages'];
 import { parseChannelLink } from './channelLink';
+import { embedMarker } from './marker';
 import { tlog } from './log';
 
 /** How the destination @mention is addressed. */
@@ -64,6 +65,13 @@ export interface RelayMetadata {
   v: 1;
   destTeamId: string;
   destChannelId: string;
+  /**
+   * Root message id of the agent's Teams-remote thread in the destination channel. When
+   * non-empty the flow REPLIES under this message (ReplyWithMessageToConversation) so the
+   * notification lands inside the agent's conversation; empty ⇒ the flow posts a new root
+   * message (legacy behaviour, e.g. thread-creation announcements).
+   */
+  threadRootId: string;
   mentionType: MentionType;
   mentionId: string;
   title: string;
@@ -144,7 +152,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
   };
 
   const postToDump = async (
-    dest: { teamId: string; channelId: string },
+    dest: { teamId: string; channelId: string; threadRootId: string },
     title: string,
     html: string,
     hostedImages: HostedImages,
@@ -169,12 +177,16 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
       }
     }
 
-    // Strip any marker tokens from the human html so the appended block is the only one.
-    const humanHtml = stripMetaMarkers(html);
+    // Strip any marker tokens from the human html so the appended block is the only one,
+    // then embed the self-loop marker so when the Flow bot re-posts this content into the
+    // agent's thread (a channel the app monitors), the app drops its own echo instead of
+    // routing it back to the agent — closing the notify→reply→notify loop.
+    const humanHtml = embedMarker(stripMetaMarkers(html));
     const meta: RelayMetadata = {
       v: 1,
       destTeamId: dest.teamId,
       destChannelId: dest.channelId,
+      threadRootId: dest.threadRootId,
       mentionType: resolved.mentionType,
       mentionId: resolved.mentionId,
       title,
@@ -188,18 +200,25 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
       html: body,
       hostedImages,
     });
-    tlog(`Relay post to Dump channel ok (dest=${dest.channelId}, mention=${resolved.mentionType}).`);
+    tlog(`Relay post to Dump channel ok (dest=${dest.channelId}, thread=${dest.threadRootId || 'root'}, mention=${resolved.mentionType}).`);
   };
 
   return {
     async createThread(p: CreateThreadParams): Promise<{ threadRootId: string; webUrl: string }> {
-      await postToDump({ teamId: p.teamId, channelId: p.channelId }, p.subject, p.html, p.hostedImages);
+      // No existing thread to reply under → flow posts a new root message.
+      await postToDump({ teamId: p.teamId, channelId: p.channelId, threadRootId: '' }, p.subject, p.html, p.hostedImages);
       // The Dump-channel post's ids don't map to a thread in the real channel.
       return { threadRootId: '', webUrl: '' };
     },
     async replyToThread(p: ReplyParams): Promise<{ messageId: string }> {
-      // The "new channel message" trigger only fires on root messages — post a new one.
-      await postToDump({ teamId: p.teamId, channelId: p.channelId }, '', p.html, p.hostedImages);
+      // Carry the agent's thread root so the flow REPLIES under it in the real channel.
+      // (The Dump-channel post itself is still a new root so the flow's trigger fires.)
+      await postToDump(
+        { teamId: p.teamId, channelId: p.channelId, threadRootId: p.threadRootId },
+        '',
+        p.html,
+        p.hostedImages,
+      );
       return { messageId: '' };
     },
   };

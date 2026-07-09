@@ -26,6 +26,7 @@ function msg(overrides: Partial<InboundMessage>): InboundMessage {
     channelId: 'chanA',
     threadRootId: 'root1',
     senderName: 'Alice',
+    senderId: '8:orgid:user-1',
     content: 'hi',
     composeTime: new Date().toISOString(),
     hasMarker: false,
@@ -56,6 +57,48 @@ describe('MessageFilter pipeline', () => {
     const f = new MessageFilter();
     const r = f.evaluate(msg({ messageId: 'x', hasMarker: true }), bindings, known);
     expect(r.reason).toBe('self-post');
+  });
+
+  it('drops bot-authored messages by MRI (28: prefix) — relay Flow bot echo', () => {
+    const f = new MessageFilter();
+    const r = f.evaluate(
+      msg({ messageId: 'bot-1', senderId: '28:app-flow-bot', senderName: 'Flow bot' }),
+      bindings,
+      known,
+    );
+    expect(r.action).toBe('ignore');
+    expect(r.reason).toBe('bot-sender');
+  });
+
+  it('drops bot-authored messages by display name when no MRI is supplied', () => {
+    const f = new MessageFilter();
+    const r = f.evaluate(
+      msg({ messageId: 'bot-2', senderId: '', senderName: 'Power Automate' }),
+      bindings,
+      known,
+    );
+    expect(r.action).toBe('ignore');
+    expect(r.reason).toBe('bot-sender');
+  });
+
+  it('does not treat a normal user (8:orgid MRI) as a bot', () => {
+    const f = new MessageFilter();
+    const r = f.evaluate(
+      msg({ messageId: 'user-1', senderId: '8:orgid:real-user', senderName: 'Alice' }),
+      bindings,
+      known,
+    );
+    expect(r.action).toBe('dispatch');
+  });
+
+  it('trusts a present MRI over display name — a human named "Flow bot" still dispatches', () => {
+    const f = new MessageFilter();
+    const r = f.evaluate(
+      msg({ messageId: 'user-2', senderId: '8:orgid:real-user', senderName: 'Flow bot' }),
+      bindings,
+      known,
+    );
+    expect(r.action).toBe('dispatch');
   });
 
   it('drops stale messages', () => {

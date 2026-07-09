@@ -278,11 +278,14 @@ describe('teams completion notification (distinct-identity ping at idle)', () =>
 
     // Content posted directly (as the signed-in user) via graph, NOT via the notifier.
     expect(h.replies.some((r) => r.html.includes('42'))).toBe(true);
-    // Exactly one distinct-identity completion ping, with the agent name + a preview.
+    // Exactly one distinct-identity completion ping — just the agent name + "finished
+    // responding" (no preview; the reply itself is already in the thread).
     expect(h.notifies).toHaveLength(1);
-    expect(h.notifies[0].html).toMatch(/finished replying/i);
+    expect(h.notifies[0].html).toMatch(/has finished responding/i);
     expect(h.notifies[0].html).toContain('<b>Gene</b>');
-    expect(h.notifies[0].html).toContain('42');
+    expect(h.notifies[0].html).not.toContain('42');
+    // The ping targets the agent's own thread root so the flow replies in-thread.
+    expect(h.notifies[0].threadRootId).toBe('root-1');
   });
 
   it('does NOT ping when the notification is inactive', async () => {

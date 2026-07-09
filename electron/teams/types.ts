@@ -8,13 +8,13 @@ export interface TeamsSettings {
   /** Default channel deep-link URL (parsed → team/channel/tenant). */
   defaultChannelUrl: string;
   /**
-   * Optional relay/trigger channel deep-link (a dedicated Teams channel watched by a
-   * Power Automate "When a new channel message is added" flow). When non-empty it acts
-   * as a feature flag: all outbound Teams posts are posted to this trigger channel so
-   * the flow re-posts them under a distinct bot identity with an @mention (so YOU get
-   * notified, since Teams never notifies you about your own messages). Send-only — no
-   * threaded reply routing on this path. Empty ⇒ fall back to the signed-in-user Graph
-   * sender.
+   * Optional relay/trigger channel deep-link (a dedicated "Dump" Teams channel watched by
+   * a Power Automate "When a new channel message is added" flow). When non-empty it gates
+   * the completion-notification feature: at each turn-end the app posts ONE notification to
+   * this Dump channel carrying routing metadata, and the flow re-posts it under a distinct
+   * bot identity — replying inside the agent's own thread with an @mention (so YOU get
+   * notified, since Teams never notifies you about your own messages). Reply content itself
+   * always posts directly as the signed-in user. Empty ⇒ completion notifications are off.
    */
   relayChannelUrl: string;
   /** Mention target kind for the relay flow: 'user' (person), 'tag' (Teams tag), or 'none'. */
@@ -97,6 +97,12 @@ export interface InboundMessage {
   /** Extracted from conversationid `;messageid=` suffix; empty for root posts. */
   threadRootId: string;
   senderName: string;
+  /**
+   * Sender identity (MRI) when available, e.g. `8:orgid:{oid}` for a user or `28:{appId}`
+   * for a bot/app. Used to drop bot-authored messages (e.g. the relay Flow bot's re-posts)
+   * so they never route back into an agent. Absent when the transport didn't supply it.
+   */
+  senderId?: string;
   content: string;
   composeTime: string;
   hasMarker: boolean;

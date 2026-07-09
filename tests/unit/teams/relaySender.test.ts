@@ -7,6 +7,7 @@ import {
   type MentionResolver,
 } from '../../../electron/teams/relaySender';
 import type { GraphSender, CreateThreadParams, ReplyParams } from '../../../electron/teams/graphClient';
+import { hasMarker } from '../../../electron/teams/marker';
 
 const CH = '19:aaa@thread.tacv2';
 // A real Dump-channel deep-link (teamId in groupId, channelId in the path).
@@ -67,23 +68,26 @@ describe('createRelaySender', () => {
     // Posted to the DUMP channel, not the caller's destination.
     expect(primary.createCalls[0].teamId).toBe(DUMP_TEAM);
     expect(primary.createCalls[0].channelId).toBe(DUMP_CHANNEL);
-    // Body contains the human html + a metadata block.
+    // Body contains the human text + a metadata block.
     const body = primary.createCalls[0].html;
-    expect(body).toContain('<p>Hi</p>');
+    expect(body).toContain('Hi');
     const meta = decodeMetaBlock(body);
     expect(meta).toMatchObject({
       v: 1,
       destTeamId: DEST_TEAM,
       destChannelId: DEST_CHANNEL,
+      threadRootId: '', // createThread → no existing thread to reply under
       mentionType: 'none',
       mentionId: '',
       title: 'Gene · Office X',
-      html: '<p>Hi</p>',
     });
+    // Forwarded content carries the self-loop marker so the Flow-bot re-post is dropped.
+    expect(meta?.html).toContain('Hi');
+    expect(hasMarker(meta!.html)).toBe(true);
     expect(primary.replyCalls).toHaveLength(0);
   });
 
-  it('replyToThread posts a NEW root message to the Dump channel (not a reply)', async () => {
+  it('replyToThread carries the agent thread root in metadata (flow replies in-thread)', async () => {
     const { primary, sender } = build();
 
     const res = await sender.replyToThread({
@@ -96,8 +100,13 @@ describe('createRelaySender', () => {
     expect(res).toEqual({ messageId: '' });
     expect(primary.createCalls).toHaveLength(1);
     expect(primary.replyCalls).toHaveLength(0);
+    // Dump post is still a NEW root (so the flow trigger fires)…
     expect(primary.createCalls[0].channelId).toBe(DUMP_CHANNEL);
-    expect(decodeMetaBlock(primary.createCalls[0].html)?.html).toBe('<p>Yo</p>');
+    const meta = decodeMetaBlock(primary.createCalls[0].html);
+    // …but it carries the destination thread root so the flow replies under it.
+    expect(meta?.threadRootId).toBe('root');
+    expect(meta?.html).toContain('Yo');
+    expect(hasMarker(meta!.html)).toBe(true);
   });
 
   it('resolves a user mention and embeds the resolved id + type in metadata', async () => {
