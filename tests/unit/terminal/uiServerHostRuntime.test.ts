@@ -182,3 +182,42 @@ describe('UiServerHostRuntime extra-args passthrough', () => {
     expect(captured.args).toEqual(['--allow-all-tools', '--ui-server', '--port', '0']);
   });
 });
+
+/**
+ * YOLO passthrough (FR-009): under ui-server the SDK client permission handler
+ * does not reliably auto-approve, so YOLO must be enforced at the hosted runtime.
+ * When `options.yolo` is set, the host launches with `--yolo`, positioned after
+ * any extraArgs and before the `--ui-server` control flags.
+ */
+describe('UiServerHostRuntime YOLO passthrough', () => {
+  it('adds --yolo to the host launch when yolo is enabled', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-y1', pty, 'copilot', process.cwd(), {
+      ...opts,
+      yolo: true,
+    }, 5000);
+    expect(captured.args).toEqual(['--yolo', '--ui-server', '--port', '0']);
+  });
+
+  it('omits --yolo when yolo is disabled', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-y2', pty, 'copilot', process.cwd(), {
+      ...opts,
+      yolo: false,
+    }, 5000);
+    expect(captured.args).toEqual(['--ui-server', '--port', '0']);
+  });
+
+  it('places --yolo after extraArgs and before the control flags', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-y3', pty, 'copilot', process.cwd(), {
+      ...opts,
+      extraArgs: ['--model', 'gpt-5.4'],
+      yolo: true,
+    }, 5000);
+    expect(captured.args).toEqual(['--model', 'gpt-5.4', '--yolo', '--ui-server', '--port', '0']);
+  });
+});

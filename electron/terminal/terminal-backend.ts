@@ -605,7 +605,7 @@ export class UiServerHostRuntime {
     pty: typeof import('node-pty'),
     cliPath: string,
     repoRoot: string,
-    options: Pick<StartTerminalOptions, 'cols' | 'rows' | 'cwd' | 'env' | 'extraArgs'>,
+    options: Pick<StartTerminalOptions, 'cols' | 'rows' | 'cwd' | 'env' | 'extraArgs' | 'yolo'>,
     listeningTimeoutMs = 15_000,
   ) {
     const launch = createSdkCliLaunchConfig(cliPath);
@@ -624,7 +624,14 @@ export class UiServerHostRuntime {
     }, listeningTimeoutMs);
 
     const extraArgs = (options.extraArgs ?? []).filter((a) => a && a.trim().length > 0);
-    this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, ...extraArgs, '--ui-server', '--port', '0'], {
+    // FR-009: under ui-server the SDK client's onPermissionRequest handler does NOT
+    // reliably intercept permission prompts for the hosted runtime (esp. resumed
+    // sessions), so YOLO must be enforced at the runtime itself. Launch the host
+    // with `--yolo` (all tool/path/url permissions) when YOLO is on. This is
+    // captured at host-creation (one host per office); toggling YOLO afterwards
+    // requires the office host to respawn.
+    const yoloArgs = options.yolo ? ['--yolo'] : [];
+    this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, ...extraArgs, ...yoloArgs, '--ui-server', '--port', '0'], {
       name: 'xterm-256color',
       cols: options.cols,
       rows: options.rows,
