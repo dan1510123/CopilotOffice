@@ -165,13 +165,18 @@ auth options. Results (all PASS):
   `user.message`; detection was tightened to assistant-authored events + turn-end before claiming.)
 - **foreground_switch** — `setForegroundSessionId(B)` then `(A)` both resolved.
 - **t029_yolooff_deferral** — see T030 above (permission surfaced, no-result, no crash, responsive).
-- **NEW robustness finding — promo-modal interstitial:** the CLI intermittently shows a once-per-day
+- **NEW robustness finding — promo-modal interstitial:** the CLI shows a one-time install-nudge
   "Now generally available! … Would you like to install it? [Yes, install] [No, thanks]" modal on
-  startup that **blocks `--ui-server` from listening** until dismissed (it waits on stdin). The spike
+  startup that **blocks `--ui-server` from listening** until dismissed (it waits on stdin). It is a
+  **one-time nudge per profile**, tracked by the persistent boolean `appInstallNudgeResponded` in
+  `~/.copilot/config.json` (alongside a separate one-time `appTipShown`) — NOT a daily/periodic
+  prompt. Empirically it appeared on a fresh launch while `appInstallNudgeResponded` was still
+  `false` and stopped once answered. So it re-fires on a fresh machine/user profile, on a config
+  reset, or when a CLI upgrade introduces a *new* interstitial keyed on a new flag. The spike
   detected `/install it\?|Yes, install/i` in the pty stream and wrote `n\r` to dismiss. **Production
-  `UiServerProcess` must handle this** (dismiss the promo, or set whatever env/flag suppresses it)
-  before the port-discovery timeout, else ui-server startup fails and falls back to node-pty (T039).
-  Filed as a follow-up hardening item.
+  `UiServerHostRuntime` handles this** (implemented: bounded rolling-buffer detection + one-shot
+  `n\r`), else ui-server startup would hang until the port-discovery timeout and fall back to
+  node-pty (T039).
 
 ## Residual & deferred verification (2026-07-09)
 

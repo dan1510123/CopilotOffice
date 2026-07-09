@@ -603,11 +603,14 @@ export class UiServerHostRuntime {
         return;
       }
 
-      // Before the server is listening, watch for the CLI's once-per-day
+      // Before the server is listening, watch for the CLI's install-nudge
       // "install the desktop app?" promo modal, which blocks --ui-server
-      // startup by waiting on stdin. Dismiss it once with "n" so the runtime
-      // proceeds to bind its port. Detection uses a bounded rolling buffer
-      // because the prompt text can straddle PTY chunk boundaries.
+      // startup by waiting on stdin. It is a one-time nudge per profile —
+      // gated by `appInstallNudgeResponded` in ~/.copilot/config.json — so it
+      // fires on a fresh machine/user (or when a CLI upgrade adds a new
+      // interstitial), not on a fixed schedule. Dismiss it once with "n" so the
+      // runtime proceeds to bind its port. Detection uses a bounded rolling
+      // buffer because the prompt text can straddle PTY chunk boundaries.
       if (this.controlPort === null && !this.promoDismissed) {
         this.startupBuffer = (this.startupBuffer + data).slice(-4000);
         if (/install it\?|Yes, install/i.test(this.startupBuffer)) {
