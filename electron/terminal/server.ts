@@ -512,6 +512,7 @@ async function startTerminalForAgent(
       cwd,
       env: taggedEnv,
       officeId,
+      yolo: yoloEnabled,
     };
 
     // Backend used for THIS session — may differ from the selected backend if the

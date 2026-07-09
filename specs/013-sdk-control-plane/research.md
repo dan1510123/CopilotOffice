@@ -132,3 +132,18 @@ is not fully capable — it degrades to node-pty per-session with no user-facing
 *through* `ui-server` still requires an environment whose resolved copilot CLI is a real,
 ui-server-capable executable (documented; the remaining half of T039 — preferring a capable exe — is
 optional given the fallback).
+
+## Permission posture mapping (T030 / FR-009, 2026-07-09)
+
+The app's YOLO flag (server module state, set via `set-yolo`) is now threaded into the ui-server
+backend via `StartTerminalOptions.yolo` and baked at session creation (parity with node-pty, which
+bakes `--yolo` at launch):
+- **YOLO on** → `onPermissionRequest` = the SDK-exported `approveAll` (auto-approve every request).
+  This is the **verified** path (spikes used approveAll successfully).
+- **YOLO off** → `onPermissionRequest` returns `{ kind: 'no-result' }`, signalling the client does
+  not decide, so the prompt should defer to the hosted runtime's own TUI (which the human is
+  viewing). **This deferral path is NOT yet empirically verified** against a live ui-server runtime
+  in this environment (blocked by the same CLI-resolution gap as T037). Documented as a residual
+  verification item; if the runtime does not fall back to its TUI on `no-result`, revisit (options:
+  omit the handler entirely, or map to an interactive elicitation). Because YOLO defaults to off and
+  the whole backend defaults to node-pty, this does not affect current users.

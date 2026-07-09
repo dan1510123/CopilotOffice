@@ -51,6 +51,8 @@ export interface StartTerminalOptions {
   rows: number;
   cwd: string;
   env: { [key: string]: string };
+  /** YOLO/auto-approve posture for this session (FR-009). Defaults to false. */
+  yolo?: boolean;
 }
 
 export interface TerminalBackend {
@@ -665,12 +667,21 @@ export class ControlPlaneClient {
     await this.startPromise;
   }
 
-  async createOrResumeSession(sessionId: string, cwd: string): Promise<UiServerSession> {
+  async createOrResumeSession(sessionId: string, cwd: string, yolo = false): Promise<UiServerSession> {
     const client = await this.getStartedClient();
+    // FR-009: map the app's YOLO posture onto the SDK permission handler.
+    // - YOLO on  → auto-approve every request (SDK-exported `approveAll`).
+    // - YOLO off → return `{ kind: 'no-result' }` so the client does NOT decide,
+    //   deferring the prompt to the hosted runtime's own TUI (which the human is
+    //   viewing). NOTE: the deferral path is not yet empirically verified against a
+    //   live ui-server runtime in this environment — see research.md T030 note.
+    const onPermissionRequest = yolo
+      ? (this.approveAll ?? (async () => ({ kind: 'approved' })))
+      : (async () => ({ kind: 'no-result' }));
     const sharedConfig: Record<string, unknown> = {
       streaming: true,
       workingDirectory: cwd,
-      onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
+      onPermissionRequest,
     };
 
     try {
@@ -889,7 +900,7 @@ export class UiServerBackend implements TerminalBackend {
     const entry = this.getOrCreateOfficeEntry(officeId, options);
     try {
       await entry.client.start();
-      const session = await entry.client.createOrResumeSession(options.sessionId, options.cwd);
+      const session = await entry.client.createOrResumeSession(options.sessionId, options.cwd, options.yolo ?? false);
       const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
       await process.setForeground();
       return process;
