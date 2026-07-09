@@ -172,11 +172,14 @@ auth options. Results (all PASS):
   `~/.copilot/config.json` (alongside a separate one-time `appTipShown`) — NOT a daily/periodic
   prompt. Empirically it appeared on a fresh launch while `appInstallNudgeResponded` was still
   `false` and stopped once answered. So it re-fires on a fresh machine/user profile, on a config
-  reset, or when a CLI upgrade introduces a *new* interstitial keyed on a new flag. The spike
-  detected `/install it\?|Yes, install/i` in the pty stream and wrote `n\r` to dismiss. **Production
-  `UiServerHostRuntime` handles this** (implemented: bounded rolling-buffer detection + one-shot
-  `n\r`), else ui-server startup would hang until the port-discovery timeout and fall back to
-  node-pty (T039).
+  reset, or when a CLI upgrade introduces a *new* interstitial keyed on a new flag. The runtime
+  detects `/install it\?|Yes, install/i` in the pre-listening pty stream and writes a single **ESC**
+  (`\x1b`) to dismiss it — ESC was verified live (flipping `appInstallNudgeResponded` to false to
+  re-fire the modal) to close the nudge WITHOUT triggering an install and to generalize to reworded
+  modals better than a `Y/N` key; the shipped `UiServerHostRuntime` then bound its port
+  (`status=listening`, `promoDismissed=true`). **Production `UiServerHostRuntime` handles this**
+  (bounded rolling-buffer detection + one-shot ESC), else ui-server startup would hang until the
+  port-discovery timeout and fall back to node-pty (T039).
 
 ## Residual & deferred verification (2026-07-09)
 

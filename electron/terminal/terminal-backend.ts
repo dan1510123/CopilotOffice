@@ -608,15 +608,17 @@ export class UiServerHostRuntime {
       // startup by waiting on stdin. It is a one-time nudge per profile —
       // gated by `appInstallNudgeResponded` in ~/.copilot/config.json — so it
       // fires on a fresh machine/user (or when a CLI upgrade adds a new
-      // interstitial), not on a fixed schedule. Dismiss it once with "n" so the
-      // runtime proceeds to bind its port. Detection uses a bounded rolling
-      // buffer because the prompt text can straddle PTY chunk boundaries.
+      // interstitial), not on a fixed schedule. Dismiss it once with ESC
+      // (cancel/dismiss) — verified to close the nudge without triggering an
+      // install and to generalize to reworded modals better than a Y/N key.
+      // Detection uses a bounded rolling buffer because the prompt text can
+      // straddle PTY chunk boundaries.
       if (this.controlPort === null && !this.promoDismissed) {
         this.startupBuffer = (this.startupBuffer + data).slice(-4000);
         if (/install it\?|Yes, install/i.test(this.startupBuffer)) {
           this.promoDismissed = true;
           try {
-            this.proc.write('n\r');
+            this.proc.write('\x1b');
           } catch {
             // PTY already gone; onExit will surface the failure.
           }

@@ -82,16 +82,16 @@ function makeDrivablePty() {
 }
 
 describe('UiServerHostRuntime promo-modal dismissal', () => {
-  it('sends "n" once when the install promo appears, then resolves on the port', async () => {
+  it('sends ESC once when the install promo appears, then resolves on the port', async () => {
     const { pty, emit, writes } = makeDrivablePty();
     const runtime = new UiServerHostRuntime('office-p', pty, 'copilot', process.cwd(), opts, 5000);
 
     emit('Now generally available! Would you like to install it?');
-    expect(writes).toEqual(['n\r']);
+    expect(writes).toEqual(['\x1b']);
 
     // A second promo-ish chunk must NOT trigger another dismissal.
     emit('Yes, install');
-    expect(writes).toEqual(['n\r']);
+    expect(writes).toEqual(['\x1b']);
 
     emit('listening on port 51234\r\n');
     await expect(runtime.whenListening()).resolves.toBe(51234);
@@ -104,7 +104,7 @@ describe('UiServerHostRuntime promo-modal dismissal', () => {
 
     emit('...would you like to inst');
     emit('all it? [Yes] [No]');
-    expect(writes).toEqual(['n\r']);
+    expect(writes).toEqual(['\x1b']);
 
     emit('listening on port 6000\r\n');
     await expect(runtime.whenListening()).resolves.toBe(6000);
@@ -124,7 +124,7 @@ describe('UiServerHostRuntime promo-modal dismissal', () => {
     const { pty, emit, writes } = makeDrivablePty();
     const runtime = new UiServerHostRuntime('office-s', pty, 'copilot', process.cwd(), opts, 5000);
 
-    // Port must win: no stray "n\r" injected into an already-listening runtime.
+    // Port must win: no stray ESC injected into an already-listening runtime.
     emit('Would you like to install it?\r\nlistening on port 8080\r\n');
     await expect(runtime.whenListening()).resolves.toBe(8080);
     expect(writes).toEqual([]);
