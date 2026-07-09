@@ -74,9 +74,18 @@ export const META_OPEN = '[[CO-META]]';
 export const META_CLOSE = '[[/CO-META]]';
 
 /** Remove any CO-META marker tokens from caller-supplied html so a forged metadata
- *  block can't be injected ahead of the app's real one (content-injection guard). */
+ *  block can't be injected ahead of the app's real one (content-injection guard).
+ *  Strips to a FIXED POINT: a single pass can reconstruct a marker at a join boundary
+ *  (e.g. `[[CO-[[CO-META]]META]]` → `[[CO-META]]`), so we repeat until stable. On exit
+ *  neither marker substring can remain (else another pass would have changed the text). */
 export function stripMetaMarkers(html: string): string {
-  return html.split(META_OPEN).join('').split(META_CLOSE).join('');
+  let out = html;
+  let prev: string;
+  do {
+    prev = out;
+    out = out.split(META_OPEN).join('').split(META_CLOSE).join('');
+  } while (out !== prev);
+  return out;
 }
 
 export interface RelaySenderOptions {

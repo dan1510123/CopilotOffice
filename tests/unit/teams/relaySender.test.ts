@@ -3,6 +3,7 @@ import {
   createRelaySender,
   createRoutingGraphSender,
   decodeMetaBlock,
+  stripMetaMarkers,
   type MentionResolver,
 } from '../../../electron/teams/relaySender';
 import type { GraphSender, CreateThreadParams, ReplyParams } from '../../../electron/teams/graphClient';
@@ -158,6 +159,16 @@ describe('createRelaySender', () => {
     await sender.createThread({ teamId: DEST_TEAM, channelId: DEST_CHANNEL, subject: 's', html: 'b' });
 
     expect(primary.createCalls.map((c) => c.channelId)).toEqual([DUMP_CHANNEL, '19:deadbeef@thread.tacv2']);
+  });
+
+  it('strips CO-META markers to a fixed point (nested markers cannot reconstruct a block)', async () => {
+    // A single non-rescanning pass would leave a full block behind; the fixed-point
+    // loop must remove every trace of both marker tokens.
+    expect(stripMetaMarkers('[[CO-[[CO-META]]META]]')).toBe('');
+    const nested = 'X[[CO-[[/CO-META]]META]]YYY[[/CO-[[/CO-META]]META]]Z';
+    const stripped = stripMetaMarkers(nested);
+    expect(stripped).not.toContain('[[CO-META]]');
+    expect(stripped).not.toContain('[[/CO-META]]');
   });
 
   it('strips CO-META markers from caller html so a forged block cannot be injected', async () => {

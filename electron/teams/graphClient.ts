@@ -130,7 +130,8 @@ export class GraphClient implements GraphSender {
       const json = (await res.json()) as { id?: string };
       return json.id || '';
     }
-    const url = `${GRAPH_BASE}/users?$filter=displayName eq '${q.replace(/'/g, "''")}'&$select=id&$top=1`;
+    const filter = `displayName eq '${q.replace(/'/g, "''")}'`;
+    const url = `${GRAPH_BASE}/users?$filter=${encodeURIComponent(filter)}&$select=id&$top=1`;
     const res = await fetch(url, { headers: await this.authHeaders() });
     if (!res.ok) return '';
     const json = (await res.json()) as { value?: Array<{ id: string }> };
