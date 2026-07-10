@@ -138,20 +138,26 @@ describe('config/agentStatusPresentation — computeStall', () => {
 });
 
 describe('config/agentStatusPresentation — describeActivity', () => {
+  it('shows no secondary detail for thinking (label already reads "Thinking…")', () => {
+    expect(describeActivity(makeStatus({ subState: 'thinking', thinkingDetail: 'refactoring util' }))).toBe('');
+    expect(describeActivity(makeStatus({ subState: 'thinking', currentTool: 'edit' }))).toBe('');
+    expect(describeActivity(makeStatus({ subState: 'thinking', thinkingDetail: null, currentTool: null }))).toBe('');
+  });
+
   it('prefers thinkingDetail', () => {
-    expect(describeActivity(makeStatus({ thinkingDetail: 'refactoring util' }))).toBe('refactoring util');
+    expect(describeActivity(makeStatus({ subState: 'starting', thinkingDetail: 'refactoring util' }))).toBe('refactoring util');
   });
 
   it('falls back to a friendly tool name', () => {
-    expect(describeActivity(makeStatus({ thinkingDetail: null, currentTool: 'edit' }))).toBe('Editing a file');
+    expect(describeActivity(makeStatus({ subState: 'starting', thinkingDetail: null, currentTool: 'edit' }))).toBe('Editing a file');
   });
 
   it('passes through an unknown tool name', () => {
-    expect(describeActivity(makeStatus({ thinkingDetail: null, currentTool: 'customtool' }))).toBe('customtool');
+    expect(describeActivity(makeStatus({ subState: 'starting', thinkingDetail: null, currentTool: 'customtool' }))).toBe('customtool');
   });
 
   it('falls back to Working… when nothing is known', () => {
-    expect(describeActivity(makeStatus({ thinkingDetail: null, currentTool: null }))).toBe('Working…');
+    expect(describeActivity(makeStatus({ subState: 'starting', thinkingDetail: null, currentTool: null }))).toBe('Working…');
   });
 
   it('returns empty string for non-in-progress states (ready/done/error/slacking)', () => {

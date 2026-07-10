@@ -72,13 +72,14 @@ describe('dashboard card height stability (spec 014 FR-015 / SC-009)', () => {
     expect(heights.size).toBe(1);
   });
 
-  it('a long thinking detail never lands in the primary label (stays "Thinking")', () => {
+  it('a long thinking detail never appears on the card (thinking shows only "Thinking…")', () => {
     const html = defaultDashboard.renderCards(ctx(status({ subState: 'thinking', thinkingDetail: 'y'.repeat(300) })));
     // Concise label present; no "Thinking: <detail>" concatenation anywhere.
-    expect(html).toContain('Thinking');
+    expect(html).toContain('Thinking…');
     expect(html).not.toContain('Thinking: ');
-    // The long detail lives only in the fixed-height detail slot.
-    expect(html).toContain('y'.repeat(300));
+    // The per-step detail is intentionally dropped for thinking, so it must not
+    // appear anywhere on the card (it was noisy churn that resized the card).
+    expect(html).not.toContain('y'.repeat(300));
   });
 
   it('fleet card also keeps a fixed min-height + fixed detail slot across states', () => {

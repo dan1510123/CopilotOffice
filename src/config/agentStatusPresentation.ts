@@ -110,8 +110,8 @@ export const STATUS_PRESENTATION: Record<StatusKey, StatusPresentation> = {
   },
   thinking: {
     key: 'thinking',
-    label: 'Thinking',
-    shortLabel: 'Thinking',
+    label: 'Thinking…',
+    shortLabel: 'Thinking…',
     colorHex: '#50fa7b',
     colorNum: 0x50fa7b,
     strokeNum: 0x66ff99,
@@ -226,13 +226,17 @@ export function computeStall(
  * Human-readable description of what an active agent is currently doing. Used ONLY
  * for a secondary detail line / tooltip — never concatenated into the primary label
  * (which must stay the concise state name so dashboard cards keep a fixed height).
+ *
+ * `thinking` is intentionally excluded: its label already reads "Thinking…" and the
+ * per-step tool/process detail was noisy churn on the card, so thinking shows the
+ * single-line label with no secondary detail (spec 014 follow-up).
  */
 export function describeActivity(status: AgentStatus | undefined | null): string {
   if (!status) return '';
-  // Only in-progress states have a "what it's doing" detail. ready/done/error/
-  // slacking must return '' so the fixed detail slot stays blank (no stale text).
+  // Only waiting/starting expose a "what it's doing" detail. thinking (label says it
+  // all) and ready/done/error/slacking return '' so the fixed detail slot stays blank.
   const key = resolveStatusKey(status);
-  if (key !== 'thinking' && key !== 'waiting' && key !== 'starting') return '';
+  if (key !== 'waiting' && key !== 'starting') return '';
   const detail = status.thinkingDetail?.trim();
   if (detail) return detail;
   const tool = status.currentTool?.trim();
