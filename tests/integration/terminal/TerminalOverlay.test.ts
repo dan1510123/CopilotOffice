@@ -104,6 +104,48 @@ describe('integration/TerminalOverlay', () => {
     expect(sessionDisplay.textContent).toBe('sess-123');
   });
 
+  it('reattachListeners is idempotent — never accumulates duplicate terminal-data listeners', () => {
+    // Simulate the real preload contract: additive registration that returns a
+    // disposer removing ONLY that registration. Duplicate live listeners are what
+    // cause every PTY byte (incl. typed echo) to be written to xterm twice.
+    const liveDataCbs: Array<(agentId: string, data: string) => void> = [];
+    installMockCopilotBridge({
+      onTerminalData: vi.fn((cb: (agentId: string, data: string) => void) => {
+        liveDataCbs.push(cb);
+        return () => {
+          const i = liveDataCbs.indexOf(cb);
+          if (i >= 0) liveDataCbs.splice(i, 1);
+        };
+      }),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+    // Constructor registers exactly one terminal-data listener.
+    expect(liveDataCbs.length).toBe(1);
+
+    // Returning from a meeting re-attaches; without idempotency this would grow
+    // to 4 and every byte would be written to xterm 4×.
+    overlay.reattachListeners();
+    overlay.reattachListeners();
+    overlay.reattachListeners();
+    expect(liveDataCbs.length).toBe(1);
+
+    // Destroy disposes this overlay's own listener (no global nuke).
+    overlay.destroy();
+    overlay = null;
+    expect(liveDataCbs.length).toBe(0);
+  });
+
   it('hides terminal, detaches session, and restores game focus path', async () => {
     const onClose = vi.fn();
     const bridge = installMockCopilotBridge({

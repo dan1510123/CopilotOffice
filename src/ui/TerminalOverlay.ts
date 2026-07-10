@@ -90,6 +90,14 @@ export class TerminalOverlay {
   // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
   // so the handler's closure captures the new agent id (feature 002, C3/V6).
   private onDataDisposable: { dispose: () => void } | null = null;
+  // Unsubscribe functions for the bridge IPC listeners this overlay owns
+  // (terminal-data, terminal-exit, session-meta-updated). Disposed and
+  // re-created on every setupTerminalListeners() call so an overlay can never
+  // accumulate duplicate listeners — duplicates would write each PTY byte to
+  // xterm more than once (the "double characters" bug).
+  private bridgeListenerDisposers: Array<() => void> = [];
+  // Teams status listener has no disposer on the bridge; bind it at most once.
+  private teamsListenerBound: boolean = false;
   // Toggled while show() is awaiting detach/attach so onData cannot fire input
   // against a half-attached agent (feature 002, V5).
   private isSwitchingAgent: boolean = false;
@@ -118,40 +126,55 @@ export class TerminalOverlay {
 
   private setupTerminalListeners(): void {
     if (typeof window !== 'undefined' && window.copilotBridge) {
-      window.copilotBridge.onTerminalData((agentId: string, data: string) => {
-        if (this.isReplaying) return;
-        if (agentId === this.currentAgentId && this.terminal) {
-          this.terminal.write(data);
-        }
-      });
+      // Idempotent: drop any prior registrations from this overlay first so we
+      // never end up with two live callbacks writing the same byte to xterm.
+      for (const dispose of this.bridgeListenerDisposers) {
+        try { dispose(); } catch { /* ignore */ }
+      }
+      this.bridgeListenerDisposers = [];
 
-      window.copilotBridge.onTerminalExit((agentId: string, exitCode: number) => {
-        if (agentId === this.currentAgentId && this.terminal) {
-          this.terminal.writeln(`\r\n[Process exited with code ${exitCode}]`);
-        }
-      });
+      this.bridgeListenerDisposers.push(
+        window.copilotBridge.onTerminalData((agentId: string, data: string) => {
+          if (this.isReplaying) return;
+          if (agentId === this.currentAgentId && this.terminal) {
+            this.terminal.write(data);
+          }
+        }),
+      );
 
-      window.copilotBridge.onSessionMetaUpdated((agentId: string, meta: { title: string }) => {
-        if (agentId === this.currentAgentId) {
-          this.updateSessionTitleDisplay(meta?.title || null);
-        }
-      });
+      this.bridgeListenerDisposers.push(
+        window.copilotBridge.onTerminalExit((agentId: string, exitCode: number) => {
+          if (agentId === this.currentAgentId && this.terminal) {
+            this.terminal.writeln(`\r\n[Process exited with code ${exitCode}]`);
+          }
+        }),
+      );
+
+      this.bridgeListenerDisposers.push(
+        window.copilotBridge.onSessionMetaUpdated((agentId: string, meta: { title: string }) => {
+          if (agentId === this.currentAgentId) {
+            this.updateSessionTitleDisplay(meta?.title || null);
+          }
+        }),
+      );
 
       // Teams Remote Agents (011): live-update the button when the bound
-      // agent's online state changes.
-      window.copilotBridge.onTeamsStatusChanged?.((status: { agentId: string; online: boolean }) => {
-        if (status?.agentId === this.currentAgentId) {
-          this.setTeamsButtonState(!!status.online);
-        }
-      });
+      // agent's online state changes. No disposer on the bridge — bind once.
+      if (!this.teamsListenerBound) {
+        window.copilotBridge.onTeamsStatusChanged?.((status: { agentId: string; online: boolean }) => {
+          if (status?.agentId === this.currentAgentId) {
+            this.setTeamsButtonState(!!status.online);
+          }
+        });
+        this.teamsListenerBound = true;
+      }
     }
   }
 
   /**
-   * Re-register IPC listeners that may have been removed by another scene's
-   * cleanup (e.g. MeetingScene calling removeTerminalListeners()).
-   * Safe to call multiple times — additive listeners are fine because they
-   * all guard on `this.currentAgentId`.
+   * Re-register this overlay's IPC listeners. setupTerminalListeners() is
+   * idempotent (it disposes prior registrations first), so calling this after
+   * returning from another scene cannot create duplicate listeners.
    */
   reattachListeners(): void {
     this.setupTerminalListeners();
@@ -1960,8 +1983,11 @@ export class TerminalOverlay {
       if (fallback) fallback.remove();
     } catch { /* ignore */ }
     this.spriteCardElement = null;
-    if (window.copilotBridge) {
-      window.copilotBridge.removeTerminalListeners();
+    // Dispose only THIS overlay's bridge listeners (not a global nuke that would
+    // silence other overlays). setupTerminalListeners re-registers on reattach.
+    for (const dispose of this.bridgeListenerDisposers) {
+      try { dispose(); } catch { /* ignore */ }
     }
+    this.bridgeListenerDisposers = [];
   }
 }

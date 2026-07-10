@@ -108,38 +108,62 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('load-offices');
   },
   
-  // Terminal event listeners
+  // Terminal event listeners. Each returns an unsubscribe function that removes
+  // ONLY this registration (not every listener on the channel), so a controller
+  // can dispose its own listener before re-registering. This prevents duplicate
+  // registrations from writing the same PTY byte to xterm more than once (the
+  // classic "double characters" bug). Callers may ignore the return value.
   onTerminalData: (callback: (agentId: string, data: string) => void) => {
-    ipcRenderer.on('terminal-data', (_event, agentId, data) => callback(agentId, data));
+    const handler = (_event: unknown, agentId: string, data: string) => callback(agentId, data);
+    ipcRenderer.on('terminal-data', handler);
+    return () => ipcRenderer.removeListener('terminal-data', handler);
   },
   onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => {
-    ipcRenderer.on('terminal-exit', (_event, agentId, exitCode) => callback(agentId, exitCode));
+    const handler = (_event: unknown, agentId: string, exitCode: number) => callback(agentId, exitCode);
+    ipcRenderer.on('terminal-exit', handler);
+    return () => ipcRenderer.removeListener('terminal-exit', handler);
   },
   onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => {
-    ipcRenderer.on('terminal-preload-status', (_event, agentId, status) => callback(agentId, status));
+    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed') => callback(agentId, status);
+    ipcRenderer.on('terminal-preload-status', handler);
+    return () => ipcRenderer.removeListener('terminal-preload-status', handler);
   },
   
   // Copilot activity event listeners
   onCopilotEvent: (callback: (agentId: string, event: CopilotEvent) => void) => {
-    ipcRenderer.on('copilot-event', (_event, agentId, copilotEvent) => callback(agentId, copilotEvent));
+    const handler = (_event: unknown, agentId: string, copilotEvent: CopilotEvent) => callback(agentId, copilotEvent);
+    ipcRenderer.on('copilot-event', handler);
+    return () => ipcRenderer.removeListener('copilot-event', handler);
   },
   onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => {
-    ipcRenderer.on('copilot-tool-start', (_event, agentId, toolName, toolId, status) => callback(agentId, toolName, toolId, status));
+    const handler = (_event: unknown, agentId: string, toolName: string, toolId: string, status: string) => callback(agentId, toolName, toolId, status);
+    ipcRenderer.on('copilot-tool-start', handler);
+    return () => ipcRenderer.removeListener('copilot-tool-start', handler);
   },
   onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => {
-    ipcRenderer.on('copilot-tool-complete', (_event, agentId, toolId, success) => callback(agentId, toolId, success));
+    const handler = (_event: unknown, agentId: string, toolId: string, success: boolean) => callback(agentId, toolId, success);
+    ipcRenderer.on('copilot-tool-complete', handler);
+    return () => ipcRenderer.removeListener('copilot-tool-complete', handler);
   },
   onCopilotTurnEnd: (callback: (agentId: string) => void) => {
-    ipcRenderer.on('copilot-turn-end', (_event, agentId) => callback(agentId));
+    const handler = (_event: unknown, agentId: string) => callback(agentId);
+    ipcRenderer.on('copilot-turn-end', handler);
+    return () => ipcRenderer.removeListener('copilot-turn-end', handler);
   },
   onCopilotTurnStart: (callback: (agentId: string) => void) => {
-    ipcRenderer.on('copilot-turn-start', (_event, agentId) => callback(agentId));
+    const handler = (_event: unknown, agentId: string) => callback(agentId);
+    ipcRenderer.on('copilot-turn-start', handler);
+    return () => ipcRenderer.removeListener('copilot-turn-start', handler);
   },
   onCopilotUserMessage: (callback: (agentId: string) => void) => {
-    ipcRenderer.on('copilot-user-message', (_event, agentId) => callback(agentId));
+    const handler = (_event: unknown, agentId: string) => callback(agentId);
+    ipcRenderer.on('copilot-user-message', handler);
+    return () => ipcRenderer.removeListener('copilot-user-message', handler);
   },
   onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => {
-    ipcRenderer.on('session-meta-updated', (_event, agentId, meta) => callback(agentId, meta));
+    const handler = (_event: unknown, agentId: string, meta: { title: string }) => callback(agentId, meta);
+    ipcRenderer.on('session-meta-updated', handler);
+    return () => ipcRenderer.removeListener('session-meta-updated', handler);
   },
   
   removeTerminalListeners: () => {
@@ -294,16 +318,16 @@ declare global {
       createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
-      onTerminalData: (callback: (agentId: string, data: string) => void) => void;
-      onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => void;
-      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => void;
-      onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => void;
-      onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => void;
-      onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => void;
-      onCopilotTurnEnd: (callback: (agentId: string) => void) => void;
-      onCopilotTurnStart: (callback: (agentId: string) => void) => void;
-      onCopilotUserMessage: (callback: (agentId: string) => void) => void;
-      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => void;
+      onTerminalData: (callback: (agentId: string, data: string) => void) => () => void;
+      onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => () => void;
+      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => () => void;
+      onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => () => void;
+      onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
+      onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => () => void;
+      onCopilotTurnEnd: (callback: (agentId: string) => void) => () => void;
+      onCopilotTurnStart: (callback: (agentId: string) => void) => () => void;
+      onCopilotUserMessage: (callback: (agentId: string) => void) => () => void;
+      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => () => void;
       removeTerminalListeners: () => void;
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
