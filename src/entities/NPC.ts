@@ -121,7 +121,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.updateSessionBadge(spriteScale);
     
     // Session status icon text
-    this.sessionText = scene.add.text(x + 16 * spriteScale, y - 24 * spriteScale, '💤', {
+    this.sessionText = scene.add.text(x + 16 * spriteScale, y - 24 * spriteScale, STATUS_PRESENTATION.slacking.icon, {
       font: `bold ${badgeFontSize * 4}px monospace`,
       color: '#ffffff',
     });
@@ -245,7 +245,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     if (!hasSession) {
       this.setStalled(false);
       this.updateBadgeForState('slacking');
-      this.sessionText.setText('💤');
+      this.sessionText.setText(STATUS_PRESENTATION.slacking.icon);
       if (!this.badgeHidden) {
         this.sessionText.setVisible(true);
       }
@@ -282,7 +282,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       this.hasActiveSession = false;
       this.setStalled(false);
       this.updateBadgeForState('slacking');
-      this.sessionText.setText('💤');
+      this.sessionText.setText(STATUS_PRESENTATION.slacking.icon);
       if (!this.badgeHidden) {
         this.sessionText.setVisible(true);
       }
