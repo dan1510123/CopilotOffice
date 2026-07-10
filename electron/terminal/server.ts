@@ -85,6 +85,19 @@ function getNodePtyFallbackBackend(): TerminalBackend | null {
   }
   return nodePtyFallbackBackend;
 }
+// Dedicated node-pty backend for the PC Terminal / local shell. A local shell
+// (powershell/bash) is a plain OS process with nothing to do with Copilot, so it
+// always runs on node-pty regardless of the office's control-plane backend. This
+// is its normal, expected backend — NOT a ui-server failure fallback — so it has
+// its own accessor to keep the two concerns from being conflated.
+let shellBackend: TerminalBackend | null = null;
+function getShellBackend(): TerminalBackend | null {
+  if (terminalBackend && terminalBackend.name === 'node-pty') return terminalBackend;
+  if (!shellBackend) {
+    shellBackend = NodePtyBackend.tryCreate();
+  }
+  return shellBackend;
+}
 const eventSourceFactory = new FileWatcherEventSourceFactory();
 
 // Track per-agent ready state so it can be queried by the renderer
@@ -520,8 +533,18 @@ async function startTerminalForAgentImpl(
     return { success: false, error: 'terminal backend not available' };
   }
   const shellOnlyMode = launchMode === 'shell';
+  // The PC Terminal / local shell is a plain OS shell (powershell/bash), not a
+  // Copilot process — it always runs on its dedicated node-pty shell backend
+  // regardless of the office's control-plane backend (ui-server/sdk). This is the
+  // expected, normal path for shell mode (regression: shell mode broke once
+  // ui-server became the default backend).
+  let sessionBackend: TerminalBackend = terminalBackend;
   if (shellOnlyMode && terminalBackend.name !== 'node-pty') {
-    return { success: false, error: 'shell mode requires node-pty backend' };
+    const shell = getShellBackend();
+    if (!shell || !shell.isAvailable()) {
+      return { success: false, error: 'shell mode requires node-pty backend' };
+    }
+    sessionBackend = shell;
   }
 
   const ck = compositeKey(officeId, agentId);
@@ -533,14 +556,23 @@ async function startTerminalForAgentImpl(
   }
 
   const officeData = getOfficeSession(officeId);
-  let sessionId = officeData.sessionIds.get(agentId);
-  if (!sessionId) {
+  let sessionId: string;
+  if (shellOnlyMode) {
+    // The PC Terminal / local shell is not a Copilot session — node-pty shell
+    // mode never resumes a session GUID. Use an ephemeral id so we don't mint or
+    // persist a bogus entry into copilot-office-sessions.json. Live reuse is
+    // still handled above via the ptyProcesses/agentToTerminal check.
     sessionId = crypto.randomUUID();
-    officeData.sessionIds.set(agentId, sessionId);
-    await saveOfficeSessionFile(officeId);
-    console.log(`[TermServer] New session GUID for ${ck}: ${sessionId}`);
   } else {
-    console.log(`[TermServer] Reusing session GUID for ${ck}: ${sessionId}`);
+    sessionId = officeData.sessionIds.get(agentId) ?? '';
+    if (!sessionId) {
+      sessionId = crypto.randomUUID();
+      officeData.sessionIds.set(agentId, sessionId);
+      await saveOfficeSessionFile(officeId);
+      console.log(`[TermServer] New session GUID for ${ck}: ${sessionId}`);
+    } else {
+      console.log(`[TermServer] Reusing session GUID for ${ck}: ${sessionId}`);
+    }
   }
 
   const terminalKey = ck;
@@ -584,13 +616,13 @@ async function startTerminalForAgentImpl(
 
     // Backend used for THIS session — may differ from the selected backend if the
     // ui-server start fails and we fall back to node-pty (T039).
-    let activeBackend: TerminalBackend = terminalBackend;
+    let activeBackend: TerminalBackend = sessionBackend;
     let sessionFallbackReason: string | undefined;
     let proc: TerminalProcess;
     try {
-      proc = await terminalBackend.start(startOptions);
+      proc = await sessionBackend.start(startOptions);
     } catch (startError) {
-      if (terminalBackend.name === 'ui-server' && !shellOnlyMode) {
+      if (sessionBackend.name === 'ui-server' && !shellOnlyMode) {
         const fallback = getNodePtyFallbackBackend();
         if (fallback && fallback.isAvailable()) {
           console.warn(`[lifecycle] ui-server start failed for ${ck} (${String(startError)}); falling back to node-pty for this session`);
