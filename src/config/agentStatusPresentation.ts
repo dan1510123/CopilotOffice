@@ -229,11 +229,15 @@ export function computeStall(
  */
 export function describeActivity(status: AgentStatus | undefined | null): string {
   if (!status) return '';
+  // Only in-progress states have a "what it's doing" detail. ready/done/error/
+  // slacking must return '' so the fixed detail slot stays blank (no stale text).
+  const key = resolveStatusKey(status);
+  if (key !== 'thinking' && key !== 'waiting' && key !== 'starting') return '';
   const detail = status.thinkingDetail?.trim();
   if (detail) return detail;
   const tool = status.currentTool?.trim();
   if (tool) return friendlyToolName(tool);
-  return 'Working…';
+  return key === 'waiting' ? 'Waiting for your answer' : 'Working…';
 }
 
 function friendlyToolName(tool: string): string {

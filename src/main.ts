@@ -19,6 +19,7 @@ import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool } from './util/toolStatus';
+import { formatElapsedMmSs, computeStall } from './config/agentStatusPresentation';
 import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
 import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStartCoordinator';
 import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/agentAutoStart';
@@ -1152,11 +1153,9 @@ const toastManager = new ToastNotificationManager(document.body);
 
 function formatElapsed(startTime: number | null): string {
   if (!startTime) return '';
-  const seconds = Math.floor((Date.now() - startTime) / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}m ${secs}s`;
+  // FR-012: live elapsed is always mm:ss (e.g. 0:07, 1:05, 12:05) so the timer
+  // width is stable and the card never reflows as the value ticks.
+  return formatElapsedMmSs(Date.now() - startTime);
 }
 
 function formatRelativeTime(timestamp: number): string {
@@ -2489,9 +2488,13 @@ async function reconnectAgentStatuses(): Promise<void> {
 // ── Elapsed Time Ticker ─────────────────────────────────────────────
 // Updates elapsed time displays on dashboard cards every second (DOM-only, no full re-render)
 const ELAPSED_TICK_MS = 1000;
+// Tracks the last emitted stall state per agent so the Phaser badge is only
+// re-tweened when the stall state actually flips (FR-013).
+const lastStalledState = new Map<string, boolean>();
 setInterval(() => {
   const office = officeManager.currentOffice;
   if (!office) return;
+  const now = Date.now();
   for (const agent of getCurrentAgents()) {
     const status = office.agents.get(agent.id);
     // Update elapsed time badge
@@ -2503,6 +2506,23 @@ setInterval(() => {
         }
       }
     }
+
+    // ── Stall detection (FR-013) ──
+    // computeStall is a pure read over status; it never mutates the state model.
+    const stalled = computeStall(status, now).isStalled;
+    // Dashboard card: toggle a data flag + class so the card can show the amber
+    // treatment without a full re-render (and so tests can assert it).
+    const card = document.querySelector(`.agent-card[data-agent="${agent.id}"]`) as HTMLElement | null;
+    if (card) {
+      card.classList.toggle('agent-stalled', stalled);
+      card.dataset.stalled = stalled ? 'true' : 'false';
+    }
+    // Phaser badge: only signal on state change to avoid restarting the tween.
+    if ((lastStalledState.get(agent.id) ?? false) !== stalled) {
+      lastStalledState.set(agent.id, stalled);
+      phaserGameRef?.events.emit('agent:stall', agent.id, stalled);
+    }
+
     // Update relative timestamps in recent activity log
     const actionEls = document.querySelectorAll(`.agent-card[data-agent="${agent.id}"] [data-action-ts]`);
     actionEls.forEach(el => {

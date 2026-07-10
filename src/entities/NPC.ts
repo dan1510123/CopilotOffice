@@ -26,6 +26,9 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   get isHighlighted(): boolean { return this._isHighlighted; }
   private highlightTween: Phaser.Tweens.Tween | null = null;
   private badgePulseTween: Phaser.Tweens.Tween | null = null;
+  private stallRing!: Phaser.GameObjects.Graphics;
+  private stallTween: Phaser.Tweens.Tween | null = null;
+  private isStalled: boolean = false;
   private isNearPlayer: boolean = false;
   private hasActiveSession: boolean = false;
   private currentBadgeState: string = 'slacking';
@@ -125,6 +128,17 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.sessionText.setOrigin(0.5, 0.5);
     this.sessionText.setVisible(true);
     this.sessionText.setDepth(Depths.BADGES + 1);
+
+    // Stall ring (FR-013): amber ring around the badge, shown only when the
+    // agent has been idle-in-state past the stall threshold. Distinct from the
+    // error state (red, no ring) and from the normal in-progress pulse — it
+    // pulses on its own slower cadence to read as "stuck / needs attention".
+    this.stallRing = scene.add.graphics();
+    this.stallRing.setPosition(x + 16 * spriteScale, y - 24 * spriteScale);
+    this.stallRing.setDepth(Depths.BADGES + 2);
+    this.stallRing.setVisible(false);
+    this.stallRing.lineStyle(2.5, 0xffb020, 0.95);
+    this.stallRing.strokeCircle(0, 0, 20 * spriteScale);
     
     // Add interaction indicator (hidden by default) - above the name
     this.indicator = scene.add.sprite(x, y - 48 * spriteScale, 'indicator');
@@ -229,6 +243,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   setHasActiveSession(hasSession: boolean, messageCount?: number): void {
     this.hasActiveSession = hasSession;
     if (!hasSession) {
+      this.setStalled(false);
       this.updateBadgeForState('slacking');
       this.sessionText.setText('💤');
       if (!this.badgeHidden) {
@@ -252,6 +267,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.badgeHidden = !visible;
     this.sessionBadge.setVisible(visible);
     this.sessionText.setVisible(visible);
+    this.stallRing.setVisible(visible && this.isStalled);
   }
 
   /** Toggle visibility of name and description labels. */
@@ -264,6 +280,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   updateAgentStatus(status: AgentStatus | undefined): void {
     if (!status || status.state === 'slacking') {
       this.hasActiveSession = false;
+      this.setStalled(false);
       this.updateBadgeForState('slacking');
       this.sessionText.setText('💤');
       if (!this.badgeHidden) {
@@ -282,6 +299,43 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
       this.sessionText.setVisible(stateKey !== 'slacking');
     }
   }
+
+  /**
+   * FR-013: toggle the ~60s stall treatment. Shows an amber ring on a slower,
+   * "laboring" pulse cadence (distinct from the normal in-progress pulse and
+   * from the error state). Clearing it restores the badge to normal. Idempotent.
+   */
+  setStalled(on: boolean): void {
+    if (this.isStalled === on) return;
+    this.isStalled = on;
+
+    if (this.stallTween) {
+      this.stallTween.stop();
+      this.stallTween = null;
+    }
+
+    if (on) {
+      this.stallRing.setScale(1);
+      this.stallRing.setAlpha(1);
+      this.stallRing.setVisible(!this.badgeHidden);
+      this.stallTween = this.scene.tweens.add({
+        targets: this.stallRing,
+        scaleX: { from: 0.85, to: 1.18 },
+        scaleY: { from: 0.85, to: 1.18 },
+        alpha: { from: 0.55, to: 1 },
+        duration: 1100,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
+    } else {
+      this.stallRing.setScale(1);
+      this.stallRing.setVisible(false);
+    }
+  }
+
+  /** True while the stall treatment is active (test/inspection aid). */
+  get stalled(): boolean { return this.isStalled; }
 
   private updateBadgeForState(stateKey: string): void {
     if (this.currentBadgeState === stateKey) return;
@@ -372,6 +426,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.descriptionLabel.setPosition(x, y - 28 * s);
     this.sessionBadge.setPosition(x + 16 * s, y - 24 * s);
     this.sessionText.setPosition(x + 16 * s, y - 24 * s);
+    this.stallRing.setPosition(x + 16 * s, y - 24 * s);
     this.indicator.setPosition(x, this.indicator.y); // keep y from tween
     this.highlightGlow.setPosition(x, y);
     this.highlightRing.setPosition(x, y);
@@ -385,6 +440,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     this.highlightRing.destroy();
     this.sessionBadge.destroy();
     this.sessionText.destroy();
+    this.stallRing.destroy();
     super.destroy(fromScene);
   }
 }

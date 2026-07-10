@@ -1,5 +1,5 @@
 import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
-import { STATUS_PRESENTATION, resolveStatusKey } from '../../config/agentStatusPresentation';
+import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
 
 /**
  * Dashboard renderer for the default (main) office layout.
@@ -63,6 +63,10 @@ export const defaultDashboard: DashboardRenderer = {
       const statusDot = statusPres.colorHex;
       const statusLabel = statusPres.label;
       const statusIcon = statusPres.icon;
+      // FR-011/FR-015: the "what it's doing" detail is rendered on its own fixed
+      // slot (never concatenated into the label), so it cannot grow the card.
+      const activityDetail = describeActivity(liveStatus);
+      const activityDetailEsc = activityDetail.replace(/"/g, '&quot;');
 
       const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
       const isSelected = agent.id === selectedAgentId;
@@ -284,6 +288,11 @@ export const defaultDashboard: DashboardRenderer = {
               <div style="font-weight: bold; color: #dde; font-size: ${t.cardTitleLg};">${agent.name}</div>
               <div style="color: #778; font-size: ${t.cardDescription}; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">${agent.description}</div>
             </div>
+            <div data-activity-detail-agent="${agent.id}" style="
+              height: 18px; line-height: 18px;
+              font-size: ${t.taskSummary}; color: #7f88b0;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            " title="${activityDetailEsc}">${activityDetail}</div>
             <div>
               ${taskSummaryHtml}
             </div>

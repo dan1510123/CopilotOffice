@@ -153,6 +153,19 @@ describe('config/agentStatusPresentation — describeActivity', () => {
   it('falls back to Working… when nothing is known', () => {
     expect(describeActivity(makeStatus({ thinkingDetail: null, currentTool: null }))).toBe('Working…');
   });
+
+  it('returns empty string for non-in-progress states (ready/done/error/slacking)', () => {
+    // FR-011: the detail slot must be blank unless the agent is actively working.
+    expect(describeActivity(makeStatus({ subState: 'ready', thinkingDetail: 'stale' }))).toBe('');
+    expect(describeActivity(makeStatus({ subState: 'ready', completionPendingAck: true, thinkingDetail: 'stale' }))).toBe('');
+    expect(describeActivity(makeStatus({ subState: 'error', thinkingDetail: 'boom' }))).toBe('');
+    expect(describeActivity(makeStatus({ state: 'slacking', subState: null }))).toBe('');
+  });
+
+  it('describes the waiting state even without a tool/detail', () => {
+    expect(describeActivity(makeStatus({ subState: 'waiting', thinkingDetail: null, currentTool: null })))
+      .toBe('Waiting for your answer');
+  });
 });
 
 describe('config/agentStatusPresentation — formatElapsedMmSs', () => {

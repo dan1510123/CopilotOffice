@@ -459,6 +459,13 @@ export class OfficeScene extends Phaser.Scene {
       this.updateSessionBadges();
     }, this);
 
+    // FR-013: stall signal from the renderer's 1s ticker. Toggles the amber
+    // stall ring on the matching NPC badge (distinct from the normal pulse).
+    this.game.events.on('agent:stall', (agentId: string, stalled: boolean) => {
+      const npc = this.npcs.find(n => n.config.id === agentId);
+      npc?.setStalled(stalled);
+    }, this);
+
     // Sync NPC badges with current officeManager state on scene start.
     // This catches status updates that fired before this listener was registered (e.g. after soft reload).
     this.updateSessionBadges();

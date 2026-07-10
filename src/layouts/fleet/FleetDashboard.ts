@@ -1,6 +1,6 @@
 import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
 import { ARCHITECT_AGENT_ID } from '../../config/agents';
-import { STATUS_PRESENTATION, resolveStatusKey } from '../../config/agentStatusPresentation';
+import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
 
 /**
  * Dashboard renderer for the fleet v-team layout.
@@ -22,6 +22,9 @@ export const fleetDashboard: DashboardRenderer = {
       const statusDot = statusPres.colorHex;
       const statusLabel = statusPres.label;
       const statusIcon = statusPres.icon;
+      // FR-011/FR-015: fixed-height activity detail slot (parity with default).
+      const activityDetail = describeActivity(liveStatus);
+      const activityDetailEsc = activityDetail.replace(/"/g, '&quot;');
 
       const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
       const isSelected = agent.id === selectedAgentId;
@@ -106,6 +109,11 @@ export const fleetDashboard: DashboardRenderer = {
               <div style="font-weight: bold; color: #dde; font-size: ${t.cardTitle};">${agent.name}</div>
               <div style="color: #778; font-size: ${t.cardDescription}; margin-top: 2px;">${agent.description}</div>
             </div>
+            <div data-activity-detail-agent="${agent.id}" style="
+              height: 16px; line-height: 16px;
+              font-size: ${t.taskSummary}; color: #7f88b0;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            " title="${activityDetailEsc}">${activityDetail}</div>
             <div>
               <div style="display: flex; align-items: center; flex-wrap: wrap; margin-top: 3px;">
                 <div style="

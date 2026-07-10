@@ -42,6 +42,7 @@ describe('entities/NPC', () => {
     const fakeNpc = {
       hasActiveSession: true,
       badgeHidden: false,
+      setStalled: vi.fn(),
       updateBadgeForState: vi.fn(),
       sessionText: {
         setText: vi.fn(),
@@ -52,6 +53,7 @@ describe('entities/NPC', () => {
     (NPC.prototype as any).updateAgentStatus.call(fakeNpc, createStatus({ state: 'slacking', subState: null }));
 
     expect(fakeNpc.hasActiveSession).toBe(false);
+    expect(fakeNpc.setStalled).toHaveBeenCalledWith(false);
     expect(fakeNpc.updateBadgeForState).toHaveBeenCalledWith('slacking');
     expect(fakeNpc.sessionText.setText).toHaveBeenCalledWith('💤');
   });
@@ -66,6 +68,7 @@ describe('entities/NPC', () => {
     npc.highlightRing = child();
     npc.sessionBadge = child();
     npc.sessionText = child();
+    npc.stallRing = child();
 
     const baseProto = Object.getPrototypeOf(NPC.prototype) as { destroy?: () => void };
     const originalDestroy = baseProto.destroy;
@@ -80,6 +83,7 @@ describe('entities/NPC', () => {
     expect(npc.highlightRing.destroy).toHaveBeenCalled();
     expect(npc.sessionBadge.destroy).toHaveBeenCalled();
     expect(npc.sessionText.destroy).toHaveBeenCalled();
+    expect(npc.stallRing.destroy).toHaveBeenCalled();
     expect(superDestroy).toHaveBeenCalled();
     baseProto.destroy = originalDestroy;
   });
