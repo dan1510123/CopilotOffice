@@ -445,6 +445,12 @@ export class TerminalOverlay {
       this.acknowledgeCompletedWork(previousOfficeId, previousAgentId);
     }
 
+    // FR-010: focusing an agent (opening / attaching its terminal, including the
+    // in-world E interact that routes here) clears that agent's Done completion
+    // badge — the user has now seen the finished work. Clearing only flips the
+    // ack flag; it never detaches or kills the session (Principle III).
+    this.acknowledgeCompletedWork(nextOfficeId, agent.id);
+
     // Feature 002 (US1, C2/V5): detach the previous agent BEFORE mutating
     // currentAgentId. Awaiting here prevents the in-flight onData/onTerminalData
     // race that produced input-lock and shared-session symptoms on cold start.

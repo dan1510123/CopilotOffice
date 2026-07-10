@@ -63,3 +63,37 @@ export function nextSubStateAfterToolComplete(
   const last = remainingTools[remainingTools.length - 1];
   return { kind: 'thinking', detail: String(last.name ?? '') };
 }
+
+/**
+ * Idempotent insert into the active-tool set (FR-004).
+ *
+ * A duplicate or replayed `tool_start` for a `toolId` that is already tracked
+ * must NOT stack a second entry — otherwise the single matching `tool_complete`
+ * would leave a phantom entry behind and the resolved status would never clear.
+ * Returns a new array plus whether the entry was actually added.
+ */
+export function addActiveTool(
+  tools: readonly ToolEntry[],
+  entry: ToolEntry
+): { tools: ToolEntry[]; added: boolean } {
+  if (tools.some((t) => t.toolId === entry.toolId)) {
+    return { tools: tools.slice(), added: false };
+  }
+  return { tools: [...tools, entry], added: true };
+}
+
+/**
+ * Remove a completed tool from the active set (FR-004).
+ *
+ * A completion for a `toolId` we never tracked (stale, replayed, or
+ * out-of-order) is a no-op: `completed` is `null` and the set is unchanged, so
+ * the caller can safely skip phantom completion notifications / status recompute.
+ */
+export function removeCompletedTool(
+  tools: readonly ToolEntry[],
+  toolId: string
+): { tools: ToolEntry[]; completed: ToolEntry | null } {
+  const completed = tools.find((t) => t.toolId === toolId) ?? null;
+  if (!completed) return { tools: tools.slice(), completed: null };
+  return { tools: tools.filter((t) => t.toolId !== toolId), completed };
+}

@@ -3,6 +3,8 @@ import {
   isAskUserTool,
   nextSubStateAfterToolComplete,
   normalizeToolName,
+  addActiveTool,
+  removeCompletedTool,
   type ToolEntry,
 } from '../../../src/util/toolStatus';
 
@@ -88,5 +90,79 @@ describe('util/toolStatus.nextSubStateAfterToolComplete (ask_user race-guard)', 
     // race-guard should NOT trip and waiting should fall back to thinking.
     const next = nextSubStateAfterToolComplete([entry('t2', 'edit')]);
     expect(next).toEqual({ kind: 'thinking', detail: 'edit' });
+  });
+});
+
+describe('util/toolStatus tool-set integrity (FR-004: dedup / out-of-order)', () => {
+  const entry = (id: string, name: string, status: string | null = null): ToolEntry => ({
+    toolId: id,
+    name,
+    status,
+  });
+
+  describe('addActiveTool', () => {
+    it('appends a new tool and reports added=true', () => {
+      const { tools, added } = addActiveTool([entry('t1', 'read_file')], entry('t2', 'edit'));
+      expect(added).toBe(true);
+      expect(tools).toHaveLength(2);
+      expect(tools[1]).toMatchObject({ toolId: 't2', name: 'edit' });
+    });
+
+    it('is idempotent: a duplicate toolId is not stacked and reports added=false', () => {
+      const start = [entry('t1', 'read_file')];
+      const { tools, added } = addActiveTool(start, entry('t1', 'read_file'));
+      expect(added).toBe(false);
+      expect(tools).toHaveLength(1);
+      expect(tools).toEqual(start);
+    });
+
+    it('does not mutate the input array', () => {
+      const start = [entry('t1', 'read_file')];
+      addActiveTool(start, entry('t2', 'edit'));
+      expect(start).toHaveLength(1);
+    });
+  });
+
+  describe('removeCompletedTool', () => {
+    it('removes the matching tool and returns it as completed', () => {
+      const { tools, completed } = removeCompletedTool(
+        [entry('t1', 'read_file'), entry('t2', 'edit')],
+        't1',
+      );
+      expect(completed).toMatchObject({ toolId: 't1', name: 'read_file' });
+      expect(tools).toHaveLength(1);
+      expect(tools[0].toolId).toBe('t2');
+    });
+
+    it('is a no-op for an unknown/out-of-order toolId (completed=null, set unchanged)', () => {
+      const start = [entry('t1', 'read_file')];
+      const { tools, completed } = removeCompletedTool(start, 'does-not-exist');
+      expect(completed).toBeNull();
+      expect(tools).toEqual(start);
+    });
+
+    it('duplicate completion is idempotent: second removal of the same id is a no-op', () => {
+      const start = [entry('t1', 'read_file'), entry('t2', 'edit')];
+      const first = removeCompletedTool(start, 't1');
+      expect(first.completed).not.toBeNull();
+      const second = removeCompletedTool(first.tools, 't1');
+      expect(second.completed).toBeNull();
+      expect(second.tools).toEqual([entry('t2', 'edit')]);
+    });
+
+    it('preserves ask_user waiting when an unrelated tool completes concurrently (integration)', () => {
+      // ask_user (t1) and read_file (t2) both active; read_file completes.
+      const active = [entry('t1', 'ask_user'), entry('t2', 'read_file')];
+      const { tools, completed } = removeCompletedTool(active, 't2');
+      expect(completed?.toolId).toBe('t2');
+      // The resolved next state off the remaining set must still be waiting.
+      expect(nextSubStateAfterToolComplete(tools)).toEqual({ kind: 'waiting' });
+    });
+
+    it('does not mutate the input array', () => {
+      const start = [entry('t1', 'read_file')];
+      removeCompletedTool(start, 't1');
+      expect(start).toHaveLength(1);
+    });
   });
 });

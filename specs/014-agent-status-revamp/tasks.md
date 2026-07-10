@@ -78,6 +78,7 @@ Single project, renderer-only. Paths are relative to the worktree root.
 - [ ] T011 [P] [US1] Extend `tests/unit/util/toolStatus.test.ts`: (a) ask_user waiting preserved when an unrelated tool completes concurrently, (b) duplicate completion is idempotent, (c) out-of-order completion for unknown toolId is a no-op (FR-003/004, SC-004).
 - [ ] T012 [US1] Add `clearCompletionAck(agentId)` as the single Done-clear entry point in `src/main.ts` and wire it to ALL focus paths: terminal open, dashboard card select, and in-world interact (E). Ensure it does not detach/kill the session (Principle III) (FR-010).
 - [ ] T013 [P] [US1] Regression test for office-switch freshness: after switching offices and back, each agent shows its current status (no stale snapshot) — assert around `reconnectAgentStatuses()` (FR-006). Prefer unit/integration; escalate to e2e only if state isn't reachable otherwise.
+- [ ] T013a [P] [US1] Regression test for session interruption: an active agent whose session is closed or errors resolves to `slacking`/`error` with no residual in-progress badge on any surface — assert around `setAgentSlacking`/`setAgentError` in `src/main.ts` (FR-005, "Session interruption" edge case).
 
 **Checkpoint**: Status is trustworthy across the full lifecycle.
 

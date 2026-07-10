@@ -18,7 +18,7 @@ import { TeamsSettingsOverlay } from './ui/TeamsSettingsOverlay';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
-import { isAskUserTool, nextSubStateAfterToolComplete } from './util/toolStatus';
+import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool } from './util/toolStatus';
 import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
 import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStartCoordinator';
 import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/agentAutoStart';
@@ -1236,12 +1236,35 @@ function refreshRightPanelMode(): void {
   seriousPlaceholder.style.display = 'none';
 }
 
+/**
+ * FR-010: single Done-clear entry point. Acknowledging completion only flips the
+ * `completionPendingAck` flag off — it NEVER detaches or kills the session
+ * (Constitution Principle III). Wired to every focus path: terminal open
+ * (serious + game via `openAgentTerminal`), dashboard card select (through
+ * `emitOpenTerminal`), notification click, and the in-world E interact (which
+ * routes through `TerminalOverlay.show` → `acknowledgeCompletedWork`).
+ */
+function clearCompletionAck(agentId: string): void {
+  const officeId = officeManager.currentOfficeId;
+  if (!officeId) return;
+  if (officeManager.acknowledgeAgentCompletion(officeId, agentId)) {
+    phaserGameRef?.events.emit('agent:status:changed', agentId);
+    updateStatusBar();
+    updateTerminalContent();
+  }
+}
+
 async function openAgentTerminal(agentId: string): Promise<void> {
   // Spec 008-smoke T10: unify "currently selected agent" across modes. Without
   // this, game-mode opens never touch selectedAgentId, so a game -> serious
   // flip loses the agent context and the serious panel never auto-attaches
   // (user-reported "locked to one agent" after flipping modes).
   selectedAgentId = agentId;
+
+  // FR-010: focusing an agent's terminal clears its Done completion badge. This
+  // covers serious-mode opens, dashboard card selects (via emitOpenTerminal),
+  // and notification clicks. The in-world E interact clears via TerminalOverlay.
+  clearCompletionAck(agentId);
 
   if (appMode === 'game') {
     phaserGameRef?.events.emit('open:agent:terminal', agentId);
@@ -1988,7 +2011,15 @@ if (window.copilotBridge) {
     if (!agentTools.has(agentId)) {
       agentTools.set(agentId, []);
     }
-    agentTools.get(agentId)!.push({ toolId, name: toolName, status });
+    // FR-004: idempotent tool set — a duplicate/replayed tool_start for the same
+    // toolId must not stack a second entry, or the resolved status would never
+    // clear once its single completion arrives.
+    const startResult = addActiveTool(agentTools.get(agentId)!, { toolId, name: toolName, status });
+    if (!startResult.added) {
+      console.log(`[Office] Ignoring duplicate tool_start for ${agentId} — toolId ${toolId} already active`);
+      return;
+    }
+    agentTools.set(agentId, startResult.tools);
 
     // Track in recent actions history
     officeManager.pushRecentAction(officeId, agentId, toolName, 'started');
@@ -2023,10 +2054,16 @@ if (window.copilotBridge) {
 
     const tools = agentTools.get(agentId);
     if (tools) {
-      // Find the completed tool's name before removing
-      const completedTool = tools.find(t => t.toolId === toolId);
-      const completedToolName = completedTool?.name || 'tool';
-      const remaining = tools.filter(t => t.toolId !== toolId);
+      // FR-004: ignore completions for a toolId we never tracked (stale, replayed,
+      // or out-of-order event). Acting on it would fire a phantom completion
+      // notification and recompute status off a tool set that never changed.
+      const completeResult = removeCompletedTool(tools, toolId);
+      if (!completeResult.completed) {
+        console.log(`[Office] Ignoring tool_complete for ${agentId} — unknown toolId ${toolId}`);
+        return;
+      }
+      const completedToolName = completeResult.completed.name || 'tool';
+      const remaining = completeResult.tools;
       agentTools.set(agentId, remaining);
 
       // Track last completed action + recent actions history
@@ -2062,6 +2099,14 @@ if (window.copilotBridge) {
     console.log(`[Office] Turn end: ${agentId}`);
     const officeId = officeManager.currentOfficeId;
     if (officeId) {
+      // FR-002 guard: a stray turn_end while the agent is still initializing must
+      // not settle it to "done" — it hasn't produced a response yet. Startup
+      // completion is owned by the ready signal / sweeper, not turn_end.
+      const current = officeManager.getAgentStatus(officeId, agentId);
+      if (current?.subState === 'starting') {
+        console.log(`[Office] Ignoring turn_end for ${agentId} — still in starting state`);
+        return;
+      }
       const agentTools = getCurrentAgentTools();
       const activeTools = agentTools.get(agentId) || [];
       const waitingToolActive = activeTools.some(t => isAskUserTool(t.name, t.status));
