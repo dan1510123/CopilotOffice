@@ -998,9 +998,18 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           removeAgentViewer(otherCk, viewerMaps);
           console.log(`[TermServer] Deactivated prior viewer ${otherCk} — single active agent per office`);
         }
-        void Promise.resolve(attachedProc!.process.setForeground?.()).catch((err: unknown) => {
+        // Await the foreground switch before responding: under the shared
+        // ui-server host, ALL input funnels to the host rawPty and is routed to
+        // whichever session is foreground. If we respond (and the viewer focuses
+        // the xterm) before the switch completes, keystrokes race to the PREVIOUS
+        // foreground agent — the "I can't see what I type until I switch back to
+        // my last active terminal" bug. Awaiting closes that race for the common
+        // switch path. Failure is non-fatal (attach still succeeds).
+        try {
+          await attachedProc!.process.setForeground?.();
+        } catch (err: unknown) {
           console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
-        });
+        }
       }
 
       const chunks = agentScrollbackBuffers.get(ck) || [];
