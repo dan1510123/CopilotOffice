@@ -1,5 +1,6 @@
 import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
 import { ARCHITECT_AGENT_ID } from '../../config/agents';
+import { STATUS_PRESENTATION, resolveStatusKey } from '../../config/agentStatusPresentation';
 
 /**
  * Dashboard renderer for the fleet v-team layout.
@@ -14,52 +15,13 @@ export const fleetDashboard: DashboardRenderer = {
     for (const agent of agents) {
       const liveStatus = office?.agents.get(agent.id);
 
-      // Determine status label + color from state model
-      let statusDot = '#555';
-      let statusLabel = 'Slacking';
-      let statusIcon = '💤';
-
-      if (liveStatus) {
-        if (liveStatus.state === 'active') {
-          switch (liveStatus.subState) {
-            case 'starting':
-              statusDot = '#ff9944';
-              statusLabel = 'Starting...';
-              statusIcon = '🚀';
-              break;
-            case 'ready':
-              if (liveStatus.completionPendingAck) {
-                statusDot = '#4a78ff';
-                statusLabel = 'Done';
-                statusIcon = '📬';
-              } else {
-                statusDot = '#ffffff';
-                statusLabel = 'Ready';
-                statusIcon = '📭';
-              }
-              break;
-            case 'waiting':
-              statusDot = '#ffb86c';
-              statusLabel = 'Waiting for input';
-              statusIcon = '⏳';
-              break;
-            case 'thinking':
-              statusDot = '#50fa7b';
-              statusLabel = liveStatus.thinkingDetail
-                ? `Thinking: ${liveStatus.thinkingDetail}`
-                : 'Thinking...';
-              statusIcon = '⚡';
-              break;
-            case 'error':
-              statusDot = '#f44';
-              statusLabel = liveStatus.thinkingDetail
-                ? `Error: ${liveStatus.thinkingDetail}`
-                : 'Error';
-              statusIcon = '❌';
-              break;
-          }
-        }
-      }
+      // Canonical status presentation (shared across badge, dashboards, notifications).
+      // Primary label stays concise; activity detail is shown separately so it cannot
+      // change the card height.
+      const statusPres = STATUS_PRESENTATION[resolveStatusKey(liveStatus)];
+      const statusDot = statusPres.colorHex;
+      const statusLabel = statusPres.label;
+      const statusIcon = statusPres.icon;
 
       const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
       const isSelected = agent.id === selectedAgentId;

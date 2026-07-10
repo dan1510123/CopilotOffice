@@ -3,20 +3,14 @@ import { AgentConfig } from '../config/agents';
 import { AgentStatus } from '../office/officeManager';
 import { Depths, ySortDepth } from '../config/depths';
 import {
+  STATUS_PRESENTATION,
+  resolveStatusKey,
+  type StatusKey,
+} from '../config/agentStatusPresentation';
+import {
   Direction, getStandFrame, registerWalkAnimations,
   walkAnimKey, directionFromVelocity,
 } from '../sprites/DirectionalSprite';
-
-// Badge color config per status
-const BADGE_COLORS: Record<string, { fill: number; stroke: number }> = {
-  slacking:     { fill: 0x555555, stroke: 0x666666 },
-  starting:     { fill: 0xff9944, stroke: 0xffbb66 },
-  ready:        { fill: 0xffffff, stroke: 0xdddddd },
-  done:         { fill: 0x4a78ff, stroke: 0x6b90ff },
-  waiting:      { fill: 0xffb86c, stroke: 0xffcc88 },
-  thinking:     { fill: 0x50fa7b, stroke: 0x66ff99 },
-  error:        { fill: 0xff4444, stroke: 0xff6666 },
-};
 
 export class NPC extends Phaser.Physics.Arcade.Sprite {
   public config: AgentConfig;
@@ -150,12 +144,13 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
 
   private updateSessionBadge(scale: number = 1): void {
     this.sessionBadge.clear();
-    const stateKey = this.currentBadgeState;
-    const colors = BADGE_COLORS[stateKey] || BADGE_COLORS.slacking;
+    const stateKey = this.currentBadgeState as StatusKey;
+    const pres = STATUS_PRESENTATION[stateKey] ?? STATUS_PRESENTATION.slacking;
+    const isSlacking = stateKey === 'slacking';
 
-    this.sessionBadge.fillStyle(colors.fill, stateKey === 'slacking' ? 0.7 : 1);
+    this.sessionBadge.fillStyle(pres.colorNum, isSlacking ? 0.7 : 1);
     this.sessionBadge.fillCircle(0, 0, 16 * scale);
-    this.sessionBadge.lineStyle(2, colors.stroke, stateKey === 'slacking' ? 0.5 : 1);
+    this.sessionBadge.lineStyle(2, pres.strokeNum, isSlacking ? 0.5 : 1);
     this.sessionBadge.strokeCircle(0, 0, 16 * scale);
   }
 
@@ -278,19 +273,11 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
     }
 
     this.hasActiveSession = true;
-    const stateKey = (status.subState === 'ready' && status.completionPendingAck) ? 'done' : (status.subState || 'ready');
+    const stateKey = resolveStatusKey(status);
     this.updateBadgeForState(stateKey);
 
-    // Show status icon in badge
-    const icons: Record<string, string> = {
-      starting: '🚀',
-      ready:    '📭',
-      done:     '📬',
-      waiting:  '⏳',
-      thinking: '🧠',
-      error:    '❌',
-    };
-    this.sessionText.setText(icons[stateKey] || '');
+    // Show canonical status icon in badge (shared across all surfaces)
+    this.sessionText.setText(STATUS_PRESENTATION[stateKey].icon || '');
     if (!this.badgeHidden) {
       this.sessionText.setVisible(stateKey !== 'slacking');
     }
@@ -309,7 +296,8 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
 
     this.updateSessionBadge(this.spriteScale);
 
-    if (stateKey === 'thinking' || stateKey === 'starting') {
+    const pres = STATUS_PRESENTATION[stateKey as StatusKey];
+    if (pres?.badgeAnimation === 'pulse') {
       this.badgePulseTween = this.scene.tweens.add({
         targets: this.sessionBadge,
         scaleX: { from: 0.925, to: 1.075 },

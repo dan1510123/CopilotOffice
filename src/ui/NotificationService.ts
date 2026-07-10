@@ -7,7 +7,23 @@ import {
   loadNotificationSettings,
   saveNotificationSettings,
 } from '../config/notifications';
+import { STATUS_PRESENTATION, type StatusKey } from '../config/agentStatusPresentation';
 import { ToastNotificationManager } from './ToastNotification';
+
+/**
+ * Maps status-bearing notification events to their canonical status key so the toast
+ * and OS notification use the same icon/color as the sprite badge and dashboards
+ * (spec 014 FR-007). Events that don't correspond to a status state map to null.
+ */
+const EVENT_STATUS_KEY: Record<NotificationEventType, StatusKey | null> = {
+  turnEnd: 'done',
+  askUser: 'waiting',
+  turnStart: 'thinking',
+  toolStart: 'thinking',
+  toolComplete: null,
+  sessionReady: 'ready',
+  sessionError: 'error',
+};
 
 export interface NotifyContext {
   toolName?: string;
@@ -90,6 +106,10 @@ export class NotificationService {
     const message = this.formatMessage(eventConfig.message, agent.name, context);
     const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
 
+    // Canonical status presentation for this event (shared with badge/dashboards).
+    const statusKey = EVENT_STATUS_KEY[eventType];
+    const statusPres = statusKey ? STATUS_PRESENTATION[statusKey] : undefined;
+
     // Toast notification
     if (eventConfig.toast) {
       this.toastManager.show({
@@ -98,13 +118,16 @@ export class NotificationService {
         agentColor: colorHex,
         message,
         onClick: () => this.onClickAgent?.(agentId),
+        statusIcon: statusPres?.icon,
+        statusColorHex: statusPres?.colorHex,
       });
     }
 
-    // Native OS notification
+    // Native OS notification — lead with the canonical status icon when available.
     if (eventConfig.osNotification) {
+      const titlePrefix = statusPres?.icon ?? '🏢';
       window.copilotBridge?.showNativeNotification(
-        `🏢 ${agent.name}`,
+        `${titlePrefix} ${agent.name}`,
         message,
       );
     }

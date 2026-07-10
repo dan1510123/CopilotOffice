@@ -9,6 +9,11 @@ export interface ToastOptions {
   agentColor: string;
   message: string;
   onClick?: () => void;
+  /** Canonical status icon (spec 014) — shown as the leading badge when provided. */
+  statusIcon?: string;
+  /** Canonical status color (spec 014) — used for the accent when provided, so
+   *  notifications match the badge/dashboard color for the same state. */
+  statusColorHex?: string;
 }
 
 interface ActiveToast {
@@ -58,12 +63,13 @@ export class ToastNotificationManager {
       this.dismiss(this.toasts[0]);
     }
 
+    const accentColor = options.statusColorHex ?? options.agentColor;
     const el = document.createElement('div');
     el.style.cssText = `
       pointer-events: auto;
       background: #1e1e3a;
-      border: 1.5px solid ${options.agentColor}66;
-      border-left: 4px solid ${options.agentColor};
+      border: 1.5px solid ${accentColor}66;
+      border-left: 4px solid ${accentColor};
       border-radius: 8px;
       padding: 12px 16px;
       display: flex;
@@ -77,13 +83,18 @@ export class ToastNotificationManager {
       transition: transform ${ANIMATION_MS}ms ease, opacity ${ANIMATION_MS}ms ease;
     `;
 
+    // Leading marker: canonical status icon when provided, else the agent-color dot.
+    const markerHtml = options.statusIcon
+      ? `<div style="font-size: 16px; line-height: 1; flex-shrink: 0;">${options.statusIcon}</div>`
+      : `<div style="
+          width: 8px; height: 8px;
+          border-radius: 50%;
+          background: ${accentColor};
+          flex-shrink: 0;
+        "></div>`;
+
     el.innerHTML = `
-      <div style="
-        width: 8px; height: 8px;
-        border-radius: 50%;
-        background: ${options.agentColor};
-        flex-shrink: 0;
-      "></div>
+      ${markerHtml}
       <div style="flex: 1; min-width: 0;">
         <div style="font-size: 12px; font-weight: bold; color: #dde;">${options.agentName}</div>
         <div style="font-size: 11px; color: #889; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${options.message}</div>
