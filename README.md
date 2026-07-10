@@ -1,44 +1,58 @@
-# Agency Office 🏢
+# Copilot Office 🏢
 
-A 2D pixel-art RPG-style game where you walk around a virtual office and interact with AI agents. Each NPC runs a real Copilot CLI session with full coding capabilities — plan tasks, debug code, and orchestrate multi-agent workflows from inside a game.
+A 2D pixel-art RPG-style desktop game where you walk around a virtual office and interact with AI agents. Each NPC runs a **real GitHub Copilot CLI session** with full coding capabilities — plan tasks, debug code, and orchestrate multi-agent workflows from inside a game. You can even bring an agent **online in a Microsoft Teams channel** and drive it from your phone.
 
-![Agency Office](https://raw.githubusercontent.com/dan1510123/CopilotOffice/main/assets/game-screenshot.png)
+![Copilot Office](https://raw.githubusercontent.com/dan1510123/CopilotOffice/main/assets/game-screenshot.png)
 
 ## Features
 
-- **Pixel-art office environment** — all sprites procedurally generated in code, no external image assets
-- **3 active NPC agents by default**, each with specialized capabilities:
+- **Pixel-art office environment** — every sprite is procedurally generated in code; there are no external image assets
+- **Real Copilot agents** — each NPC runs an actual Copilot CLI session, rendered live in an xterm.js terminal
+- **3 active NPC agents by default**, each with a distinct personality:
   - **Gene** (Generalist) — general-purpose coding, debugging, and research
-  - **Dan** (Debugger) — bug investigation and root cause analysis
-  - **Alice** (Admin) — has direct access to edit this game's UI code (`workingDir: '.'`)
-- **6 reserve agent slots** — Azure, Val, Rex, Doc, Scout, and Penny have pre-generated sprites ready to activate
-- **Arthur (Architect)** appears in fleet v-team offices (and can be toggled into the default office in config)
-- **Real terminal integration** via xterm.js — agents run actual Copilot CLI sessions through node-pty
-- **Multi-office management** — switch between projects with independent agent state per office
-- **Meeting Mode** — private meeting room for planning and decomposing complex tasks into structured subtasks
-- **Fleet execution** — parallel agent spawning in dedicated v-team offices for approved task plans
-- **Real-time status badges** — agent states (thinking, waiting, ready, slacking) with animated indicators
+  - **Dan** (Debugger) — bug investigation and root-cause analysis
+  - **Alice** (Admin) — has direct access to edit this game's own source code (`workingDir: '.'`)
+- **6 reserve agents** — Azure (Cloud Wizard), Val (Validator), Rex (Deployer), Doc (Code Doctor), Scout (Ranger), and Penny (Accountant) have pre-generated sprites ready to seat at an empty desk
+- **Arthur (the Architect)** — hosts Meeting Mode and appears in fleet v-team offices (can be toggled into the default office in config)
+- **Teams remote agents** — bring any agent online in a Microsoft Teams channel thread; anyone can reply in-thread to drive the agent's terminal session and get answers posted back (feature-flagged)
+- **Multi-office management** — switch between projects with independent agent state and working directories per office
+- **Meeting Mode** — a private meeting room where Arthur decomposes a complex request into a structured, reviewable plan
+- **Fleet execution** — approved plans spin up parallel agent sessions in a dedicated v-team office
+- **Real-time status badges** — agent states (slacking → starting → ready ↔ waiting/thinking) with animated indicators
 - **Toast & OS notifications** — configurable per-event notifications for agent activity
-- **Session persistence** — terminal sessions and history survive restarts
-- **Player customization** — customizable character colors
-- **Mini-games** — Pong and Basketball (behind feature flags) for breaks
+- **Session persistence** — offices, seated agents, and terminal sessions survive restarts
+- **Player & sprite customization** — customize your character's appearance and colors
+- **Mini-games** — a built-in Galaxian arcade game (Pong and Basketball are also included behind feature flags)
 - **Hot reload** development mode with file watching
 
 ## Tech Stack
 
-- **Phaser 3** — 2D game framework (sole renderer)
-- **Electron 40+** — desktop app with Node.js integration
+- **Phaser 3** — 2D game framework (the sole renderer)
+- **Electron 40+** — desktop shell with a Node.js main process
 - **TypeScript** — strict mode throughout
-- **esbuild** — fast bundling for game and Electron code
+- **esbuild** — fast bundling for both the game and Electron code
 - **xterm.js** — terminal emulator for agent conversations
-- **node-pty** — pseudo-terminal for running CLI processes
+- **node-pty** — pseudo-terminal that hosts the Copilot CLI
+- **@github/copilot-sdk** — SDK control plane for the `ui-server` terminal backend
+- **ws** — WebSocket transport (SDK runtime + Teams real-time receive)
+
+### Terminal backends
+
+The terminal server (`electron/terminal/server.ts`) selects a backend via the `COPILOT_TERMINAL_BACKEND` environment variable:
+
+- **`node-pty`** (fallback, always available) — spawns the real Copilot TUI directly, one PTY per agent
+- **`ui-server`** (default) — node-pty hosts one `copilot --ui-server` runtime per office and the Copilot SDK attaches over a local port; automatically falls back to `node-pty` when the CLI can't host `--ui-server`
+- **`sdk`** (legacy) — the SDK spawns its own headless runtime over stdio
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+
-- npm
+To use the app **in full** you'll need:
+
+- **Node.js 18+** and **npm**
+- **GitHub Copilot access** — the agents run the real Copilot CLI, so you must be signed in to a GitHub account with an active Copilot subscription. The CLI runtime ships with the app via the `@github/copilot-sdk` platform package; on first run, authenticate through the CLI as prompted.
+- **(Teams remote agents only) Azure CLI** — the Teams feature acquires Microsoft Graph and IC3 tokens via `az account get-access-token`, so you must have the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) installed and be logged in (`az login`) with an account that has access to the target Teams channel. This feature is off by default and enabled in Settings.
 
 ### Install from npm (global command)
 
@@ -50,7 +64,8 @@ copilotoffice
 ### Install from source (development)
 
 ```bash
-cd AgencyOffice
+git clone https://github.com/dan1510123/CopilotOffice.git
+cd CopilotOffice
 npm install
 
 # Build and run
@@ -69,21 +84,40 @@ npm run dev
 | `E` | Interact with nearby agent or object |
 | `F10` | Close terminal |
 | `Escape` | Close terminal or mini-game |
-| `Ctrl+Shift+N` | New terminal session |
+| `Ctrl+Shift+N` | New terminal session (terminal focused) |
 
 ## Project Structure
 
 ```
-AgencyOffice/
+CopilotOffice/
 ├── electron/                    # Electron main process
 │   ├── main.ts                  # Window, IPC handlers, hot reload
-│   ├── cli-bridge.ts            # Mock/placeholder (not used at runtime)
-│   └── terminal/                # Terminal server subsystem
-│       ├── server.ts            # PTY owner (forked child process)
-│       ├── ipc-relay.ts         # IPC bridge (renderer ↔ main ↔ server)
-│       ├── preload.ts           # Context bridge (window.copilotBridge)
-│       ├── protocol.ts          # IPC message type definitions
-│       └── events-watcher.ts    # Copilot CLI event file parser
+│   ├── nonTerminalIpc.ts        # Non-terminal IPC handlers
+│   ├── officeFileStore.ts       # Office persistence on disk
+│   ├── cli-bridge.ts            # Legacy placeholder (not used at runtime)
+│   ├── terminal/                # Terminal server subsystem
+│   │   ├── server.ts            # PTY/SDK owner (forked child process)
+│   │   ├── terminal-backend.ts  # Backend selection (node-pty / ui-server / sdk)
+│   │   ├── pty-registry.ts      # Live PTY/session bookkeeping
+│   │   ├── agent-viewers.ts     # Active-viewer dual-key invariant helpers
+│   │   ├── office-foreground.ts # Foreground session selection (ui-server)
+│   │   ├── session-repair.ts    # Session recovery
+│   │   ├── ipc-relay.ts         # IPC bridge (renderer ↔ main ↔ server)
+│   │   ├── preload.ts           # Context bridge (window.copilotBridge)
+│   │   ├── protocol.ts          # IPC message type definitions
+│   │   ├── event-source.ts      # Backend-agnostic event source
+│   │   └── events-watcher.ts    # Copilot CLI event file parser
+│   └── teams/                   # Teams remote agents (main-process service)
+│       ├── teamsService.ts      # Orchestrator (register/route/reply lifecycle)
+│       ├── auth.ts              # Graph + IC3 tokens via `az`
+│       ├── graphClient.ts       # Send channel messages
+│       ├── trouterClient.ts     # Real-time receive (WebSocket)
+│       ├── chatsvcClient.ts     # Poll fallback receive
+│       ├── messageFilter.ts     # Dedup / marker / classify pipeline
+│       ├── dispatchQueue.ts     # Per-agent FIFO dispatch
+│       ├── sessionGateway.ts    # Adapter over the terminal server
+│       ├── onlineAgentsStore.ts # Online-agent persistence + GC
+│       └── ...                  # channelLink, marker, chunk, resolvers, IPC
 ├── src/                         # Renderer process (Phaser + DOM)
 │   ├── main.ts                  # Entry point — DOM layout, Phaser init, IPC wiring
 │   ├── index.html               # HTML host page
@@ -91,44 +125,31 @@ AgencyOffice/
 │   │   ├── BootScene.ts         # Procedural sprite generation
 │   │   ├── OfficeScene.ts       # Main game scene (layout, NPCs, interactions)
 │   │   └── MeetingScene.ts      # Meeting room with Arthur for planning
-│   ├── entities/                # Game entities
-│   │   ├── Player.ts            # Player character with movement
-│   │   └── NPC.ts               # NPC agents with status badges
-│   ├── sprites/                 # Procedural sprite generation
-│   │   ├── SpriteGenerator.ts   # Sprite sheet generation
-│   │   └── DirectionalSprite.ts # 4-direction animation utilities
-│   ├── ui/                      # UI overlays
+│   ├── entities/                # Game entities (Player, NPC)
+│   ├── sprites/                 # Procedural sprite generation + animation
+│   ├── ui/                      # DOM overlays
 │   │   ├── TerminalOverlay.ts   # xterm.js terminal for agent sessions
+│   │   ├── SeriousTerminalController.ts # Split-pane terminal controller
 │   │   ├── FleetDashboard.ts    # Fleet execution dashboard
-│   │   ├── PongGame.ts          # Pong mini-game
-│   │   ├── BasketballGame.ts    # Basketball mini-game
-│   │   ├── ToastNotification.ts # Toast notification popups
-│   │   ├── NotificationService.ts
-│   │   ├── NotificationSettingsPanel.ts
-│   │   ├── CameraDragController.ts
-│   │   └── DialogBox.ts         # Legacy (deprecated)
-│   ├── input/                   # Keyboard focus management
-│   │   ├── InputManager.ts      # Central coordinator
-│   │   ├── GameInputListener.ts
-│   │   ├── GlobalInputListener.ts
-│   │   └── TerminalInputListener.ts
-│   ├── office/                  # Multi-office state management
-│   │   └── officeManager.ts     # Office CRUD, agent status tracking
+│   │   ├── SettingsPanel.ts     # Settings overlay
+│   │   ├── TeamsSettingsOverlay.ts # Teams feature settings
+│   │   ├── SpriteCustomizerPanel.ts # Player appearance customization
+│   │   ├── GalaxianGame.ts      # Galaxian mini-game
+│   │   ├── PongGame.ts / BasketballGame.ts # Mini-games (feature-flagged)
+│   │   ├── NotificationService.ts / NotificationSettingsPanel.ts / ToastNotification.ts
+│   │   └── CameraDragController.ts / DialogBox.ts
+│   ├── input/                   # Keyboard focus management (InputManager + listeners)
+│   ├── office/                  # Multi-office state management (officeManager.ts)
 │   ├── meeting/                 # Meeting mode & fleet orchestration
-│   │   ├── types.ts             # MeetingPlan, TaskAssignment, FleetStatus
-│   │   ├── planParser.ts        # Terminal output → structured plan
-│   │   ├── planApproval.ts      # Plan review overlay
-│   │   ├── fleetOrchestrator.ts # Parallel agent spawning
-│   │   ├── fleetTracker.ts      # Fleet state machine
-│   │   └── fleetVisualizer.ts   # Fleet NPC visualization
+│   │   ├── types.ts / planParser.ts / planApproval.ts
+│   │   └── fleetOrchestrator.ts / fleetTracker.ts / fleetVisualizer.ts
 │   ├── layouts/                 # Layout system
-│   │   ├── types.ts             # DashboardRenderer, LayoutDefinition
-│   │   ├── index.ts             # Layout registry
+│   │   ├── types.ts / index.ts  # Layout registry + behaviors
 │   │   ├── default/             # Default office layout
 │   │   └── fleet/               # Fleet v-team layout
 │   └── config/                  # Static configuration
-│       ├── agents.ts            # Agent definitions & fleet config
-│       ├── depths.ts            # Phaser depth layer constants
+│       ├── agents.ts            # Agent definitions, reserve + fleet config
+│       ├── depths.ts / zIndex.ts # Phaser depth + DOM z-index constants
 │       ├── notifications.ts     # Notification event settings
 │       ├── meetingPrompt.ts     # Meeting coordinator prompt
 │       └── playerCustomization.ts # Player color customization
@@ -137,23 +158,27 @@ AgencyOffice/
 
 ## Adding New Agents
 
-Edit `src/config/agents.ts` to add new NPCs. Six reserve agent slots (Azure, Val, Rex, Doc, Scout, Penny) already have pre-generated sprites — activate one by adding its config to the `AGENTS` array:
+Edit `src/config/agents.ts` to add new NPCs. Six reserve agent slots (Azure, Val, Rex, Doc, Scout, Penny) already have pre-generated sprites — activate one by adding its config, or add a brand-new entry to the `AGENTS` array:
 
 ```typescript
 {
   id: 'unique-id',
   name: 'Display Name',
-  skill: 'copilot-skill-name',
+  skill: 'general',
   sprite: 'sprite_key',
-  color: 0xff0000,  // Hex color for procedural sprite
-  position: { x: 5, y: 7 },  // Grid position in office
-  greeting: "Hello message when player approaches",
+  color: 0xff0000,             // Hex color for the procedural sprite
+  position: { x: 5, y: 7 },    // Grid position in the office (20×12 tile grid)
+  greeting: "Hello message shown when the player approaches",
   description: 'Short description',
-  workingDir: 'optional/path',  // Optional custom working directory
+  workingDir: 'optional/path', // Optional custom working directory
 }
 ```
 
-Sprites are auto-generated based on the color — no image assets needed.
+Sprites are auto-generated from the color — no image assets needed.
+
+> **Tip:** Don't hardcode agent IDs in scene/layout/dashboard logic. Use the named
+> constants exported from `src/config/agents.ts` (`GENERALIST_AGENT_ID`,
+> `DEBUGGER_AGENT_ID`, `ADMIN_AGENT_ID`, `ARCHITECT_AGENT_ID`, `DEFAULT_PLAN_AGENT_IDS`).
 
 ## Development
 
@@ -168,13 +193,21 @@ npm run build
 npm run electron
 ```
 
+## Testing
+
+```bash
+npm run test          # Vitest unit/integration suite
+npm run test:coverage # Vitest with coverage output
+npm run test:e2e      # Playwright end-to-end tests (runs a build first)
+```
+
 ## Release channels
 
-- **Stable**: `npm i -g copilotoffice` (uses npm `latest` dist-tag)
-- **Beta**: `npm i -g copilotoffice@beta` (uses npm `beta` dist-tag)
+- **Stable**: `npm i -g copilotoffice` (uses the npm `latest` dist-tag)
+- **Beta**: `npm i -g copilotoffice@beta` (uses the npm `beta` dist-tag)
 
-For maintainers: pushing to GitHub is not enough for `npm i -g copilotoffice` by name.
-You must publish to npm. Typical flow:
+For maintainers: pushing to GitHub is not enough for `npm i -g copilotoffice` by name —
+you must publish to npm. Typical flow:
 
 ```bash
 npm run build
