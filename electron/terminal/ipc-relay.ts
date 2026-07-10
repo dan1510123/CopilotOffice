@@ -357,8 +357,8 @@ export class TerminalRelay {
       this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode })
     );
 
-    ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string) =>
-      this.request({ type: 'attach', requestId: this.id(), officeId, agentId })
+    ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string, foreground?: boolean) =>
+      this.request({ type: 'attach', requestId: this.id(), officeId, agentId, foreground })
     );
 
     ipcMain.handle('terminal-detach', (_event, officeId: string, agentId: string) => {

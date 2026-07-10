@@ -600,7 +600,7 @@ export class TerminalOverlay {
           // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
           // at the same position as the live PTY.
           const attachResult = await withTimeout(
-            window.copilotBridge.terminalAttach(officeId, agent.id),
+            window.copilotBridge.terminalAttach(officeId, agent.id, true),
             IPC_TIMEOUT, 'terminalAttach'
           );
 

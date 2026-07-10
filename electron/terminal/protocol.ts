@@ -63,6 +63,17 @@ export interface MsgAttach {
   requestId: string;
   officeId: string;
   agentId: string;
+  /**
+   * True only for a genuine user "I am now viewing this agent" attach (the
+   * SeriousTerminalController panel or the TerminalOverlay popup). Under the
+   * shared ui-server host this is what claims the single host foreground: the
+   * agent whose rawPty renders and whose session receives keyboard input.
+   *
+   * Background attaches (reconnect-on-focus, fleetTracker, teams) OMIT this so
+   * they only subscribe to the agent's copilot-events for badges/status and can
+   * NEVER hijack the foreground away from the agent the user is actually viewing.
+   */
+  foreground?: boolean;
 }
 
 export interface MsgDetach {

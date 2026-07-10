@@ -19,7 +19,6 @@ import {
 } from './agent-viewers';
 import {
   shouldForwardSharedHostData,
-  viewersToDeactivate,
 } from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
@@ -464,7 +463,45 @@ const uiServerOnlineOffices = new Set<string>();
 /** Stores pre-seeded prompts to send once the agent signals ready. */
 const pendingPreseededPrompts = new Map<string, string>();
 
-async function startTerminalForAgent(
+type StartTerminalResult = { success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string };
+
+/**
+ * In-flight start coalescing (R-DBL): `startTerminalForAgentImpl` awaits the
+ * backend before it registers the process in `ptyProcesses`/`agentToTerminal`.
+ * Two concurrent starts for the SAME agent (e.g. auto-warm racing a user click)
+ * both pass the "already running" dedup check, both spawn a backend process, and
+ * — under the shared ui-server host — EACH registers a `rawPty.onData` listener.
+ * The second overwrites the maps, orphaning the first process whose onData
+ * listener is never disposed, so the foreground agent's output (and echoed
+ * keystrokes) render twice. Coalescing concurrent starts per composite key so a
+ * single backend process is ever created closes that race.
+ */
+const inFlightStarts = new Map<string, Promise<StartTerminalResult>>();
+
+function startTerminalForAgent(
+  officeId: string,
+  agentId: string,
+  workingDir?: string,
+  cols?: number,
+  rows?: number,
+  preseededPrompt?: string,
+  launchMode: 'copilot' | 'shell' = 'copilot',
+): Promise<StartTerminalResult> {
+  const ck = compositeKey(officeId, agentId);
+  const pending = inFlightStarts.get(ck);
+  if (pending) {
+    // A start for this agent is already in flight — reuse its result rather than
+    // spawning a second backend process (and a second shared-host onData listener).
+    return pending.then((r) => (r.success ? { ...r, reused: true } : r));
+  }
+  const started = startTerminalForAgentImpl(officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode);
+  inFlightStarts.set(ck, started);
+  return started.finally(() => {
+    inFlightStarts.delete(ck);
+  });
+}
+
+async function startTerminalForAgentImpl(
   officeId: string,
   agentId: string,
   workingDir?: string,
@@ -577,6 +614,27 @@ async function startTerminalForAgent(
     });
 
     agentToTerminal.set(ck, terminalKey);
+
+    // Foreground hijack guard (R-FG): under the shared ui-server host, EVERY
+    // newly started agent calls setForeground() on the host (UiServerBackend.start),
+    // and the host routes ALL rawPty input to its foreground session. A background
+    // warm/start of a non-viewed agent therefore steals input away from the agent
+    // the user is actually viewing — their keystrokes silently route into the
+    // just-started session. `officeForegroundCk` records who the viewer attached
+    // to; if this start is for a DIFFERENT agent than the intended foreground,
+    // re-assert the intended foreground so the viewer keeps input ownership.
+    if (activeBackend.name === 'ui-server') {
+      const intendedCk = officeForegroundCk.get(officeId);
+      if (intendedCk && intendedCk !== ck) {
+        const fgKey = agentToTerminal.get(intendedCk);
+        const fgProc = fgKey ? ptyProcesses.get(fgKey) : null;
+        if (fgProc && typeof fgProc.process.setForeground === 'function') {
+          void Promise.resolve(fgProc.process.setForeground()).catch((err: unknown) => {
+            console.warn(`[lifecycle] re-assert foreground failed for ${intendedCk}: ${String(err)}`);
+          });
+        }
+      }
+    }
 
     // Per-agent ui-server → node-pty fallback (T039). Surface it so a broken SDK
     // attach is never silent (a stale/incompatible SDK once masked itself this way).
@@ -988,16 +1046,22 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
       const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
       const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
-      if (isSharedHost) {
-        // Single active agent per office (shared ui-server host): make this agent
-        // the office foreground so the shared TUI stream is attributed only to it,
-        // and deactivate every other active viewer in the same office so exactly
-        // one agent is UI-active at a time.
+      // Split foreground from event-subscription. addAgentViewer above already
+      // subscribed this agent to its copilot-events (badges/status/fleet/teams) —
+      // that is safe for MANY agents at once. The host FOREGROUND (rawPty render +
+      // keyboard input target) can belong to EXACTLY ONE agent, so we only claim
+      // it for a genuine user-view attach (msg.foreground === true). Background
+      // attaches (reconnect-on-focus, fleetTracker, teams) leave foreground alone
+      // and therefore can no longer steal the input target from the agent the user
+      // is actually looking at — the "keystrokes land in the wrong agent" bug.
+      if (isSharedHost && msg.foreground === true) {
+        // This agent is now the office foreground: the shared TUI stream is
+        // attributed to it and its session receives keyboard input. We do NOT
+        // deactivate other viewers here — they stay subscribed for events; the
+        // rawPty foreground gate (shouldForwardSharedHostData) already ensures only
+        // this agent's terminal bytes render. The renderer detaches the previously
+        // viewed agent on switch, so exactly one agent stays foreground.
         officeForegroundCk.set(msg.officeId, ck);
-        for (const otherCk of viewersToDeactivate(msg.officeId, ck, aliasKey, activeAgentViewers)) {
-          removeAgentViewer(otherCk, viewerMaps);
-          console.log(`[TermServer] Deactivated prior viewer ${otherCk} — single active agent per office`);
-        }
         // Await the foreground switch before responding: under the shared
         // ui-server host, ALL input funnels to the host rawPty and is routed to
         // whichever session is foreground. If we respond (and the viewer focuses

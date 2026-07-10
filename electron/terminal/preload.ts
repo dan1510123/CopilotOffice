@@ -40,8 +40,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   terminalExists: (officeId: string, agentId: string): Promise<boolean> => {
     return ipcRenderer.invoke('terminal-exists', officeId, agentId);
   },
-  terminalAttach: (officeId: string, agentId: string): Promise<{ success: boolean; scrollback?: string }> => {
-    return ipcRenderer.invoke('terminal-attach', officeId, agentId);
+  terminalAttach: (officeId: string, agentId: string, foreground?: boolean): Promise<{ success: boolean; scrollback?: string }> => {
+    return ipcRenderer.invoke('terminal-attach', officeId, agentId, foreground);
   },
   terminalDetach: (officeId: string, agentId: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('terminal-detach', officeId, agentId);
@@ -301,7 +301,7 @@ declare global {
       setYolo: (enabled: boolean) => Promise<{ success: boolean }>;
       setAdditionalParams: (params: string) => Promise<{ success: boolean }>;
       terminalExists: (officeId: string, agentId: string) => Promise<boolean>;
-      terminalAttach: (officeId: string, agentId: string) => Promise<{ success: boolean; scrollback?: string }>;
+      terminalAttach: (officeId: string, agentId: string, foreground?: boolean) => Promise<{ success: boolean; scrollback?: string }>;
       terminalDetach: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       terminalPopOut: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       getSessionId: (officeId: string, agentId: string) => Promise<string | null>;

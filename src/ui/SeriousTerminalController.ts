@@ -449,7 +449,7 @@ export class SeriousTerminalController {
         }
       }
 
-      const attachResult = await window.copilotBridge.terminalAttach(options.officeId, options.agentId);
+      const attachResult = await window.copilotBridge.terminalAttach(options.officeId, options.agentId, true);
       if (!attachResult.success) {
         this.terminal.writeln('\r\nFailed to attach terminal session.');
         this.setStatus('Attach failed');
