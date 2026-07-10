@@ -1,6 +1,6 @@
 {
   "name": "copilotoffice",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "A 2D pixel-art game where you interact with AI agents in a virtual office",
   "main": "dist/electron/main.js",
   "bin": {
