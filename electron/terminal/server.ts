@@ -17,6 +17,10 @@ import {
   removeAgentViewer,
   type ViewerMaps,
 } from './agent-viewers';
+import {
+  shouldForwardSharedHostData,
+  viewersToDeactivate,
+} from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 
@@ -59,6 +63,14 @@ const agentForwardKeys: Set<string> = new Set();
 // before injecting Enter, so a second queued prompt isn't submitted mid-render.
 const lastPtyDataAt: Map<string, number> = new Map();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
+// ui-server shared-host foreground tracking. Under the ui-server backend every
+// agent in an office shares ONE host TUI (`runtime.rawPty`); its output only
+// ever renders the *foreground* session, yet all agents' onData callbacks fire.
+// This maps officeId → the composite key of the agent that currently owns the
+// shared stream, so rendered output is attributed to exactly one agent and can't
+// leak into another session's scrollback/live view. Only meaningful for
+// ui-server (node-pty agents own a private PTY each).
+const officeForegroundCk: Map<string, string> = new Map();
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
 // Lazily-created node-pty backend used as a start-time fallback when the
@@ -132,6 +144,13 @@ function getOfficeSession(officeId: string): OfficeSessionData {
 // Composite key for PTY/runtime maps: `${officeId}:${agentId}`
 function compositeKey(officeId: string, agentId: string): string {
   return `${officeId}:${agentId}`;
+}
+
+// Clear an office's shared-host foreground pointer only when it currently points
+// at `ck` (i.e. the foreground agent's PTY is being destroyed). A later start or
+// attach re-establishes the foreground. See `officeForegroundCk`.
+function clearForegroundIf(officeId: string, ck: string): void {
+  if (officeForegroundCk.get(officeId) === ck) officeForegroundCk.delete(officeId);
 }
 
 /**
@@ -753,7 +772,24 @@ async function startTerminalForAgent(
       pendingData = '';
     };
 
+    // ui-server: every agent in an office shares ONE host TUI (rawPty). Its bytes
+    // only ever render the *foreground* session, yet all agents' onData callbacks
+    // fire. Attribute the shared stream to exactly one agent (the office
+    // foreground) so a session's rendered output cannot leak into another's
+    // scrollback or live view. Default the first started agent to foreground;
+    // the `attach` handler updates it on every agent switch.
+    const isSharedHostBackend = activeBackend.name === 'ui-server';
+    if (isSharedHostBackend && !officeForegroundCk.has(officeId)) {
+      officeForegroundCk.set(officeId, ck);
+    }
+
     proc.onData((data: string) => {
+      if (isSharedHostBackend && !shouldForwardSharedHostData(ck, officeForegroundCk.get(officeId))) {
+        // Not the office foreground — this is another session's rendered output
+        // arriving on the shared host TUI stream. Ignore it so it can't leak into
+        // this agent's scrollback or live view.
+        return;
+      }
       lastPtyDataAt.set(ck, Date.now());
       appendToScrollback(ck, data);
       // Ready signal from PTY output. Newer CLI builds do not always emit the old
@@ -782,6 +818,7 @@ async function startTerminalForAgent(
       unregisterPty(proc.pid);
       ptyProcesses.delete(terminalKey);
       activeAgentViewers.delete(ck);
+      clearForegroundIf(officeId, ck);
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
       agentReadyState.delete(ck);
@@ -911,6 +948,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           killPtyProcess(proc);
           ptyProcesses.delete(key!);
           agentToTerminal.delete(ck);
+          clearForegroundIf(msg.officeId, ck);
           // Archive old session ID and clear it so next start generates a fresh one
           archiveSessionId(msg.officeId, msg.agentId);
           const officeData = getOfficeSession(msg.officeId);
@@ -949,8 +987,18 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // the attach.
       const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
       const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
-      if (attachedProc && typeof attachedProc.process.setForeground === 'function') {
-        void Promise.resolve(attachedProc.process.setForeground()).catch((err: unknown) => {
+      const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
+      if (isSharedHost) {
+        // Single active agent per office (shared ui-server host): make this agent
+        // the office foreground so the shared TUI stream is attributed only to it,
+        // and deactivate every other active viewer in the same office so exactly
+        // one agent is UI-active at a time.
+        officeForegroundCk.set(msg.officeId, ck);
+        for (const otherCk of viewersToDeactivate(msg.officeId, ck, aliasKey, activeAgentViewers)) {
+          removeAgentViewer(otherCk, viewerMaps);
+          console.log(`[TermServer] Deactivated prior viewer ${otherCk} — single active agent per office`);
+        }
+        void Promise.resolve(attachedProc!.process.setForeground?.()).catch((err: unknown) => {
           console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
         });
       }
@@ -1067,6 +1115,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
       activeAgentViewers.delete(ck);
+      clearForegroundIf(msg.officeId, ck);
       // Clear session metadata
       const officeDataReset = getOfficeSession(msg.officeId);
       officeDataReset.sessionMeta.delete(msg.agentId);
@@ -1121,6 +1170,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
         activeAgentViewers.delete(ck);
+        clearForegroundIf(officeId, ck);
         hasAutoTitled.delete(ck);
         send({ type: 'session-meta-updated', agentId, meta: { title: '' } });
       }
