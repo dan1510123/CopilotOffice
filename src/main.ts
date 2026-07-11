@@ -44,19 +44,23 @@ function getCurrentAgents() {
 /**
  * Order agent cards for the overview according to the active sort mode.
  * - 'default': the layout's configured order (unchanged).
- * - 'recent': most recently active first, ranked by the latest of the agent's
- *   `activityStartTime` and its most recent `recentActions` timestamp. Agents
- *   with no recorded activity score 0. Stable, so equal-score agents keep
- *   config order.
+ * - 'recent': most recently active first. Recency is the latest of the agent's
+ *   in-memory activity (`activityStartTime` / `recentActions` timestamps) and
+ *   the persisted last-activity timestamp for this office+agent, so the order
+ *   survives an app restart. Agents with no recorded activity score 0. Stable,
+ *   so equal-score agents keep config order.
  */
 function sortAgentsByMode(agents: AgentConfig[], office: OfficeData | null): AgentConfig[] {
   if (agentSortMode !== 'recent' || !office) return agents;
+  const persisted = getOfficeAgentActivityTimes(office.config.id);
   const recency = (id: string): number => {
+    let t = persisted[id] ?? 0;
     const status = office.agents.get(id);
-    if (!status) return 0;
-    let t = status.activityStartTime ?? 0;
-    for (const action of status.recentActions) {
-      if (action.timestamp > t) t = action.timestamp;
+    if (status) {
+      if ((status.activityStartTime ?? 0) > t) t = status.activityStartTime!;
+      for (const action of status.recentActions) {
+        if (action.timestamp > t) t = action.timestamp;
+      }
     }
     return t;
   };
@@ -97,7 +101,31 @@ const PC_TERMINAL_ID = 'pc-terminal';
 type AgentSortMode = 'default' | 'recent';
 const AGENT_SORT_STORAGE_KEY = 'agencyOffice:agentSortMode';
 const OFFICE_ACCESS_TIMES_KEY = 'agencyOffice:officeAccessTimes';
+// Persisted last-activity (tool/turn) timestamps so the 'recent' agent sort
+// survives an app restart, when the in-memory AgentStatus map is empty.
+// Shape: { [officeId]: { [agentId]: epochMs } }.
+const AGENT_ACTIVITY_TIMES_KEY = 'agencyOffice:agentActivityTimes';
 let agentSortMode: AgentSortMode = (localStorage.getItem(AGENT_SORT_STORAGE_KEY) as AgentSortMode) || 'default';
+
+function getAgentActivityTimes(): Record<string, Record<string, number>> {
+  try {
+    const raw = localStorage.getItem(AGENT_ACTIVITY_TIMES_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function getOfficeAgentActivityTimes(officeId: string): Record<string, number> {
+  return getAgentActivityTimes()[officeId] ?? {};
+}
+
+function recordAgentActivity(officeId: string | null, agentId: string): void {
+  if (!officeId) return;
+  const all = getAgentActivityTimes();
+  const office = all[officeId] ?? {};
+  office[agentId] = Date.now();
+  all[officeId] = office;
+  try { localStorage.setItem(AGENT_ACTIVITY_TIMES_KEY, JSON.stringify(all)); } catch { /* ignore */ }
+}
 
 function getOfficeAccessTimes(): Record<string, number> {
   try {
@@ -2041,6 +2069,8 @@ if (window.copilotBridge) {
 
     // Track in recent actions history
     officeManager.pushRecentAction(officeId, agentId, toolName, 'started');
+    // Persist last-activity time so the 'recent' agent sort survives restarts.
+    recordAgentActivity(officeId, agentId);
     // Use tool status as task summary context
     if (status) {
       officeManager.setTaskSummary(officeId, agentId, status);
@@ -2158,6 +2188,8 @@ if (window.copilotBridge) {
     }
     // Set task summary on turn start
     officeManager.setTaskSummary(officeId, agentId, 'Processing...');
+    // Persist last-activity time so the 'recent' agent sort survives restarts.
+    recordAgentActivity(officeId, agentId);
     officeManager.setAgentThinking(officeId, agentId, 'Processing...');
     console.log(`[Office] Status: ${agentId} → thinking (turn start)`);
     notifyAgent(agentId, 'turnStart');
