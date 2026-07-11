@@ -17,7 +17,7 @@ const settings: TeamsSettings = {
   checkInThrottleMs: 60000,
 };
 
-function makeHarness() {
+function makeHarness(opts: { notify?: boolean } = {}) {
   const store = new InMemoryTeamsOnlineStore();
   const tokens: TokenProvider = { getToken: async () => 'fake' };
 
@@ -29,6 +29,17 @@ function makeHarness() {
       return { messageId: `reply-${replies.length}` };
     }),
   };
+
+  // Distinct-identity relay/Dump-channel sender used for the end-of-response completion ping.
+  const notifierPosts: string[] = [];
+  const notifier: GraphSender = {
+    createThread: vi.fn(async () => ({ threadRootId: '', webUrl: '' })),
+    replyToThread: vi.fn(async (p) => {
+      notifierPosts.push(p.html);
+      return { messageId: `notify-${notifierPosts.length}` };
+    }),
+  };
+  let notifyActive = opts.notify ?? false;
 
   let emit: (m: InboundMessage) => void = () => {};
   const source: MessageSource = {
@@ -63,6 +74,8 @@ function makeHarness() {
     store,
     tokens,
     graph,
+    notifier,
+    isNotifyActive: () => notifyActive,
     source,
     gateway,
     getSettings: () => settings,
@@ -75,6 +88,10 @@ function makeHarness() {
     service,
     graph,
     replies,
+    notifierPosts,
+    setNotifyActive: (v: boolean) => {
+      notifyActive = v;
+    },
     submitted,
     forwarding,
     inbound: () => emit,
@@ -116,6 +133,53 @@ describe('teams ambient (locally-driven) streaming', () => {
     expect(joined).toContain('Done refactoring.'); // reply streamed
     // The agent never received a Teams-originated prompt.
     expect(h.submitted).toHaveLength(0);
+  });
+
+  it('fires the Dump-channel completion notification once a local turn goes idle', async () => {
+    const h = makeHarness({ notify: true });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+
+    h.agent()({ agentId: 'generalist', kind: 'user-message', content: 'refactor the parser' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-start' });
+    h.agent()({ agentId: 'generalist', kind: 'message', content: 'Done refactoring.' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    await tick(40);
+
+    // Exactly one completion ping via the distinct-identity notifier (relay/Dump channel).
+    expect(h.notifierPosts).toHaveLength(1);
+    expect(h.notifierPosts[0]).toContain('has finished responding');
+    expect(h.notifierPosts[0]).toContain('🤖 <b>Gene</b>');
+  });
+
+  it('does not notify when a local turn produced no assistant text', async () => {
+    const h = makeHarness({ notify: true });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+
+    // A local user-message + turn-end with no `message` event → nothing was said.
+    h.agent()({ agentId: 'generalist', kind: 'user-message', content: 'noop please' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-start' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    await tick(40);
+
+    expect(h.notifierPosts).toHaveLength(0);
+  });
+
+  it('does not notify when the completion notification is inactive', async () => {
+    const h = makeHarness({ notify: false });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+
+    h.agent()({ agentId: 'generalist', kind: 'user-message', content: 'do a thing' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-start' });
+    h.agent()({ agentId: 'generalist', kind: 'message', content: 'Thing done.' });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    await tick(40);
+
+    // Reply still streamed under the operator identity, but no distinct-identity ping.
+    expect(h.replies.join('\n')).toContain('Thing done.');
+    expect(h.notifierPosts).toHaveLength(0);
   });
 
   it('does not echo the Teams prompt back as a local request (user-message during dispatch)', async () => {

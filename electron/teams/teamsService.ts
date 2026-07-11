@@ -103,8 +103,9 @@ interface PendingTurn {
 /**
  * Accumulator for a locally-driven (non-Teams) turn on an online agent. Mirrors the
  * subset of {@link PendingTurn} the ambient stream needs. No `resolve` (there is no
- * dispatch-queue promise to settle) and no completion-notification bookkeeping — a
- * local turn just streams its text into the thread.
+ * dispatch-queue promise to settle) — a local turn just streams its text into the
+ * thread and, once idle, fires the same end-of-response completion notification as a
+ * Teams-driven dispatch.
  */
 interface AmbientTurn {
   officeId: string;
@@ -112,6 +113,12 @@ interface AmbientTurn {
   binding: OnlineAgentBinding;
   chunks: string[];
   startedAt: number;
+  /**
+   * Text of the most recent non-empty turn flushed during this local response. Drives
+   * the end-of-response completion notification's empty-turn skip. Undefined ⇒ the agent
+   * produced no text this response, so no completion ping is sent.
+   */
+  lastReplyText?: string;
   settleTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -628,6 +635,7 @@ export class TeamsService {
     if (!text) return;
     const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
     tlog(`Local reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
+    rec.lastReplyText = text;
     await this.postReply(rec.binding, text);
   }
 
@@ -637,7 +645,12 @@ export class TeamsService {
     if (!rec) return;
     this.cancelAmbientSettle(rec);
     this.ambient.delete(agentId);
+    // Flush anything that arrived without a trailing turn-end (defensive).
     await this.flushAmbient(rec);
+    // Same distinct-identity completion ping as a Teams-driven dispatch, now that the
+    // locally-driven agent is idle — so the operator gets notified in Teams even though
+    // the reply content itself was posted under their own (un-notifying) identity.
+    await this.maybeNotifyComplete(rec.binding, rec.lastReplyText);
   }
 
   /** Post a locally-typed user request into the thread, tagged so it's distinct from replies. */
@@ -667,7 +680,7 @@ export class TeamsService {
     // One distinct-identity completion ping per response (via the relay/Dump channel),
     // now that the agent is idle — so the operator gets notified even though the reply
     // content itself was posted under their own identity.
-    await this.maybeNotifyComplete(rec);
+    await this.maybeNotifyComplete(rec.binding, rec.lastReplyText);
     rec.resolve();
   }
 
@@ -675,25 +688,27 @@ export class TeamsService {
    * Post a single end-of-response notification via the distinct-identity {@link
    * TeamsServiceDeps.notifier} (relay/Dump channel) so a Power Automate flow re-posts it
    * under the Flow-bot identity with an @mention. Active only when a notifier is wired and
-   * {@link TeamsServiceDeps.isNotifyActive} is true. Skips silently when the dispatch
+   * {@link TeamsServiceDeps.isNotifyActive} is true. Skips silently when the response
    * produced no text. Never throws — a notification failure must not wedge the queue.
+   * Shared by the Teams-dispatch ({@link finalizeDispatch}) and locally-driven ambient
+   * ({@link finalizeAmbient}) idle-finalize paths.
    */
-  private async maybeNotifyComplete(rec: PendingTurn): Promise<void> {
+  private async maybeNotifyComplete(binding: OnlineAgentBinding, lastReplyText?: string): Promise<void> {
     const notifier = this.deps.notifier;
     if (!notifier || !(this.deps.isNotifyActive?.() ?? false)) return;
-    if (!rec.lastReplyText) return; // nothing was said this dispatch → nothing to notify
+    if (!lastReplyText) return; // nothing was said this response → nothing to notify
     // The reply content itself already posted directly in the thread; this ping only
     // signals completion (a distinct-identity notification), so no preview is needed.
     // Include the session title when known so a notification for one of several agents
     // is self-identifying, e.g. "<b>Alice</b> has finished responding in "Bot in Teams"".
-    const title = (rec.binding.sessionTitle || '').trim();
+    const title = (binding.sessionTitle || '').trim();
     const where = title ? ` in “${escapeHtml(title)}”` : '';
-    const html = `${this.agentLabel(rec.binding)} has finished responding${where}`;
+    const html = `${this.agentLabel(binding)} has finished responding${where}`;
     try {
       const posted = await notifier.replyToThread({
-        teamId: rec.binding.teamId,
-        channelId: rec.binding.channelId,
-        threadRootId: rec.binding.threadRootId,
+        teamId: binding.teamId,
+        channelId: binding.channelId,
+        threadRootId: binding.threadRootId,
         html,
       });
       if (posted?.messageId) this.rememberPosted(posted.messageId);
