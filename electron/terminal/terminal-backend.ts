@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
 import type { PermissionHandler } from '@github/copilot-sdk';
+import { loadCustomAgents } from './custom-agents';
 
 export interface TerminalExitEvent {
   exitCode: number;
@@ -534,6 +535,10 @@ export class CopilotSdkBackend implements TerminalBackend {
     const sharedConfig: Record<string, unknown> = {
       streaming: true,
       workingDirectory: options.cwd,
+      // Inject the user's custom agents (~/.copilot/agents + <cwd>/.github/agents).
+      // SDK-created sessions don't auto-discover them the way the TUI does, so
+      // without this "New Session" loses every custom agent. See ./custom-agents.
+      customAgents: loadCustomAgents(options.cwd),
       onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
     };
 
@@ -770,6 +775,9 @@ export class ControlPlaneClient {
     const sharedConfig: Record<string, unknown> = {
       streaming: true,
       workingDirectory: cwd,
+      // Inject the user's custom agents (~/.copilot/agents + <cwd>/.github/agents)
+      // so SDK-created ("New Session") sessions expose them like the TUI does.
+      customAgents: loadCustomAgents(cwd),
       onPermissionRequest,
     };
 
