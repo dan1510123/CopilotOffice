@@ -19,6 +19,8 @@ import {
 } from './agent-viewers';
 import {
   shouldForwardSharedHostData,
+  foregroundAfterStart,
+  shouldReassertForeground,
 } from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
@@ -657,8 +659,8 @@ async function startTerminalForAgentImpl(
     // re-assert the intended foreground so the viewer keeps input ownership.
     if (activeBackend.name === 'ui-server') {
       const intendedCk = officeForegroundCk.get(officeId);
-      if (intendedCk && intendedCk !== ck) {
-        const fgKey = agentToTerminal.get(intendedCk);
+      if (shouldReassertForeground(intendedCk, ck)) {
+        const fgKey = agentToTerminal.get(intendedCk!);
         const fgProc = fgKey ? ptyProcesses.get(fgKey) : null;
         if (fgProc && typeof fgProc.process.setForeground === 'function') {
           void Promise.resolve(fgProc.process.setForeground()).catch((err: unknown) => {
@@ -869,8 +871,11 @@ async function startTerminalForAgentImpl(
     // scrollback or live view. Default the first started agent to foreground;
     // the `attach` handler updates it on every agent switch.
     const isSharedHostBackend = activeBackend.name === 'ui-server';
-    if (isSharedHostBackend && !officeForegroundCk.has(officeId)) {
-      officeForegroundCk.set(officeId, ck);
+    if (isSharedHostBackend) {
+      // An existing foreground is never overwritten by a starting agent, so a
+      // background warm/start of a non-viewed agent can't hijack the viewer's
+      // input ownership (see foregroundAfterStart).
+      officeForegroundCk.set(officeId, foregroundAfterStart(officeForegroundCk.get(officeId), ck));
     }
 
     proc.onData((data: string) => {

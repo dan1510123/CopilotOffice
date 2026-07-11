@@ -37,11 +37,35 @@ export function shouldForwardSharedHostData(
 }
 
 /**
- * Given the agent being activated (`ck`, plus its optional dual-key alias) in
- * `officeId`, return the other active-viewer keys in the SAME office that must
- * be deactivated so exactly one agent is UI-active per office. Keys for other
- * offices — and the activated agent's own keys — are never returned.
+ * Given the office foreground recorded before an agent starts, return who owns
+ * the foreground after starting `startingCk`. An existing foreground is NEVER
+ * overwritten by a starting agent — a background warm/start (e.g. cross-office
+ * Teams cold-warm) of a non-viewed agent must not seize foreground from the
+ * agent the user is actually viewing. Only when no foreground is recorded yet
+ * does the starting agent claim it. Mirrors the `!officeForegroundCk.has(...)`
+ * claim guard in server.ts.
  */
+export function foregroundAfterStart(
+  currentForeground: string | undefined,
+  startingCk: string,
+): string {
+  return currentForeground ?? startingCk;
+}
+
+/**
+ * Whether starting `startingCk` must re-assert the office's intended foreground.
+ * Under the shared ui-server host every started agent claims the host
+ * foreground, so a background start of a different agent than the viewer's
+ * foreground would hijack input. Re-assert when a foreground is recorded and it
+ * is a different agent than the one starting. Mirrors the re-assert guard in
+ * server.ts.
+ */
+export function shouldReassertForeground(
+  intendedForeground: string | undefined,
+  startingCk: string,
+): boolean {
+  return intendedForeground !== undefined && intendedForeground !== startingCk;
+}
 export function viewersToDeactivate(
   officeId: string,
   ck: string,
