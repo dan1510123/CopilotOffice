@@ -1172,7 +1172,9 @@ function formatElapsed(startTime: number | null): string {
   if (!startTime) return '';
   // FR-012: live elapsed is always mm:ss (e.g. 0:07, 1:05, 12:05) so the timer
   // width is stable and the card never reflows as the value ticks.
-  return formatElapsedMmSs(Date.now() - startTime);
+  // formatElapsedMmSs does the (now - startTime) subtraction itself — pass the
+  // raw start timestamp, not a pre-computed delta.
+  return formatElapsedMmSs(startTime);
 }
 
 function formatRelativeTime(timestamp: number): string {
