@@ -9,7 +9,7 @@ description: "Task list for Agent Status Tracking Revamp"
 
 **Tests**: INCLUDED — the spec's Regression Plan and Success Criteria explicitly require unit + e2e coverage.
 
-**Worktree**: All work happens in `C:\Users\danielluo\repos\CopilotOffice-014-agent-status-revamp` (branch `014-agent-status-revamp`). Run every `npm`/`git` command from that directory (Constitution Principle VII — its `dist/` is the one that matters).
+**Worktree**: All work happens in a dedicated `014-agent-status-revamp` worktree (branch `014-agent-status-revamp`). Run every `npm`/`git` command from that worktree directory (Constitution Principle VII — its `dist/` is the one that matters).
 
 **Organization**: Grouped by user story. US1 (reliability) and US2 (consistency) are both P1; US2's shared-mapping foundation unblocks US1's surface work, so the config module is done in the Foundational phase.
 
