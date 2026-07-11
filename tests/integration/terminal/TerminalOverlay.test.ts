@@ -225,7 +225,7 @@ describe('integration/TerminalOverlay', () => {
     overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
     await overlay.show(createAgent(), vi.fn());
 
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist');
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist', true);
     expect(bridge.terminalResize).toHaveBeenCalled();
 
     const resizeOrder = (bridge.terminalResize as any).mock.invocationCallOrder[0] as number | undefined;

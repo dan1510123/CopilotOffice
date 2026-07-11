@@ -194,11 +194,11 @@ describe('integration/serious-mode smoke (spec 003)', () => {
 
     clickAgentCard('generalist');
     await flushUi();
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist');
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist', true);
 
     clickAgentCard('debugger');
     await flushUi();
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger');
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger', true);
 
     // Switching should detach the previous agent before re-attaching.
     expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
@@ -257,7 +257,7 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     expect(
       bridge.terminalAttach,
       'V12 violated: render failure aborted the open flow before terminalAttach',
-    ).toHaveBeenCalledWith('office-0', 'generalist');
+    ).toHaveBeenCalledWith('office-0', 'generalist', true);
   }, 15000);
 
   it('SM-001 single sprite-card across game-mode + serious-mode toggles (V8/V9/V10, C6/C7)', async () => {
@@ -301,7 +301,7 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     expect(
       bridge.terminalAttach,
       'V12 violated: terminalAttach never called after render throw',
-    ).toHaveBeenCalledWith('office-0', 'generalist');
+    ).toHaveBeenCalledWith('office-0', 'generalist', true);
   }, 15000);
 
   it('SM-002.a serious-mode open happy path unchanged by resilience handler (V12.a, C8.a)', async () => {
@@ -312,7 +312,7 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     await flushUi();
 
     // Happy path attaches normally.
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist');
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist', true);
     // No render-error status leaked into the terminal output.
     // (We can only inspect the rendered status element; if the resilience
     // handler fired, the status would contain "[render error" — it must not.)
@@ -343,7 +343,7 @@ describe('integration/serious-mode smoke (spec 003)', () => {
 
     // After switching, terminalAttach for debugger fired and detach for the
     // previous (generalist) happened.
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger');
+    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger', true);
     expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
 
     // Sanity: the dashboard click-driven open path issued an attach for the
