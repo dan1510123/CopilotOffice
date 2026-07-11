@@ -277,7 +277,7 @@ export class NPC extends Phaser.Physics.Arcade.Sprite {
   }
 
   /** Update the NPC badge to reflect the agent's full status */
-  updateAgentStatus(status: AgentStatus | undefined): void {
+  updateAgentStatus(status: (Pick<AgentStatus, 'state' | 'subState'> & Partial<AgentStatus>) | undefined): void {
     if (!status || status.state === 'slacking') {
       this.hasActiveSession = false;
       this.setStalled(false);

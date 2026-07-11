@@ -10,6 +10,7 @@ import { AGENTS, AgentConfig, swapActiveAgents, restoreSeatedReserveAgents, ARCH
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
+import { SessionMetaSnapshot } from './layouts/types';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { showClipboardToast } from './ui/clipboardToast';
 import { NotificationService } from './ui/NotificationService';
@@ -18,7 +19,7 @@ import { TeamsSettingsOverlay } from './ui/TeamsSettingsOverlay';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
-import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool } from './util/toolStatus';
+import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool, ToolEntry } from './util/toolStatus';
 import { formatElapsedMmSs, computeStall } from './config/agentStatusPresentation';
 import { decideStartupTimeoutTransition } from './util/startupTimeoutGuard';
 import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStartCoordinator';
@@ -67,7 +68,7 @@ function sortAgentsByMode(agents: AgentConfig[], office: OfficeData | null): Age
   return [...agents].sort((a, b) => recency(b.id) - recency(a.id));
 }
 
-function getCurrentAgentTools(): Map<string, { toolId: string; name: string; status: string }[]> {
+function getCurrentAgentTools(): Map<string, ToolEntry[]> {
   return officeManager.currentOffice?.agentTools || new Map();
 }
 
@@ -134,7 +135,8 @@ function getOfficeAccessTimes(): Record<string, number> {
   } catch { return {}; }
 }
 
-function recordOfficeAccess(officeId: string): void {
+function recordOfficeAccess(officeId: string | null): void {
+  if (!officeId) return;
   const times = getOfficeAccessTimes();
   times[officeId] = Date.now();
   try { localStorage.setItem(OFFICE_ACCESS_TIMES_KEY, JSON.stringify(times)); } catch { /* ignore */ }
@@ -516,8 +518,8 @@ function installE2eDebugHook(): void {
       return getCurrentAgents().map((a) => ({
         id: a.id,
         name: a.name,
-        tileX: a.tileX,
-        tileY: a.tileY,
+        tileX: a.position.x,
+        tileY: a.position.y,
       }));
     },
     getActiveTerminalAgentId: () => {
@@ -1541,7 +1543,7 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
 
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
-let cachedSessionMeta: Record<string, { title: string }> = {};
+let cachedSessionMeta: Record<string, SessionMetaSnapshot> = {};
 
 // ── Teams Remote (011) dashboard state ──────────────────────────
 // Cached so the synchronous dashboard renderer can gate the per-tile

@@ -96,7 +96,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
 
   // Transfer a session (ID, metadata, PTY alias) from one office to another
-  transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
+  transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string; error?: string }> => {
     return ipcRenderer.invoke('transfer-session', fromOfficeId, toOfficeId, agentId);
   },
 
@@ -317,7 +317,7 @@ declare global {
       getAllSessionMeta: (officeId: string) => Promise<Record<string, { title: string; sessionId?: string }>>;
       createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
-      transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
+      transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       onTerminalData: (callback: (agentId: string, data: string) => void) => () => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => () => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => () => void;

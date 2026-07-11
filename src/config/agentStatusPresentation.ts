@@ -169,7 +169,9 @@ const NOT_STALLED: StallInfo = {
  * a status reaches here, `subState === 'waiting'` already reflects that guard, so we
  * simply honor it.
  */
-export function resolveStatusKey(status: AgentStatus | undefined | null): StatusKey {
+export function resolveStatusKey(
+  status: Pick<AgentStatus, 'state' | 'subState' | 'completionPendingAck'> | undefined | null
+): StatusKey {
   if (!status || status.state === 'slacking') return 'slacking';
 
   switch (status.subState) {

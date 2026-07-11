@@ -13,7 +13,7 @@ export type StartupTimeoutDecision =
   | { kind: 'transition-to-error'; reason: 'Startup timed out' };
 
 export interface StartupTimeoutInputs {
-  subState: string | undefined;
+  subState: string | null | undefined;
   activityStartTime: number | null | undefined;
   now: number;
   timeoutMs: number;

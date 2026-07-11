@@ -107,7 +107,7 @@ function finalizeSpritesheet(scene: Phaser.Scene, g: Phaser.GameObjects.Graphics
   canvas.getContext('2d')!.drawImage(srcCanvas, 0, 0);
 
   scene.textures.remove(tempKey);
-  scene.textures.addSpriteSheet(name, canvas, {
+  scene.textures.addSpriteSheet(name, canvas as unknown as HTMLImageElement, {
     frameWidth: FRAME_WIDTH,
     frameHeight: FRAME_HEIGHT,
   });

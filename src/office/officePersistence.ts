@@ -19,6 +19,7 @@
 // session-history files are keyed by id — positionally reindexing survivors
 // after a deletion would remap later offices onto the wrong session file.
 
+import type { AgentConfig } from '../config/agents';
 import type { OfficeConfig, OfficeLayout, SeatedAgent } from './officeManager';
 
 /** On-disk / localStorage shape. */
@@ -121,14 +122,14 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
     };
     // Carry custom agent definitions verbatim when present.
     if (cfg.customAgents !== undefined) {
-      (normalized as Record<string, unknown>).customAgents = cfg.customAgents;
+      normalized.customAgents = cfg.customAgents as AgentConfig[];
     }
     if (cfg.customReserveAgents !== undefined) {
-      (normalized as Record<string, unknown>).customReserveAgents = cfg.customReserveAgents;
+      normalized.customReserveAgents = cfg.customReserveAgents as Record<string, AgentConfig>;
     }
     // Carry the optional per-office Teams channel override verbatim.
     if (cfg.teamsChannelUrl !== undefined) {
-      (normalized as Record<string, unknown>).teamsChannelUrl = cfg.teamsChannelUrl;
+      normalized.teamsChannelUrl = cfg.teamsChannelUrl as string;
     }
     offices.push(normalized);
   }

@@ -27,7 +27,7 @@ export function extractJsonBlocks(text: string): string[] {
 /** Validate a parsed JSON object matches the MeetingPlan interface. */
 export function validateMeetingPlan(
   obj: unknown,
-  validAgentIds: string[],
+  validAgentIds: readonly string[],
 ): MeetingPlan | null {
   if (obj === null || typeof obj !== 'object') return null;
 
@@ -70,7 +70,7 @@ export function validateMeetingPlan(
 /** Parse a MeetingPlan from raw terminal output. */
 export function parsePlanFromOutput(
   terminalOutput: string,
-  validAgentIds: string[] = DEFAULT_VALID_AGENT_IDS,
+  validAgentIds: readonly string[] = DEFAULT_VALID_AGENT_IDS,
 ): MeetingPlan | null {
   const clean = stripAnsi(terminalOutput);
   const blocks = extractJsonBlocks(clean);

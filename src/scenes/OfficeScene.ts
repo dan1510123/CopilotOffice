@@ -2386,19 +2386,19 @@ export class OfficeScene extends Phaser.Scene {
     let nearestDeskDist = interactionDistance;
     
     // Check NPCs
-    this.npcs.forEach(npc => {
+    for (const npc of this.npcs) {
       const dist = Phaser.Math.Distance.Between(
         this.player.x, this.player.y,
         npc.x, npc.y
       );
-      
+
       if (dist < nearestNPCDist) {
         nearestNPCDist = dist;
         nearestNPC = npc;
       }
-      
+
       npc.setNearPlayer(false);
-    });
+    }
     
     // Check desks
     this.desks.forEach(desk => {

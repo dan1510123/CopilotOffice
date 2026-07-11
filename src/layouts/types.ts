@@ -1,5 +1,6 @@
 import { AgentConfig } from '../config/agents';
 import { AgentStatus, OfficeData, OfficeLayout } from '../office/officeManager';
+import type { ToolEntry } from '../util/toolStatus';
 
 /** Per-agent session snapshot displayed in the dashboard's session info panel. */
 export interface SessionMetaSnapshot {
@@ -16,7 +17,7 @@ export interface DashboardRenderContext {
   office: OfficeData | null;
   selectedAgentId: string | null;
   cachedSessionMeta: Record<string, SessionMetaSnapshot>;
-  agentTools: Map<string, { toolId: string; name: string; status: string }[]>;
+  agentTools: Map<string, ToolEntry[]>;
   formatElapsed: (startTime: number | null) => string;
   formatRelativeTime: (timestamp: number) => string;
   /** Teams Remote (011): whether the feature flag is enabled (gates the tile button). */

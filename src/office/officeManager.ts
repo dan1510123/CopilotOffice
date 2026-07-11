@@ -4,6 +4,7 @@
 import type { AgentConfig } from '../config/agents';
 import { generateRandomOfficeAgents } from '../config/agents';
 import { logLifecycleTransition, type LifecycleState } from '../util/lifecycleLog';
+import type { ToolEntry } from '../util/toolStatus';
 import {
   createBridgePersistencePort,
   deserializeOffices,
@@ -77,7 +78,7 @@ export interface AgentStatus {
 export interface OfficeData {
   config: OfficeConfig;
   agents: Map<string, AgentStatus>;
-  agentTools: Map<string, { toolId: string; name: string; status: string }[]>;
+  agentTools: Map<string, ToolEntry[]>;
 }
 
 export class OfficeManager {
@@ -356,7 +357,7 @@ export class OfficeManager {
     if (currentOfficeId && this.offices.has(currentOfficeId)) {
       this._currentOfficeId = currentOfficeId;
     } else if (this.offices.size > 0) {
-      this._currentOfficeId = this.offices.keys().next().value;
+      this._currentOfficeId = this.offices.keys().next().value ?? null;
     }
   }
   
@@ -507,7 +508,7 @@ export class OfficeManager {
     // currentTool is derived from the agentTools stack
     const office = this.offices.get(officeId);
     const tools = office?.agentTools.get(agentId);
-    status.currentTool = tools?.length ? tools[tools.length - 1].name : null;
+    status.currentTool = tools?.length ? tools[tools.length - 1].name ?? null : null;
     status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
     this.emitLifecycleTransition(officeId, agentId, status, from, reason, detail ?? undefined);

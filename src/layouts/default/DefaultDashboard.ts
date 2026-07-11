@@ -102,13 +102,13 @@ export const defaultDashboard: DashboardRenderer = {
       // ── Tool Pipeline Section ──
       let toolPipelineHtml = '';
       if (tools.length > 0) {
-        const toolRows = tools.map((t, i) => {
+        const toolRows = tools.map((tool, i) => {
           const isLast = i === tools.length - 1;
           const icon = isLast ? '▸' : '◦';
           const color = isLast ? '#8af' : '#556';
-          const statusText = isLast ? t.status : '(queued)';
+          const statusText = isLast ? tool.status : '(queued)';
           return `<div style="font-size: ${t.toolRow}; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">
-            ${icon} <span style="color: #9ab;">${t.name}</span> <span style="color: #556;">— ${statusText}</span>
+            ${icon} <span style="color: #9ab;">${tool.name}</span> <span style="color: #556;">— ${statusText}</span>
           </div>`;
         }).join('');
         toolPipelineHtml = `
