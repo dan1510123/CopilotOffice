@@ -2348,10 +2348,14 @@ if (window.copilotBridge) {
   });
 
   // Teams Remote Agents (011): surface service toasts (GC cleanup, auth/online).
-  window.copilotBridge.onTeamsToast?.((toast: { level?: string; message?: string }) => {
+  window.copilotBridge.onTeamsToast?.((toast: { level?: string; message?: string; durationMs?: number }) => {
     if (!toast?.message) return;
     const kind = toast.level === 'error' ? 'error' : toast.level === 'warn' ? 'error' : 'info';
-    showClipboardToast(toast.message, kind);
+    if (typeof toast.durationMs === 'number' && toast.durationMs > 0) {
+      showClipboardToast(toast.message, kind, toast.durationMs);
+    } else {
+      showClipboardToast(toast.message, kind);
+    }
   });
 
   // Terminal backend fallback notice (013): if a requested backend (default

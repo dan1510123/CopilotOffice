@@ -188,7 +188,14 @@ app.whenReady().then(async () => {
       path.join(process.cwd(), '.data', 'teams-token.enc'),
       safeStorage,
     );
-    const tokens = new AzTokenProvider(undefined, tokenPersistence);
+    // The token observer forwards az/token outcomes to the Teams service so it can surface
+    // an actionable "run az login" toast on a hard credential failure and clear it on
+    // recovery. A lazy getter is used because `teamsService` is constructed further below;
+    // the observer only fires during async token acquisition, long after wiring completes.
+    const tokens = new AzTokenProvider(undefined, tokenPersistence, {
+      onAcquire: (resource) => teamsService?.onTokenOutcome('acquire', resource, false),
+      onFailure: (resource, err, usedCache) => teamsService?.onTokenOutcome('fail', resource, usedCache, err),
+    });
     // Hard outbound gate: the app may only POST to the configured channels — the
     // global default plus per-office overrides. Enforced at the GraphSender boundary
     // so every send path (threads, replies, acks, check-ins, notices) is validated.
@@ -289,8 +296,14 @@ app.whenReady().then(async () => {
       settingsStore,
       getMainWindow: () => mainWindow,
       onSettingsChanged: (settings) => {
-        if (settings.enabled) teamsService?.start().catch((e) => console.error('[Main] Teams start failed:', e));
-        else teamsService?.stop().catch((e) => console.error('[Main] Teams stop failed:', e));
+        if (settings.enabled) {
+          teamsService
+            ?.start()
+            .then(() => teamsService?.verifyAccess(settings))
+            .catch((e) => console.error('[Main] Teams start failed:', e));
+        } else {
+          teamsService?.stop().catch((e) => console.error('[Main] Teams stop failed:', e));
+        }
       },
     });
 

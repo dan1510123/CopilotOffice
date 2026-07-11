@@ -16,6 +16,43 @@ export interface TokenProvider {
   getToken(resource: TokenResource): Promise<string>;
 }
 
+/**
+ * Optional observer notified of token-acquisition outcomes so a higher layer (the Teams
+ * service) can surface user-facing health signals — e.g. prompt "run az login" when the
+ * credential expires, or clear the warning once a token is acquired again. Injected so
+ * `auth.ts` stays free of any electron/renderer dependency. Never receives a token value.
+ */
+export interface TokenObserver {
+  /** A fresh token was successfully acquired from `az`. */
+  onAcquire?(resource: TokenResource): void;
+  /**
+   * Token acquisition failed. `usedCache` is true when a still-valid cached token was
+   * reused (soft/graceful degradation) and false when the call is about to throw (hard
+   * failure — the caller has no usable token). `err.message` is already secret-safe.
+   */
+  onFailure?(resource: TokenResource, err: Error, usedCache: boolean): void;
+}
+
+/**
+ * Heuristic: does this error look like an expired / missing Azure CLI login (i.e. the
+ * fix is `az login`) rather than a transient network blip? Used only to tune messaging;
+ * callers should still treat any hard token failure as actionable.
+ */
+export function isAzLoginError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes('az login') ||
+    msg.includes('please run') ||
+    msg.includes('not logged in') ||
+    msg.includes('no subscription') ||
+    msg.includes('refresh token') ||
+    msg.includes('aadsts') ||
+    msg.includes('interaction_required') ||
+    msg.includes('token acquisition failed')
+  );
+}
+
 const RESOURCE_URLS: Record<TokenResource, string> = {
   graph: 'https://graph.microsoft.com',
   ic3: 'https://ic3.teams.office.com',
@@ -109,6 +146,7 @@ export class AzTokenProvider implements TokenProvider {
   constructor(
     private readonly runner: AzRunner = defaultAzRunner,
     private readonly persistence?: TokenPersistence,
+    private readonly observer?: TokenObserver,
   ) {
     if (persistence) {
       try {
@@ -151,14 +189,27 @@ export class AzTokenProvider implements TokenProvider {
       this.saveCache();
       // Log the acquisition + expiry only — NEVER the token itself.
       tlog(`Acquired ${resource} token (expires ${new Date(expiresAt).toISOString()}).`);
+      this.notifyObserver(() => this.observer?.onAcquire?.(resource));
       return token;
     } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
       // Graceful degradation: reuse a still-valid cached token if we have one.
       if (cached && cached.expiresAt > now) {
         twarn(`Token refresh failed for ${resource}; reusing cached token.`);
+        this.notifyObserver(() => this.observer?.onFailure?.(resource, err, true));
         return cached.token;
       }
-      throw e;
+      this.notifyObserver(() => this.observer?.onFailure?.(resource, err, false));
+      throw err;
+    }
+  }
+
+  /** Run an observer callback defensively — a buggy observer must never break token flow. */
+  private notifyObserver(fn: () => void): void {
+    try {
+      fn();
+    } catch {
+      /* observer errors are non-fatal */
     }
   }
 }

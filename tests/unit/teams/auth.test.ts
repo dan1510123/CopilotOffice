@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AzTokenProvider, decodeJwtExpMs } from '../../../electron/teams/auth';
+import { AzTokenProvider, decodeJwtExpMs, isAzLoginError } from '../../../electron/teams/auth';
 
 function fakeJwt(expSeconds: number): string {
   const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
@@ -116,6 +116,72 @@ describe('AzTokenProvider persistence', () => {
       load: () => ({}),
       save: () => {
         throw new Error('write failed');
+      },
+    });
+    await expect(provider.getToken('graph')).resolves.toBeTruthy();
+  });
+});
+
+describe('isAzLoginError', () => {
+  it('matches common expired/missing-login messages', () => {
+    expect(isAzLoginError(new Error('ERROR: Please run "az login" to setup account.'))).toBe(true);
+    expect(isAzLoginError(new Error('AADSTS700082: The refresh token has expired'))).toBe(true);
+    expect(isAzLoginError(new Error('az token acquisition failed for https://graph...'))).toBe(true);
+    expect(isAzLoginError('interaction_required')).toBe(true);
+  });
+  it('is false for empty/unrelated errors', () => {
+    expect(isAzLoginError(new Error('ECONNRESET socket hang up'))).toBe(false);
+    expect(isAzLoginError('')).toBe(false);
+    expect(isAzLoginError(null)).toBe(false);
+  });
+});
+
+describe('AzTokenProvider observer', () => {
+  it('fires onAcquire with the resource on a successful acquisition', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const runner = vi.fn(async () => fakeJwt(future));
+    const onAcquire = vi.fn();
+    const provider = new AzTokenProvider(runner, undefined, { onAcquire });
+    await provider.getToken('graph');
+    expect(onAcquire).toHaveBeenCalledWith('graph');
+  });
+
+  it('fires onFailure(usedCache=false) and rethrows on a hard failure', async () => {
+    const runner = vi.fn(async () => {
+      throw new Error('az login required');
+    });
+    const onFailure = vi.fn();
+    const provider = new AzTokenProvider(runner, undefined, { onFailure });
+    await expect(provider.getToken('ic3')).rejects.toThrow('az login required');
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][0]).toBe('ic3');
+    expect(onFailure.mock.calls[0][2]).toBe(false); // usedCache
+  });
+
+  it('fires onFailure(usedCache=true) when a still-valid cached token is reused', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const nearExpiry = Math.floor(Date.now() / 1000) + 60; // inside refresh buffer
+    let call = 0;
+    const runner = vi.fn(async () => {
+      call++;
+      if (call === 1) return fakeJwt(nearExpiry);
+      throw new Error('az offline');
+    });
+    const onFailure = vi.fn();
+    const provider = new AzTokenProvider(runner, undefined, { onFailure });
+    await provider.getToken('graph'); // seeds a still-valid (but near-expiry) token
+    const t2 = await provider.getToken('graph'); // triggers refresh → fails → cache reuse
+    expect(t2).toBeTruthy();
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][2]).toBe(true); // usedCache
+  });
+
+  it('a throwing observer never breaks token acquisition', async () => {
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    const runner = vi.fn(async () => fakeJwt(future));
+    const provider = new AzTokenProvider(runner, undefined, {
+      onAcquire: () => {
+        throw new Error('observer boom');
       },
     });
     await expect(provider.getToken('graph')).resolves.toBeTruthy();

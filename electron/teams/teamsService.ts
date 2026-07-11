@@ -21,6 +21,7 @@ import { extractImageMarkers, loadHostedImages, hostedImagesHtml } from './image
 import type { HostedImage } from './imageMarker';
 import { pickAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
+import { isAzLoginError } from './auth';
 import type {
   TeamsSettings,
   OnlineAgentBinding,
@@ -32,6 +33,8 @@ import type {
 export interface TeamsToast {
   level: 'info' | 'warn' | 'error';
   message: string;
+  /** Optional display duration (ms). Omitted ⇒ renderer default. */
+  durationMs?: number;
 }
 
 export interface AgentInfo {
@@ -135,6 +138,12 @@ const RECONCILE_MS = 15_000;
  */
 const TURN_SETTLE_MS = 2500;
 
+/** Long-lived duration (ms) for the actionable "run az login" credential toast. */
+const AUTH_TOAST_DURATION_MS = 60_000;
+
+/** While the credential stays broken, re-emit the az-login toast at most this often. */
+const AUTH_TOAST_REPEAT_MS = 5 * 60 * 1000;
+
 export class TeamsService {
   private bindings: OnlineAgentBinding[] = [];
   private knownThreads: KnownThread[] = [];
@@ -165,6 +174,12 @@ export class TeamsService {
   private started = false;
   private readonly now: () => number;
   private readonly settleMs: number;
+  /** True once a hard token failure has been surfaced and not yet recovered. */
+  private authBroken = false;
+  /** Timestamp of the last az-login toast (throttle guard). 0 ⇒ never shown. */
+  private lastAuthToastAt = 0;
+  /** Last observed receive-transport health, to emit connect/reconnect notices once per transition. */
+  private lastTransportHealth: 'connected' | 'disconnected' | 'error' | 'unknown' = 'unknown';
 
   constructor(private readonly deps: TeamsServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -790,6 +805,140 @@ export class TeamsService {
 
   // ── Reconnect / teardown reconcile (FR-022/024) ──────────────
 
+  // ── Credential / connection health (auth + transport) ────────
+
+  /** True when at least one agent is bound (online or persisted); gates health noise. */
+  private hasBoundAgents(): boolean {
+    return this.bindings.length > 0;
+  }
+
+  /**
+   * Called by the token provider (wired in main.ts) on every acquisition outcome.
+   * Owns the actionable credential toast and its throttle, and clears the warning once a
+   * token is acquired again. Only surfaces while an agent is bound (avoid noise when Teams
+   * isn't in use). A soft failure (cached-token fallback) is not user-facing — the agent is
+   * still working — so only hard failures raise the prompt. `err` is used only to tailor the
+   * message (az-login vs generic connectivity); it is never logged or shown verbatim.
+   */
+  onTokenOutcome(kind: 'acquire' | 'fail', _resource: string, usedCache: boolean, err?: Error): void {
+    if (kind === 'acquire') {
+      if (this.authBroken) {
+        const hadToast = this.lastAuthToastAt > 0; // only announce recovery if we warned
+        this.authBroken = false;
+        this.lastAuthToastAt = 0;
+        if (hadToast && this.hasBoundAgents()) {
+          this.deps.emitToast({ level: 'info', message: 'Teams: Azure credential restored — reconnected.' });
+          // Suppress the redundant transport "reconnected" toast for this same recovery.
+          this.lastTransportHealth = 'unknown';
+        }
+      }
+      return;
+    }
+    // kind === 'fail'
+    if (usedCache) return; // soft degradation — still have a usable token, stay quiet
+    if (!this.hasBoundAgents()) {
+      // Remember it's broken so recovery still fires later, but don't toast when idle.
+      this.authBroken = true;
+      return;
+    }
+    const now = this.now();
+    const dueForRepeat = now - this.lastAuthToastAt >= AUTH_TOAST_REPEAT_MS;
+    if (!this.authBroken || dueForRepeat) {
+      this.authBroken = true;
+      this.lastAuthToastAt = now;
+      // Any hard failure is actionable, but only an actual expired/missing login should
+      // tell the user to run `az login`; a network/DNS blip gets a generic message.
+      const looksLikeLogin = !err || isAzLoginError(err);
+      this.deps.emitToast({
+        level: 'error',
+        message: looksLikeLogin
+          ? 'Teams: Azure credential expired. Run "az login" in a new terminal to reconnect.'
+          : 'Teams: can\u2019t reach Azure to authenticate (network issue?). Retrying automatically.',
+        durationMs: AUTH_TOAST_DURATION_MS,
+      });
+    }
+  }
+
+  /**
+   * Emit a one-shot notice when the receive transport (re)connects. Called each reconcile
+   * tick. The az-login prompt is owned by {@link onTokenOutcome}; a transport drop that is
+   * NOT an auth failure (e.g. a network blip) stays quiet — only its eventual recovery is
+   * announced. Gated on bound agents to avoid noise when Teams isn't in use.
+   */
+  private checkTransportHealth(): void {
+    const health = this.deps.source.health;
+    const prev = this.lastTransportHealth;
+    this.lastTransportHealth = health;
+    if (!this.hasBoundAgents()) return;
+    if (health === 'connected' && prev !== 'connected' && prev !== 'unknown') {
+      this.deps.emitToast({ level: 'info', message: 'Teams: reconnected.' });
+    }
+  }
+
+  /**
+   * One-shot access check run when the feature is enabled + saved in Settings. Confirms the
+   * signed-in user can actually reach the configured default + relay/Dump channels. Acquiring
+   * the graph token here exercises `az`, so a broken credential trips the token observer →
+   * az-login toast automatically. Purely reports via toast; never throws.
+   */
+  async verifyAccess(settings: TeamsSettings): Promise<void> {
+    const targets: Array<{ label: string; url: string }> = [];
+    if (settings.defaultChannelUrl?.trim()) targets.push({ label: 'default', url: settings.defaultChannelUrl });
+    if (settings.relayChannelUrl?.trim()) targets.push({ label: 'Dump', url: settings.relayChannelUrl });
+    if (targets.length === 0) return; // nothing configured to verify
+
+    const getChannel = this.deps.graph.getChannel?.bind(this.deps.graph);
+    if (!getChannel) return; // sender can't probe — skip silently
+
+    const ok: string[] = [];
+    const failed: string[] = []; // membership / wrong-link problems (403/404/unparseable)
+    const authFailed: string[] = []; // 401 — token rejected (expired / wrong tenant)
+    let unknownFailure = false; // token-acquisition / transient error — don't claim success
+    for (const t of targets) {
+      const coords = parseChannelLink(t.url);
+      if (!coords) {
+        failed.push(`${t.label} (unparseable link)`);
+        continue;
+      }
+      try {
+        await getChannel(coords.teamId, coords.channelId);
+        ok.push(t.label);
+      } catch (e) {
+        const msg = (e as Error).message || '';
+        if (/\b401\b/.test(msg)) {
+          authFailed.push(t.label);
+        } else if (/\b(403|404)\b/.test(msg)) {
+          failed.push(t.label);
+        } else {
+          // Likely a token acquisition failure — the token observer owns that az-login
+          // prompt; just make sure a partial success here isn't reported as all-clear.
+          unknownFailure = true;
+        }
+      }
+    }
+
+    if (authFailed.length > 0) {
+      this.deps.emitToast({
+        level: 'error',
+        message: `Teams: Azure sign-in was rejected for the ${authFailed.join(' + ')} channel${authFailed.length > 1 ? 's' : ''}. Run "az login" (correct tenant) and re-enable.`,
+        durationMs: AUTH_TOAST_DURATION_MS,
+      });
+    }
+    if (failed.length > 0) {
+      this.deps.emitToast({
+        level: 'warn',
+        message: `Teams: can't access the ${failed.join(' + ')} channel${failed.length > 1 ? 's' : ''}. Check the link and your Teams membership.`,
+      });
+    }
+    // Only claim success when EVERY configured target was confirmed reachable.
+    if (authFailed.length === 0 && failed.length === 0 && !unknownFailure && ok.length > 0) {
+      this.deps.emitToast({
+        level: 'info',
+        message: `Teams: verified access to the ${ok.join(' + ')} channel${ok.length > 1 ? 's' : ''}.`,
+      });
+    }
+  }
+
   /**
    * Run a reconcile pass on demand (e.g. right after the renderer re-attaches
    * terminal sessions on startup / office switch), so Teams bindings re-online
@@ -801,6 +950,7 @@ export class TeamsService {
   }
 
   private async reconcile(): Promise<void> {
+    this.checkTransportHealth();
     let changed = false;
     for (const b of [...this.bindings]) {
       // Abort cleanly if the service is stopping — a reconnect below would otherwise

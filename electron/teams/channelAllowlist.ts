@@ -55,9 +55,12 @@ export function createAllowlistedGraphSender(
       return inner.replyToThread(p);
     },
   };
-  // Preserve the optional read-only capability verbatim (no channel target to gate).
+  // Preserve the optional read-only capabilities verbatim (no channel target to gate).
   if (inner.listChannels) {
     wrapped.listChannels = (teamId: string) => inner.listChannels!(teamId);
+  }
+  if (inner.getChannel) {
+    wrapped.getChannel = (teamId: string, channelId: string) => inner.getChannel!(teamId, channelId);
   }
   return wrapped;
 }

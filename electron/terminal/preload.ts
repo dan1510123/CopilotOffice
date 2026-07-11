@@ -347,7 +347,7 @@ declare global {
       teamsGetSettings: () => Promise<{ success: boolean; settings: TeamsSettingsShape }>;
       teamsSaveSettings: (settings: TeamsSettingsShape) => Promise<{ success: boolean; parsed?: unknown; error?: string }>;
       onTeamsStatusChanged: (callback: (status: TeamsAgentStatus) => void) => void;
-      onTeamsToast: (callback: (toast: { level: string; message: string }) => void) => void;
+      onTeamsToast: (callback: (toast: { level: string; message: string; durationMs?: number }) => void) => void;
     };
   }
 

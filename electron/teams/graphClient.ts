@@ -39,6 +39,8 @@ export interface GraphSender {
   createThread(p: CreateThreadParams): Promise<{ threadRootId: string; webUrl: string }>;
   replyToThread(p: ReplyParams): Promise<{ messageId: string }>;
   listChannels?(teamId: string): Promise<Array<{ id: string; displayName: string }>>;
+  /** Probe access to a single channel; throws with the HTTP status on non-OK. */
+  getChannel?(teamId: string, channelId: string): Promise<{ id: string; displayName: string }>;
 }
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
@@ -102,6 +104,22 @@ export class GraphClient implements GraphSender {
     if (!res.ok) throw new Error(`Graph listChannels failed: ${res.status}`);
     const json = (await res.json()) as { value?: Array<{ id: string; displayName: string }> };
     return json.value || [];
+  }
+
+  /**
+   * Probe access to a single channel (`GET /teams/{teamId}/channels/{channelId}`). Used by
+   * the settings-save access check to confirm the signed-in user can actually reach the
+   * configured default / Dump channels. Throws with the HTTP status on non-OK so the caller
+   * can classify 401/403 (permission) vs 404 (wrong link).
+   */
+  async getChannel(teamId: string, channelId: string): Promise<{ id: string; displayName: string }> {
+    const url = `${GRAPH_BASE}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(
+      channelId,
+    )}?$select=id,displayName`;
+    const res = await fetch(url, { headers: await this.authHeaders() });
+    if (!res.ok) throw new Error(`Graph getChannel failed: ${res.status} ${await safeText(res)}`);
+    const json = (await res.json()) as { id?: string; displayName?: string };
+    return { id: json.id || channelId, displayName: json.displayName || '' };
   }
 
   /** List a team's tags (id + displayName) — used to resolve a tag name to its tagId. */
