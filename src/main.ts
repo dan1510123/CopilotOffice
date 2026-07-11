@@ -5,8 +5,8 @@ import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
-import { officeManager, OfficeLayout } from './office/officeManager';
-import { AGENTS, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
+import { officeManager, OfficeLayout, OfficeData } from './office/officeManager';
+import { AGENTS, AgentConfig, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
@@ -41,6 +41,28 @@ function getCurrentAgents() {
   return getLayout(getCurrentLayout()).agents;
 }
 
+/**
+ * Order agent cards for the overview according to the active sort mode.
+ * - 'default': the layout's configured order (unchanged).
+ * - 'recent': most recently active first, ranked by the latest of the agent's
+ *   `activityStartTime` and its most recent `recentActions` timestamp. Agents
+ *   with no recorded activity score 0. Stable, so equal-score agents keep
+ *   config order.
+ */
+function sortAgentsByMode(agents: AgentConfig[], office: OfficeData | null): AgentConfig[] {
+  if (agentSortMode !== 'recent' || !office) return agents;
+  const recency = (id: string): number => {
+    const status = office.agents.get(id);
+    if (!status) return 0;
+    let t = status.activityStartTime ?? 0;
+    for (const action of status.recentActions) {
+      if (action.timestamp > t) t = action.timestamp;
+    }
+    return t;
+  };
+  return [...agents].sort((a, b) => recency(b.id) - recency(a.id));
+}
+
 function getCurrentAgentTools(): Map<string, { toolId: string; name: string; status: string }[]> {
   return officeManager.currentOffice?.agentTools || new Map();
 }
@@ -71,11 +93,11 @@ const SESSION_META_CACHE_STORAGE_KEY = 'agencyOffice:sessionMetaCacheByOffice';
 const OVERVIEW_SPRITE_CACHE_STORAGE_KEY = 'agencyOffice:overviewSpriteCache';
 const PC_TERMINAL_ID = 'pc-terminal';
 
-// Office tab sort state
-type OfficeSortMode = 'default' | 'recent';
-const OFFICE_SORT_STORAGE_KEY = 'agencyOffice:officeSortMode';
+// Agent card sort state (orders agent cards within the current office view)
+type AgentSortMode = 'default' | 'recent';
+const AGENT_SORT_STORAGE_KEY = 'agencyOffice:agentSortMode';
 const OFFICE_ACCESS_TIMES_KEY = 'agencyOffice:officeAccessTimes';
-let officeSortMode: OfficeSortMode = (localStorage.getItem(OFFICE_SORT_STORAGE_KEY) as OfficeSortMode) || 'default';
+let agentSortMode: AgentSortMode = (localStorage.getItem(AGENT_SORT_STORAGE_KEY) as AgentSortMode) || 'default';
 
 function getOfficeAccessTimes(): Record<string, number> {
   try {
@@ -538,13 +560,8 @@ function installE2eDebugHook(): void {
 // ── Office Tabs ─────────────────────────────────────────────────
 
 function renderOfficeTabs() {
-  let offices = officeManager.getAllOffices();
+  const offices = officeManager.getAllOffices();
   const currentId = officeManager.currentOfficeId;
-
-  if (officeSortMode === 'recent') {
-    const accessTimes = getOfficeAccessTimes();
-    offices = [...offices].sort((a, b) => (accessTimes[b.id] || 0) - (accessTimes[a.id] || 0));
-  }
 
   let html = '';
 
@@ -1047,18 +1064,18 @@ overviewHeader.innerHTML = `
     <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
   </div>
   <div style="display: flex; align-items: center; gap: 8px;">
-    <button id="office-sort-btn" style="
+    <button id="agent-sort-btn" style="
       padding: 6px 12px;
-      background: ${officeSortMode === 'recent' ? '#2a3a5a' : '#252538'};
-      color: ${officeSortMode === 'recent' ? '#8af' : '#666'};
-      border: 1px solid ${officeSortMode === 'recent' ? '#4488ff' : '#444'};
+      background: ${agentSortMode === 'recent' ? '#2a3a5a' : '#252538'};
+      color: ${agentSortMode === 'recent' ? '#8af' : '#666'};
+      border: 1px solid ${agentSortMode === 'recent' ? '#4488ff' : '#444'};
       border-radius: 4px;
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 12px;
       cursor: pointer;
       white-space: nowrap;
       transition: all 0.2s;
-    " title="Sort office tabs">⇅ ${officeSortMode === 'recent' ? 'Recent' : 'Default'}</button>
+    " title="Sort agents in this office">⇅ ${agentSortMode === 'recent' ? 'Recent' : 'Default'}</button>
     <button id="close-office-btn" style="
       display: none;
       padding: 6px 14px;
@@ -1075,18 +1092,18 @@ overviewHeader.innerHTML = `
 `;
 overviewHost.appendChild(overviewHeader);
 
-// Sort button handler
-document.getElementById('office-sort-btn')!.addEventListener('click', () => {
-  officeSortMode = officeSortMode === 'default' ? 'recent' : 'default';
-  try { localStorage.setItem(OFFICE_SORT_STORAGE_KEY, officeSortMode); } catch { /* ignore */ }
-  renderOfficeTabs();
+// Sort button handler — reorders agent cards in the current office
+document.getElementById('agent-sort-btn')!.addEventListener('click', () => {
+  agentSortMode = agentSortMode === 'default' ? 'recent' : 'default';
+  try { localStorage.setItem(AGENT_SORT_STORAGE_KEY, agentSortMode); } catch { /* ignore */ }
+  updateTerminalContent();
   // Re-render the sort button to reflect new state
-  const sortBtn = document.getElementById('office-sort-btn');
+  const sortBtn = document.getElementById('agent-sort-btn');
   if (sortBtn) {
-    sortBtn.textContent = `⇅ ${officeSortMode === 'recent' ? 'Recent' : 'Default'}`;
-    sortBtn.style.background = officeSortMode === 'recent' ? '#2a3a5a' : '#252538';
-    sortBtn.style.color = officeSortMode === 'recent' ? '#8af' : '#666';
-    sortBtn.style.borderColor = officeSortMode === 'recent' ? '#4488ff' : '#444';
+    sortBtn.textContent = `⇅ ${agentSortMode === 'recent' ? 'Recent' : 'Default'}`;
+    sortBtn.style.background = agentSortMode === 'recent' ? '#2a3a5a' : '#252538';
+    sortBtn.style.color = agentSortMode === 'recent' ? '#8af' : '#666';
+    sortBtn.style.borderColor = agentSortMode === 'recent' ? '#4488ff' : '#444';
   }
 });
 
@@ -1617,7 +1634,7 @@ function updateTerminalContentNow() {
   // Delegate card rendering to the layout-specific dashboard renderer
   const layout = getLayout(getCurrentLayout());
   const html = layout.dashboard.renderCards({
-    agents: layout.agents,
+    agents: sortAgentsByMode(layout.agents, office || null),
     office: office || null,
     selectedAgentId,
     cachedSessionMeta,
