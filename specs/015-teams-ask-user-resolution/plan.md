@@ -11,25 +11,31 @@ no Adaptive Cards), and let a thread reply resolve the pending selection **match
 by selector label** (number/letter). Every `ask_user` from an online agent is forwarded,
 whether the turn was Teams- or locally-initiated (FR-013).
 
-Two mechanisms make this work, both grounded in the existing code (see
-[research.md](./research.md)):
+Two mechanisms make this work, both grounded in the existing code and **verified by a
+runtime spike** against the real CLI + SDK (see [research.md](./research.md) Decision 1):
 
-1. **Payload preservation (FR-015/016)** — today the terminal server discards `ask_user`
-   arguments and forwards only the static status `'Waiting for your answer'`
-   (`formatToolStatus` in `events-watcher.ts`). We **add** a dedicated, additive
-   `copilot-ask-user` event carrying `{toolId, question, options[], freeform}` alongside
-   the unchanged `copilot-tool-start`, relayed server → main (`protocol.ts`,
-   `ipc-relay.ts`, `preload.ts`) → `SessionGateway` (new `ask-user` AgentEvent kind) →
-   `TeamsService`.
+1. **Payload preservation (FR-015/016)** — on the SDK/ui-server backend (product default)
+   `ask_user` is the SDK **user-input interaction**, whose `user_input.requested` event
+   carries `{requestId, question, choices, allowFreeform, toolCallId}` **natively** (no
+   argument scraping). We relay it as a dedicated, additive `copilot-ask-user` event
+   carrying `{toolId, requestId, question, options[], freeform}` alongside the unchanged
+   `copilot-tool-start`, server → main (`protocol.ts`, `ipc-relay.ts`, `preload.ts`) →
+   `SessionGateway` (new `ask-user` AgentEvent kind) → `TeamsService`. The node-pty
+   fallback (no SDK session) normalizes `tool.execution_start` arguments best-effort
+   (`requestId` unavailable); its static `'Waiting for your answer'` status is untouched.
 
-2. **Answer submission via the existing session path (FR-004)** — there is **no separate
-   "resolve-interaction" API**; the only transport is `RelaySessionGateway.submitPrompt →
-   TerminalRelay.mainSubmitPrompt → server 'submit-prompt'` (SDK enqueue / node-pty
-   keystrokes). A Teams answer submits the **matched option's display text** (or freeform
-   text) through that same path, so the resolution appears in the terminal exactly once
-   with no forked/duplicated session. A `PendingQuestion` per online agent, held in the
-   Teams service with a `resolved` latch, guarantees at-most-once resolution across the
-   Teams/local race and keeps answers ahead of queued follow-ups.
+2. **Answer submission via the SDK user-input channel (FR-004)** — a **new prerequisite**:
+   every managed SDK/ui-server session MUST register an `onUserInputRequest` handler, or
+   the model refuses to call `ask_user` (spike-verified). A Teams answer flows through a
+   new transport-agnostic seam `RelaySessionGateway.submitAnswer(officeId, agentId,
+   {requestId?, answer, wasFreeform}) → server 'submit-answer' IPC`, which resolves the
+   pending interaction via `handlePendingUserInput(requestId)` (SDK/ui-server) or keystroke
+   injection (node-pty). The handler promise may be resolved **late**, so the agent waits
+   for the Teams reply and the resolution appears in the terminal exactly once with no
+   forked/duplicated session. A `PendingQuestion` per online agent (keyed by `requestId`,
+   held in the Teams service with a `resolved` latch) guarantees at-most-once resolution
+   across the Teams/local race and keeps answers ahead of queued follow-ups. Local
+   answers are detected via the SDK `user_input.completed` event.
 
 All Teams posting (question, nudges, notices) reuses `safeReply` → `graphClient`
 (self-marker, `postedMessageIds`, `chunkReply`); all inbound reuses `messageFilter` and
@@ -44,16 +50,23 @@ the per-agent `DispatchQueue`. No bot, no new auth, no renderer/Phaser changes.
 **Target Platform**: Windows/macOS desktop (Electron); `az` CLI signed in for Teams tokens
 **Project Type**: Desktop app (Electron main + Phaser/DOM renderer), single repository
 **Performance Goals**: Question post within one Teams round-trip of the `ask_user` event; answer resolves within one reply (SC-002); no added latency to non-ask_user events
-**Constraints**: Reuse all spec-011 Teams infra; additive event only (no regression to `copilot-tool-start` or other events — FR-016); answers through the existing session submit path only (Principle III); respect the `ask_user` waiting-state race-guard (`src/util/toolStatus.ts`) and agent-status presentation (`src/config/agentStatusPresentation.ts`)
+**Constraints**: Reuse all spec-011 Teams infra; additive event only (no regression to `copilot-tool-start` or other events — FR-016); answers resolve the pending interaction through the new `submit-answer`/`handlePendingUserInput` seam (SDK) or keystroke injection (node-pty), never forking/duplicating the session (Principle III); **managed SDK sessions must register `onUserInputRequest`** or `ask_user` is unusable; respect the `ask_user` waiting-state race-guard (`src/util/toolStatus.ts`) and agent-status presentation (`src/config/agentStatusPresentation.ts`)
 **Scale/Scope**: One pending question per online agent; a handful of agents online concurrently; single signed-in posting identity
 
-### Key resolved decisions (see research.md)
+### Key resolved decisions (see research.md — spike-verified)
 
-- **Answer-submission mechanism**: reuse `submitPrompt`; submit the option's **display
-  text** (labels are Teams-only). A P1 **runtime spike** verifies SDK `enqueue` resolves a
-  *pending* interaction; documented backend-aware fallback behind `gateway.submitAnswer`.
-- **Payload relay**: additive `copilot-ask-user` event; labels assigned in the
-  main/gateway mapping step (server stays a dumb forwarder).
+- **Answer-submission mechanism**: register `onUserInputRequest` on every managed SDK
+  session (prerequisite — without it the model refuses `ask_user`); resolve a Teams answer
+  via a new `gateway.submitAnswer` → `submit-answer` IPC → `handlePendingUserInput(requestId)`
+  (SDK/ui-server) or keystroke injection (node-pty). The handler promise resolves **late**
+  (async Teams reply). This **replaces** the earlier "reuse `submitPrompt`/enqueue" idea —
+  the spike showed `enqueue` does *not* resolve a pending interaction; the dedicated
+  user-input channel does. Submit the option's **display text** (labels are Teams-only);
+  `requestId` is the single-resolution key; local answers detected via `user_input.completed`.
+- **Payload relay**: additive `copilot-ask-user` event carrying `requestId`; on the
+  SDK/ui-server backend fields come natively from `user_input.requested`; labels are
+  assigned by the consumer (`TeamsService`), not the gateway/server (both stay dumb
+  forwarders).
 - **Presentation**: formatted HTML text, Option A (no cards — the receive path can't
   observe card `Action.Submit` without a registered bot).
 
@@ -70,10 +83,12 @@ the per-agent `DispatchQueue`. No bot, no new auth, no renderer/Phaser changes.
   `copilot-tool-start` (unchanged).
 - [x] **Input focus transitions routed through `InputManager`** — N/A (no new UI/input
   surface; no keyboard handling in the renderer).
-- [x] **Session lifecycle integrity maintained** — answers go **only** through the
-  existing `submitPrompt` session path; the flow never detaches/duplicates/forks the
-  session, and it respects the `ask_user` waiting-state race-guard. Payload relay adds a
-  consumer, not a lifecycle.
+- [x] **Session lifecycle integrity maintained** — a Teams answer resolves the **pending
+  user-input interaction** via the new `submit-answer` → `handlePendingUserInput(requestId)`
+  seam (SDK/ui-server) or keystroke injection (node-pty) — a single answer channel that
+  never detaches/duplicates/forks the session, and it respects the `ask_user` waiting-state
+  race-guard. Registering `onUserInputRequest` on managed sessions enables the tool without
+  altering session lifecycle. Payload relay adds a consumer, not a lifecycle.
 - [x] **Configuration-first approach** — gated by the existing Teams feature flag +
   channel config; forwarding scope (all `ask_user`, FR-013) follows spec, no hardcoded
   special-case branching beyond the additive event.
@@ -110,16 +125,17 @@ specs/015-teams-ask-user-resolution/
 ```text
 electron/
 ├── terminal/
-│   ├── events-watcher.ts   # extract ask_user args (normalize question/options/freeform); keep formatToolStatus static label
-│   ├── server.ts           # in tool.execution_start branch: also emit copilot-ask-user for toolName==='ask_user' (~L760-768)
-│   ├── protocol.ts         # + SrvCopilotAskUser to server→client union (~L283-315)
-│   ├── ipc-relay.ts        # + 'copilot-ask-user' fan-out to mainEvents + webContents (~L297,321); update doc comment (~L18)
+│   ├── terminal-backend.ts # register onUserInputRequest on managed SDK sessions (createOrResumeSession ~L754, forStdio ~L534); add handlePendingUserInput(requestId,{answer,wasFreeform}) resolver
+│   ├── events-watcher.ts   # normalize ask_user args for node-pty degraded path; keep formatToolStatus static label (FR-016)
+│   ├── server.ts           # emit copilot-ask-user (from user_input.requested / node-pty args); forward user_input.completed viewer-less; + 'submit-answer' handler → handlePendingUserInput | keystrokes (~L971)
+│   ├── protocol.ts         # + SrvCopilotAskUser (with requestId) + 'submit-answer' IPC message
+│   ├── ipc-relay.ts        # + 'copilot-ask-user' fan-out (agentId,toolId,requestId,question,options,freeform); + mainSubmitAnswer → 'submit-answer'; update doc comment (~L18)
 │   └── preload.ts          # + onCopilotAskUser bridge + type + removeAllListeners cleanup (~L138,175,325)
 └── teams/
-    ├── sessionGateway.ts   # + AgentEventKind 'ask-user' + AgentEvent.askUser; subscribe/map copilot-ask-user; assign labels
-    ├── teamsService.ts     # PendingQuestion map; onAskUserEvent (post question); answer resolver in handleInbound;
-    │                       #   nudge; "answered in app"/"no longer answerable" notices; clear on offline/exit
-    └── types.ts            # + AskUserOption / PendingQuestion types
+    ├── sessionGateway.ts   # + AgentEventKind 'ask-user' + AgentEvent.askUser (requestId); map copilot-ask-user (NO labels here); + submitAnswer seam
+    ├── teamsService.ts     # PendingQuestion map (keyed by requestId); onAskUserEvent (assign labels + post); answer resolver in handleInbound;
+    │                       #   nudge; "answered in app" (via user_input.completed) / "no longer answerable" notices; clear on offline/exit
+    └── types.ts            # + AskUserOption / PendingQuestion types (with requestId)
 
 src/
 ├── util/toolStatus.ts                 # (reused as-is — race-guard honored, not modified)

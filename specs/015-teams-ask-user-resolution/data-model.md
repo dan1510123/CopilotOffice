@@ -24,7 +24,8 @@ at a time"). Held in `TeamsService` as `Map<agentId, PendingQuestion>`.
 | `agentId` | `string` | Owning agent (maps to its single online binding). |
 | `officeId` | `string` | Office of the binding (for `submitPrompt` addressing). |
 | `binding` | `OnlineAgentBinding` | Resolved bound thread (routing target). |
-| `toolId` | `string` | The `ask_user` tool-call id from the payload; distinguishes a superseding question from a stale one. |
+| `toolId` | `string` | The `ask_user` tool-call id from the payload (`toolCallId`); informational / diagnostics. |
+| `requestId` | `string` | The SDK `user_input.requested` request id — **the single-resolution key** (research Decision 1). Passed to `submitAnswer`/`handlePendingUserInput`; distinguishes a superseding question from a stale one. Undefined only on the degraded node-pty path. |
 | `question` | `string` | The question text (preserved from payload, FR-015). |
 | `options` | `Option[]` | Ordered list; order = presentation order and label assignment order. |
 | `freeform` | `boolean` | Whether a non-listed answer is accepted (FR-002/FR-006). |
@@ -83,7 +84,7 @@ PENDING ──valid selector-label reply (Teams)──▶ RESOLVING ──submit
 PENDING ──freeform reply, freeform=true─────────▶ RESOLVING ──submit reply text──▶ RESOLVED → (cleared)
 PENDING ──non-label reply, freeform=false──────▶ PENDING   (post nudge; stay open)   [FR-005]
 PENDING ──local answer (wait-end signal)───────▶ RESOLVED  (post "answered in app")  [FR-008]
-PENDING ──new ask-user (different toolId)───────▶ superseded → new PENDING           [Edge: superseded]
+PENDING ──new ask-user (different requestId)────▶ superseded → new PENDING           [Edge: superseded]
 PENDING ──turn-end w/o ask_user still active────▶ (cleared, no notice)               [defensive]
 PENDING ──agent goes offline / session exit─────▶ ABANDONED (post "no longer answerable") [FR-009]
 RESOLVED / ABANDONED ──any later Teams reply for same question──▶ no-op              [FR-007]
@@ -94,18 +95,22 @@ RESOLVED / ABANDONED ──any later Teams reply for same question──▶ no-o
    Teams- or locally-initiated). Assign labels to `options` in order; post the question
    (chunked, marked). Supersede any existing record for that agent.
 2. **Teams resolve (RESOLVING→RESOLVED)**: only if `resolved === false`. Atomically set
-   `resolved = true`, then `gateway.submitPrompt(officeId, agentId, valueToSubmit, label='Teams · <sender>')`
-   where `valueToSubmit` = matched `option.text` (label match) or the raw reply text
-   (freeform). Clear the record. The submitted turn then streams back through the
-   existing dispatch/ambient path.
+   `resolved = true`, then `gateway.submitAnswer(officeId, agentId, { requestId, answer: valueToSubmit, wasFreeform })`
+   where `valueToSubmit` = matched `option.text` (label match, `wasFreeform:false`) or the
+   raw reply text (freeform, `wasFreeform:true`). The gateway routes this to the terminal
+   server's `submit-answer` IPC → `handlePendingUserInput(requestId)` for the SDK/ui-server
+   backend, or keystroke injection for node-pty (research Decision 1). Clear the record.
+   The resumed turn then streams back through the existing dispatch/ambient path.
 3. **No-match, choices-only (stay PENDING)**: post a nudge re-listing options + labels
    (FR-005). Do **not** set `resolved`.
-4. **Local resolve (→RESOLVED)**: detected when the agent leaves the ask_user wait
-   without a Teams answer (a `turn-start` / `message` / `user-message` / `tool-complete`
-   that clears the ask_user wait per `nextSubStateAfterToolComplete`). If `resolved` is
-   still `false`, set it, clear the record, and post the short "answered in app" notice
+4. **Local resolve (→RESOLVED)**: primary signal is the SDK `user_input.completed
+   { answer, wasFreeform, requestId }` event (the answer was given in-app). As a
+   node-pty/degraded fallback, a `turn-start` / `message` / `user-message` /
+   `tool-complete` that clears the ask_user wait (per `nextSubStateAfterToolComplete`)
+   while a record is still pending also implies a local answer. If `resolved` is still
+   `false`, set it, clear the record, and post the short "answered in app" notice
    (FR-008).
-5. **Supersede**: a new `ask-user` with a different `toolId` replaces the record; stale
+5. **Supersede**: a new `ask-user` with a different `requestId` replaces the record; stale
    selectors can no longer resolve the replaced question (spec Edge Case).
 6. **Abandon (→cleared + notice)**: `goOffline` / `onSessionExit` clears the record; if
    one was outstanding, post "no longer answerable" (FR-009). Post-offline replies are
@@ -130,6 +135,7 @@ export interface PendingQuestion {
   officeId: string;
   binding: OnlineAgentBinding;
   toolId: string;
+  requestId: string;              // SDK user_input.requested id — single-resolution key
   question: string;
   options: AskUserOption[];
   freeform: boolean;
@@ -154,8 +160,9 @@ export interface AgentEvent {
   // NEW — populated only when kind === 'ask-user':
   askUser?: {
     toolId: string;
+    requestId?: string;            // SDK single-resolution key (undefined on node-pty)
     question: string;
-    options: { text: string }[];   // ordered; labels assigned by the consumer
+    options: { text: string }[];   // ordered; labels assigned by the consumer (TeamsService)
     freeform: boolean;
   };
 }

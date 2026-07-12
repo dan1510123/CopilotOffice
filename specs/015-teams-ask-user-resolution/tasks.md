@@ -66,6 +66,7 @@ description: "Task list for feature 015 — Resolve ask_user Prompts via Teams R
 
 - [ ] T015 [P] Add `tests/unit/terminal/askUserRelay.test.ts`: synthetic `user_input.requested` (toolName `ask_user`) → server emits both `copilot-tool-start` (status `'Waiting for your answer'`) **and** `copilot-ask-user` with normalized `{question, options:[{text}], freeform, requestId}`; a non-`ask_user` tool emits **no** `copilot-ask-user` and leaves `copilot-tool-start` unchanged (FR-016).
 - [ ] T016 [P] Add `tests/unit/teams/sessionGateway.askUser.test.ts`: a `copilot-ask-user` main event yields exactly one `ask-user` `AgentEvent` (options order preserved, `freeform` boolean, `requestId` carried); and `submitAnswer(...)` calls `mainSubmitAnswer` with the exact payload. Extend the existing `tests/unit/teams/sessionGateway.test.ts` patterns.
+- [ ] T016b [P] Add `tests/unit/terminal/askUserHandlerRegistration.test.ts` (spike prerequisite — events-ipc §0): assert **both** `ControlPlaneClient.createOrResumeSession` and `CopilotSdkBackend.resumeOrCreateSession` register `onUserInputRequest` (so `requestUserInput: true` and the model is told `ask_user` is available), and that `handlePendingUserInput(requestId, {answer, wasFreeform})` resolves the stored late promise and is an **idempotent no-op** for an unknown/already-resolved `requestId` (guards T004/T005/T006).
 
 **Checkpoint**: `ask_user` is usable on managed SDK sessions, the payload reaches the gateway as an `ask-user` event, and answers can be submitted via `submitAnswer`. User-story work can begin.
 
@@ -151,7 +152,7 @@ description: "Task list for feature 015 — Resolve ask_user Prompts via Teams R
 ### Phase Dependencies
 
 - **Setup (Phase 1)**: no dependencies — start immediately (T001–T003 all [P]).
-- **Foundational (Phase 2)**: depends on Phase 1 types. **Blocks all user stories.** Within it: T004/T005 (handler registration) → T006 (resolve API) → T012 (server routing); T007–T009 (server relay) → T010 (ipc-relay) → T011 (preload) / T014 (gateway map); T013 (submitAnswer) depends on T010. Tests T015/T016 after their targets.
+- **Foundational (Phase 2)**: depends on Phase 1 types. **Blocks all user stories.** Within it: T004/T005 (handler registration) → T006 (resolve API) → T012 (server routing); T007–T009 (server relay) → T010 (ipc-relay) → T011 (preload) / T014 (gateway map); T013 (submitAnswer) depends on T010. Tests T015/T016/T016b after their targets.
 - **User Story 1 (Phase 3, P1)**: depends on Phase 2 (needs `ask-user` event + `submitAnswer` + user-input handler). MVP.
 - **User Story 2 (Phase 4, P2)**: depends on Phase 2 and the resolver seam from US1 (T022/T023); otherwise independently testable.
 - **User Story 3 (Phase 5, P3)**: depends on the question composer from US1 (T021); presentation-only.
@@ -165,7 +166,7 @@ description: "Task list for feature 015 — Resolve ask_user Prompts via Teams R
 ### Parallel Opportunities
 
 - Phase 1: T001, T002, T003 in parallel (different files).
-- Phase 2: T011 (preload) parallel with server work once protocol (T003) lands; foundational tests T015/T016 parallel with each other.
+- Phase 2: T011 (preload) parallel with server work once protocol (T003) lands; foundational tests T015/T016/T016b parallel with each other.
 - US1 tests T017/T018 in parallel; US2 test T026 and US3 test T030 in parallel with their sibling stories once Phase 2 is done.
 - Phase 6: T032, T033, T034 in parallel.
 - With capacity, US2 and US3 can proceed in parallel after US1's shared seam (T021–T023) exists.
@@ -188,7 +189,7 @@ Task: "gateway ask-user mapping test in tests/unit/teams/sessionGateway.askUser.
 ### MVP First (User Story 1)
 
 1. Phase 1 Setup (T001–T003).
-2. Phase 2 Foundational (T004–T016) — **critical**: without the user-input handler the model refuses `ask_user`.
+2. Phase 2 Foundational (T004–T016b) — **critical**: without the user-input handler the model refuses `ask_user`.
 3. Phase 3 US1 (T017–T025).
 4. **STOP and VALIDATE** US1 independently (quickstart scenarios 1–3, plus local-answer + abandonment).
 5. Demo the MVP.

@@ -82,11 +82,13 @@ Key targeted suites (see contracts): payload-relay contract tests
 (`contracts/events-ipc.md`) and question/answer flow tests
 (`contracts/question-answer-flow.md`).
 
-## Runtime spike (do first — research Decision 1)
+## Runtime spike — COMPLETED (research Decision 1)
 
-Before implementing the answer path, confirm the **answer-submission mechanism**: with a
-real online agent at an `ask_user`, submit an option's display text through the existing
-`submit-prompt` path and verify the interaction resolves and the agent continues (once).
-If SDK-backend `enqueue` does not resolve a *pending* interaction, apply the documented
-fallback (backend-aware keystroke/interaction-response injection behind
-`gateway.submitAnswer`). Record the outcome in `research.md`.
+The answer-submission mechanism was **verified by a spike** against the real bundled CLI
+(`@github/copilot-1.0.71`) + SDK (`@github/copilot-sdk@1.0.5`). Result: for the
+SDK/ui-server backend, `ask_user` is the SDK **user-input interaction** — the session must
+register `onUserInputRequest` (or the model refuses the tool), and a Teams answer resolves
+it via `handlePendingUserInput(requestId, {answer, wasFreeform})` (the handler promise may
+be resolved **late**). The node-pty fallback uses keystroke injection. Both hide behind
+`gateway.submitAnswer(officeId, agentId, {requestId?, answer, wasFreeform})`. No further
+spike is required; implement per research Decision 1 and `contracts/events-ipc.md` §0/§5.

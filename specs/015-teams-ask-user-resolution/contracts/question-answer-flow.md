@@ -19,7 +19,8 @@ FR-013: forward regardless of Teams- vs locally-initiated turn).
 **Behavior**:
 1. Resolve the online `binding` for `e.agentId`; if none, ignore.
 2. Assign selector labels to `e.askUser.options` in order (`A, B, C, …`), build
-   `PendingQuestion` (see data-model), supersede any existing record for the agent.
+   `PendingQuestion` (see data-model; carries `requestId` — the single-resolution key),
+   supersede any existing record for the agent.
 3. Compose one HTML message:
    - A "needs your answer" framing distinct from ordinary replies (FR-002).
    - The question text (escaped).
@@ -49,14 +50,21 @@ as an answer, never dispatched as a new prompt (FR-012).
 **Actions**:
 | Condition | Action |
 |---|---|
-| Label match | `resolved = true`; `submitPrompt(officeId, agentId, matchedOption.text, 'Teams · <sender>')`; clear record. (FR-003/004) |
-| No label match **and** `freeform === true` | `resolved = true`; `submitPrompt(officeId, agentId, rawReplyText, 'Teams · <sender>')`; clear record. (FR-006) |
+| Label match | `resolved = true`; `gateway.submitAnswer(officeId, agentId, { requestId, answer: matchedOption.text, wasFreeform: false })`; clear record. (FR-003/004) |
+| No label match **and** `freeform === true` | `resolved = true`; `gateway.submitAnswer(officeId, agentId, { requestId, answer: rawReplyText, wasFreeform: true })`; clear record. (FR-006) |
 | No label match **and** `freeform === false` | Post nudge re-listing options + labels via `safeReply`; **leave record PENDING** (`resolved` stays false). (FR-005, SC-005) |
 
 **Single-resolution (FR-007, SC-004)**: the `resolved` check-and-set is synchronous in
 the main process (single-threaded) — the first resolver flips `resolved` and clears the
-record before `await`ing `submitPrompt`, so a near-simultaneous second reply finds
-`resolved === true` (or no record) and is a **no-op**.
+record before `await`ing `submitAnswer`, so a near-simultaneous second reply finds
+`resolved === true` (or no record) and is a **no-op**. `requestId` is the resolution key
+carried through to `handlePendingUserInput`, which is itself idempotent (a second resolve
+of the same `requestId` is a no-op — defense in depth).
+
+**Answer transport**: `gateway.submitAnswer` → `mainSubmitAnswer` → server `submit-answer`
+IPC → `handlePendingUserInput(requestId)` (SDK/ui-server) **or** keystroke injection
+(node-pty). This is **not** `submitPrompt` — it resolves the pending interaction so the
+resolution appears in the terminal exactly once (research Decision 1; events-ipc §5).
 
 **Submitted value**: the matched `option.text` (never the label) or the raw freeform
 text — identical to what a local answer for that choice produces (research Decision 1).
@@ -65,19 +73,21 @@ text — identical to what a local answer for that choice produces (research Dec
 
 ## C. Local resolution (FR-008)
 
-**Trigger**: the agent leaves the ask_user wait **without** a Teams answer — observed as
-the next `turn-start` / `message` / `user-message` / `tool-complete` that clears the
-ask_user waiting state, while a `PendingQuestion` exists with `resolved === false`.
+**Trigger**: the agent's `ask_user` is answered **in-app** (not via Teams). The primary
+signal is the SDK `user_input.completed { answer, wasFreeform, requestId }` event forwarded
+to main (events-ipc §5), while a `PendingQuestion` exists with `resolved === false`. On the
+node-pty/degraded path (no `user_input.completed`), fall back to the heuristic: the next
+`turn-start` / `message` / `user-message` / `tool-complete` that clears the ask_user wait.
 
 **Behavior**: set `resolved = true`, clear the record, and `safeReply` a short
 "✅ Answered in the app." notice (marker + recorded). A subsequent Teams reply for that
 (now-cleared) question is a no-op (FR-007). Only fire the notice once per record.
 
-> Implementation note: the simplest robust signal is "a non-`ask-user` agent event
-> arrived for this agent while a pending record exists" — because a Teams resolution
-> clears the record *before* the resulting turn streams, any later event that finds a
-> still-pending record implies a local answer (or supersession, handled separately by
-> `toolId`).
+> Implementation note (node-pty fallback): the simplest robust signal is "a non-`ask-user`
+> agent event arrived for this agent while a pending record exists" — because a Teams
+> resolution clears the record *before* the resulting turn streams, any later event that
+> finds a still-pending record implies a local answer (or supersession, handled separately
+> by `requestId`).
 
 ---
 
@@ -97,7 +107,7 @@ ask_user waiting state, while a `PendingQuestion` exists with `resolved === fals
 ## E. Invariants (map to FRs / SCs)
 
 - **One pending per agent** (`Map<agentId, PendingQuestion>`); a new `ask-user`
-  supersedes (matched/cleared by `toolId`). (Edge: superseded)
+  supersedes (matched/cleared by `requestId`). (Edge: superseded)
 - **Answers bypass the dispatch queue**; genuine follow-up prompts (arriving after the
   record clears) use the existing FIFO `DispatchQueue`. (FR-012)
 - **Every posted message carries the self-marker** and is recorded in
@@ -113,14 +123,15 @@ ask_user waiting state, while a `PendingQuestion` exists with `resolved === fals
 
 1. `ask-user` event → one marked, framed thread post listing all labeled options
    (+ freeform hint iff freeform). (SC-001)
-2. Reply `B` → `submitPrompt` called once with option B's **text**; record cleared.
-   (SC-003)
-3. Choices-only, reply `xyz` → nudge posted, record still pending, `submitPrompt` **not**
+2. Reply `B` → `gateway.submitAnswer` called once with `{ requestId, answer: optionB.text,
+   wasFreeform: false }`; record cleared. (SC-003)
+3. Choices-only, reply `xyz` → nudge posted, record still pending, `submitAnswer` **not**
    called. (SC-005)
-4. Freeform, reply `xyz` → `submitPrompt` called once with `xyz`.
-5. Teams reply then near-simultaneous second reply → exactly one `submitPrompt`. (SC-004)
-6. Local answer (non-ask event while pending) → "answered in app" notice; later Teams
-   reply is a no-op. (FR-007/008)
+4. Freeform, reply `xyz` → `submitAnswer` called once with `{ requestId, answer: 'xyz',
+   wasFreeform: true }`. (FR-006)
+5. Teams reply then near-simultaneous second reply → exactly one `submitAnswer`. (SC-004)
+6. Local answer (`user_input.completed`, or a non-ask event while pending on node-pty) →
+   "answered in app" notice; later Teams reply is a no-op. (FR-007/008)
 7. `goOffline` / `onSessionExit` while pending → "no longer answerable" notice; later
    reply dropped. (FR-009)
 8. Non-`ask_user` tool events and ordinary Teams prompt routing are unchanged. (FR-016)

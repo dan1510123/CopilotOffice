@@ -42,6 +42,13 @@ or `src/main.ts` (ask_user is only special-cased for *status/waiting-state*
 presentation — `src/util/toolStatus.ts`, `src/config/agentStatusPresentation.ts`,
 `src/main.ts:2205` — never for answer submission).
 
+> ⚠️ **SUPERSEDED for the SDK/ui-server backend by the spike (see "Runtime verification —
+> RESOLVED by spike" and "Revised Decision 1" below).** The `submitPrompt`/`enqueue`
+> reasoning in the next three paragraphs applies **only to the node-pty fallback** now.
+> The SDK/ui-server backend answers via the dedicated user-input interaction channel
+> (`onUserInputRequest` / `handlePendingUserInput(requestId)`), unified behind
+> `gateway.submitAnswer`.
+
 **Decision**: **Reuse the existing `submitPrompt` path unchanged** as the answer
 channel. The Teams answer flows through
 `RelaySessionGateway.submitPrompt → mainSubmitPrompt → server 'submit-prompt'`,
@@ -144,35 +151,38 @@ transport-agnostic and the single-resolution guarantee lives in one place.
 (question, options, freeform flag) are discarded. How do we carry them to the Teams
 service without regressing existing tool-start signaling (FR-015, FR-016)?
 
-**Finding — the payload is dropped at the terminal server.** For
+**Finding — the payload is dropped at the terminal server (node-pty path).** For
 `tool.execution_start`, the server sends only `{toolName, toolId, status}`, where
 `status = formatToolStatus(toolName, arguments)` and `formatToolStatus('ask_user', …)`
 returns the constant `'Waiting for your answer'`, discarding `arguments`
-(`electron/terminal/events-watcher.ts:221`, `.../server.ts:762`). The SDK/CLI
-`ask_user` arguments are available in `event.data.arguments` at that point but are
-never forwarded. The relay then fans `copilot-tool-start` out as positional args
-`(agentId, toolName, toolId, status)` to main and renderer
-(`ipc-relay.ts:298,322`; `preload.ts:138`).
+(`electron/terminal/events-watcher.ts:221`, `.../server.ts:762`). **However, the spike
+(Decision 1) showed the SDK/ui-server backend does NOT depend on this path at all**: it
+emits a first-class `user_input.requested { requestId, question, choices, allowFreeform,
+toolCallId }` event that carries the full payload natively. So payload preservation splits
+by backend: **native for SDK/ui-server**, **arguments-scrape best-effort for node-pty**.
 
-**Decision — supplement, don't replace, the tool-start relay.** Add an **additive,
-optional payload field** carried on a **new dedicated `ask_user` event** emitted
-*alongside* the existing generic `copilot-tool-start` (which continues unchanged so
-status/waiting-state signaling and all other tools are untouched — FR-016).
+**Decision — supplement, don't replace, the tool-start relay.** Add a **new dedicated
+`copilot-ask-user` event** emitted *alongside* the existing generic `copilot-tool-start`
+(which continues unchanged so status/waiting-state signaling and all other tools are
+untouched — FR-016).
 
 Concretely (full shapes in [contracts/events-ipc.md](./contracts/events-ipc.md)):
-- **Server → main/renderer**: when `event.data.toolName === 'ask_user'`, in addition to
-  the existing `copilot-tool-start`, emit a new
-  `copilot-ask-user { agentId, toolId, question, options: {label,text}[], freeform }`
-  server message. The server assigns the stable selector **labels** here (or the main
-  process does — see below), from the *ordered* options in `event.data.arguments`.
-- **protocol.ts**: add `SrvCopilotAskUser` to the server→client union.
+- **Server → main/renderer**: emit a new
+  `copilot-ask-user { agentId, toolId, requestId, question, options: {text}[], freeform }`
+  server message. On the **SDK/ui-server backend** the fields come from the native
+  `user_input.requested` event (incl. the `requestId` single-resolution key). On the
+  **node-pty backend** the server normalizes `event.data.arguments` best-effort
+  (`requestId` unavailable). The server carries the *ordered option display text only* —
+  it does **not** assign selector labels.
+- **protocol.ts**: add `SrvCopilotAskUser` (with `requestId`) to the server→client union.
 - **ipc-relay.ts**: relay it to `mainEvents.emit('copilot-ask-user', …)` (for the Teams
   service) and `webContents.send('copilot-ask-user', …)` (renderer parity, unused by
   Phaser today but keeps the boundary honest).
 - **preload.ts**: expose `onCopilotAskUser(cb)` for symmetry (no renderer consumer
   required by this feature).
 - **sessionGateway.ts**: map `copilot-ask-user` into a new `AgentEvent` kind
-  `ask-user` carrying `{ question, options, freeform, toolId }`.
+  `ask-user` carrying `{ question, options: {text}[], freeform, toolId, requestId }` —
+  transport only, **no labels assigned here**.
 
 **Rationale**:
 - Additive — the generic `copilot-tool-start` for `ask_user` still fires with its
@@ -184,12 +194,12 @@ Concretely (full shapes in [contracts/events-ipc.md](./contracts/events-ipc.md))
   `tool-start`, `tool-complete`, `user-message`) is its own event through the same
   relay; `ask-user` becomes one more.
 
-**Where labels are assigned**: assign in the **main process / SessionGateway mapping
-step**, not the server. The server stays a dumb forwarder of the raw ordered options;
-the Teams-facing label convention (letters `A,B,…` per spec examples) is a
-presentation concern owned by the consumer. This keeps the renderer/other consumers
-free to label differently and keeps `electron/terminal/*` free of Teams presentation
-policy.
+**Where labels are assigned**: assign in the **Teams service (`TeamsService`) consumer**,
+not the server or the gateway. The server and `SessionGateway` stay dumb forwarders of the
+raw ordered option text; the Teams-facing label convention (letters `A,B,…` per spec
+examples) is a presentation concern owned solely by the consumer that posts to Teams. This
+keeps the renderer/other consumers free to label differently and keeps `electron/terminal/*`
+and the gateway free of Teams presentation policy.
 
 **Alternatives considered**:
 - *Widen `copilot-tool-start` to also carry `arguments`.* Rejected — changes a shared,
@@ -238,14 +248,15 @@ offline/session-end abandonment (FR-009)?
   cleared on resolution / supersession / turn-end-without-ask / offline / session-exit.
   (Data model in [data-model.md](./data-model.md).)
 - **Single-resolution (FR-007)**: the `PendingQuestion` carries a `resolved` flag
-  flipped atomically by the *first* resolver. The Teams answer path checks-and-sets it
-  before calling `submitPrompt`; a later Teams reply for the same question finds
-  `resolved` (or no pending record) and is a no-op. The **local** answer is detected by
-  the existing signal that the wait ended — the agent emits `turn-start`/`message`/
-  `user-message`/`tool-complete` moving it out of the ask_user wait — at which point the
-  service clears the pending record and (per FR-008) posts a short "answered in app"
-  notice. Because both the local resolution signal and the Teams answer mutate the same
-  in-service record, exactly one wins.
+  flipped atomically by the *first* resolver, keyed by `requestId`. The Teams answer path
+  checks-and-sets it before calling `submitAnswer`; a later Teams reply for the same
+  question finds `resolved` (or no pending record) and is a no-op — and
+  `handlePendingUserInput(requestId)` is itself idempotent (defense in depth). The
+  **local** answer is detected via the SDK `user_input.completed { requestId }` event
+  (node-pty fallback: the `turn-start`/`message`/`user-message`/`tool-complete` signal
+  that the ask_user wait ended) — at which point the service clears the pending record and
+  (per FR-008) posts a short "answered in app" notice. Because both the local resolution
+  signal and the Teams answer mutate the same in-service record, exactly one wins.
 - **Ordering (FR-012)**: answers do **not** go through the normal inbound-dispatch
   enqueue path. When a reply arrives while a question is pending, `handleInbound`
   routes it to the **answer resolver** (submit selected option / freeform / nudge)
