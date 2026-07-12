@@ -80,6 +80,44 @@ export interface TeamsStoreState {
   knownThreads: KnownThread[];
 }
 
+/**
+ * A single selectable answer within a {@link PendingQuestion} (spec 015).
+ * `label` is the system-generated Teams selector (matching key); `text` is the
+ * original option display text submitted to the agent when chosen.
+ */
+export interface AskUserOption {
+  /** Generated selector shown in Teams (e.g. `A`, `B`, `C`). Case-insensitive match key (FR-014). */
+  label: string;
+  /** Original option display text from the ask_user payload; the value submitted to the agent. */
+  text: string;
+}
+
+/**
+ * The record that an online agent currently awaits an `ask_user` answer (spec 015).
+ * At most one per online agent; transient, in-memory, main-process only (never persisted).
+ */
+export interface PendingQuestion {
+  agentId: string;
+  officeId: string;
+  binding: OnlineAgentBinding;
+  /** The ask_user tool-call id (toolCallId); informational / diagnostics. */
+  toolId: string;
+  /** SDK `user_input.requested` request id — the single-resolution key. '' on the node-pty degraded path. */
+  requestId: string;
+  /** The question text (preserved from payload, FR-015). */
+  question: string;
+  /** Ordered options; order = presentation order and label-assignment order. */
+  options: AskUserOption[];
+  /** Whether a non-listed (freeform) answer is accepted (FR-002/FR-006). */
+  freeform: boolean;
+  /** Single-resolution latch (FR-007). Set true by the first resolver (Teams or local). */
+  resolved: boolean;
+  /** Message id of the posted question (self-loop bookkeeping / nudge reference). */
+  postedMessageId?: string;
+  /** Unix ms; diagnostics / stale-guard. */
+  createdAt: number;
+}
+
 /** Per-agent online status surfaced to the renderer. */
 export interface OnlineAgentStatus {
   agentId: string;

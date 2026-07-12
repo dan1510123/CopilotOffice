@@ -43,6 +43,23 @@ export interface MsgSetAgentForwarding {
   enabled: boolean;
 }
 
+/**
+ * Answer to a pending `ask_user` interaction (spec 015). Distinct from
+ * `submit-prompt`: this resolves the pending user-input interaction (SDK/ui-server
+ * → `handlePendingUserInput(requestId)`) or injects keystrokes (node-pty). Never
+ * enqueues a new prompt.
+ */
+export interface MsgSubmitAnswer {
+  type: 'submit-answer';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  /** SDK single-resolution key; empty/undefined on the node-pty degraded path. */
+  answerRequestId?: string;
+  answer: string;
+  wasFreeform: boolean;
+}
+
 export interface MsgResize {
   type: 'resize';
   officeId: string;
@@ -209,6 +226,7 @@ export type MainToServer =
   | MsgStart
   | MsgWrite
   | MsgSubmitPrompt
+  | MsgSubmitAnswer
   | MsgSetAgentForwarding
   | MsgResize
   | MsgKill
@@ -285,6 +303,26 @@ export interface SrvCopilotToolStart {
   toolName: string;
   toolId: string;
   status: string;
+}
+
+/**
+ * Emitted IN ADDITION to `copilot-tool-start` when an agent raises an `ask_user`
+ * user-input interaction (spec 015). SDK/ui-server backend: fields come natively
+ * from `user_input.requested`. node-pty backend: normalized from
+ * `tool.execution_start` arguments (`requestId` is ''). The server stays a dumb
+ * forwarder — it does NOT assign selector labels or format HTML.
+ */
+export interface SrvCopilotAskUser {
+  type: 'copilot-ask-user';
+  agentId: string;
+  toolId: string;
+  /** SDK user_input.requested id (single-resolution key); '' on node-pty. */
+  requestId: string;
+  question: string;
+  /** ORDERED; original display text, verbatim. */
+  options: { text: string }[];
+  /** Whether a non-listed answer is accepted (allowFreeform). */
+  freeform: boolean;
 }
 
 export interface SrvCopilotToolComplete {
@@ -364,6 +402,7 @@ export type ServerToMain =
   | SrvTerminalExit
   | SrvCopilotEvent
   | SrvCopilotToolStart
+  | SrvCopilotAskUser
   | SrvCopilotToolComplete
   | SrvCopilotTurnEnd
   | SrvCopilotTurnStart

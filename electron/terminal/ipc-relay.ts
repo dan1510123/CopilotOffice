@@ -16,7 +16,9 @@ export class TerminalRelay {
    * server→main copilot/terminal events without going through the renderer.
    * Emits: 'copilot-event' (agentId, event), 'copilot-turn-start' (agentId),
    * 'copilot-turn-end' (agentId), 'copilot-tool-start' (agentId, toolName, toolId, status),
+   * 'copilot-ask-user' (agentId, toolId, requestId, question, options, freeform),
    * 'session-meta-updated' (agentId, meta), 'terminal-exit' (agentId, exitCode).
+   * Accepts (via mainSubmitAnswer): 'submit-answer' (officeId, agentId, requestId?, answer, wasFreeform).
    */
   public readonly mainEvents = new EventEmitter();
 
@@ -224,6 +226,27 @@ export class TerminalRelay {
     return this.request({ type: 'submit-prompt', requestId: this.id(), officeId, agentId, prompt, label }) as Promise<{ success: boolean; error?: string }>;
   }
 
+  /**
+   * spec 015: answer a pending `ask_user` interaction. Distinct from
+   * mainSubmitPrompt — resolves the pending user-input interaction (SDK/ui-server)
+   * or injects keystrokes (node-pty). `requestId` is the single-resolution key.
+   */
+  mainSubmitAnswer(
+    officeId: string,
+    agentId: string,
+    a: { requestId?: string; answer: string; wasFreeform: boolean },
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.request({
+      type: 'submit-answer',
+      requestId: this.id(),
+      officeId,
+      agentId,
+      answerRequestId: a.requestId,
+      answer: a.answer,
+      wasFreeform: a.wasFreeform,
+    }) as Promise<{ success: boolean; error?: string }>;
+  }
+
   /** Fire-and-forget: control whether copilot-events are mirrored to main for an agent without a viewer. */
   mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void {
     this.send({ type: 'set-agent-forwarding', officeId, agentId, enabled });
@@ -297,6 +320,9 @@ export class TerminalRelay {
       case 'copilot-tool-start':
         this.mainEvents.emit('copilot-tool-start', msg.agentId, msg.toolName, msg.toolId, msg.status);
         break;
+      case 'copilot-ask-user':
+        this.mainEvents.emit('copilot-ask-user', msg.agentId, msg.toolId, msg.requestId, msg.question, msg.options, msg.freeform);
+        break;
       case 'session-meta-updated':
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);
         break;
@@ -320,6 +346,9 @@ export class TerminalRelay {
         break;
       case 'copilot-tool-start':
         win.webContents.send('copilot-tool-start', msg.agentId, msg.toolName, msg.toolId, msg.status);
+        break;
+      case 'copilot-ask-user':
+        win.webContents.send('copilot-ask-user', msg.agentId, msg.toolId, msg.requestId, msg.question, msg.options, msg.freeform);
         break;
       case 'copilot-tool-complete':
         win.webContents.send('copilot-tool-complete', msg.agentId, msg.toolId, msg.success);

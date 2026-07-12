@@ -438,6 +438,7 @@ sessionMeta: Map<string, {title}>         (agentId → metadata)
 20. create-office-session - Create session file
 21. delete-office-session - Delete session file
 22. transfer-session - Transfer between offices
+23. submit-answer - Answer a pending ask_user interaction (spec 015; requestId?, answer, wasFreeform) — resolves via handlePendingUserInput (SDK/ui-server) or keystroke injection (node-pty)
 
 **ServerToMain Messages (11 types):**
 1. ready - Server ready
@@ -452,6 +453,7 @@ sessionMeta: Map<string, {title}>         (agentId → metadata)
 10. terminal-preload-status - Status: preloading|ready|failed
 11. session-meta-updated - Metadata changed
 12. response - Generic response with result
+13. copilot-ask-user - ask_user question relay (spec 015; agentId, toolId, requestId, question, options, freeform) — additive alongside the unchanged copilot-tool-start (FR-016)
 
 ---
 

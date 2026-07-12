@@ -9,6 +9,7 @@ function makeRelay(overrides: Partial<TerminalRelayLike> = {}): TerminalRelayLik
     mainGetSessionMeta: vi.fn(async () => ({ title: 'T' })),
     mainWrite: vi.fn(async () => ({ success: true })),
     mainSubmitPrompt: vi.fn(async () => ({ success: true })),
+    mainSubmitAnswer: vi.fn(async () => ({ success: true })),
     mainSetAgentForwarding: vi.fn(() => {}),
     mainEvents: emitter as unknown as TerminalRelayLike['mainEvents'],
     ...overrides,
@@ -101,5 +102,62 @@ describe('RelaySessionGateway.onAgentEvent', () => {
     events.length = 0;
     emitter.emit('copilot-user-message', 'generalist', 'after-unsub');
     expect(events).toHaveLength(0);
+  });
+});
+
+describe('RelaySessionGateway ask-user (spec 015)', () => {
+  it('maps a copilot-ask-user main event to exactly one ask-user AgentEvent (order + requestId preserved, no labels)', () => {
+    const relay = makeRelay();
+    const emitter = relay.mainEvents as unknown as EventEmitter;
+    const gw = new RelaySessionGateway(relay);
+    const events: unknown[] = [];
+    const off = gw.onAgentEvent((e) => events.push(e));
+
+    emitter.emit(
+      'copilot-ask-user',
+      'generalist',
+      'tool-7',
+      'req-42',
+      'Which database?',
+      [{ text: 'PostgreSQL' }, { text: 'MySQL' }, { text: 'SQLite' }],
+      1,
+    );
+
+    expect(events).toEqual([
+      {
+        agentId: 'generalist',
+        kind: 'ask-user',
+        askUser: {
+          toolId: 'tool-7',
+          requestId: 'req-42',
+          question: 'Which database?',
+          options: [{ text: 'PostgreSQL' }, { text: 'MySQL' }, { text: 'SQLite' }],
+          freeform: true,
+        },
+      },
+    ]);
+
+    off();
+    events.length = 0;
+    emitter.emit('copilot-ask-user', 'generalist', 't', 'r', 'q', [], false);
+    expect(events).toHaveLength(0);
+  });
+
+  it('submitAnswer routes to mainSubmitAnswer with the exact payload', async () => {
+    const relay = makeRelay();
+    const gw = new RelaySessionGateway(relay);
+    await gw.submitAnswer('office-0', 'generalist', { requestId: 'req-42', answer: 'MySQL', wasFreeform: false });
+    expect(relay.mainSubmitAnswer).toHaveBeenCalledWith('office-0', 'generalist', {
+      requestId: 'req-42',
+      answer: 'MySQL',
+      wasFreeform: false,
+    });
+    expect(relay.mainSubmitPrompt).not.toHaveBeenCalled();
+  });
+
+  it('submitAnswer throws when the submit fails', async () => {
+    const relay = makeRelay({ mainSubmitAnswer: vi.fn(async () => ({ success: false, error: 'No PTY' })) });
+    const gw = new RelaySessionGateway(relay);
+    await expect(gw.submitAnswer('o', 'a', { answer: 'x', wasFreeform: true })).rejects.toThrow(/No PTY/);
   });
 });

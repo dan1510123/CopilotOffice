@@ -140,6 +140,12 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-tool-start', handler);
     return () => ipcRenderer.removeListener('copilot-tool-start', handler);
   },
+  // spec 015: additive ask_user relay (renderer parity — no Phaser consumer required).
+  onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => {
+    const handler = (_event: unknown, agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => callback(agentId, toolId, requestId, question, options, freeform);
+    ipcRenderer.on('copilot-ask-user', handler);
+    return () => ipcRenderer.removeListener('copilot-ask-user', handler);
+  },
   onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => {
     const handler = (_event: unknown, agentId: string, toolId: string, success: boolean) => callback(agentId, toolId, success);
     ipcRenderer.on('copilot-tool-complete', handler);
@@ -173,6 +179,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   removeCopilotListeners: () => {
     ipcRenderer.removeAllListeners('copilot-event');
     ipcRenderer.removeAllListeners('copilot-tool-start');
+    ipcRenderer.removeAllListeners('copilot-ask-user');
     ipcRenderer.removeAllListeners('copilot-tool-complete');
     ipcRenderer.removeAllListeners('copilot-turn-end');
     ipcRenderer.removeAllListeners('copilot-turn-start');
@@ -323,6 +330,7 @@ declare global {
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => () => void;
       onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => () => void;
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
+      onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => () => void;
       onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => () => void;
       onCopilotTurnEnd: (callback: (agentId: string) => void) => () => void;
       onCopilotTurnStart: (callback: (agentId: string) => void) => () => void;

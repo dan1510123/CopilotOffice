@@ -8,9 +8,9 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
-import { formatToolStatus } from './events-watcher';
+import { formatToolStatus, buildAskUserRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
-import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport } from './terminal-backend';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -764,6 +764,26 @@ async function startTerminalForAgentImpl(
           const d = event.data as { toolCallId: string; toolName: string; arguments: Record<string, unknown> };
           console.log(`[TermServer] Forwarding tool_start for ${ck}: ${d.toolName}`);
           send({ type: 'copilot-tool-start', agentId, toolName: d.toolName, toolId: d.toolCallId, status: formatToolStatus(d.toolName, d.arguments) });
+          // spec 015: node-pty/degraded path — there is no SDK `user_input.requested`
+          // event, so surface the ask_user payload best-effort from the tool arguments
+          // IN ADDITION to the unchanged copilot-tool-start above (requestId unavailable).
+          // buildAskUserRelay returns null unless this is an ask_user on the node-pty
+          // backend, so SDK/ui-server never double-emits copilot-ask-user here.
+          const askRelay = buildAskUserRelay(event, activeBackend.name);
+          if (askRelay) {
+            send({ type: 'copilot-ask-user', agentId, toolId: askRelay.toolId, requestId: askRelay.requestId, question: askRelay.question, options: askRelay.options, freeform: askRelay.freeform });
+          }
+        } else if (event.type === 'user_input.requested') {
+          // spec 015: SDK/ui-server backend — `ask_user` is the SDK user-input
+          // interaction. The payload arrives natively. Emit copilot-tool-start with
+          // the same static status the node-pty path uses (FR-016) PLUS the dedicated
+          // copilot-ask-user carrying the requestId single-resolution key.
+          const askRelay = buildAskUserRelay(event, activeBackend.name);
+          if (askRelay) {
+            console.log(`[TermServer] Forwarding ask_user (user_input.requested) for ${ck}: requestId=${askRelay.requestId}, ${askRelay.options.length} option(s)`);
+            send({ type: 'copilot-tool-start', agentId, toolName: 'ask_user', toolId: askRelay.toolId, status: 'Waiting for your answer' });
+            send({ type: 'copilot-ask-user', agentId, toolId: askRelay.toolId, requestId: askRelay.requestId, question: askRelay.question, options: askRelay.options, freeform: askRelay.freeform });
+          }
         } else if (event.type === 'tool.execution_complete') {
           const d = event.data as { toolCallId: string; success: boolean };
           console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
@@ -1001,6 +1021,40 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
         console.log(`[TermServer] SUBMIT-PROMPT FAILED — no PTY for ${ck}`);
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
+      }
+      break;
+    }
+
+    case 'submit-answer': {
+      // spec 015: answer a pending ask_user interaction. Distinct from submit-prompt —
+      // this resolves the pending user-input interaction, it does NOT enqueue a new
+      // prompt. SDK/ui-server backend → handlePendingUserInput(requestId) (resolves the
+      // late onUserInputRequest promise). node-pty backend → keystroke injection onto
+      // the interaction input line (idle-gated type + Enter), exactly like a local answer.
+      const key = getTerminalKey(msg.officeId, msg.agentId);
+      const proc = key ? ptyProcesses.get(key) : null;
+      if (proc) {
+        // A Teams answer resumes this turn; ensure its resulting events reach the
+        // main-process Teams consumer even without a renderer viewer.
+        agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
+        const backendProc = proc.process;
+        if (answerTransport(backendProc) === 'sdk') {
+          // SDK/ui-server backend: resolve the pending interaction by requestId.
+          const resolved = handlePendingUserInput(String(msg.answerRequestId ?? ''), { answer: msg.answer, wasFreeform: msg.wasFreeform });
+          if (!resolved) {
+            console.warn(`[TermServer] submit-answer: no pending user-input for requestId="${msg.answerRequestId ?? ''}" (${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
+          }
+        } else {
+          // node-pty backend: no SDK session — type the answer into the real TUI's
+          // interaction input line and submit (idle-gated). Best-effort/degraded:
+          // there is no requestId to key on; the local input line is the answer surface.
+          submitViaKeystrokes(backendProc, msg.answer, key!);
+        }
+        send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      } else {
+        const ck = compositeKey(msg.officeId, msg.agentId);
+        console.log(`[TermServer] SUBMIT-ANSWER FAILED — no PTY for ${ck}`);
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
       }
       break;

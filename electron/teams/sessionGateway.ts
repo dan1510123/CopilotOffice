@@ -14,13 +14,32 @@
 
 import type { CopilotEvent } from '../terminal/events-watcher';
 
-export type AgentEventKind = 'message' | 'turn-start' | 'turn-end' | 'tool-start' | 'user-message';
+export type AgentEventKind =
+  | 'message'
+  | 'turn-start'
+  | 'turn-end'
+  | 'tool-start'
+  | 'user-message'
+  | 'ask-user'; // spec 015 — additive; existing kinds untouched.
 
 export interface AgentEvent {
   agentId: string;
   kind: AgentEventKind;
   content?: string;
   toolName?: string;
+  /**
+   * Populated only when `kind === 'ask-user'` (spec 015). Carries the raw ordered
+   * option display text; selector labels (A/B/C…) are assigned by the consumer
+   * (TeamsService), NOT here — the gateway is transport-only.
+   */
+  askUser?: {
+    toolId: string;
+    /** SDK single-resolution key; undefined on the node-pty degraded path. */
+    requestId?: string;
+    question: string;
+    options: { text: string }[];
+    freeform: boolean;
+  };
 }
 
 /** Minimal surface of TerminalRelay the gateway depends on (for testability). */
@@ -29,6 +48,7 @@ export interface TerminalRelayLike {
   mainGetSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
   mainWrite(officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }>;
   mainSubmitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<{ success: boolean; error?: string }>;
+  mainSubmitAnswer(officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<{ success: boolean; error?: string }>;
   mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void;
   mainIsAgentReady(officeId: string, agentId: string): Promise<boolean>;
   mainEvents: {
@@ -43,6 +63,13 @@ export interface SessionGateway {
   /** True only when the agent's PTY is alive AND the CLI has signalled ready. */
   isAgentReady(officeId: string, agentId: string): Promise<boolean>;
   submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void>;
+  /**
+   * spec 015: answer a pending `ask_user` interaction. The single transport-agnostic
+   * answer seam — resolves the pending user-input interaction (SDK/ui-server) or
+   * injects keystrokes (node-pty). NOT `submitPrompt`/enqueue. `requestId` is the
+   * single-resolution key.
+   */
+  submitAnswer(officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void>;
   /**
    * Enable/disable mirroring of copilot-events to the main process for an agent
    * that has no active renderer viewer. Must be enabled around a Teams-driven turn
@@ -83,6 +110,19 @@ export class RelaySessionGateway implements SessionGateway {
     this.relay.mainSetAgentForwarding(officeId, agentId, enabled);
   }
 
+  async submitAnswer(
+    officeId: string,
+    agentId: string,
+    a: { requestId?: string; answer: string; wasFreeform: boolean },
+  ): Promise<void> {
+    // spec 015: resolve the pending user-input interaction (SDK) or inject keystrokes
+    // (node-pty) via the dedicated submit-answer IPC — never submitPrompt/enqueue.
+    const res = await this.relay.mainSubmitAnswer(officeId, agentId, a);
+    if (!res.success) {
+      throw new Error(res.error || `Failed to submit answer to ${officeId}:${agentId}`);
+    }
+  }
+
   onAgentEvent(cb: (e: AgentEvent) => void): () => void {
     const onCopilotEvent = (...args: unknown[]) => {
       const agentId = args[0] as string;
@@ -98,12 +138,24 @@ export class RelaySessionGateway implements SessionGateway {
       cb({ agentId: args[0] as string, kind: 'tool-start', toolName: args[1] as string });
     const onUserMessage = (...args: unknown[]) =>
       cb({ agentId: args[0] as string, kind: 'user-message', content: (args[1] as string) ?? '' });
+    // spec 015: map the additive copilot-ask-user relay to an 'ask-user' AgentEvent.
+    // Transport-only — selector labels (A/B/C) are assigned by the consumer (TeamsService).
+    const onAskUser = (...args: unknown[]) => {
+      const agentId = args[0] as string;
+      const toolId = (args[1] as string) ?? '';
+      const requestId = (args[2] as string) ?? '';
+      const question = (args[3] as string) ?? '';
+      const options = (args[4] as { text: string }[]) ?? [];
+      const freeform = Boolean(args[5]);
+      cb({ agentId, kind: 'ask-user', askUser: { toolId, requestId, question, options, freeform } });
+    };
 
     this.relay.mainEvents.on('copilot-event', onCopilotEvent);
     this.relay.mainEvents.on('copilot-turn-start', onTurnStart);
     this.relay.mainEvents.on('copilot-turn-end', onTurnEnd);
     this.relay.mainEvents.on('copilot-tool-start', onToolStart);
     this.relay.mainEvents.on('copilot-user-message', onUserMessage);
+    this.relay.mainEvents.on('copilot-ask-user', onAskUser);
 
     return () => {
       this.relay.mainEvents.off('copilot-event', onCopilotEvent);
@@ -111,6 +163,7 @@ export class RelaySessionGateway implements SessionGateway {
       this.relay.mainEvents.off('copilot-turn-end', onTurnEnd);
       this.relay.mainEvents.off('copilot-tool-start', onToolStart);
       this.relay.mainEvents.off('copilot-user-message', onUserMessage);
+      this.relay.mainEvents.off('copilot-ask-user', onAskUser);
     };
   }
 

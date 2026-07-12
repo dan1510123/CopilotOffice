@@ -5,6 +5,87 @@ import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from 
 import type { PermissionHandler } from '@github/copilot-sdk';
 import { loadCustomAgents } from './custom-agents';
 
+// ── spec 015: ask_user (SDK user-input interaction) answer channel ──────────────
+//
+// Registering an `onUserInputRequest` handler on every managed SDK/ui-server session
+// is a spike-verified PREREQUISITE: without it the runtime advertises the tool as
+// unavailable (`requestUserInput` is false) and the model refuses to call `ask_user`.
+// The handler stores a LATE-resolvable resolver keyed by the interaction `requestId`;
+// it is resolved out-of-band when a Teams (or local) answer arrives via
+// `handlePendingUserInput(requestId, …)`. The agent keeps waiting until then.
+
+interface PendingUserInputEntry {
+  resolve: (a: { answer: string; wasFreeform: boolean }) => void;
+  sessionId?: string;
+  toolCallId?: string;
+}
+
+/** Pending ask_user interactions keyed by `requestId` (single-resolution key). */
+const pendingUserInput = new Map<string, PendingUserInputEntry>();
+
+interface UserInputRequest {
+  requestId?: unknown;
+  toolCallId?: unknown;
+}
+
+/**
+ * Build the SDK `onUserInputRequest` handler (spec 015 prerequisite). Registered on
+ * every managed SDK/ui-server session so `ask_user` is usable. Returns a promise that
+ * is resolved LATE by {@link handlePendingUserInput} when the answer arrives.
+ */
+export function makeUserInputHandler(): (
+  request: UserInputRequest,
+  ctx?: { sessionId?: string },
+) => Promise<{ answer: string; wasFreeform: boolean }> {
+  return (request, ctx) =>
+    new Promise((resolve) => {
+      const requestId = request?.requestId != null ? String(request.requestId) : '';
+      pendingUserInput.set(requestId, {
+        resolve,
+        sessionId: ctx?.sessionId,
+        toolCallId: request?.toolCallId != null ? String(request.toolCallId) : undefined,
+      });
+    });
+}
+
+/**
+ * Resolve a pending `ask_user` interaction (spec 015). Idempotent: an unknown or
+ * already-resolved `requestId` is a no-op + warn (supports the single-resolution
+ * Teams/local race). Returns true only when a stored resolver actually fired.
+ */
+export function handlePendingUserInput(
+  requestId: string,
+  answer: { answer: string; wasFreeform: boolean },
+): boolean {
+  const entry = pendingUserInput.get(requestId);
+  if (!entry) {
+    console.warn(
+      `[terminal-backend] handlePendingUserInput: no pending user-input for requestId="${requestId}" (already resolved or unknown) — no-op`,
+    );
+    return false;
+  }
+  pendingUserInput.delete(requestId);
+  entry.resolve({ answer: answer.answer, wasFreeform: answer.wasFreeform });
+  return true;
+}
+
+/** Test/diagnostics helper: number of outstanding pending user-input interactions. */
+export function pendingUserInputCount(): number {
+  return pendingUserInput.size;
+}
+
+/**
+ * Decide how an `ask_user` answer is delivered for a backend process (spec 015).
+ * SDK/ui-server backends expose `submitPrompt` (a real programmatic session) and resolve
+ * the pending interaction by `requestId` via {@link handlePendingUserInput}. The raw
+ * node-pty backend omits `submitPrompt`; there is no SDK session, so the answer is typed
+ * onto the TUI's interaction input line via keystroke injection (best-effort/degraded,
+ * no requestId). This is the single source of truth for the server's submit-answer routing.
+ */
+export function answerTransport(proc: Pick<TerminalProcess, 'submitPrompt'>): 'sdk' | 'keystroke' {
+  return typeof proc.submitPrompt === 'function' ? 'sdk' : 'keystroke';
+}
+
 export interface TerminalExitEvent {
   exitCode: number;
 }
@@ -540,6 +621,10 @@ export class CopilotSdkBackend implements TerminalBackend {
       // without this "New Session" loses every custom agent. See ./custom-agents.
       customAgents: loadCustomAgents(options.cwd),
       onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
+      // spec 015 prerequisite (forStdio path): register the user-input handler so
+      // the model is told `ask_user` is available and Teams/local answers can
+      // resolve the pending interaction late. See makeUserInputHandler.
+      onUserInputRequest: makeUserInputHandler(),
     };
 
     try {
@@ -779,6 +864,11 @@ export class ControlPlaneClient {
       // so SDK-created ("New Session") sessions expose them like the TUI does.
       customAgents: loadCustomAgents(cwd),
       onPermissionRequest,
+      // spec 015 prerequisite: advertise `ask_user` (requestUserInput: true) and
+      // provide the late-resolvable answer channel. Without this the model refuses
+      // to call ask_user. The relay of the question itself rides the normal event
+      // stream (user_input.requested → server watcherCallback).
+      onUserInputRequest: makeUserInputHandler(),
     };
 
     try {

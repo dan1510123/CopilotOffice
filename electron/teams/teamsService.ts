@@ -28,6 +28,8 @@ import type {
   KnownThread,
   InboundMessage,
   OnlineAgentStatus,
+  PendingQuestion,
+  AskUserOption,
 } from './types';
 
 export interface TeamsToast {
@@ -159,6 +161,13 @@ export class TeamsService {
    * an agent with an in-flight Teams dispatch never uses this map.
    */
   private readonly ambient = new Map<string, AmbientTurn>(); // key = agentId
+  /**
+   * Pending `ask_user` questions awaiting an answer, keyed by agentId (spec 015).
+   * At most one per online agent — a new `ask-user` supersedes the prior record.
+   * Transient, in-memory, main-process only (never persisted). Distinct from
+   * {@link pending} (in-flight Teams dispatches) and {@link ambient}.
+   */
+  private readonly pendingQuestions = new Map<string, PendingQuestion>(); // key = agentId
   /**
    * Message ids of every message the app has posted (thread roots + replies).
    * Primary self-loop guard: an inbound message whose id is here is our own echo
@@ -363,6 +372,15 @@ export class TeamsService {
     const b = this.findBinding(officeId, agentId);
     if (!b) return { success: true };
     tlog(`OFFLINE: @${b.handle} (${officeId}:${agentId}).`);
+    // spec 015 (FR-009): an outstanding ask_user question is no longer answerable once the
+    // agent leaves. Clear the record and notice the thread (before the generic offline notice).
+    const abandoned = this.pendingQuestions.get(agentId);
+    if (abandoned) {
+      this.pendingQuestions.delete(agentId);
+      if (postNotice && b.online && b.threadRootId) {
+        await this.safeReply(b, `${this.agentLabel(b)} ⚠️ This question is no longer answerable (agent offline).`);
+      }
+    }
     if (postNotice && b.online && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
@@ -421,6 +439,18 @@ export class TeamsService {
     if (content === '/stop') {
       tlog(`/stop received in @${binding.handle}'s thread — taking offline.`);
       await this.goOffline(binding.officeId, binding.agentId, true);
+      return;
+    }
+
+    // spec 015 (FR-012): if this agent has a pending `ask_user` question, a thread reply is
+    // an ANSWER, not a new prompt. Route it to the resolver instead of the dispatch queue.
+    // A record that is already resolved (near-simultaneous second reply, or the brief window
+    // before the record clears) drops the reply as a no-op (single-resolution — FR-007).
+    const pendingQ = this.pendingQuestions.get(binding.agentId);
+    if (pendingQ) {
+      if (!pendingQ.resolved) {
+        await this.resolveAnswer(pendingQ, msg.content);
+      }
       return;
     }
 
@@ -505,6 +535,18 @@ export class TeamsService {
   }
 
   private onAgentEvent(e: AgentEvent): void {
+    // spec 015: an `ask-user` question is handled regardless of whether the current turn
+    // was Teams- or locally-initiated (FR-013). Intercept before the dispatch/ambient
+    // split so it never streams as ordinary output.
+    if (e.kind === 'ask-user') {
+      void this.onAskUserEvent(e);
+      return;
+    }
+    // spec 015 §C: any non-`ask-user` event for an agent with a still-pending, unresolved
+    // question implies the ask_user was answered in-app (a Teams answer clears the record
+    // synchronously before the resumed turn streams). Fire the one-time local-answer notice.
+    this.maybeLocalResolve(e.agentId);
+
     const rec = this.pending.get(e.agentId);
     if (!rec) {
       // No in-flight Teams dispatch → this output was driven locally (app terminal).
@@ -748,6 +790,149 @@ export class TeamsService {
    * under the operator's own Teams identity, this makes automated agent output
    * visually distinct from messages the operator typed by hand.
    */
+  // ── ask_user question / answer flow (spec 015) ───────────────
+
+  /**
+   * Handle an `ask-user` AgentEvent for an online agent (contract §A). Resolves the
+   * binding, assigns stable selector labels (A, B, C…) to options in order, supersedes any
+   * existing record for the agent, and posts one framed question message listing all
+   * options (+ a freeform hint iff allowed). Ignored when the agent isn't online.
+   */
+  private async onAskUserEvent(e: AgentEvent): Promise<void> {
+    if (!e.askUser) return;
+    const binding = this.bindings.find((b) => b.agentId === e.agentId && b.online);
+    if (!binding) return;
+
+    const options: AskUserOption[] = e.askUser.options.map((o, i) => ({
+      label: selectorLabel(i),
+      text: o.text,
+    }));
+    const record: PendingQuestion = {
+      agentId: e.agentId,
+      officeId: binding.officeId,
+      binding,
+      toolId: e.askUser.toolId,
+      requestId: e.askUser.requestId ?? '',
+      question: e.askUser.question,
+      options,
+      freeform: e.askUser.freeform,
+      resolved: false,
+      createdAt: this.now(),
+    };
+    // Supersede any prior pending question for this agent (keyed by agentId; the new
+    // requestId/toolId replaces the old — data-model "one pending per agent" invariant).
+    this.pendingQuestions.set(e.agentId, record);
+
+    tlog(`ask_user → @${binding.handle}: "${truncate(record.question, 80)}" (${options.length} options, freeform=${record.freeform}, requestId=${record.requestId || '∅'})`);
+
+    const html = this.composeQuestion(record);
+    let firstId: string | undefined;
+    for (const chunk of chunkReply(html, 3500)) {
+      const id = await this.safeReply(binding, chunk);
+      if (!firstId) firstId = id;
+    }
+    // Only stamp the posted id if this record is still the current pending one (it may
+    // have been superseded/cleared while awaiting the post).
+    if (this.pendingQuestions.get(e.agentId) === record) {
+      record.postedMessageId = firstId;
+    }
+  }
+
+  /** Compose the HTML for a pending question: attention framing + question + labeled
+   *  options + optional freeform hint (contract §A, FR-001/002/006; framing per FR-002/T031). */
+  private composeQuestion(record: PendingQuestion): string {
+    const lines: string[] = [
+      `${this.agentLabel(record.binding)} ❓ <b>needs your answer</b>`,
+      `<br><br>${escapeHtml(record.question)}`,
+    ];
+    for (const opt of record.options) {
+      lines.push(`<br><b>${escapeHtml(opt.label)}</b> — ${escapeHtml(opt.text)}`);
+    }
+    lines.push(`<br><br><i>Reply with a letter (${record.options.map((o) => escapeHtml(o.label)).join(', ')}) to choose.</i>`);
+    if (record.freeform) {
+      lines.push(`<br><i>Or reply with your own answer.</i>`);
+    }
+    return lines.join('');
+  }
+
+  /** Compose the nudge re-listing options when a choices-only reply doesn't match a label
+   *  (contract §B, FR-005/SC-005). Leaves the record pending. */
+  private composeNudge(record: PendingQuestion): string {
+    const lines: string[] = [
+      `${this.agentLabel(record.binding)} 🤔 I didn't recognize that as one of the choices. Reply with a letter:`,
+    ];
+    for (const opt of record.options) {
+      lines.push(`<br><b>${escapeHtml(opt.label)}</b> — ${escapeHtml(opt.text)}`);
+    }
+    return lines.join('');
+  }
+
+  /**
+   * Resolve a thread reply against a pending question (contract §B). Selector-label-only
+   * matching (FR-014). The `resolved` check-and-set is synchronous (main process is
+   * single-threaded) so the first resolver wins — a near-simultaneous second reply finds
+   * `resolved === true` and is dropped (single-resolution, FR-007/SC-004). The record is
+   * deleted after the answer is submitted so genuine follow-up prompts dispatch normally.
+   */
+  private async resolveAnswer(record: PendingQuestion, rawText: string): Promise<void> {
+    const token = (rawText.trim().split(/\s+/)[0] ?? '').replace(/[).:]$/, '');
+    const matched = token
+      ? record.options.find((o) => o.label.toLowerCase() === token.toLowerCase())
+      : undefined;
+
+    if (matched) {
+      if (record.resolved) return; // latch: already claimed
+      record.resolved = true;
+      tlog(`answer → @${record.binding.handle}: label "${matched.label}" ⇒ "${truncate(matched.text, 60)}"`);
+      await this.submitAnswerSafe(record, matched.text, false);
+      this.pendingQuestions.delete(record.agentId);
+      return;
+    }
+
+    if (record.freeform) {
+      if (record.resolved) return;
+      record.resolved = true;
+      tlog(`answer → @${record.binding.handle}: freeform "${truncate(rawText, 60)}"`);
+      await this.submitAnswerSafe(record, rawText.trim(), true);
+      this.pendingQuestions.delete(record.agentId);
+      return;
+    }
+
+    // Choices-only and no label match → nudge and leave the record pending (FR-005).
+    await this.safeReply(record.binding, this.composeNudge(record));
+  }
+
+  /** Submit an answer through the gateway, swallowing errors so a failed transport can't
+   *  wedge inbound handling. The submitted value is the option TEXT (never the label) or the
+   *  raw freeform text — identical to a local answer (FR-003/004/014). */
+  private async submitAnswerSafe(record: PendingQuestion, answer: string, wasFreeform: boolean): Promise<void> {
+    try {
+      await this.deps.gateway.submitAnswer(record.officeId, record.agentId, {
+        requestId: record.requestId || undefined,
+        answer,
+        wasFreeform,
+      });
+    } catch (e) {
+      twarn('submitAnswer failed:', (e as Error).message);
+    }
+  }
+
+  /**
+   * Local-resolution detection (contract §C, FR-008): if `agentId` has a still-pending,
+   * unresolved question and a non-`ask-user` event arrives, the ask_user was answered
+   * in-app. Latch it, clear the record, and post a one-time "answered in the app" notice.
+   * A Teams answer clears the record synchronously before its resumed turn streams, so this
+   * only fires for genuinely local answers.
+   */
+  private maybeLocalResolve(agentId: string): void {
+    const record = this.pendingQuestions.get(agentId);
+    if (!record || record.resolved) return;
+    record.resolved = true;
+    this.pendingQuestions.delete(agentId);
+    tlog(`ask_user answered locally for @${record.binding.handle} — posting in-app notice.`);
+    void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered in the app.`);
+  }
+
   private agentLabel(binding: OnlineAgentBinding): string {
     return `🤖 <b>${escapeHtml(binding.displayName)}</b>`;
   }
@@ -782,12 +967,14 @@ export class TeamsService {
     }
   }
 
-  /** Reply to a thread, swallowing errors (logs only) so the queue keeps moving. */
+  /** Reply to a thread, swallowing errors (logs only) so the queue keeps moving.
+   *  Returns the posted messageId when Graph reports one (used to record the ask_user
+   *  question's message id — spec 015 T021), or undefined on failure. */
   private async safeReply(
     binding: OnlineAgentBinding,
     html: string,
     hostedImages?: HostedImage[],
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     try {
       const posted = await this.deps.graph.replyToThread({
         teamId: binding.teamId,
@@ -798,8 +985,10 @@ export class TeamsService {
       });
       // Record our own reply id so its Trouter echo is dropped (self-loop guard).
       if (posted?.messageId) this.rememberPosted(posted.messageId);
+      return posted?.messageId;
     } catch (e) {
       twarn('replyToThread failed:', (e as Error).message);
+      return undefined;
     }
   }
 
@@ -1082,5 +1271,19 @@ export class TeamsService {
 function truncate(text: string, max: number): string {
   const oneLine = (text ?? '').replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max)}…`;
+}
+
+/**
+ * Generate a stable selector label for an option at `index` (spec 015 FR-014):
+ * A, B, …, Z, AA, AB, … (Excel-style) so very long option lists still get unique labels.
+ */
+function selectorLabel(index: number): string {
+  let n = index;
+  let s = '';
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
 }
 

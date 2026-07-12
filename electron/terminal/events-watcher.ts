@@ -249,3 +249,89 @@ export function formatToolStatus(toolName: string, args: Record<string, unknown>
       return `Using ${toolName}`;
   }
 }
+
+/**
+ * Normalize `ask_user` tool arguments to `{ question, options: {text}[], freeform }`
+ * regardless of upstream key names (spec 015, node-pty/degraded path only). Handles
+ * `question`/`prompt`, `options`/`choices` as `string[]` or `{label,value}[]`/`{text}[]`,
+ * and the freeform flag under several aliases. This does NOT touch {@link formatToolStatus}
+ * — the static `'Waiting for your answer'` label stays byte-for-byte (FR-016). The
+ * SDK/ui-server backend does not use this; its fields arrive natively in
+ * `user_input.requested`.
+ */
+export function normalizeAskUserArgs(args: Record<string, unknown> | undefined): {
+  question: string;
+  options: { text: string }[];
+  freeform: boolean;
+} {
+  const a = args ?? {};
+  const questionRaw = a.question ?? a.prompt ?? a.message ?? a.text ?? '';
+  const question = typeof questionRaw === 'string' ? questionRaw : String(questionRaw ?? '');
+
+  const rawOptions = a.options ?? a.choices ?? a.answers ?? a.selections ?? [];
+  const options: { text: string }[] = [];
+  if (Array.isArray(rawOptions)) {
+    for (const opt of rawOptions) {
+      if (typeof opt === 'string') {
+        options.push({ text: opt });
+      } else if (opt && typeof opt === 'object') {
+        const o = opt as Record<string, unknown>;
+        const text = o.text ?? o.label ?? o.value ?? o.name ?? '';
+        options.push({ text: typeof text === 'string' ? text : String(text ?? '') });
+      }
+    }
+  }
+
+  const freeformRaw =
+    a.freeform ?? a.allowFreeform ?? a.allowFreeText ?? a.allowCustom ?? a.freeText ?? false;
+  const freeform = Boolean(freeformRaw);
+
+  return { question, options, freeform };
+}
+
+/**
+ * spec 015 — pure relay translator. Given a copilot event and the active backend
+ * name, return the normalized ask_user payload to relay as `copilot-ask-user`, or
+ * `null` when the event is not an ask_user surface for this backend.
+ *
+ * - SDK/ui-server backend: `user_input.requested` carries the payload natively
+ *   (incl. the `requestId` single-resolution key).
+ * - node-pty backend: `tool.execution_start` with `toolName === 'ask_user'`,
+ *   normalized best-effort from arguments (`requestId` unavailable → '').
+ *
+ * The caller still emits the unchanged `copilot-tool-start` separately (FR-016).
+ */
+export function buildAskUserRelay(
+  event: { type: string; data: Record<string, unknown> },
+  backendName: string,
+): { toolId: string; requestId: string; question: string; options: { text: string }[]; freeform: boolean } | null {
+  const d = event.data ?? {};
+  if (event.type === 'user_input.requested') {
+    const options = Array.isArray(d.choices)
+      ? d.choices.map((c) => ({
+          text:
+            typeof c === 'string'
+              ? c
+              : String((c as Record<string, unknown>)?.text ?? (c as Record<string, unknown>)?.label ?? (c as Record<string, unknown>)?.value ?? ''),
+        }))
+      : [];
+    return {
+      toolId: String(d.toolCallId ?? ''),
+      requestId: String(d.requestId ?? ''),
+      question: String(d.question ?? ''),
+      options,
+      freeform: Boolean(d.allowFreeform),
+    };
+  }
+  if (event.type === 'tool.execution_start' && d.toolName === 'ask_user' && backendName === 'node-pty') {
+    const norm = normalizeAskUserArgs(d.arguments as Record<string, unknown> | undefined);
+    return {
+      toolId: String(d.toolCallId ?? ''),
+      requestId: '',
+      question: norm.question,
+      options: norm.options,
+      freeform: norm.freeform,
+    };
+  }
+  return null;
+}
