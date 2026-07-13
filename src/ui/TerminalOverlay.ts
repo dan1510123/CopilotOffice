@@ -1111,7 +1111,8 @@ export class TerminalOverlay {
     }
 
     this.setTeamsButtonState(false, true);
-    const officeChannelUrl = officeManager.getOffice(officeId)?.config.teamsChannelUrl;
+    const office = officeManager.getOffice(officeId)?.config;
+    const officeChannelUrl = office?.teamsChannelUrl;
     const workingDir = this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory();
     const res = await window.copilotBridge.teamsRegister({
       officeId,
@@ -1119,6 +1120,8 @@ export class TerminalOverlay {
       displayName: this.currentAgent.name,
       workingDir,
       officeChannelUrl,
+      officeMentionType: office?.teamsMentionType,
+      officeMentionValue: office?.teamsMentionValue,
     });
     if (res?.success) {
       this.setTeamsButtonState(true);

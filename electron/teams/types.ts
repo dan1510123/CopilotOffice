@@ -58,6 +58,13 @@ export interface OnlineAgentBinding {
   teamId: string;
   channelId: string;
   tenantId: string;
+  /**
+   * Per-office relay @mention override for the completion notification, frozen at register
+   * time (mirrors how the channel is resolved once at register). When absent / 'none' /
+   * empty value, the global {@link TeamsSettings.relayMentionType}/relayMentionValue apply.
+   */
+  mentionType?: 'user' | 'tag' | 'none';
+  mentionValue?: string;
   /** Root message id of the agent's thread (routing target). Empty while pending. */
   threadRootId: string;
   /** Thread web URL (for surfacing in the UI). */

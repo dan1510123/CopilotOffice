@@ -30,6 +30,12 @@ export interface OfficeConfig {
   customReserveAgents?: Record<string, AgentConfig>;
   /** Optional per-office override Teams channel deep-link (falls back to global default). */
   teamsChannelUrl?: string;
+  /**
+   * Optional per-office override for the relay @mention target used in Teams completion
+   * notifications. Falls back to the global mention when type is 'none' or value is empty.
+   */
+  teamsMentionType?: 'user' | 'tag' | 'none';
+  teamsMentionValue?: string;
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -215,7 +221,7 @@ export class OfficeManager {
   }
   
   // Update office config
-  updateOffice(officeId: string, updates: Partial<Pick<OfficeConfig, 'name' | 'workingDirectory' | 'layout' | 'teamsChannelUrl'>>): boolean {
+  updateOffice(officeId: string, updates: Partial<Pick<OfficeConfig, 'name' | 'workingDirectory' | 'layout' | 'teamsChannelUrl' | 'teamsMentionType' | 'teamsMentionValue'>>): boolean {
     const office = this.offices.get(officeId);
     if (!office) return false;
     
@@ -223,6 +229,8 @@ export class OfficeManager {
     if (updates.workingDirectory !== undefined) office.config.workingDirectory = updates.workingDirectory;
     if (updates.layout !== undefined) office.config.layout = updates.layout;
     if (updates.teamsChannelUrl !== undefined) office.config.teamsChannelUrl = updates.teamsChannelUrl;
+    if (updates.teamsMentionType !== undefined) office.config.teamsMentionType = updates.teamsMentionType;
+    if (updates.teamsMentionValue !== undefined) office.config.teamsMentionValue = updates.teamsMentionValue;
     
     this.saveToStorage();
     this.onOfficesUpdated?.();

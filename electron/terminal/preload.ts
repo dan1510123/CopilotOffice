@@ -228,7 +228,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   teamsStatus: (args?: { officeId?: string; agentId?: string }): Promise<{ success: boolean; connected: boolean; bindings: unknown[] }> => {
     return ipcRenderer.invoke('teams:status', args ?? {});
   },
-  teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string }): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> => {
+  teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string; officeMentionType?: 'user' | 'tag' | 'none'; officeMentionValue?: string }): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> => {
     return ipcRenderer.invoke('teams:register', ctx);
   },
   teamsStop: (args: { officeId: string; agentId: string }): Promise<{ success: boolean }> => {
@@ -349,7 +349,7 @@ declare global {
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
       loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;
       teamsStatus: (args?: { officeId?: string; agentId?: string }) => Promise<{ success: boolean; connected: boolean; bindings: TeamsAgentStatus[] }>;
-      teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string }) => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
+      teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string; officeMentionType?: 'user' | 'tag' | 'none'; officeMentionValue?: string }) => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
       teamsStop: (args: { officeId: string; agentId: string }) => Promise<{ success: boolean }>;
       teamsReconcile: () => Promise<{ success: boolean }>;
       teamsGetSettings: () => Promise<{ success: boolean; settings: TeamsSettingsShape }>;

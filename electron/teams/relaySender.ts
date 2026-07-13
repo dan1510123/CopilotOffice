@@ -195,6 +195,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
     title: string,
     html: string,
     hostedImages: HostedImages,
+    mentionOverride?: MentionRef,
   ): Promise<void> => {
     // Enforce the SAME outbound allowlist on the logical destination as the direct path.
     // (Only the Dump-channel POST itself bypasses the allowlist, not the fan-out target.)
@@ -206,7 +207,10 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
     const dump = resolveDump();
 
     let resolved: ResolvedMention = { mentionType: 'none', mentionId: '' };
-    const ref = opts.getMention();
+    // Per-send (per-office) override wins when provided and non-empty; otherwise fall back
+    // to the global operator-configured mention (read live).
+    const hasOverride = !!(mentionOverride && mentionOverride.type !== 'none' && mentionOverride.value.trim());
+    const ref = hasOverride ? (mentionOverride as MentionRef) : opts.getMention();
     if (ref && ref.type !== 'none' && ref.value.trim()) {
       try {
         resolved = await opts.resolveMention({ type: ref.type, value: ref.value.trim() }, dest.teamId);
@@ -245,7 +249,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
   return {
     async createThread(p: CreateThreadParams): Promise<{ threadRootId: string; webUrl: string }> {
       // No existing thread to reply under → flow posts a new root message.
-      await postToDump({ teamId: p.teamId, channelId: p.channelId, threadRootId: '' }, p.subject, p.html, p.hostedImages);
+      await postToDump({ teamId: p.teamId, channelId: p.channelId, threadRootId: '' }, p.subject, p.html, p.hostedImages, p.mentionOverride);
       // The Dump-channel post's ids don't map to a thread in the real channel.
       return { threadRootId: '', webUrl: '' };
     },
@@ -257,6 +261,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
         '',
         p.html,
         p.hostedImages,
+        p.mentionOverride,
       );
       return { messageId: '' };
     },

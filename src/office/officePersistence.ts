@@ -131,6 +131,13 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
     if (cfg.teamsChannelUrl !== undefined) {
       normalized.teamsChannelUrl = cfg.teamsChannelUrl as string;
     }
+    // Carry the optional per-office Teams relay @mention override verbatim.
+    if (cfg.teamsMentionType !== undefined) {
+      normalized.teamsMentionType = cfg.teamsMentionType as 'user' | 'tag' | 'none';
+    }
+    if (cfg.teamsMentionValue !== undefined) {
+      normalized.teamsMentionValue = cfg.teamsMentionValue as string;
+    }
     offices.push(normalized);
   }
 

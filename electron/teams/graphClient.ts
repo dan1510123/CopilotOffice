@@ -14,6 +14,12 @@ export interface CreateThreadParams {
   html: string;
   /** Optional inline images referenced by the html via `../hostedContents/{id}/$value`. */
   hostedImages?: HostedImage[];
+  /**
+   * Optional per-send relay @mention override. Honored only by the relay sender; the direct
+   * Graph sender ignores it. When absent / 'none' / empty value, the sender falls back to the
+   * global operator-configured mention. See {@link createRelaySender}.
+   */
+  mentionOverride?: { type: 'user' | 'tag' | 'none'; value: string };
 }
 
 export interface ReplyParams {
@@ -23,6 +29,12 @@ export interface ReplyParams {
   html: string;
   /** Optional inline images referenced by the html via `../hostedContents/{id}/$value`. */
   hostedImages?: HostedImage[];
+  /**
+   * Optional per-send relay @mention override. Honored only by the relay sender; the direct
+   * Graph sender ignores it. When absent / 'none' / empty value, the sender falls back to the
+   * global operator-configured mention. See {@link createRelaySender}.
+   */
+  mentionOverride?: { type: 'user' | 'tag' | 'none'; value: string };
 }
 
 /** Build the Graph `hostedContents` array (temporaryId + base64 bytes) for inline images. */

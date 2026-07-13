@@ -160,6 +160,62 @@ describe('createRelaySender', () => {
     expect(resolveMention).not.toHaveBeenCalled();
   });
 
+  it('per-send mentionOverride wins over the global mention (per-office tag override)', async () => {
+    const resolveMention = vi.fn<MentionResolver>(async (ref) => {
+      expect(ref).toEqual({ type: 'tag', value: 'OfficeLeads' });
+      return { mentionType: 'tag', mentionId: 'OfficeLeads' };
+    });
+    // Global mention points at a user; the per-office override points at a tag and must win.
+    const { primary, sender } = build({
+      getMention: () => ({ type: 'user', value: 'global@example.com' }),
+      resolveMention,
+    });
+
+    await sender.replyToThread({
+      teamId: DEST_TEAM,
+      channelId: DEST_CHANNEL,
+      threadRootId: 'root',
+      html: 'done',
+      mentionOverride: { type: 'tag', value: 'OfficeLeads' },
+    });
+
+    expect(resolveMention).toHaveBeenCalledOnce();
+    const meta = decodeMetaBlock(primary.createCalls[0].html);
+    expect(meta).toMatchObject({ mentionType: 'tag', mentionId: 'OfficeLeads' });
+  });
+
+  it('falls back to the global mention when the override is none/empty', async () => {
+    const resolveMention = vi.fn<MentionResolver>(async (ref) => {
+      expect(ref).toEqual({ type: 'user', value: 'global@example.com' });
+      return { mentionType: 'user', mentionId: 'oid-global' };
+    });
+    const { primary, sender } = build({
+      getMention: () => ({ type: 'user', value: 'global@example.com' }),
+      resolveMention,
+    });
+
+    // Empty override value ⇒ ignore override, use global.
+    await sender.replyToThread({
+      teamId: DEST_TEAM,
+      channelId: DEST_CHANNEL,
+      threadRootId: 'root',
+      html: 'done',
+      mentionOverride: { type: 'tag', value: '   ' },
+    });
+    // 'none' override ⇒ ignore override, use global.
+    await sender.createThread({
+      teamId: DEST_TEAM,
+      channelId: DEST_CHANNEL,
+      subject: 's',
+      html: 'a',
+      mentionOverride: { type: 'none', value: '' },
+    });
+
+    expect(resolveMention).toHaveBeenCalledTimes(2);
+    expect(decodeMetaBlock(primary.createCalls[0].html)).toMatchObject({ mentionType: 'user', mentionId: 'oid-global' });
+    expect(decodeMetaBlock(primary.createCalls[1].html)).toMatchObject({ mentionType: 'user', mentionId: 'oid-global' });
+  });
+
   it('reads the Dump URL per-send (live settings changes)', async () => {
     const primary = recordingPrimary();
     let url = DUMP_URL;

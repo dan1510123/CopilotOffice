@@ -1003,6 +1003,21 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
       width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12121f; border: 1px solid #333;
       border-radius: 5px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
     " />
+    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Teams Mention Override <span style="color:#667;">(optional)</span></label>
+    <div style="display: flex; gap: 6px; margin-bottom: 14px;">
+      <select class="osp-teams-mention-type" style="
+        padding: 6px 8px; background: #12121f; border: 1px solid #333; border-radius: 5px;
+        color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+      ">
+        <option value="none"${(office.config.teamsMentionType ?? 'none') === 'none' ? ' selected' : ''}>Default</option>
+        <option value="tag"${office.config.teamsMentionType === 'tag' ? ' selected' : ''}>Tag</option>
+        <option value="user"${office.config.teamsMentionType === 'user' ? ' selected' : ''}>User</option>
+      </select>
+      <input class="osp-teams-mention-value" type="text" value="${escapeHtml(office.config.teamsMentionValue ?? '')}" placeholder="Tag name / user (empty = use default)" style="
+        flex: 1; padding: 6px 8px; background: #12121f; border: 1px solid #333; border-radius: 5px;
+        color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+      " />
+    </div>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
       ${canDelete ? `<button class="osp-delete" style="
         padding: 5px 12px; background: #2a1a1a; border: 1px solid #633; border-radius: 5px;
@@ -1027,6 +1042,8 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
   const nameInput = popover.querySelector('.osp-name') as HTMLInputElement;
   const pathInput = popover.querySelector('.osp-path') as HTMLInputElement;
   const teamsInput = popover.querySelector('.osp-teams') as HTMLInputElement;
+  const teamsMentionTypeInput = popover.querySelector('.osp-teams-mention-type') as HTMLSelectElement;
+  const teamsMentionValueInput = popover.querySelector('.osp-teams-mention-value') as HTMLInputElement;
 
   popover.querySelector('.osp-close')?.addEventListener('click', closeOfficePopover);
 
@@ -1037,6 +1054,11 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
     if (newPath) officeManager.updateOffice(officeId, { workingDirectory: newPath });
     // Per-office Teams channel override (empty string clears it).
     officeManager.updateOffice(officeId, { teamsChannelUrl: teamsInput.value.trim() });
+    // Per-office Teams relay @mention override (empty value falls back to the global mention).
+    officeManager.updateOffice(officeId, {
+      teamsMentionType: teamsMentionTypeInput.value as 'user' | 'tag' | 'none',
+      teamsMentionValue: teamsMentionValueInput.value.trim(),
+    });
     renderOfficeTabs();
     updateTerminalContent();
     closeOfficePopover();
@@ -1726,13 +1748,16 @@ async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
   }
   const agent = getSeriousLaunchConfig(agentId);
   if (!agent) return;
-  const officeChannelUrl = officeManager.getOffice(officeId)?.config.teamsChannelUrl;
+  const office = officeManager.getOffice(officeId)?.config;
+  const officeChannelUrl = office?.teamsChannelUrl;
   const res = await window.copilotBridge.teamsRegister({
     officeId,
     agentId,
     displayName: agent.name,
     workingDir: agent.workingDir || officeManager.getCurrentWorkingDirectory(),
     officeChannelUrl,
+    officeMentionType: office?.teamsMentionType,
+    officeMentionValue: office?.teamsMentionValue,
   });
   if (res?.success) {
     teamsOnlineAgentIds.add(agentId);

@@ -52,6 +52,12 @@ export interface RegisterContext {
   workingDir: string;
   /** Per-office override channel deep-link (office.teamsChannelUrl); may be empty. */
   officeChannelUrl?: string;
+  /**
+   * Per-office relay @mention override (office.teamsMentionType/teamsMentionValue). When
+   * type is 'none' or value is empty, the global operator-configured mention applies.
+   */
+  officeMentionType?: 'user' | 'tag' | 'none';
+  officeMentionValue?: string;
 }
 
 export interface TeamsServiceDeps {
@@ -346,6 +352,8 @@ export class TeamsService {
       teamId: coords.teamId,
       channelId: coords.channelId,
       tenantId: coords.tenantId,
+      mentionType: ctx.officeMentionType,
+      mentionValue: ctx.officeMentionValue,
       threadRootId: thread.threadRootId,
       threadWebUrl: thread.webUrl,
       online: true,
@@ -776,6 +784,8 @@ export class TeamsService {
         channelId: binding.channelId,
         threadRootId: binding.threadRootId,
         html,
+        // Per-office relay @mention override (frozen at register); empty ⇒ global mention.
+        mentionOverride: { type: binding.mentionType ?? 'none', value: binding.mentionValue ?? '' },
       });
       if (posted?.messageId) this.rememberPosted(posted.messageId);
     } catch (e) {
