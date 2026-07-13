@@ -162,11 +162,17 @@ function coerceScalar(s: string): FMValue {
  * Convert a parsed `.agent.md` file into an SDK `CustomAgentConfig`, or `null`
  * when the file is unusable (no name, or empty prompt body). `tools: undefined`
  * intentionally maps to "all tools" per the SDK contract.
+ *
+ * `fallbackName` (typically the filename minus `.agent.md`) is used as the agent
+ * name when the frontmatter omits an explicit `name:` — matching the CLI, which
+ * derives an agent's name from its filename (e.g. `speckit.plan.agent.md` →
+ * `speckit.plan`).
  */
-export function toCustomAgentConfig(parsed: ParsedAgentFile): CustomAgentConfig | null {
-  if (!parsed.name || !parsed.prompt) return null;
+export function toCustomAgentConfig(parsed: ParsedAgentFile, fallbackName?: string): CustomAgentConfig | null {
+  const name = parsed.name || fallbackName;
+  if (!name || !parsed.prompt) return null;
   const config: CustomAgentConfig = {
-    name: parsed.name,
+    name,
     prompt: parsed.prompt,
   };
   if (parsed.displayName) config.displayName = parsed.displayName;
@@ -228,7 +234,10 @@ export function loadCustomAgents(cwd: string, copilotHome: string = resolveCopil
       } catch {
         continue;
       }
-      const config = toCustomAgentConfig(parseAgentFrontmatter(content));
+      // Derive the fallback name from the filename (`<name>.agent.md`) for files
+      // whose frontmatter omits `name:` — e.g. the speckit repo agents.
+      const fallbackName = entry.slice(0, -'.agent.md'.length);
+      const config = toCustomAgentConfig(parseAgentFrontmatter(content), fallbackName);
       if (config && !byName.has(config.name)) {
         byName.set(config.name, config);
       }

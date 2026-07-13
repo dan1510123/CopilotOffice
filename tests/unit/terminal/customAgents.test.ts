@@ -81,6 +81,17 @@ describe('toCustomAgentConfig', () => {
     expect(toCustomAgentConfig({ name: 'x', prompt: '' })).toBeNull();
   });
 
+  it('uses the fallback name when frontmatter omits name', () => {
+    const cfg = toCustomAgentConfig({ prompt: 'body' }, 'speckit.plan');
+    expect(cfg).not.toBeNull();
+    expect(cfg!.name).toBe('speckit.plan');
+  });
+
+  it('prefers the frontmatter name over the fallback', () => {
+    const cfg = toCustomAgentConfig({ name: 'explicit', prompt: 'body' }, 'from-file');
+    expect(cfg!.name).toBe('explicit');
+  });
+
   it('omits empty tool lists so the SDK grants all tools', () => {
     const cfg = toCustomAgentConfig({ name: 'x', prompt: 'p', tools: [] });
     expect(cfg).not.toBeNull();
@@ -173,6 +184,13 @@ describe('loadCustomAgents', () => {
     const agents = loadCustomAgents(tmpCwd, copilotHome);
     expect(agents).toHaveLength(1);
     expect(agents[0].description).toBe('from-home');
+  });
+
+  it('derives agent name from filename when frontmatter omits name', () => {
+    write(path.join(tmpCwd, '.github', 'agents'), 'speckit.plan.agent.md', '---\ndescription: plan agent\n---\nbody');
+
+    const agents = loadCustomAgents(tmpCwd, copilotHome);
+    expect(agents.map((a) => a.name)).toContain('speckit.plan');
   });
 
   it('never throws when directories are missing', () => {
