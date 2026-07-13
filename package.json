@@ -1,6 +1,6 @@
 {
   "name": "copilotoffice",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "A 2D pixel-art desktop game where you walk around a virtual office and interact with AI agents that run real GitHub Copilot CLI sessions — plan, debug, orchestrate fleets, and drive agents from Microsoft Teams.",
   "main": "dist/electron/main.js",
   "bin": {
