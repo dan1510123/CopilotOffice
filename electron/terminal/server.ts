@@ -10,7 +10,7 @@ import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
-import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession } from './terminal-backend';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -784,6 +784,15 @@ async function startTerminalForAgentImpl(
             send({ type: 'copilot-tool-start', agentId, toolName: 'ask_user', toolId: askRelay.toolId, status: 'Waiting for your answer' });
             send({ type: 'copilot-ask-user', agentId, toolId: askRelay.toolId, requestId: askRelay.requestId, question: askRelay.question, options: askRelay.options, freeform: askRelay.freeform });
           }
+        } else if (event.type === 'user_input.completed') {
+          // spec 015 (hardening h1): the SDK signals a resolved ask_user interaction.
+          // Forward it ALWAYS (outside the viewer gate, next to user_input.requested)
+          // so the main-process Teams consumer can PRECISELY clear a locally-answered
+          // question by requestId instead of relying on a "any subsequent event" heuristic.
+          const d = (event.data ?? {}) as { requestId?: unknown };
+          const completedRequestId = d.requestId != null ? String(d.requestId) : '';
+          console.log(`[TermServer] Forwarding ask_user complete (user_input.completed) for ${ck}: requestId=${completedRequestId}`);
+          send({ type: 'copilot-ask-user-complete', agentId, requestId: completedRequestId });
         } else if (event.type === 'tool.execution_complete') {
           const d = event.data as { toolCallId: string; success: boolean };
           console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
@@ -943,6 +952,12 @@ async function startTerminalForAgentImpl(
       lastUserMessageText.delete(ck);
       const w = agentWatchers.get(ck);
       if (w) { w.stop(); agentWatchers.delete(ck); }
+      // spec 015 hardening (h3): GC any pending ask_user resolvers owned by this
+      // session so an agent torn down mid-question can't leak an unresolved resolver.
+      const dropped = clearPendingUserInputForSession(sessionId);
+      if (dropped > 0) {
+        console.log(`[TermServer] Cleared ${dropped} pending ask_user interaction(s) for exited session ${sessionId} (${ck})`);
+      }
     });
 
     if (!shellOnlyMode && activeBackend.name === 'node-pty') {
@@ -1040,18 +1055,28 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
         if (answerTransport(backendProc) === 'sdk') {
-          // SDK/ui-server backend: resolve the pending interaction by requestId.
-          const resolved = handlePendingUserInput(String(msg.answerRequestId ?? ''), { answer: msg.answer, wasFreeform: msg.wasFreeform });
+          // SDK/ui-server backend: resolve the pending interaction by (sessionId,
+          // requestId). Scoping to the owning session prevents any cross-agent
+          // requestId collision (see terminal-backend.pendingUserInput).
+          const resolved = handlePendingUserInput(
+            proc.sessionId,
+            String(msg.answerRequestId ?? ''),
+            { answer: msg.answer, wasFreeform: msg.wasFreeform },
+          );
           if (!resolved) {
-            console.warn(`[TermServer] submit-answer: no pending user-input for requestId="${msg.answerRequestId ?? ''}" (${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
+            console.warn(`[TermServer] submit-answer: no pending user-input for session="${proc.sessionId}" requestId="${msg.answerRequestId ?? ''}" (${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
           }
+          // FR (hardening h2): report the REAL outcome so the caller (Teams consumer)
+          // can keep the question open + re-prompt instead of silently dropping the
+          // reply when the resolver was missing (transient/ownership mismatch).
+          send({ type: 'response', requestId: msg.requestId, result: { success: resolved, error: resolved ? undefined : 'no pending user-input to resolve' } });
         } else {
           // node-pty backend: no SDK session — type the answer into the real TUI's
           // interaction input line and submit (idle-gated). Best-effort/degraded:
           // there is no requestId to key on; the local input line is the answer surface.
           submitViaKeystrokes(backendProc, msg.answer, key!);
+          send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         }
-        send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
         console.log(`[TermServer] SUBMIT-ANSWER FAILED — no PTY for ${ck}`);

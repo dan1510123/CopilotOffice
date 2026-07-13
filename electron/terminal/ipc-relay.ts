@@ -323,6 +323,9 @@ export class TerminalRelay {
       case 'copilot-ask-user':
         this.mainEvents.emit('copilot-ask-user', msg.agentId, msg.toolId, msg.requestId, msg.question, msg.options, msg.freeform);
         break;
+      case 'copilot-ask-user-complete':
+        this.mainEvents.emit('copilot-ask-user-complete', msg.agentId, msg.requestId);
+        break;
       case 'session-meta-updated':
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);
         break;
@@ -349,6 +352,9 @@ export class TerminalRelay {
         break;
       case 'copilot-ask-user':
         win.webContents.send('copilot-ask-user', msg.agentId, msg.toolId, msg.requestId, msg.question, msg.options, msg.freeform);
+        break;
+      case 'copilot-ask-user-complete':
+        win.webContents.send('copilot-ask-user-complete', msg.agentId, msg.requestId);
         break;
       case 'copilot-tool-complete':
         win.webContents.send('copilot-tool-complete', msg.agentId, msg.toolId, msg.success);

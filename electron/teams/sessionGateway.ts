@@ -20,13 +20,20 @@ export type AgentEventKind =
   | 'turn-end'
   | 'tool-start'
   | 'user-message'
-  | 'ask-user'; // spec 015 — additive; existing kinds untouched.
+  | 'ask-user' // spec 015 — additive; existing kinds untouched.
+  | 'ask-user-complete'; // spec 015 hardening (h1) — precise local-resolve signal.
 
 export interface AgentEvent {
   agentId: string;
   kind: AgentEventKind;
   content?: string;
   toolName?: string;
+  /**
+   * Populated only when `kind === 'ask-user-complete'` (spec 015 hardening h1). The
+   * SDK requestId of the interaction the runtime just resolved, so the consumer can
+   * precisely clear a locally-answered pending question. '' when unavailable.
+   */
+  requestId?: string;
   /**
    * Populated only when `kind === 'ask-user'` (spec 015). Carries the raw ordered
    * option display text; selector labels (A/B/C…) are assigned by the consumer
@@ -149,6 +156,14 @@ export class RelaySessionGateway implements SessionGateway {
       const freeform = Boolean(args[5]);
       cb({ agentId, kind: 'ask-user', askUser: { toolId, requestId, question, options, freeform } });
     };
+    // spec 015 hardening (h1): the SDK resolved an ask_user interaction. Carries the
+    // requestId so TeamsService can PRECISELY clear a locally-answered pending question
+    // (SDK path) instead of the "any subsequent event" heuristic (node-pty only).
+    const onAskUserComplete = (...args: unknown[]) => {
+      const agentId = args[0] as string;
+      const requestId = (args[1] as string) ?? '';
+      cb({ agentId, kind: 'ask-user-complete', requestId });
+    };
 
     this.relay.mainEvents.on('copilot-event', onCopilotEvent);
     this.relay.mainEvents.on('copilot-turn-start', onTurnStart);
@@ -156,6 +171,7 @@ export class RelaySessionGateway implements SessionGateway {
     this.relay.mainEvents.on('copilot-tool-start', onToolStart);
     this.relay.mainEvents.on('copilot-user-message', onUserMessage);
     this.relay.mainEvents.on('copilot-ask-user', onAskUser);
+    this.relay.mainEvents.on('copilot-ask-user-complete', onAskUserComplete);
 
     return () => {
       this.relay.mainEvents.off('copilot-event', onCopilotEvent);
@@ -164,6 +180,7 @@ export class RelaySessionGateway implements SessionGateway {
       this.relay.mainEvents.off('copilot-tool-start', onToolStart);
       this.relay.mainEvents.off('copilot-user-message', onUserMessage);
       this.relay.mainEvents.off('copilot-ask-user', onAskUser);
+      this.relay.mainEvents.off('copilot-ask-user-complete', onAskUserComplete);
     };
   }
 

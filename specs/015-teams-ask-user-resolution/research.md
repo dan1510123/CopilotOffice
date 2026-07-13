@@ -306,3 +306,29 @@ spike** against the real CLI + SDK: the dedicated `user_input.requested` /
 unblocks the agent. The one new obligation this surfaced — sessions must register a
 user-input handler for `ask_user` to be usable on the SDK/ui-server backend — is an
 implementation task, not an open question.
+
+## Decision 6 — Post-implementation hardening (reliability)
+
+A runtime-reliability review after the MVP landed surfaced three defects that were fixed
+without changing the user-facing contract:
+
+- **h1 — precise local-resolution signal.** The MVP fired the "answered in the app"
+  local-resolution on *any* subsequent non-`ask-user` event for a pending agent, which
+  false-positives if the agent emits events while still blocked on the question (deleting
+  the record early → a real Teams reply is then dropped). Fix: forward the SDK's
+  `user_input.completed` as a dedicated `copilot-ask-user-complete` main event → new
+  `ask-user-complete` AgentEvent kind carrying the `requestId`; TeamsService clears the
+  pending record **only** on the matching requestId. The old heuristic is retained **only**
+  for the node-pty degraded path (empty requestId), which has no completion event.
+- **h2 — transport-failure re-open.** A failed `submitAnswer` used to leave the record
+  `resolved` and deleted, silently dropping the reply and hanging the agent. Fix: the
+  server's `submit-answer` returns the **real** resolve outcome (`success: resolved`);
+  `submitAnswerSafe` returns a boolean; on failure the single-resolution latch is
+  **released**, the record is **kept**, and a "couldn't deliver — please reply again"
+  notice is posted. The synchronous check-and-set latch (first resolver wins) is preserved.
+- **h3 — session-scoped pending map + GC.** The `pendingUserInput` map was process-global
+  and keyed only by `requestId` (cross-agent collision risk; orphaned resolver leak if a
+  session is killed mid-question). Fix: key by `${sessionId}::${requestId}`,
+  `handlePendingUserInput(sessionId, requestId, …)` resolves within the owning session, and
+  `clearPendingUserInputForSession(sessionId)` (called from the PTY `onExit`) GCs a torn-down
+  session's pending interactions.

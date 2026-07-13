@@ -143,6 +143,22 @@ describe('RelaySessionGateway ask-user (spec 015)', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('maps a copilot-ask-user-complete main event to an ask-user-complete AgentEvent (h1)', () => {
+    const relay = makeRelay();
+    const emitter = relay.mainEvents as unknown as EventEmitter;
+    const gw = new RelaySessionGateway(relay);
+    const events: unknown[] = [];
+    const off = gw.onAgentEvent((e) => events.push(e));
+
+    emitter.emit('copilot-ask-user-complete', 'generalist', 'req-42');
+    expect(events).toEqual([{ agentId: 'generalist', kind: 'ask-user-complete', requestId: 'req-42' }]);
+
+    off();
+    events.length = 0;
+    emitter.emit('copilot-ask-user-complete', 'generalist', 'req-99');
+    expect(events).toHaveLength(0);
+  });
+
   it('submitAnswer routes to mainSubmitAnswer with the exact payload', async () => {
     const relay = makeRelay();
     const gw = new RelaySessionGateway(relay);

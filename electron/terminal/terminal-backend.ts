@@ -10,18 +10,27 @@ import { loadCustomAgents } from './custom-agents';
 // Registering an `onUserInputRequest` handler on every managed SDK/ui-server session
 // is a spike-verified PREREQUISITE: without it the runtime advertises the tool as
 // unavailable (`requestUserInput` is false) and the model refuses to call `ask_user`.
-// The handler stores a LATE-resolvable resolver keyed by the interaction `requestId`;
-// it is resolved out-of-band when a Teams (or local) answer arrives via
-// `handlePendingUserInput(requestId, …)`. The agent keeps waiting until then.
+// The handler stores a LATE-resolvable resolver keyed by the owning session's id AND the
+// interaction `requestId`; it is resolved out-of-band when a Teams (or local) answer
+// arrives via `handlePendingUserInput(sessionId, requestId, …)`. The agent keeps waiting
+// until then. Scoping by `sessionId` (rather than a bare `requestId`) prevents any
+// cross-agent collision if two live sessions ever surface the same `requestId`, and lets
+// a session's outstanding interactions be garbage-collected on exit
+// (`clearPendingUserInputForSession`) so a killed-mid-question agent can't leak resolvers.
 
 interface PendingUserInputEntry {
   resolve: (a: { answer: string; wasFreeform: boolean }) => void;
-  sessionId?: string;
+  sessionId: string;
   toolCallId?: string;
 }
 
-/** Pending ask_user interactions keyed by `requestId` (single-resolution key). */
+/** Pending ask_user interactions keyed by `${sessionId}::${requestId}`. */
 const pendingUserInput = new Map<string, PendingUserInputEntry>();
+
+/** Composite key: scope the single-resolution `requestId` by its owning session. */
+function pendingKey(sessionId: string, requestId: string): string {
+  return `${sessionId}::${requestId}`;
+}
 
 interface UserInputRequest {
   requestId?: unknown;
@@ -30,43 +39,67 @@ interface UserInputRequest {
 
 /**
  * Build the SDK `onUserInputRequest` handler (spec 015 prerequisite). Registered on
- * every managed SDK/ui-server session so `ask_user` is usable. Returns a promise that
- * is resolved LATE by {@link handlePendingUserInput} when the answer arrives.
+ * every managed SDK/ui-server session so `ask_user` is usable. `sessionId` scopes every
+ * pending interaction to its owning session. Returns a promise that is resolved LATE by
+ * {@link handlePendingUserInput} when the answer arrives.
  */
-export function makeUserInputHandler(): (
+export function makeUserInputHandler(
+  sessionId: string,
+): (
   request: UserInputRequest,
   ctx?: { sessionId?: string },
 ) => Promise<{ answer: string; wasFreeform: boolean }> {
   return (request, ctx) =>
     new Promise((resolve) => {
       const requestId = request?.requestId != null ? String(request.requestId) : '';
-      pendingUserInput.set(requestId, {
+      // Prefer the closure sessionId (deterministic, matches the server's PtyProcess
+      // sessionId); fall back to any ctx-supplied id only if the closure id is empty.
+      const scope = sessionId || ctx?.sessionId || '';
+      pendingUserInput.set(pendingKey(scope, requestId), {
         resolve,
-        sessionId: ctx?.sessionId,
+        sessionId: scope,
         toolCallId: request?.toolCallId != null ? String(request.toolCallId) : undefined,
       });
     });
 }
 
 /**
- * Resolve a pending `ask_user` interaction (spec 015). Idempotent: an unknown or
- * already-resolved `requestId` is a no-op + warn (supports the single-resolution
- * Teams/local race). Returns true only when a stored resolver actually fired.
+ * Resolve a pending `ask_user` interaction (spec 015), scoped to `sessionId`. Idempotent:
+ * an unknown or already-resolved `(sessionId, requestId)` is a no-op + warn (supports the
+ * single-resolution Teams/local race). Returns true only when a stored resolver fired.
  */
 export function handlePendingUserInput(
+  sessionId: string,
   requestId: string,
   answer: { answer: string; wasFreeform: boolean },
 ): boolean {
-  const entry = pendingUserInput.get(requestId);
+  const key = pendingKey(sessionId, requestId);
+  const entry = pendingUserInput.get(key);
   if (!entry) {
     console.warn(
-      `[terminal-backend] handlePendingUserInput: no pending user-input for requestId="${requestId}" (already resolved or unknown) — no-op`,
+      `[terminal-backend] handlePendingUserInput: no pending user-input for session="${sessionId}" requestId="${requestId}" (already resolved or unknown) — no-op`,
     );
     return false;
   }
-  pendingUserInput.delete(requestId);
+  pendingUserInput.delete(key);
   entry.resolve({ answer: answer.answer, wasFreeform: answer.wasFreeform });
   return true;
+}
+
+/**
+ * GC every outstanding pending user-input interaction owned by `sessionId` (spec 015).
+ * Called when a session exits/resets/is killed so an agent torn down mid-`ask_user` cannot
+ * leak an unresolved resolver. Returns the number of entries dropped.
+ */
+export function clearPendingUserInputForSession(sessionId: string): number {
+  let dropped = 0;
+  for (const [key, entry] of pendingUserInput) {
+    if (entry.sessionId === sessionId) {
+      pendingUserInput.delete(key);
+      dropped++;
+    }
+  }
+  return dropped;
 }
 
 /** Test/diagnostics helper: number of outstanding pending user-input interactions. */
@@ -624,7 +657,7 @@ export class CopilotSdkBackend implements TerminalBackend {
       // spec 015 prerequisite (forStdio path): register the user-input handler so
       // the model is told `ask_user` is available and Teams/local answers can
       // resolve the pending interaction late. See makeUserInputHandler.
-      onUserInputRequest: makeUserInputHandler(),
+      onUserInputRequest: makeUserInputHandler(options.sessionId),
     };
 
     try {
@@ -868,7 +901,7 @@ export class ControlPlaneClient {
       // provide the late-resolvable answer channel. Without this the model refuses
       // to call ask_user. The relay of the question itself rides the normal event
       // stream (user_input.requested → server watcherCallback).
-      onUserInputRequest: makeUserInputHandler(),
+      onUserInputRequest: makeUserInputHandler(sessionId),
     };
 
     try {

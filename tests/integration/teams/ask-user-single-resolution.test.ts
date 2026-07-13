@@ -134,8 +134,9 @@ describe('single-resolution + abandonment (US1)', () => {
     await tick(40);
     h.replies.length = 0;
 
-    // The agent's ask_user is answered in-app → a non-ask-user event arrives while pending.
-    h.agent()({ agentId: 'generalist', kind: 'turn-start' } as AgentEvent);
+    // The agent's ask_user is answered in-app → the SDK emits user_input.completed for
+    // this requestId (hardening h1: the precise local-resolution signal, not a heuristic).
+    h.agent()({ agentId: 'generalist', kind: 'ask-user-complete', requestId: 'req-1' } as AgentEvent);
     await tick(40);
 
     const joined = h.replies.join('\n').toLowerCase();

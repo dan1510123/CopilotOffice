@@ -19,11 +19,11 @@ describe('answerTransport — submit-answer backend routing (spec 015)', () => {
   });
 
   it('degraded node-pty path does NOT resolve a pending user-input by requestId', () => {
-    // On node-pty there is no requestId; a spurious handlePendingUserInput('') is a no-op.
-    const handler = makeUserInputHandler();
+    // On node-pty there is no requestId; a spurious empty-requestId resolve is a no-op.
+    const handler = makeUserInputHandler('sess-kf');
     void handler({ requestId: 'req-1' });
-    expect(handlePendingUserInput('', { answer: 'x', wasFreeform: false })).toBe(false);
+    expect(handlePendingUserInput('sess-kf', '', { answer: 'x', wasFreeform: false })).toBe(false);
     // the real SDK requestId is still resolvable (proving the '' no-op didn't consume it).
-    expect(handlePendingUserInput('req-1', { answer: 'Yes', wasFreeform: false })).toBe(true);
+    expect(handlePendingUserInput('sess-kf', 'req-1', { answer: 'Yes', wasFreeform: false })).toBe(true);
   });
 });

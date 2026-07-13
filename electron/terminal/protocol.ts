@@ -332,6 +332,20 @@ export interface SrvCopilotToolComplete {
   success: boolean;
 }
 
+/**
+ * Emitted when the SDK signals a resolved `ask_user` interaction
+ * (`user_input.completed`) — spec 015 hardening (h1). Always forwarded (outside the
+ * viewer gate) so the main-process Teams consumer can PRECISELY clear a locally-answered
+ * pending question by `requestId`, rather than relying on a "any subsequent event"
+ * heuristic. node-pty has no such event (its records carry an empty `requestId`).
+ */
+export interface SrvCopilotAskUserComplete {
+  type: 'copilot-ask-user-complete';
+  agentId: string;
+  /** The resolved SDK user_input requestId; '' when unavailable. */
+  requestId: string;
+}
+
 export interface SrvCopilotTurnEnd {
   type: 'copilot-turn-end';
   agentId: string;
@@ -403,6 +417,7 @@ export type ServerToMain =
   | SrvCopilotEvent
   | SrvCopilotToolStart
   | SrvCopilotAskUser
+  | SrvCopilotAskUserComplete
   | SrvCopilotToolComplete
   | SrvCopilotTurnEnd
   | SrvCopilotTurnStart

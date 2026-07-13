@@ -542,9 +542,18 @@ export class TeamsService {
       void this.onAskUserEvent(e);
       return;
     }
-    // spec 015 §C: any non-`ask-user` event for an agent with a still-pending, unresolved
-    // question implies the ask_user was answered in-app (a Teams answer clears the record
-    // synchronously before the resumed turn streams). Fire the one-time local-answer notice.
+    // spec 015 hardening (h1): the SDK explicitly signalled that an ask_user interaction
+    // resolved (user_input.completed). This is the PRECISE local-answer signal for the
+    // SDK/ui-server path — clear only the matching pending record by requestId. If a Teams
+    // answer already resolved+deleted it, there's no record → no false notice.
+    if (e.kind === 'ask-user-complete') {
+      this.maybeLocalResolveByRequestId(e.agentId, e.requestId ?? '');
+      return;
+    }
+    // spec 015 §C: on the node-pty degraded path there is no user_input.completed event,
+    // so fall back to the heuristic — any non-`ask-user` event for an agent with a
+    // still-pending node-pty question (empty requestId) implies a local answer. SDK records
+    // (non-empty requestId) are NOT resolved here; they wait for `ask-user-complete` above.
     this.maybeLocalResolve(e.agentId);
 
     const rec = this.pending.get(e.agentId);
@@ -884,8 +893,8 @@ export class TeamsService {
       if (record.resolved) return; // latch: already claimed
       record.resolved = true;
       tlog(`answer → @${record.binding.handle}: label "${matched.label}" ⇒ "${truncate(matched.text, 60)}"`);
-      await this.submitAnswerSafe(record, matched.text, false);
-      this.pendingQuestions.delete(record.agentId);
+      const ok = await this.submitAnswerSafe(record, matched.text, false);
+      this.settleResolution(record, ok);
       return;
     }
 
@@ -893,8 +902,8 @@ export class TeamsService {
       if (record.resolved) return;
       record.resolved = true;
       tlog(`answer → @${record.binding.handle}: freeform "${truncate(rawText, 60)}"`);
-      await this.submitAnswerSafe(record, rawText.trim(), true);
-      this.pendingQuestions.delete(record.agentId);
+      const ok = await this.submitAnswerSafe(record, rawText.trim(), true);
+      this.settleResolution(record, ok);
       return;
     }
 
@@ -902,34 +911,81 @@ export class TeamsService {
     await this.safeReply(record.binding, this.composeNudge(record));
   }
 
-  /** Submit an answer through the gateway, swallowing errors so a failed transport can't
-   *  wedge inbound handling. The submitted value is the option TEXT (never the label) or the
-   *  raw freeform text — identical to a local answer (FR-003/004/014). */
-  private async submitAnswerSafe(record: PendingQuestion, answer: string, wasFreeform: boolean): Promise<void> {
+  /**
+   * Finalize a resolution attempt (spec 015 hardening h2). On success, delete the record
+   * so genuine follow-up prompts dispatch normally. On transport FAILURE, RELEASE the
+   * single-resolution latch and KEEP the record so the human can simply reply again, and
+   * post a thread notice — instead of silently dropping the answer and hanging the agent.
+   */
+  private settleResolution(record: PendingQuestion, ok: boolean): void {
+    if (ok) {
+      this.pendingQuestions.delete(record.agentId);
+      return;
+    }
+    // Only roll back if this record is still the current pending one and still latched by
+    // us (it may have been superseded by a newer question while awaiting the transport).
+    if (this.pendingQuestions.get(record.agentId) === record) {
+      record.resolved = false;
+      void this.safeReply(
+        record.binding,
+        `${this.agentLabel(record.binding)} ⚠️ I couldn't deliver that answer — please reply again.`,
+      );
+    }
+  }
+
+  /** Submit an answer through the gateway. Returns true iff the transport reported success;
+   *  a failure (thrown by the gateway when the runtime had no pending interaction to resolve,
+   *  or a transient IPC error) returns false so the caller can keep the question open and
+   *  re-prompt (FR hardening h2). The submitted value is the option TEXT (never the label)
+   *  or the raw freeform text — identical to a local answer (FR-003/004/014). */
+  private async submitAnswerSafe(record: PendingQuestion, answer: string, wasFreeform: boolean): Promise<boolean> {
     try {
       await this.deps.gateway.submitAnswer(record.officeId, record.agentId, {
         requestId: record.requestId || undefined,
         answer,
         wasFreeform,
       });
+      return true;
     } catch (e) {
       twarn('submitAnswer failed:', (e as Error).message);
+      return false;
     }
   }
 
   /**
-   * Local-resolution detection (contract §C, FR-008): if `agentId` has a still-pending,
-   * unresolved question and a non-`ask-user` event arrives, the ask_user was answered
-   * in-app. Latch it, clear the record, and post a one-time "answered in the app" notice.
-   * A Teams answer clears the record synchronously before its resumed turn streams, so this
-   * only fires for genuinely local answers.
+   * Local-resolution detection for the node-pty degraded path (contract §C, FR-008): if
+   * `agentId` has a still-pending, unresolved node-pty question (empty requestId) and a
+   * non-`ask-user` event arrives, the ask_user was answered in-app. Latch it, clear the
+   * record, and post a one-time "answered in the app" notice. SDK records (non-empty
+   * requestId) are ignored here — they resolve precisely via {@link maybeLocalResolveByRequestId}
+   * on the explicit `user_input.completed` signal, avoiding false positives when an agent
+   * emits events while still blocked on the question.
    */
   private maybeLocalResolve(agentId: string): void {
     const record = this.pendingQuestions.get(agentId);
     if (!record || record.resolved) return;
+    if (record.requestId) return; // SDK path: wait for the precise ask-user-complete signal.
     record.resolved = true;
     this.pendingQuestions.delete(agentId);
-    tlog(`ask_user answered locally for @${record.binding.handle} — posting in-app notice.`);
+    tlog(`ask_user answered locally (node-pty) for @${record.binding.handle} — posting in-app notice.`);
+    void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered in the app.`);
+  }
+
+  /**
+   * Precise local-resolution for the SDK/ui-server path (spec 015 hardening h1). Fired on
+   * `user_input.completed`: clear the pending question ONLY when its requestId matches the
+   * resolved interaction. A Teams answer clears the record synchronously before this fires,
+   * so a matching record here means the answer came from the app → post the one-time notice.
+   */
+  private maybeLocalResolveByRequestId(agentId: string, requestId: string): void {
+    const record = this.pendingQuestions.get(agentId);
+    if (!record || record.resolved) return;
+    // Only clear when the completed interaction is the one we're tracking. An empty
+    // completed requestId can't be safely matched to a specific SDK question, so ignore it.
+    if (!requestId || record.requestId !== requestId) return;
+    record.resolved = true;
+    this.pendingQuestions.delete(agentId);
+    tlog(`ask_user answered locally (SDK requestId=${requestId}) for @${record.binding.handle} — posting in-app notice.`);
     void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered in the app.`);
   }
 

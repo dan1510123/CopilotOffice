@@ -4,6 +4,7 @@ import {
   CopilotSdkBackend,
   makeUserInputHandler,
   handlePendingUserInput,
+  clearPendingUserInputForSession,
   pendingUserInputCount,
 } from '../../../electron/terminal/terminal-backend';
 
@@ -62,13 +63,13 @@ describe('managed sessions register onUserInputRequest (requestUserInput prerequ
   });
 });
 
-describe('handlePendingUserInput — late resolution + idempotence', () => {
+describe('handlePendingUserInput — late resolution + idempotence (session-scoped)', () => {
   it('resolves the stored late promise with the answer', async () => {
-    const handler = makeUserInputHandler();
+    const handler = makeUserInputHandler('sess-A');
     const before = pendingUserInputCount();
     const answerP = handler({ requestId: 'r-1', toolCallId: 't-1' });
 
-    const ok = handlePendingUserInput('r-1', { answer: 'MySQL', wasFreeform: false });
+    const ok = handlePendingUserInput('sess-A', 'r-1', { answer: 'MySQL', wasFreeform: false });
     expect(ok).toBe(true);
     await expect(answerP).resolves.toEqual({ answer: 'MySQL', wasFreeform: false });
     // the pending entry is removed after resolution.
@@ -76,15 +77,47 @@ describe('handlePendingUserInput — late resolution + idempotence', () => {
   });
 
   it('is an idempotent no-op for an already-resolved requestId', async () => {
-    const handler = makeUserInputHandler();
+    const handler = makeUserInputHandler('sess-B');
     const answerP = handler({ requestId: 'r-2' });
-    expect(handlePendingUserInput('r-2', { answer: 'A', wasFreeform: false })).toBe(true);
-    // second resolve of the same requestId does nothing.
-    expect(handlePendingUserInput('r-2', { answer: 'B', wasFreeform: true })).toBe(false);
+    expect(handlePendingUserInput('sess-B', 'r-2', { answer: 'A', wasFreeform: false })).toBe(true);
+    // second resolve of the same (session, requestId) does nothing.
+    expect(handlePendingUserInput('sess-B', 'r-2', { answer: 'B', wasFreeform: true })).toBe(false);
     await expect(answerP).resolves.toEqual({ answer: 'A', wasFreeform: false });
   });
 
   it('is a no-op for an unknown requestId', () => {
-    expect(handlePendingUserInput('does-not-exist', { answer: 'x', wasFreeform: false })).toBe(false);
+    expect(handlePendingUserInput('sess-Z', 'does-not-exist', { answer: 'x', wasFreeform: false })).toBe(false);
+  });
+
+  it('scopes by session — same requestId in two sessions does not collide (h3)', async () => {
+    const hA = makeUserInputHandler('sess-1');
+    const hB = makeUserInputHandler('sess-2');
+    const pA = hA({ requestId: 'dup' });
+    const pB = hB({ requestId: 'dup' });
+
+    // Resolving session-1's 'dup' must NOT resolve session-2's identical requestId.
+    expect(handlePendingUserInput('sess-1', 'dup', { answer: 'one', wasFreeform: false })).toBe(true);
+    await expect(pA).resolves.toEqual({ answer: 'one', wasFreeform: false });
+
+    expect(handlePendingUserInput('sess-2', 'dup', { answer: 'two', wasFreeform: false })).toBe(true);
+    await expect(pB).resolves.toEqual({ answer: 'two', wasFreeform: false });
+  });
+
+  it('clearPendingUserInputForSession drops only that session\'s pending interactions (h3 GC)', () => {
+    const before = pendingUserInputCount();
+    const hA = makeUserInputHandler('gc-A');
+    const hB = makeUserInputHandler('gc-B');
+    void hA({ requestId: 'a1' });
+    void hA({ requestId: 'a2' });
+    void hB({ requestId: 'b1' });
+    expect(pendingUserInputCount()).toBe(before + 3);
+
+    const dropped = clearPendingUserInputForSession('gc-A');
+    expect(dropped).toBe(2);
+    expect(pendingUserInputCount()).toBe(before + 1);
+    // gc-B is untouched and still resolvable.
+    expect(handlePendingUserInput('gc-B', 'b1', { answer: 'x', wasFreeform: false })).toBe(true);
+    // A previously-cleared gc-A interaction can no longer be resolved.
+    expect(handlePendingUserInput('gc-A', 'a1', { answer: 'x', wasFreeform: false })).toBe(false);
   });
 });
