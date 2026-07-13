@@ -14,14 +14,20 @@ name: Publish to npm
 #              runs. If the approval is rejected (or times out), the publish job
 #              never runs and the pipeline stops - nothing is published.
 #
-# One-time setup (all in the GitHub UI - no terminal needed):
-#   1. npm token: create an "Automation"/Granular (read+write) token at npmjs.com,
-#      then add it as repo secret NPM_TOKEN
-#      (Settings -> Secrets and variables -> Actions).
+# One-time setup (all in the GitHub UI + npmjs.com — no terminal needed):
+#   1. Trusted publisher (OIDC, no token): on npmjs.com open the package ->
+#      Settings -> Trusted Publisher -> GitHub Actions, and set
+#        Organization/User: dan1510123
+#        Repository:        CopilotOffice
+#        Workflow filename: npm-publish.yml
+#        Environment:       npm-production   (optional but recommended)
+#      This lets the publish job authenticate via its OIDC identity — no npm
+#      token stored anywhere, and no 2FA/OTP prompt (which is what previously
+#      failed CI with EOTP).
 #   2. Approval gate: Settings -> Environments -> New environment named
 #      `npm-production`. Open it, enable "Required reviewers", and add yourself
-#      (and/or a team). Optionally scope NPM_TOKEN to this environment instead of
-#      the repo. This environment is what forces the manual approval below.
+#      (and/or a team). This environment is what forces the manual approval
+#      before the publish job runs.
 #   3. Publish a Release (Releases -> Draft a new release -> tag like v2.3.0 ->
 #      Publish release). The build job runs, then the publish job waits for your
 #      approval before publishing.
@@ -116,7 +122,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Trusted publishing (OIDC) requires npm >= 11.5.1; Node 24 may ship an
+      # older npm. Upgrade so `npm publish` uses the OIDC identity (no token,
+      # no 2FA/OTP) once a trusted publisher is configured for this package.
+      - name: Ensure npm supports trusted publishing
+        run: npm install -g npm@latest
+
       - name: Publish to npm
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
