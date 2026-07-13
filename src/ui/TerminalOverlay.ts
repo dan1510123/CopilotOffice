@@ -74,6 +74,7 @@ export class TerminalOverlay {
   private readonly wheelPager = new WheelPager();
   private resizeObserver: ResizeObserver | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
+  private refitRaf: number | null = null;
   private refitGeneration: number = 0;
   private getOfficeId: () => string;
   private attachedOfficeId: string | null = null;
@@ -193,6 +194,10 @@ export class TerminalOverlay {
   }
 
   private clearRefitTimers(): void {
+    if (this.refitRaf !== null) {
+      cancelAnimationFrame(this.refitRaf);
+      this.refitRaf = null;
+    }
     for (const timer of this.refitTimers) {
       clearTimeout(timer);
     }
@@ -306,7 +311,7 @@ export class TerminalOverlay {
     if (!dims) return null;
 
     const agentId = options?.agentId ?? this.currentAgentId;
-    if (!agentId || !window.copilotBridge) return dims;
+    if (!agentId || typeof window === 'undefined' || !window.copilotBridge) return dims;
 
     const officeId = options?.officeId ?? this.getActiveOfficeId();
     void window.copilotBridge.terminalResize(officeId, agentId, dims.cols, dims.rows).catch(() => {});
@@ -1762,7 +1767,8 @@ export class TerminalOverlay {
     };
 
     // Stage 1: immediate (next frame)
-    requestAnimationFrame(() => {
+    this.refitRaf = requestAnimationFrame(() => {
+      this.refitRaf = null;
       doFit();
       // Stage 2: after 150ms
       this.refitTimers.push(setTimeout(() => {
