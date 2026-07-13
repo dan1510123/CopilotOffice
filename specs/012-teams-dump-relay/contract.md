@@ -29,8 +29,15 @@ The app posts an HTML channel message whose body is:
 
 ```
 <human-readable html>
+<p><em>Relay routing (diagnostic — ignored by flow)</em> … dest/thread/mention/title …</p>
 <p>[[CO-META]]<base64(JSON)>[[/CO-META]]</p>
 ```
+
+The middle block is a human-readable DIAGNOSTIC routing summary (see
+`renderRoutingSummary`). It exists only so an operator viewing the Dump channel can see
+the destination/mention/thread the flow will use. It sits OUTSIDE the `[[CO-META]]`
+markers, is HTML-escaped and marker-stripped, so the flow ignores it and it is never
+fanned out to the destination (the flow forwards only the metadata JSON's `html` field).
 
 The JSON payload (base64-encoded so Teams HTML-encoding can't corrupt it):
 

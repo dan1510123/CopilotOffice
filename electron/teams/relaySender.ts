@@ -14,6 +14,11 @@
 // the stored message can't corrupt the JSON when the flow reads it back. The flow
 // parses the metadata and posts to `destTeamId`/`destChannelId` with the mention.
 //
+// Between the human html and the base64 block the post also carries a human-readable
+// DIAGNOSTIC routing summary (see `renderRoutingSummary`). It sits OUTSIDE the markers so
+// the flow ignores it, and it exists only so an operator viewing the Dump channel can see
+// the destination/mention/thread the flow will use — it is never fanned out.
+//
 // Because the "new channel message" trigger only fires on ROOT messages (not replies),
 // `replyToThread` also posts a new root message. Send-only by nature: the Dump-channel
 // post's ids don't map to a thread in the real channel, so both methods return empty
@@ -34,6 +39,7 @@ import type { GraphSender, CreateThreadParams, ReplyParams } from './graphClient
 type HostedImages = CreateThreadParams['hostedImages'];
 import { parseChannelLink } from './channelLink';
 import { embedMarker } from './marker';
+import { escapeHtml } from './htmlText';
 import { tlog } from './log';
 
 /** How the destination @mention is addressed. */
@@ -125,6 +131,34 @@ export function encodeMetaBlock(meta: RelayMetadata): string {
   return `<p>${META_OPEN}${b64}${META_CLOSE}</p>`;
 }
 
+/**
+ * Render a human-readable, DIAGNOSTIC summary of the routing metadata for the Dump post.
+ * This block exists purely so an operator viewing the Dump channel can see what the flow
+ * will use — it is placed OUTSIDE the `[[CO-META]]` markers so the Power Automate flow
+ * ignores it, and it is never fanned out to the destination (the flow forwards only the
+ * metadata JSON's `html` field). Every field value is HTML-escaped so it renders
+ * literally, and the whole block is marker-stripped so a field value can never introduce
+ * a stray `[[CO-META]]`/`[[/CO-META]]` token that could confuse the flow's extraction.
+ */
+export function renderRoutingSummary(meta: RelayMetadata): string {
+  const mention =
+    meta.mentionType === 'none' || !meta.mentionId
+      ? 'none'
+      : `${meta.mentionType}: ${meta.mentionId}`;
+  const rows: Array<[string, string]> = [
+    ['Destination channel', meta.destChannelId],
+    ['Destination team', meta.destTeamId],
+    ['Thread', meta.threadRootId || '(new root)'],
+    ['Mention', mention],
+    ['Title', meta.title || '(none)'],
+  ];
+  const lines = rows
+    .map(([label, value]) => `${escapeHtml(label)}: ${escapeHtml(value)}`)
+    .join('<br/>');
+  const block = `<p><em>Relay routing (diagnostic — ignored by flow)</em><br/>${lines}</p>`;
+  return stripMetaMarkers(block);
+}
+
 /** Extract + decode the metadata block from a Dump-channel message body (used by tests / tooling).
  *  Parses the LAST marker block — the app always appends its block last, so this is robust
  *  even if the human html still contained marker-like text. */
@@ -197,7 +231,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
       title,
       html: humanHtml,
     };
-    const body = `${humanHtml}${encodeMetaBlock(meta)}`;
+    const body = `${humanHtml}${renderRoutingSummary(meta)}${encodeMetaBlock(meta)}`;
     await opts.primary.createThread({
       teamId: dump.teamId,
       channelId: dump.channelId,

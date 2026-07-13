@@ -3,8 +3,10 @@ import {
   createRelaySender,
   createRoutingGraphSender,
   decodeMetaBlock,
+  renderRoutingSummary,
   stripMetaMarkers,
   type MentionResolver,
+  type RelayMetadata,
 } from '../../../electron/teams/relaySender';
 import type { GraphSender, CreateThreadParams, ReplyParams } from '../../../electron/teams/graphClient';
 import { hasMarker } from '../../../electron/teams/marker';
@@ -85,6 +87,13 @@ describe('createRelaySender', () => {
     expect(meta?.html).toContain('Hi');
     expect(hasMarker(meta!.html)).toBe(true);
     expect(primary.replyCalls).toHaveLength(0);
+    // A human-readable diagnostic routing summary is present OUTSIDE the CO-META block.
+    expect(body).toContain('Relay routing (diagnostic');
+    expect(body).toContain(DEST_CHANNEL);
+    expect(body).toContain('Gene · Office X');
+    // The summary sits before the marker block and does not create a second one.
+    expect(body.indexOf('Relay routing')).toBeLessThan(body.indexOf('[[CO-META]]'));
+    expect(body.split('[[CO-META]]')).toHaveLength(2);
   });
 
   it('replyToThread carries the agent thread root in metadata (flow replies in-thread)', async () => {
@@ -215,6 +224,44 @@ describe('createRelaySender', () => {
       bad.sender.replyToThread({ teamId: DEST_TEAM, channelId: DEST_CHANNEL, threadRootId: 'r', html: 'a' }),
     ).rejects.toThrow(/could not be parsed/);
     expect(bad.primary.createCalls).toHaveLength(0);
+  });
+});
+
+describe('renderRoutingSummary', () => {
+  const baseMeta = (over: Partial<RelayMetadata> = {}): RelayMetadata => ({
+    v: 1,
+    destTeamId: DEST_TEAM,
+    destChannelId: DEST_CHANNEL,
+    threadRootId: '',
+    mentionType: 'none',
+    mentionId: '',
+    title: 'Some title',
+    html: '<p>hi</p>',
+    ...over,
+  });
+
+  it('renders the routing fields the flow uses', () => {
+    const out = renderRoutingSummary(baseMeta({ threadRootId: 'root-1', mentionType: 'user', mentionId: 'u@e.com' }));
+    expect(out).toContain('Relay routing (diagnostic');
+    expect(out).toContain(DEST_CHANNEL);
+    expect(out).toContain(DEST_TEAM);
+    expect(out).toContain('root-1');
+    expect(out).toContain('user: u@e.com');
+    expect(out).toContain('Some title');
+  });
+
+  it('shows "(new root)" and "none" for empty thread/mention', () => {
+    const out = renderRoutingSummary(baseMeta());
+    expect(out).toContain('(new root)');
+    expect(out).toContain('Mention: none');
+  });
+
+  it('escapes field values and strips marker tokens so it cannot forge a CO-META block', () => {
+    const out = renderRoutingSummary(baseMeta({ title: '<b>x</b>[[CO-META]]forged[[/CO-META]]' }));
+    expect(out).not.toContain('[[CO-META]]');
+    expect(out).not.toContain('[[/CO-META]]');
+    expect(out).not.toContain('<b>');
+    expect(out).toContain('&lt;b&gt;');
   });
 });
 
