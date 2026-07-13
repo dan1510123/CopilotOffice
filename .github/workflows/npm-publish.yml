@@ -6,15 +6,25 @@ name: Publish to npm
 #   - Automatically when you publish a GitHub Release.
 #   - Manually via the "Run workflow" button (Actions tab) with a dry-run option.
 #
-# One-time setup (in the GitHub UI — no terminal needed):
-#   1. Create an npm "Automation" access token at
-#      https://www.npmjs.com/settings/<your-user>/tokens (works with 2FA).
-#   2. Repo -> Settings -> Secrets and variables -> Actions -> New repository
-#      secret named NPM_TOKEN with that token as the value.
-#   3. Publish a Release (Releases -> Draft a new release -> choose/create a tag
-#      like v2.3.0 -> Publish release). This workflow runs and publishes.
+# Flow:
+#   build   -> always runs tests + build (and a publish --dry-run preview when
+#              requested). No secrets, no approval.
+#   publish -> gated behind the `npm-production` environment. GitHub pauses here
+#              and waits for a MANUAL APPROVAL from a required reviewer before it
+#              runs. If the approval is rejected (or times out), the publish job
+#              never runs and the pipeline stops - nothing is published.
 #
-# Tip: keep the git tag / release version in sync with package.json "version".
+# One-time setup (all in the GitHub UI - no terminal needed):
+#   1. npm token: create an "Automation"/Granular (read+write) token at npmjs.com,
+#      then add it as repo secret NPM_TOKEN
+#      (Settings -> Secrets and variables -> Actions).
+#   2. Approval gate: Settings -> Environments -> New environment named
+#      `npm-production`. Open it, enable "Required reviewers", and add yourself
+#      (and/or a team). Optionally scope NPM_TOKEN to this environment instead of
+#      the repo. This environment is what forces the manual approval below.
+#   3. Publish a Release (Releases -> Draft a new release -> tag like v2.3.0 ->
+#      Publish release). The build job runs, then the publish job waits for your
+#      approval before publishing.
 
 on:
   release:
@@ -22,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish in --dry-run mode (no actual publish)"
+        description: "Run npm publish in --dry-run mode (no actual publish, no approval)"
         type: boolean
         default: false
 
@@ -31,11 +41,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
+    name: Build & test
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # required for npm provenance / trusted publishing
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,14 +79,44 @@ jobs:
             exit 1
           fi
 
-      - name: Publish (dry run)
+      - name: Publish preview (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --provenance --access public --dry-run
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish:
+    name: Publish to npm
+    needs: build
+    # Skip the real publish for dry runs; only publish for a release or a
+    # non-dry-run manual dispatch.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    runs-on: ubuntu-latest
+    # Requiring this protected environment is what pauses the run for a MANUAL
+    # APPROVAL. If the reviewer rejects it, this job never runs and the pipeline
+    # stops without publishing.
+    environment:
+      name: npm-production
+      url: https://www.npmjs.com/package/copilotoffice
+    permissions:
+      contents: read
+      id-token: write # required for npm provenance / trusted publishing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
 
       - name: Publish to npm
-        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
