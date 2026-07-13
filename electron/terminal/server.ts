@@ -1055,16 +1055,13 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
         if (answerTransport(backendProc) === 'sdk') {
-          // SDK/ui-server backend: resolve the pending interaction by (sessionId,
-          // requestId). Scoping to the owning session prevents any cross-agent
-          // requestId collision (see terminal-backend.pendingUserInput).
-          const resolved = handlePendingUserInput(
-            proc.sessionId,
-            String(msg.answerRequestId ?? ''),
-            { answer: msg.answer, wasFreeform: msg.wasFreeform },
-          );
+          // SDK/ui-server backend: resolve the session's single pending interaction.
+          // The resolver is correlated by sessionId (the onUserInputRequest callback
+          // carries no requestId — see terminal-backend module header); answerRequestId
+          // is the event-derived id, kept for diagnostics only.
+          const resolved = handlePendingUserInput(proc.sessionId, { answer: msg.answer, wasFreeform: msg.wasFreeform });
           if (!resolved) {
-            console.warn(`[TermServer] submit-answer: no pending user-input for session="${proc.sessionId}" requestId="${msg.answerRequestId ?? ''}" (${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
+            console.warn(`[TermServer] submit-answer: no pending user-input for session="${proc.sessionId}" (answerRequestId="${msg.answerRequestId ?? ''}", ${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
           }
           // FR (hardening h2): report the REAL outcome so the caller (Teams consumer)
           // can keep the question open + re-prompt instead of silently dropping the

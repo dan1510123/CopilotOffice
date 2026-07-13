@@ -328,7 +328,28 @@ without changing the user-facing contract:
   notice is posted. The synchronous check-and-set latch (first resolver wins) is preserved.
 - **h3 — session-scoped pending map + GC.** The `pendingUserInput` map was process-global
   and keyed only by `requestId` (cross-agent collision risk; orphaned resolver leak if a
-  session is killed mid-question). Fix: key by `${sessionId}::${requestId}`,
-  `handlePendingUserInput(sessionId, requestId, …)` resolves within the owning session, and
-  `clearPendingUserInputForSession(sessionId)` (called from the PTY `onExit`) GCs a torn-down
-  session's pending interactions.
+  session is killed mid-question). Fix: key by `sessionId`,
+  `handlePendingUserInput(sessionId, …)` resolves the session's single pending interaction,
+  and `clearPendingUserInputForSession(sessionId)` (called from the PTY `onExit`) GCs a
+  torn-down session's pending interaction.
+
+### Spike 2026-07-13 — the `onUserInputRequest` callback carries no requestId (BLOCKER, fixed)
+
+A live SDK spike (`forStdio`, real bundled CLI) proved the SDK/ask_user answer path had a
+latent, always-failing bug on the primary backend. Two parallel surfaces expose the
+interaction with **different fields**:
+
+| Surface | Shape | Has `requestId`? |
+|---|---|---|
+| `user_input.requested` **event** (`session.on`) | `{ requestId, question, choices, allowFreeform, toolCallId }` | ✅ yes |
+| `onUserInputRequest` **callback** `request` arg | `{ question, choices, allowFreeform }` | ❌ **no** (only `ctx.sessionId`) |
+
+Teams relays and echoes back the **event's** `requestId`, but our resolver map was keyed by
+the **callback's** `requestId` — which is `undefined`. The lookup could therefore NEVER
+match, every SDK/ui-server answer returned `resolved=false`, and (post-h2) the user saw
+"⚠️ I couldn't deliver that answer." Because `ask_user` **blocks the turn**, there is at
+most one pending user-input per session, so the correct and sufficient key is **`sessionId`
+alone** (the only correlation the callback provides via `ctx.sessionId`). The event-stream
+`requestId` remains the single-resolution key at the *TeamsService* layer (question framing,
+`user_input.completed` matching for h1) — it is simply not usable to correlate the *resolver
+callback*. node-pty is unaffected (keystroke path, no resolver map).

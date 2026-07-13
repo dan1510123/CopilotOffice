@@ -10,27 +10,28 @@ import { loadCustomAgents } from './custom-agents';
 // Registering an `onUserInputRequest` handler on every managed SDK/ui-server session
 // is a spike-verified PREREQUISITE: without it the runtime advertises the tool as
 // unavailable (`requestUserInput` is false) and the model refuses to call `ask_user`.
-// The handler stores a LATE-resolvable resolver keyed by the owning session's id AND the
-// interaction `requestId`; it is resolved out-of-band when a Teams (or local) answer
-// arrives via `handlePendingUserInput(sessionId, requestId, …)`. The agent keeps waiting
-// until then. Scoping by `sessionId` (rather than a bare `requestId`) prevents any
-// cross-agent collision if two live sessions ever surface the same `requestId`, and lets
-// a session's outstanding interactions be garbage-collected on exit
-// (`clearPendingUserInputForSession`) so a killed-mid-question agent can't leak resolvers.
+//
+// CRITICAL (spike 2026-07-13): the `onUserInputRequest` CALLBACK receives only
+// `{ question, choices, allowFreeform }` — it carries NO `requestId` and NO `toolCallId`.
+// The ONLY correlation the callback provides is `ctx.sessionId`. The interaction
+// `requestId` exists solely on the parallel event stream (`user_input.requested` /
+// `user_input.completed`), which is what Teams relays and echoes back. Therefore the
+// pending resolver MUST be keyed by `sessionId` alone — keying it by the callback's
+// (absent) requestId can never match the event-derived requestId, and the answer is
+// dropped. `ask_user` blocks the turn, so there is at most ONE pending user-input per
+// session at a time; a single-slot-per-session map is the correct and sufficient model.
+// The resolver is resolved out-of-band by `handlePendingUserInput(sessionId, …)` when a
+// Teams (or local) answer arrives; the agent keeps waiting until then. Keying by
+// `sessionId` also makes cross-agent collision impossible and lets a torn-down session's
+// resolver be GC'd (`clearPendingUserInputForSession`).
 
 interface PendingUserInputEntry {
   resolve: (a: { answer: string; wasFreeform: boolean }) => void;
   sessionId: string;
-  toolCallId?: string;
 }
 
-/** Pending ask_user interactions keyed by `${sessionId}::${requestId}`. */
+/** Pending ask_user interactions keyed by `sessionId` (one blocking interaction per session). */
 const pendingUserInput = new Map<string, PendingUserInputEntry>();
-
-/** Composite key: scope the single-resolution `requestId` by its owning session. */
-function pendingKey(sessionId: string, requestId: string): string {
-  return `${sessionId}::${requestId}`;
-}
 
 interface UserInputRequest {
   requestId?: unknown;
@@ -39,9 +40,9 @@ interface UserInputRequest {
 
 /**
  * Build the SDK `onUserInputRequest` handler (spec 015 prerequisite). Registered on
- * every managed SDK/ui-server session so `ask_user` is usable. `sessionId` scopes every
- * pending interaction to its owning session. Returns a promise that is resolved LATE by
- * {@link handlePendingUserInput} when the answer arrives.
+ * every managed SDK/ui-server session so `ask_user` is usable. `sessionId` is the ONLY
+ * correlation key (see module header) — the callback provides no requestId. Returns a
+ * promise resolved LATE by {@link handlePendingUserInput} when the answer arrives.
  */
 export function makeUserInputHandler(
   sessionId: string,
@@ -49,57 +50,53 @@ export function makeUserInputHandler(
   request: UserInputRequest,
   ctx?: { sessionId?: string },
 ) => Promise<{ answer: string; wasFreeform: boolean }> {
-  return (request, ctx) =>
+  return (_request, ctx) =>
     new Promise((resolve) => {
-      const requestId = request?.requestId != null ? String(request.requestId) : '';
       // Prefer the closure sessionId (deterministic, matches the server's PtyProcess
-      // sessionId); fall back to any ctx-supplied id only if the closure id is empty.
+      // sessionId used at answer time); fall back to ctx only if the closure id is empty.
       const scope = sessionId || ctx?.sessionId || '';
-      pendingUserInput.set(pendingKey(scope, requestId), {
-        resolve,
-        sessionId: scope,
-        toolCallId: request?.toolCallId != null ? String(request.toolCallId) : undefined,
-      });
+      const existing = pendingUserInput.get(scope);
+      if (existing) {
+        // ask_user blocks the turn, so a second pending interaction for the same session
+        // should not occur. If it somehow does, the old resolver would leak — warn.
+        console.warn(
+          `[terminal-backend] makeUserInputHandler: replacing an UNRESOLVED pending user-input for session="${scope}" (its promise will never resolve)`,
+        );
+      }
+      pendingUserInput.set(scope, { resolve, sessionId: scope });
     });
 }
 
 /**
- * Resolve a pending `ask_user` interaction (spec 015), scoped to `sessionId`. Idempotent:
- * an unknown or already-resolved `(sessionId, requestId)` is a no-op + warn (supports the
- * single-resolution Teams/local race). Returns true only when a stored resolver fired.
+ * Resolve the pending `ask_user` interaction for `sessionId` (spec 015). Idempotent: an
+ * unknown or already-resolved session is a no-op + warn (supports the single-resolution
+ * Teams/local race). Returns true only when a stored resolver actually fired. The
+ * event-stream `requestId` (Teams' single-resolution key) is accepted for diagnostics
+ * only — the resolver itself is correlated by session (the callback has no requestId).
  */
 export function handlePendingUserInput(
   sessionId: string,
-  requestId: string,
   answer: { answer: string; wasFreeform: boolean },
 ): boolean {
-  const key = pendingKey(sessionId, requestId);
-  const entry = pendingUserInput.get(key);
+  const entry = pendingUserInput.get(sessionId);
   if (!entry) {
     console.warn(
-      `[terminal-backend] handlePendingUserInput: no pending user-input for session="${sessionId}" requestId="${requestId}" (already resolved or unknown) — no-op`,
+      `[terminal-backend] handlePendingUserInput: no pending user-input for session="${sessionId}" (already resolved or unknown) — no-op`,
     );
     return false;
   }
-  pendingUserInput.delete(key);
+  pendingUserInput.delete(sessionId);
   entry.resolve({ answer: answer.answer, wasFreeform: answer.wasFreeform });
   return true;
 }
 
 /**
- * GC every outstanding pending user-input interaction owned by `sessionId` (spec 015).
+ * GC the outstanding pending user-input interaction owned by `sessionId` (spec 015).
  * Called when a session exits/resets/is killed so an agent torn down mid-`ask_user` cannot
- * leak an unresolved resolver. Returns the number of entries dropped.
+ * leak an unresolved resolver. Returns the number of entries dropped (0 or 1).
  */
 export function clearPendingUserInputForSession(sessionId: string): number {
-  let dropped = 0;
-  for (const [key, entry] of pendingUserInput) {
-    if (entry.sessionId === sessionId) {
-      pendingUserInput.delete(key);
-      dropped++;
-    }
-  }
-  return dropped;
+  return pendingUserInput.delete(sessionId) ? 1 : 0;
 }
 
 /** Test/diagnostics helper: number of outstanding pending user-input interactions. */

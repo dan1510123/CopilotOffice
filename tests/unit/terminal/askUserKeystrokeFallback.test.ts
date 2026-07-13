@@ -18,12 +18,13 @@ describe('answerTransport — submit-answer backend routing (spec 015)', () => {
     expect(answerTransport(sdk as never)).toBe('sdk');
   });
 
-  it('degraded node-pty path does NOT resolve a pending user-input by requestId', () => {
-    // On node-pty there is no requestId; a spurious empty-requestId resolve is a no-op.
+  it('degraded node-pty path does NOT resolve a pending user-input for a foreign session', () => {
+    // node-pty has no SDK resolver; resolving an unrelated session is a no-op and must
+    // not consume the SDK session's pending interaction.
     const handler = makeUserInputHandler('sess-kf');
     void handler({ requestId: 'req-1' });
-    expect(handlePendingUserInput('sess-kf', '', { answer: 'x', wasFreeform: false })).toBe(false);
-    // the real SDK requestId is still resolvable (proving the '' no-op didn't consume it).
-    expect(handlePendingUserInput('sess-kf', 'req-1', { answer: 'Yes', wasFreeform: false })).toBe(true);
+    expect(handlePendingUserInput('nodepty-sess', { answer: 'x', wasFreeform: false })).toBe(false);
+    // the real SDK session is still resolvable (proving the foreign no-op didn't consume it).
+    expect(handlePendingUserInput('sess-kf', { answer: 'Yes', wasFreeform: false })).toBe(true);
   });
 });
