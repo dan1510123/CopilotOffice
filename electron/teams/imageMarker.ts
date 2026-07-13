@@ -137,9 +137,22 @@ export function sniffImageType(buf: Buffer): string | null {
  */
 export function resolveWithinBase(rawPath: string, baseDir?: string): string | null {
   if (!baseDir) return null; // no sandbox → cannot safely contain; reject
-  if (path.isAbsolute(rawPath)) return null; // absolute/UNC paths escape the sandbox
+  // Reject absolute paths under BOTH POSIX and Windows semantics so a
+  // Windows-style path (`C:\`, `\\UNC`) is blocked even when running on Linux
+  // (and a POSIX `/abs` path on Windows). `path.isAbsolute` alone is
+  // platform-dependent and would let the other platform's form escape.
+  if (
+    path.isAbsolute(rawPath) ||
+    path.win32.isAbsolute(rawPath) ||
+    path.posix.isAbsolute(rawPath)
+  ) {
+    return null; // absolute/UNC paths escape the sandbox
+  }
+  // Normalize backslashes to forward slashes so Windows-style `..\` traversal is
+  // detected even on POSIX, where `\` is an ordinary filename character.
+  const normalizedRaw = rawPath.replace(/\\/g, '/');
   const root = path.resolve(baseDir);
-  const resolved = path.resolve(root, rawPath);
+  const resolved = path.resolve(root, normalizedRaw);
   const rel = path.relative(root, resolved);
   // Inside the root iff the relative path doesn't climb out and isn't absolute.
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
