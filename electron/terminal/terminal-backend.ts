@@ -4,6 +4,7 @@ import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
 import type { PermissionHandler } from '@github/copilot-sdk';
 import { loadCustomAgents } from './custom-agents';
+import { resolveSkillDirectories } from './custom-skills';
 
 // ── spec 015: ask_user (SDK user-input interaction) answer channel ──────────────
 //
@@ -650,6 +651,12 @@ export class CopilotSdkBackend implements TerminalBackend {
       // SDK-created sessions don't auto-discover them the way the TUI does, so
       // without this "New Session" loses every custom agent. See ./custom-agents.
       customAgents: loadCustomAgents(options.cwd),
+      // Inject the user's skills too (~/.copilot/skills + <cwd>/.github/skills).
+      // SDK-created sessions don't auto-discover them (enableConfigDiscovery
+      // defaults to false), so without this the model never loads any skill even
+      // though the hosted TUI's `/` menu still lists them. See ./custom-skills.
+      enableSkills: true,
+      skillDirectories: resolveSkillDirectories(options.cwd),
       onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
       // spec 015 prerequisite (forStdio path): register the user-input handler so
       // the model is told `ask_user` is available and Teams/local answers can
@@ -893,6 +900,11 @@ export class ControlPlaneClient {
       // Inject the user's custom agents (~/.copilot/agents + <cwd>/.github/agents)
       // so SDK-created ("New Session") sessions expose them like the TUI does.
       customAgents: loadCustomAgents(cwd),
+      // Inject the user's skills too (~/.copilot/skills + <cwd>/.github/skills)
+      // so SDK-created ("New Session") sessions load them like the TUI does.
+      // See ./custom-skills.
+      enableSkills: true,
+      skillDirectories: resolveSkillDirectories(cwd),
       onPermissionRequest,
       // spec 015 prerequisite: advertise `ask_user` (requestUserInput: true) and
       // provide the late-resolvable answer channel. Without this the model refuses
