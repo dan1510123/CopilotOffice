@@ -87,7 +87,7 @@ jobs:
 
       - name: Publish preview (dry run)
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
-        run: npm publish --provenance --access public --dry-run
+        run: npm publish --access public --no-provenance --dry-run
 
   publish:
     name: Publish to npm
@@ -129,4 +129,9 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        # OIDC trusted publishing authenticates without a token. Provenance is
+        # disabled because npm only allows provenance from PUBLIC source repos,
+        # and this repository is private (E422 "Unsupported ... visibility:
+        # private"). Make the repo public and re-add --provenance if you want
+        # signed provenance attestations.
+        run: npm publish --access public --no-provenance
