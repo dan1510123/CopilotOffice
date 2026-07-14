@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { TeamsService } from '../../../electron/teams/teamsService';
 import { InMemoryTeamsOnlineStore } from '../../../electron/teams/onlineAgentsStore';
 import type { GraphSender } from '../../../electron/teams/graphClient';
@@ -244,5 +247,43 @@ describe('teams online round-trip (US1)', () => {
     const b = await h.service.register({ officeId: 'office-1', agentId: 'debugger', displayName: 'Gene', workingDir: '.' });
     expect(a.handle).toBe('gene');
     expect(b.handle).toBe('gene-1');
+  });
+
+  it('attaches an office-file sentinel as a raw upload and strips the comment (office-file)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'office-file-'));
+    fs.mkdirSync(path.join(dir, '.office-files'));
+    const rel = '.office-files/data-2026-07-13T21-40-01-123Z.csv';
+    fs.writeFileSync(path.join(dir, rel), 'id,name\n1,alice\n');
+
+    const h = makeHarness();
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: dir });
+
+    h.inbound()({
+      messageId: 'm-file',
+      channelId: '19:abc@thread.tacv2',
+      threadRootId: 'root-1',
+      senderName: 'Alice',
+      content: 'export the data',
+      composeTime: new Date().toISOString(),
+      hasMarker: false,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    h.agent()({ agentId: 'generalist', kind: 'message', content: `Here is your export:\n<!--office-file:${rel}-->` });
+    h.agent()({ agentId: 'generalist', kind: 'turn-end' });
+    await new Promise((r) => setTimeout(r, 40));
+
+    const calls = (h.graph.replyToThread as unknown as { mock: { calls: Array<[{ html: string; attachments?: Array<{ name: string; contentType: string; bytes: Buffer }> }]> } }).mock.calls;
+    // The sentinel comment never reaches Teams (stripped from every posted html).
+    expect(calls.every((c) => !c[0].html.includes('<!--office-file:'))).toBe(true);
+    // Exactly one reply carries the raw file attachment with basename + inferred type.
+    const withAttachment = calls.map((c) => c[0]).find((p) => (p.attachments?.length ?? 0) > 0);
+    expect(withAttachment).toBeDefined();
+    expect(withAttachment!.attachments).toHaveLength(1);
+    expect(withAttachment!.attachments![0].name).toBe('data-2026-07-13T21-40-01-123Z.csv');
+    expect(withAttachment!.attachments![0].contentType).toBe('text/csv');
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

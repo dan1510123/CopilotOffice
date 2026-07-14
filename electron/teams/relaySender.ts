@@ -37,6 +37,7 @@
 import type { GraphSender, CreateThreadParams, ReplyParams } from './graphClient';
 
 type HostedImages = CreateThreadParams['hostedImages'];
+type Attachments = CreateThreadParams['attachments'];
 import { parseChannelLink } from './channelLink';
 import { embedMarker } from './marker';
 import { escapeHtml } from './htmlText';
@@ -195,6 +196,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
     title: string,
     html: string,
     hostedImages: HostedImages,
+    attachments: Attachments,
     mentionOverride?: MentionRef,
   ): Promise<void> => {
     // Enforce the SAME outbound allowlist on the logical destination as the direct path.
@@ -242,6 +244,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
       subject: 'CopilotOffice',
       html: body,
       hostedImages,
+      attachments,
     });
     tlog(`Relay post to Dump channel ok (dest=${dest.channelId}, thread=${dest.threadRootId || 'root'}, mention=${resolved.mentionType}).`);
   };
@@ -249,7 +252,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
   return {
     async createThread(p: CreateThreadParams): Promise<{ threadRootId: string; webUrl: string }> {
       // No existing thread to reply under → flow posts a new root message.
-      await postToDump({ teamId: p.teamId, channelId: p.channelId, threadRootId: '' }, p.subject, p.html, p.hostedImages, p.mentionOverride);
+      await postToDump({ teamId: p.teamId, channelId: p.channelId, threadRootId: '' }, p.subject, p.html, p.hostedImages, p.attachments, p.mentionOverride);
       // The Dump-channel post's ids don't map to a thread in the real channel.
       return { threadRootId: '', webUrl: '' };
     },
@@ -261,6 +264,7 @@ export function createRelaySender(opts: RelaySenderOptions): GraphSender {
         '',
         p.html,
         p.hostedImages,
+        p.attachments,
         p.mentionOverride,
       );
       return { messageId: '' };

@@ -19,6 +19,8 @@ import { chunkReply } from './chunk';
 import { escapeHtml } from './htmlText';
 import { extractImageMarkers, loadHostedImages, hostedImagesHtml } from './imageMarker';
 import type { HostedImage } from './imageMarker';
+import { extractFileMarkers, loadAttachmentFiles } from './fileMarker';
+import type { AttachmentFile } from './fileMarker';
 import { pickAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import { isAzLoginError } from './auth';
@@ -1008,7 +1010,10 @@ export class TeamsService {
     // Recognize `<!--office-image:PATH-->` sentinels: pull them out of the reply
     // text (before markdown→HTML conversion) and attach the referenced files as
     // inline Graph hosted-content images. Paths resolve against the agent's cwd.
-    const { text: cleaned, paths } = extractImageMarkers(text);
+    const { text: noImages, paths } = extractImageMarkers(text);
+    // Recognize `<!--office-file:PATH-->` sentinels on the image-stripped text and
+    // attach the referenced files as raw Graph reference attachments (not inline).
+    const { text: cleaned, paths: filePaths } = extractFileMarkers(noImages);
     let images: HostedImage[] = [];
     if (paths.length) {
       tlog(`office-image: @${binding.handle} reply has ${paths.length} sentinel(s): ${paths.join(', ')} (baseDir=${binding.workingDir})`);
@@ -1017,6 +1022,17 @@ export class TeamsService {
         tlog(`office-image: loaded ${images.length}/${paths.length} image(s) for @${binding.handle} — will attach inline.`);
       } else {
         twarn(`office-image: no images loaded for @${binding.handle} despite ${paths.length} sentinel(s) — all paths rejected (see warnings above).`);
+      }
+    }
+
+    let attachments: AttachmentFile[] = [];
+    if (filePaths.length) {
+      tlog(`office-file: @${binding.handle} reply has ${filePaths.length} sentinel(s): ${filePaths.join(', ')} (baseDir=${binding.workingDir})`);
+      attachments = await loadAttachmentFiles(filePaths, { baseDir: binding.workingDir, warn: (m) => twarn(m) });
+      if (attachments.length) {
+        tlog(`office-file: loaded ${attachments.length}/${filePaths.length} file(s) for @${binding.handle} — will attach as raw upload(s).`);
+      } else {
+        twarn(`office-file: no files loaded for @${binding.handle} despite ${filePaths.length} sentinel(s) — all paths rejected (see warnings above).`);
       }
     }
 
@@ -1031,6 +1047,12 @@ export class TeamsService {
       tlog(`office-image: posting ${images.length} inline image reply to @${binding.handle} thread.`);
       await this.safeReply(binding, `${prefix}<br>${hostedImagesHtml(images)}`, images);
     }
+
+    if (attachments.length) {
+      const names = attachments.map((a) => a.name).join(', ');
+      tlog(`office-file: posting ${attachments.length} attachment(s) to @${binding.handle} thread: ${names}`);
+      await this.safeReply(binding, `${prefix}<br>📎 ${escapeHtml(names)}`, undefined, attachments);
+    }
   }
 
   /** Reply to a thread, swallowing errors (logs only) so the queue keeps moving.
@@ -1040,6 +1062,7 @@ export class TeamsService {
     binding: OnlineAgentBinding,
     html: string,
     hostedImages?: HostedImage[],
+    attachments?: AttachmentFile[],
   ): Promise<string | undefined> {
     try {
       const posted = await this.deps.graph.replyToThread({
@@ -1048,6 +1071,7 @@ export class TeamsService {
         threadRootId: binding.threadRootId,
         html,
         hostedImages,
+        attachments,
       });
       // Record our own reply id so its Trouter echo is dropped (self-loop guard).
       if (posted?.messageId) this.rememberPosted(posted.messageId);
