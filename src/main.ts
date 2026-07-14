@@ -834,7 +834,9 @@ function renderOfficeTabs() {
 
   // Keep the active office tab visible when the tab strip overflows.
   const activeTab = tabsBar.querySelector('.office-tab.active') as HTMLElement | null;
-  activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (typeof activeTab?.scrollIntoView === 'function') {
+    activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
 
   tabsBar.querySelectorAll('.office-tab').forEach(tab => {
     tab.addEventListener('click', (e) => {
