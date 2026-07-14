@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 import { TerminalRelay } from './terminal/ipc-relay';
 import { createOfficeFileStore } from './officeFileStore';
+import { runLifecycleBackup } from './dataBackup';
 import { registerNonTerminalIpc } from './nonTerminalIpc';
 import { reapRegisteredPtys } from './terminal/pty-registry';
 import { TeamsService } from './teams/teamsService';
@@ -148,6 +149,11 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
 
   killOrphanedProcesses();
+
+  // Continuous data backups (spec: on open / on close). Snapshot the whole
+  // `.data` directory before we touch it this session, then prune snapshots
+  // older than 30 days. Best-effort — never blocks or fails startup.
+  runLifecycleBackup('open');
 
   relay.registerIpc();
 
@@ -334,6 +340,11 @@ app.on('before-quit', (event) => {
   const teamsStop = teamsService ? teamsService.stop().catch(() => undefined) : Promise.resolve();
   Promise.resolve(teamsStop).finally(() => {
     relay.shutdown().finally(() => {
+      // Snapshot the final `.data` state after the server has flushed session
+      // files during shutdown, so the on-close backup captures the latest data.
+      // Intentionally synchronous: `.data` is small and the snapshot must finish
+      // before `app.quit()` or the final state could be lost on process exit.
+      runLifecycleBackup('close');
       console.log('[Main] Relay shutdown complete — quitting');
       app.quit();                        // re-trigger quit (isShuttingDown guard skips this handler)
     });
