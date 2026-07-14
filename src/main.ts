@@ -272,14 +272,18 @@ tabsBar.id = 'office-tabs';
 tabsBar.style.cssText = `
   display: flex;
   align-items: center;
-  background: #1a1a2a;
-  border-bottom: 2px solid #333;
-  padding: 0 16px;
-  height: 72px;
+  gap: 6px;
+  background: #171724;
+  border-bottom: 1px solid #26263a;
+  padding: 0 12px;
+  height: 60px;
   flex-shrink: 0;
-  font-size: 22px;
+  overflow: hidden;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  box-shadow: 0 2px 12px rgba(0,0,0,.28);
 `;
 container.appendChild(tabsBar);
+injectTopBarStyles();
 
 // Main content area (split view)
 const mainContent = document.createElement('div');
@@ -589,149 +593,248 @@ function installE2eDebugHook(): void {
 
 // ── Office Tabs ─────────────────────────────────────────────────
 
+// Offices whose ui-server SDK runtime has come online (per `backend-online`).
+// node-pty offices never emit that event, so getOfficeIndicator() also treats
+// an office with any active agent session as online.
+const onlineOffices = new Set<string>();
+
+type OfficeIndicator = 'offline' | 'online' | 'working';
+
+// Derive an office's top-bar indicator from its SDK-online flag + agent statuses.
+// working = any agent actively thinking; online = SDK runtime up OR any agent
+// session running (covers node-pty); otherwise offline.
+function getOfficeIndicator(officeId: string): OfficeIndicator {
+  const office = officeManager.getOffice(officeId);
+  let anyActive = false;
+  if (office) {
+    for (const status of office.agents.values()) {
+      if (status.subState === 'thinking') return 'working';
+      if (status.state === 'active') anyActive = true;
+    }
+  }
+  return onlineOffices.has(officeId) || anyActive ? 'online' : 'offline';
+}
+
+// Resolve the per-indicator visuals for a tab. `isActive` keeps the blue accent
+// for the selected-but-offline office; green wins whenever the office is online.
+function officeIndicatorStyles(indicator: OfficeIndicator, isActive: boolean): {
+  dotColor: string; dotGlow: string; working: boolean; border: string; tabGlow: string;
+} {
+  if (indicator === 'working') {
+    return { dotColor: '#46d17f', dotGlow: 'box-shadow: 0 0 8px #46d17f;', working: true, border: '#2f7a52', tabGlow: 'box-shadow: 0 0 10px rgba(70,209,127,.25);' };
+  }
+  if (indicator === 'online') {
+    return { dotColor: '#46d17f', dotGlow: 'box-shadow: 0 0 6px #46d17f88;', working: false, border: '#2f7a52', tabGlow: '' };
+  }
+  // offline
+  return {
+    dotColor: isActive ? '#6d8bff' : '#4a4a68',
+    dotGlow: isActive ? 'box-shadow: 0 0 8px #6d8bff;' : '',
+    working: false,
+    border: isActive ? '#3a3a6a' : 'transparent',
+    tabGlow: '',
+  };
+}
+
+// One-time injection of hover/active styles the inline CSS can't express.
+// Guarded so hot-reload re-execution doesn't stack duplicate <style> tags.
+function injectTopBarStyles() {
+  if (document.getElementById('topbar-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'topbar-styles';
+  style.textContent = `
+    #office-tabs .tabs-region {
+      display: flex; align-items: center; gap: 4px;
+      flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden;
+      scrollbar-width: none; height: 100%;
+    }
+    #office-tabs .tabs-region::-webkit-scrollbar { display: none; }
+    #office-tabs .ctrls-region {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+    }
+    #office-tabs .tb-divider {
+      width: 1px; height: 26px; background: #2c2c46; margin: 0 4px; flex-shrink: 0;
+    }
+    #office-tabs .office-tab { transition: background .15s, border-color .15s, color .15s; }
+    #office-tabs .office-tab:hover { background: #20203180; color: #cfcfea; }
+    #office-tabs .office-tab .edit-office-btn {
+      opacity: .85;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px; height: 20px;
+      border-radius: 5px;
+      transition: opacity .15s, background .15s, color .15s;
+    }
+    #office-tabs .office-tab:hover .edit-office-btn,
+    #office-tabs .office-tab.active .edit-office-btn { opacity: 1; }
+    #office-tabs .office-tab .edit-office-btn:hover { background: #3a3a5e; color: #fff; }
+    #office-tabs[data-app-mode="serious"] #zoom-bar { display: none !important; }
+    #office-tabs .office-tab .status-dot { transition: background .2s, box-shadow .2s; }
+    #office-tabs .office-tab .status-dot.working { animation: office-dot-pulse 1.15s ease-in-out infinite; }
+    @keyframes office-dot-pulse {
+      0%, 100% { box-shadow: 0 0 4px #46d17f88; opacity: .85; }
+      50%      { box-shadow: 0 0 11px #46d17f, 0 0 3px #46d17f; opacity: 1; }
+    }
+    #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s, border-color .15s, color .15s; }
+    #office-tabs .tb-pill:hover { background: #26263e; color: #fff; }
+    #office-tabs #new-office-btn:hover { background: #1c2a22; }
+  `;
+  document.head.appendChild(style);
+}
+
 function renderOfficeTabs() {
   const offices = officeManager.getAllOffices();
   const currentId = officeManager.currentOfficeId;
 
-  let html = '';
+  let tabsHtml = '';
 
   for (const office of offices) {
     const isActive = office.id === currentId;
-    const bgColor = isActive ? '#2a2a4a' : '#1a1a2a';
-    const borderColor = isActive ? '#4488ff' : 'transparent';
+    const bgColor = isActive ? '#232342' : 'transparent';
+    const ind = getOfficeIndicator(office.id);
+    const iv = officeIndicatorStyles(ind, isActive);
 
-    html += `
-      <div class="office-tab" data-office-id="${office.id}" style="
-        padding: 12px 24px;
-        margin-right: 8px;
+    tabsHtml += `
+      <div class="office-tab${isActive ? ' active' : ''}" data-office-id="${office.id}" style="
+        padding: 8px 14px;
         background: ${bgColor};
-        border: 2px solid ${borderColor};
-        border-bottom: none;
-        border-radius: 8px 8px 0 0;
+        border: 1px solid ${iv.border};
+        border-radius: 8px;
         cursor: pointer;
-        font-family: monospace;
-        color: ${isActive ? '#fff' : '#888'};
+        color: ${isActive ? '#fff' : '#9a9ab8'};
+        font-size: 15.5px;
+        font-weight: 500;
+        white-space: nowrap;
+        flex-shrink: 0;
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 9px;
+        ${iv.tabGlow}
       ">
+        <span class="status-dot${iv.working ? ' working' : ''}" style="width: 7px; height: 7px; border-radius: 50%; background: ${iv.dotColor}; ${iv.dotGlow} flex-shrink: 0;"></span>
         <span>${office.name}</span>
         <span class="edit-office-btn" data-office-id="${office.id}" style="
-          color: #666;
+          color: #b0b0d0;
           font-size: 14px;
-          padding: 4px 8px;
-          border-radius: 4px;
         ">⚙</span>
       </div>
     `;
   }
 
-  html += `
+  tabsHtml += `
     <div id="new-office-btn" style="
-      padding: 12px 24px;
-      background: #252538;
-      border: 2px dashed #444;
-      border-radius: 8px 8px 0 0;
+      padding: 8px 12px;
+      margin-left: 2px;
+      background: transparent;
+      border: 1px dashed #2e4a3a;
+      border-radius: 8px;
       cursor: pointer;
-      font-family: monospace;
-      color: #4a4;
-    ">+ New Office</div>
-    <div style="flex: 1;"></div>
-    <div id="app-mode-toggle-btn" style="
-      padding: 8px 14px;
-      background: ${appMode === 'serious' ? '#2f2638' : '#252538'};
-      border: 2px solid ${appMode === 'serious' ? '#a66be0' : '#444'};
-      border-radius: 6px;
+      color: #7fd6a3;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      flex-shrink: 0;
+    ">＋ New Office</div>
+  `;
+
+  const ctrlsHtml = `
+    <div id="app-mode-toggle-btn" class="tb-pill" style="
+      height: 36px;
+      padding: 0 14px;
+      gap: 6px;
+      background: ${appMode === 'serious' ? '#241d33' : '#1e1e30'};
+      border: 1px solid ${appMode === 'serious' ? '#5a3d8a' : '#2c2c46'};
+      border-radius: 9px;
       cursor: pointer;
-      font-family: monospace;
-      color: ${appMode === 'serious' ? '#d4b6ff' : '#8fb7ff'};
-      font-size: 14px;
+      color: ${appMode === 'serious' ? '#c9a6ff' : '#8fb7ff'};
+      font-size: 13px;
+      font-weight: 500;
       user-select: none;
-      transition: all 0.2s;
-      margin-right: 8px;
     " title="Toggle app mode (game/serious)">
-      ${appMode === 'serious' ? '🧠 Serious Mode' : '🎮 Game Mode'}
+      ${appMode === 'serious' ? '🧠 Serious' : '🎮 Game'}
     </div>
-    <div id="sprite-customizer-btn" style="
-      padding: 8px 16px;
-      background: #252538;
-      border: 2px solid #444;
-      border-radius: 6px;
+    <div id="sprite-customizer-btn" class="tb-pill" style="
+      height: 36px;
+      min-width: 36px;
+      justify-content: center;
+      background: #1e1e30;
+      border: 1px solid #2c2c46;
+      border-radius: 9px;
       cursor: pointer;
-      font-family: monospace;
-      color: #666;
+      color: #b8b8d4;
       font-size: 16px;
       user-select: none;
-      transition: all 0.2s;
-      margin-right: 8px;
     " title="Customize Player">🎨</div>
-    <div id="zoom-bar" style="
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      background: #252538;
-      border: 2px solid #444;
-      border-radius: 6px;
-      font-family: monospace;
-      font-size: 14px;
-      margin-right: 8px;
+    <div id="zoom-bar" class="tb-pill" style="
+      height: 36px;
+      gap: 8px;
+      padding: 0 12px;
+      background: #1e1e30;
+      border: 1px solid #2c2c46;
+      border-radius: 9px;
       user-select: none;
     ">
       <button id="zoom-minus-btn" style="
-        background: #333;
-        border: 1px solid #555;
-        border-radius: 4px;
+        background: none;
+        border: none;
         cursor: pointer;
-        font-size: 14px;
-        font-family: monospace;
-        padding: 2px 8px;
-        color: #aac;
+        font-size: 15px;
+        padding: 0 2px;
+        color: #b8b8d4;
       ">\u2212</button>
       <input id="zoom-slider" type="range" min="50" max="200"
         value="${Math.round(currentZoom * 100)}"
         title="Zoom"
-        style="width: 80px; cursor: pointer; accent-color: #4488cc;" />
+        style="width: 74px; cursor: pointer; accent-color: #6d8bff;" />
       <button id="zoom-plus-btn" style="
-        background: #333;
-        border: 1px solid #555;
-        border-radius: 4px;
+        background: none;
+        border: none;
         cursor: pointer;
-        font-size: 14px;
-        font-family: monospace;
-        padding: 2px 8px;
-        color: #aac;
+        font-size: 15px;
+        padding: 0 2px;
+        color: #b8b8d4;
       ">+</button>
-      <span id="zoom-label" style="color: #888; font-size: 11px; min-width: 32px; text-align: center;">${Math.round(currentZoom * 100)}%</span>
+      <span id="zoom-label" style="color: #8a8aa8; font-size: 12px; min-width: 32px; text-align: center;">${Math.round(currentZoom * 100)}%</span>
     </div>
-    <div id="debug-toggle-btn" style="
-      padding: 8px 16px;
-      background: ${debugMode ? '#3a2a1a' : '#252538'};
-      border: 2px solid ${debugMode ? '#ff8800' : '#444'};
-      border-radius: 6px;
+    <div id="debug-toggle-btn" class="tb-pill" style="
+      height: 36px;
+      min-width: 36px;
+      justify-content: center;
+      background: ${debugMode ? '#3a2a1a' : '#1e1e30'};
+      border: 1px solid ${debugMode ? '#ff8800' : '#2c2c46'};
+      border-radius: 9px;
       cursor: pointer;
-      font-family: monospace;
-      color: ${debugMode ? '#ff8800' : '#666'};
+      color: ${debugMode ? '#ff8800' : '#b8b8d4'};
       font-size: 16px;
       user-select: none;
-      transition: all 0.2s;
       ${debugMode ? 'box-shadow: 0 0 8px #ff880044;' : ''}
-    ">🐛 Debug</div>
-    <div id="settings-btn" style="
-      padding: 8px 16px;
-      background: #252538;
-      border: 2px solid #444;
-      border-radius: 6px;
+    " title="Toggle debug mode">🐛</div>
+    <div id="settings-btn" class="tb-pill" style="
+      height: 36px;
+      min-width: 36px;
+      justify-content: center;
+      background: #1e1e30;
+      border: 1px solid #2c2c46;
+      border-radius: 9px;
       cursor: pointer;
-      font-family: monospace;
-      color: #666;
+      color: #b8b8d4;
       font-size: 16px;
       user-select: none;
-      transition: all 0.2s;
-    ">⚙ Settings</div>
+    " title="Settings">⚙</div>
+  `;
+
+  const html = `
+    <div class="tabs-region">${tabsHtml}</div>
+    <div class="tb-divider"></div>
+    <div class="ctrls-region">${ctrlsHtml}</div>
   `;
 
   tabsBar.innerHTML = html;
+
+  // Keep the active office tab visible when the tab strip overflows.
+  const activeTab = tabsBar.querySelector('.office-tab.active') as HTMLElement | null;
+  activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 
   tabsBar.querySelectorAll('.office-tab').forEach(tab => {
     tab.addEventListener('click', (e) => {
@@ -804,6 +907,27 @@ function renderOfficeTabs() {
   });
 
   applyMobileTopBarVisibility();
+}
+
+// Lightweight refresh of just the per-office online/working indicators. Avoids a
+// full renderOfficeTabs() rebuild so it won't interrupt an in-progress zoom-slider
+// drag or hover state when agent statuses change frequently.
+function updateOfficeTabIndicators(): void {
+  const currentId = officeManager.currentOfficeId;
+  tabsBar.querySelectorAll<HTMLElement>('.office-tab').forEach(tab => {
+    const officeId = tab.dataset.officeId;
+    if (!officeId) return;
+    const isActive = officeId === currentId;
+    const iv = officeIndicatorStyles(getOfficeIndicator(officeId), isActive);
+    tab.style.borderColor = iv.border;
+    tab.style.boxShadow = iv.tabGlow ? iv.tabGlow.replace('box-shadow:', '').replace(';', '').trim() : '';
+    const dot = tab.querySelector<HTMLElement>('.status-dot');
+    if (dot) {
+      dot.style.background = iv.dotColor;
+      dot.style.boxShadow = iv.dotGlow ? iv.dotGlow.replace('box-shadow:', '').replace(';', '').trim() : '';
+      dot.classList.toggle('working', iv.working);
+    }
+  });
 }
 
 function switchToOffice(officeId: string) {
@@ -2403,6 +2527,8 @@ if (window.copilotBridge) {
   // at most once per office by the server.
   window.copilotBridge.onBackendOnline?.((officeId: string, _backend: string) => {
     const officeName = officeManager.getOffice(officeId)?.config.name ?? officeId;
+    onlineOffices.add(officeId);
+    updateOfficeTabIndicators();
     showClipboardToast(`GitHub Copilot SDK server online for ${officeName}`, 'success', 10_000);
   });
 
@@ -2830,6 +2956,7 @@ function onAgentSessionClosed(agentId: string): void {
 function onAgentStatusChanged(): void {
   updateTerminalContent();
   updateStatusBar();
+  updateOfficeTabIndicators();
 }
 
 function onAgentReattached(agentId: string): void {
