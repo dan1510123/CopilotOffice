@@ -2,26 +2,30 @@
 // be unit-tested and reused by the `restore-data` CLI.
 //
 // Concept: every time the app opens and closes, the entire `.data/` directory is
-// snapshotted into a sibling `.data-backup-<timestamp>-<reason>/` folder. Backups
-// older than a retention window (default 30 days) are pruned. A companion CLI
+// snapshotted into `.data-backups/backup-<timestamp>-<reason>/`. All snapshots
+// live inside the single `.data-backups/` container folder. Backups older than a
+// retention window (default 30 days) are pruned. A companion CLI
 // (`npm run restore-data`) lists these snapshots and restores a chosen version.
 //
-// The `.data-backup-*/` naming matches the pattern already reserved in
-// `.gitignore`, so user data snapshots are never committed.
+// The `.data-backups/` folder matches the pattern reserved in `.gitignore`, so
+// user data snapshots are never committed.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
 export type BackupReason = 'open' | 'close' | 'prerestore' | 'manual';
 
-/** Directory prefix for every snapshot. Kept in sync with `.gitignore`. */
-export const BACKUP_PREFIX = '.data-backup-';
+/** Container folder that holds every snapshot. Kept in sync with `.gitignore`. */
+export const BACKUPS_DIR = '.data-backups';
+
+/** Prefix for each snapshot folder inside {@link BACKUPS_DIR}. */
+export const SNAPSHOT_PREFIX = 'backup-';
 
 const DEFAULT_DATA_SUBDIR = '.data';
 const DEFAULT_RETENTION_DAYS = 30;
 
 export interface BackupOptions {
-  /** Root under which `.data` and the `.data-backup-*` folders live. Defaults to `process.cwd()`. */
+  /** Root under which `.data` and `.data-backups/` live. Defaults to `process.cwd()`. */
   cwd?: string;
   /** Relative data dir name. Defaults to `.data`. */
   dataSubdir?: string;
@@ -30,7 +34,7 @@ export interface BackupOptions {
 }
 
 export interface BackupInfo {
-  /** Folder name, e.g. `.data-backup-20260714-095442-close`. */
+  /** Snapshot folder name, e.g. `backup-20260714-095442-close`. */
   name: string;
   /** Absolute path to the snapshot folder. */
   path: string;
@@ -52,7 +56,8 @@ export function formatBackupTimestamp(d: Date): string {
 function resolvePaths(options: BackupOptions) {
   const cwd = options.cwd ?? process.cwd();
   const dataDir = path.join(cwd, options.dataSubdir ?? DEFAULT_DATA_SUBDIR);
-  return { cwd, dataDir };
+  const backupsDir = path.join(cwd, BACKUPS_DIR);
+  return { cwd, dataDir, backupsDir };
 }
 
 /** True when the directory exists and holds at least one entry. */
@@ -65,20 +70,21 @@ function hasContent(dir: string): boolean {
 }
 
 /**
- * Snapshot the `.data` directory into `.data-backup-<timestamp>-<reason>`.
+ * Snapshot the `.data` directory into `.data-backups/backup-<timestamp>-<reason>`.
  * Best-effort and non-throwing: returns the created backup path, or `null` when
  * there is nothing to back up or the copy failed.
  */
 export function backupDataDir(reason: BackupReason, options: BackupOptions = {}): string | null {
-  const { cwd, dataDir } = resolvePaths(options);
+  const { dataDir, backupsDir } = resolvePaths(options);
   try {
     if (!hasContent(dataDir)) return null;
+    fs.mkdirSync(backupsDir, { recursive: true });
     const stamp = formatBackupTimestamp(options.now ?? new Date());
-    let dest = path.join(cwd, `${BACKUP_PREFIX}${stamp}-${reason}`);
+    let dest = path.join(backupsDir, `${SNAPSHOT_PREFIX}${stamp}-${reason}`);
     // Guard against same-second collisions (open+close in <1s, or repeated calls).
     let suffix = 1;
     while (fs.existsSync(dest)) {
-      dest = path.join(cwd, `${BACKUP_PREFIX}${stamp}-${reason}-${suffix++}`);
+      dest = path.join(backupsDir, `${SNAPSHOT_PREFIX}${stamp}-${reason}-${suffix++}`);
     }
     fs.cpSync(dataDir, dest, { recursive: true });
     return dest;
@@ -88,26 +94,26 @@ export function backupDataDir(reason: BackupReason, options: BackupOptions = {})
   }
 }
 
-/** List every `.data-backup-*` snapshot, newest first. */
+/** List every snapshot inside `.data-backups/`, newest first. */
 export function listBackups(options: BackupOptions = {}): BackupInfo[] {
-  const { cwd } = resolvePaths(options);
+  const { backupsDir } = resolvePaths(options);
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(cwd, { withFileTypes: true });
+    entries = fs.readdirSync(backupsDir, { withFileTypes: true });
   } catch {
     return [];
   }
   const backups: BackupInfo[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith(BACKUP_PREFIX)) continue;
-    const full = path.join(cwd, entry.name);
+    if (!entry.isDirectory() || !entry.name.startsWith(SNAPSHOT_PREFIX)) continue;
+    const full = path.join(backupsDir, entry.name);
     let createdAt = new Date(0);
     try {
       createdAt = fs.statSync(full).mtime;
     } catch {
       /* keep epoch fallback */
     }
-    const rest = entry.name.slice(BACKUP_PREFIX.length);
+    const rest = entry.name.slice(SNAPSHOT_PREFIX.length);
     const reason = rest.split('-').slice(2).join('-') || 'unknown';
     backups.push({ name: entry.name, path: full, reason, createdAt });
   }
@@ -145,9 +151,9 @@ export function restoreDataBackup(
   name: string,
   options: BackupOptions = {},
 ): { restoredFrom: string; safetyBackup: string | null } {
-  const { cwd, dataDir } = resolvePaths(options);
-  const src = path.join(cwd, name);
-  if (!name.startsWith(BACKUP_PREFIX) || !fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
+  const { cwd, dataDir, backupsDir } = resolvePaths(options);
+  const src = path.join(backupsDir, name);
+  if (!name.startsWith(SNAPSHOT_PREFIX) || !fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
     throw new Error(`Backup not found: ${name}`);
   }
   // Full copy of the current `.data` first, so the restore is reversible.

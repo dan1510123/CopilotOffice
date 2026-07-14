@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Interactive restore CLI for `.data` snapshots created by the continuous
-// backup feature (electron/dataBackup.ts). Lists available `.data-backup-*`
-// versions and restores the one you pick, snapshotting the current `.data`
-// first so the restore is reversible.
+// backup feature (electron/dataBackup.ts). Lists snapshots from the
+// `.data-backups/` container and restores the one you pick, snapshotting the
+// current `.data` first so the restore is reversible.
 //
 // Usage:
 //   npm run restore-data            # interactive picker

@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  BACKUP_PREFIX,
+  BACKUPS_DIR,
+  SNAPSHOT_PREFIX,
   backupDataDir,
   formatBackupTimestamp,
   listBackups,
@@ -14,6 +15,7 @@ import {
 describe('electron/dataBackup', () => {
   let tmpRoot: string;
   let dataDir: string;
+  let backupsDir: string;
 
   const seedData = (contents: Record<string, string>) => {
     fs.mkdirSync(dataDir, { recursive: true });
@@ -25,6 +27,7 @@ describe('electron/dataBackup', () => {
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'data-backup-'));
     dataDir = path.join(tmpRoot, '.data');
+    backupsDir = path.join(tmpRoot, BACKUPS_DIR);
   });
 
   afterEach(() => {
@@ -39,9 +42,18 @@ describe('electron/dataBackup', () => {
   it('backupDataDir copies the whole .data directory into a reason-tagged snapshot', () => {
     seedData({ 'a.json': '{"x":1}', 'b.txt': 'hello' });
     const dest = backupDataDir('open', { cwd: tmpRoot, now: new Date(2026, 6, 14, 9, 5, 3) });
-    expect(dest).toBe(path.join(tmpRoot, `${BACKUP_PREFIX}20260714-090503-open`));
+    expect(dest).toBe(path.join(backupsDir, `${SNAPSHOT_PREFIX}20260714-090503-open`));
     expect(fs.readFileSync(path.join(dest!, 'a.json'), 'utf8')).toBe('{"x":1}');
     expect(fs.readFileSync(path.join(dest!, 'b.txt'), 'utf8')).toBe('hello');
+  });
+
+  it('places every snapshot inside the .data-backups container folder', () => {
+    seedData({ 'a.json': '1' });
+    const dest = backupDataDir('open', { cwd: tmpRoot })!;
+    expect(path.dirname(dest)).toBe(backupsDir);
+    expect(path.basename(dest).startsWith(SNAPSHOT_PREFIX)).toBe(true);
+    // Nothing is created at the repo root anymore.
+    expect(fs.readdirSync(tmpRoot).filter((n) => n.startsWith('.data-backup-'))).toHaveLength(0);
   });
 
   it('backupDataDir returns null when .data is missing or empty', () => {

@@ -45,7 +45,7 @@ yarn-error.log*
 
 # Local-only office data backups (don't commit user data)
 .data.bak-*/
-.data-backup-*/
+.data-backups/
 .data-restore-tmp-*/
 .data-restore-old-*/
 
