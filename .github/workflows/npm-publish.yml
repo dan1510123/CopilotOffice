@@ -130,8 +130,6 @@ jobs:
 
       - name: Publish to npm
         # OIDC trusted publishing authenticates without a token. Provenance is
-        # disabled because npm only allows provenance from PUBLIC source repos,
-        # and this repository is private (E422 "Unsupported ... visibility:
-        # private"). Make the repo public and re-add --provenance if you want
-        # signed provenance attestations.
-        run: npm publish --access public --no-provenance
+        # enabled because the source repository is public — npm records a signed
+        # provenance attestation linking this release to the workflow run.
+        run: npm publish --access public --provenance
