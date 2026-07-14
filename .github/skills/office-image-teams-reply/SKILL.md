@@ -1,11 +1,11 @@
 ---
-name: "office-image-reply"
+name: "office-image-teams-reply"
 description: "Render agent-provided markdown into a PNG saved inside the working directory and emit the CopilotOffice office-image sentinel so the image renders inline in the agent's Teams reply; trigger phrases include 'send as image', 'render markdown', 'render this in Teams', 'post as picture', 'make it look right in Teams', 'screenshot this reply', 'render the table as an image', 'render the code as an image'."
 license: MIT
 allowed-tools: shell
 ---
 
-# office-image-reply
+# office-image-teams-reply
 
 ## Context
 
@@ -74,16 +74,16 @@ the emitted sentinel path is always relative and in-sandbox).
 
 ```powershell
 # One-time setup (first run only)
-Set-Location (Join-Path $env:USERPROFILE ".copilot\skills\office-image-reply")
+Set-Location (Join-Path $env:USERPROFILE ".copilot\skills\office-image-teams-reply")
 npm install
 npx playwright install chromium
 
 # Render from a piped string
 "# Title`n`n| A | B |`n|---|---|`n| 1 | 2 |" |
-  node (Join-Path $env:USERPROFILE ".copilot\skills\office-image-reply\render-markdown-image.mjs") --cwd "<workingDir>"
+  node (Join-Path $env:USERPROFILE ".copilot\skills\office-image-teams-reply\render-markdown-image.mjs") --cwd "<workingDir>"
 
 # Or render from a markdown file
-node (Join-Path $env:USERPROFILE ".copilot\skills\office-image-reply\render-markdown-image.mjs") `
+node (Join-Path $env:USERPROFILE ".copilot\skills\office-image-teams-reply\render-markdown-image.mjs") `
   --input "<workingDir>\draft-reply.md" --cwd "<workingDir>"
 ```
 
