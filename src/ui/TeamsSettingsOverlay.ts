@@ -7,6 +7,7 @@
 import { ZIndex } from '../config/zIndex';
 import type { TeamsSettings } from '../config/teamsConfig';
 import { DEFAULT_TEAMS_SETTINGS } from '../config/teamsConfig';
+import { injectUiKit, uiButtonClass } from './uiKit';
 
 export interface TeamsSettingsOverlayCallbacks {
   onOpen?: () => void;
@@ -37,6 +38,7 @@ export class TeamsSettingsOverlay {
     }
 
     this.callbacks.onOpen?.();
+    injectUiKit();
 
     this.overlay = document.createElement('div');
     this.overlay.id = 'teams-settings-overlay';
@@ -214,12 +216,11 @@ export class TeamsSettingsOverlay {
     const footer = document.createElement('div');
     footer.style.cssText = 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;';
 
-    const cancelBtn = this.button('Cancel', '#2a3a4a');
+    const cancelBtn = this.button('Cancel', 'default');
     cancelBtn.onclick = () => this.close();
     footer.appendChild(cancelBtn);
 
-    const saveBtn = this.button('Save', '#2a4a3a');
-    saveBtn.style.color = '#88ffaa';
+    const saveBtn = this.button('Save', 'success');
     saveBtn.onclick = async () => {
       error.textContent = '';
       const next: TeamsSettings = {
@@ -266,13 +267,11 @@ export class TeamsSettingsOverlay {
     return { row, input };
   }
 
-  private button(text: string, bg: string): HTMLButtonElement {
+  private button(text: string, variant: 'default' | 'success' = 'default'): HTMLButtonElement {
     const b = document.createElement('button');
     b.textContent = text;
-    b.style.cssText = `
-      background: ${bg}; border: 1px solid #4a5a6a; color: #cde; padding: 8px 18px;
-      border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 13px;
-    `;
+    b.className = uiButtonClass(variant);
+    b.style.padding = '8px 18px';
     return b;
   }
 }

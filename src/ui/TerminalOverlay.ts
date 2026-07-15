@@ -11,6 +11,7 @@ import { WheelPager } from './terminalWheel';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
+import { injectUiKit, uiButtonClass } from './uiKit';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -939,47 +940,29 @@ export class TerminalOverlay {
       gap: 8px;
     `;
 
-    const btnStyle = `
-      background: #2a3a4a;
-      border: 1px solid #4a5a6a;
-      color: #aaa;
-      padding: 8px 16px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-family: 'Cascadia Code', Consolas, monospace;
-      font-size: 13px;
-      white-space: nowrap;
-    `;
+    injectUiKit();
 
     const historyBtn = document.createElement('button');
     historyBtn.textContent = 'Session History';
-    historyBtn.style.cssText = btnStyle;
-    historyBtn.onmouseover = () => historyBtn.style.background = '#3a4a5a';
-    historyBtn.onmouseout = () => historyBtn.style.background = '#2a3a4a';
+    historyBtn.className = uiButtonClass('default');
     historyBtn.onclick = () => this.toggleSessionHistory(historyBtn);
     buttonGrid.appendChild(historyBtn);
 
     const newSessionBtn = document.createElement('button');
     newSessionBtn.textContent = 'New Session';
-    newSessionBtn.style.cssText = btnStyle;
-    newSessionBtn.onmouseover = () => newSessionBtn.style.background = '#3a4a5a';
-    newSessionBtn.onmouseout = () => newSessionBtn.style.background = '#2a3a4a';
+    newSessionBtn.className = uiButtonClass('primary');
     newSessionBtn.onclick = () => this.handleNewSession();
     buttonGrid.appendChild(newSessionBtn);
 
     const clearHistoryBtn = document.createElement('button');
     clearHistoryBtn.textContent = 'Clear History';
-    clearHistoryBtn.style.cssText = btnStyle;
-    clearHistoryBtn.onmouseover = () => clearHistoryBtn.style.background = '#3a4a5a';
-    clearHistoryBtn.onmouseout = () => clearHistoryBtn.style.background = '#2a3a4a';
+    clearHistoryBtn.className = uiButtonClass('default');
     clearHistoryBtn.onclick = () => this.handleClearHistory();
     buttonGrid.appendChild(clearHistoryBtn);
 
     const closeSessionBtn = document.createElement('button');
     closeSessionBtn.textContent = 'Close Session';
-    closeSessionBtn.style.cssText = btnStyle + 'color: #ff8888;';
-    closeSessionBtn.onmouseover = () => { closeSessionBtn.style.background = '#4a2a2a'; };
-    closeSessionBtn.onmouseout = () => { closeSessionBtn.style.background = '#2a3a4a'; };
+    closeSessionBtn.className = uiButtonClass('danger');
     closeSessionBtn.onclick = () => this.handleCloseSession();
     buttonGrid.appendChild(closeSessionBtn);
 
@@ -987,9 +970,8 @@ export class TerminalOverlay {
     // Rendered only when the feature flag is enabled (visibility set by refreshTeamsButton).
     this.teamsRemoteBtn = document.createElement('button');
     this.teamsRemoteBtn.textContent = '💬 Teams Remote';
-    this.teamsRemoteBtn.style.cssText = btnStyle + 'color: #88ccff; display: none;';
-    this.teamsRemoteBtn.onmouseover = () => { if (this.teamsRemoteBtn) this.teamsRemoteBtn.style.background = '#2a3a5a'; };
-    this.teamsRemoteBtn.onmouseout = () => { if (this.teamsRemoteBtn) this.teamsRemoteBtn.style.background = '#2a3a4a'; };
+    this.teamsRemoteBtn.className = uiButtonClass('teams');
+    this.teamsRemoteBtn.style.display = 'none';
     this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
     this.teamsRemoteBtn.title = 'Bring this agent online in a Teams channel thread';
     buttonGrid.appendChild(this.teamsRemoteBtn);
@@ -997,40 +979,27 @@ export class TerminalOverlay {
 
     this.fullscreenBtn = document.createElement('button');
     this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';
-    this.fullscreenBtn.style.cssText = btnStyle + 'color: #88ccff;';
-    this.fullscreenBtn.onmouseover = () => { if (this.fullscreenBtn) this.fullscreenBtn.style.background = '#2a3a5a'; };
-    this.fullscreenBtn.onmouseout = () => { if (this.fullscreenBtn) this.fullscreenBtn.style.background = '#2a3a4a'; };
+    this.fullscreenBtn.className = uiButtonClass('default');
     this.fullscreenBtn.onclick = () => this.toggleFullWidth();
     this.fullscreenBtn.title = 'Toggle fullscreen (Ctrl+F)';
     buttonGrid.appendChild(this.fullscreenBtn);
 
     const refreshFocusBtn = document.createElement('button');
     refreshFocusBtn.textContent = 'Refresh Focus';
-    refreshFocusBtn.style.cssText = btnStyle + 'color: #88ffaa;';
-    refreshFocusBtn.onmouseover = () => { refreshFocusBtn.style.background = '#2a4a3a'; };
-    refreshFocusBtn.onmouseout = () => { refreshFocusBtn.style.background = '#2a3a4a'; };
+    refreshFocusBtn.className = uiButtonClass('success');
     refreshFocusBtn.onclick = () => this.refreshFocusAndGeometry();
     refreshFocusBtn.title = 'Re-focus terminal and force geometry self-heal';
     buttonGrid.appendChild(refreshFocusBtn);
 
     this.mobileKeyboardBtn = document.createElement('button');
     this.mobileKeyboardBtn.textContent = '⌨ Open Keyboard';
-    this.mobileKeyboardBtn.style.cssText = `
-      ${btnStyle}
+    this.mobileKeyboardBtn.className = uiButtonClass('primary');
+    this.mobileKeyboardBtn.style.cssText += `
       width: 100%;
       min-height: 56px;
       font-size: 20px;
       font-weight: bold;
-      color: #ffffff;
-      background: #3a4f8f;
-      border: 2px solid #6f86d8;
     `;
-    this.mobileKeyboardBtn.onmouseover = () => {
-      if (this.mobileKeyboardBtn) this.mobileKeyboardBtn.style.background = '#4a63b0';
-    };
-    this.mobileKeyboardBtn.onmouseout = () => {
-      if (this.mobileKeyboardBtn) this.mobileKeyboardBtn.style.background = '#3a4f8f';
-    };
     this.mobileKeyboardBtn.onclick = () => this.focusTerminal();
     this.mobileKeyboardBtn.title = 'Tap to open the device keyboard for terminal input';
 
@@ -1083,17 +1052,11 @@ export class TerminalOverlay {
     if (pending) {
       this.teamsRemoteBtn.textContent = '💬 Connecting…';
       this.teamsRemoteBtn.disabled = true;
-      this.teamsRemoteBtn.style.color = '#ccaa66';
       return;
     }
     this.teamsRemoteBtn.disabled = false;
-    if (online) {
-      this.teamsRemoteBtn.textContent = '🟢 Teams Online';
-      this.teamsRemoteBtn.style.color = '#88ffaa';
-    } else {
-      this.teamsRemoteBtn.textContent = '💬 Teams Remote';
-      this.teamsRemoteBtn.style.color = '#88ccff';
-    }
+    this.teamsRemoteBtn.className = uiButtonClass(online ? 'teams-online' : 'teams');
+    this.teamsRemoteBtn.textContent = online ? '🟢 Teams Online' : '💬 Teams Remote';
   }
 
   private async handleTeamsRemote(): Promise<void> {

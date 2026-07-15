@@ -1,4 +1,5 @@
 import type { MeetingPlan } from './types';
+import { injectUiKit, uiButtonClass, type UiButtonVariant } from '../ui/uiKit';
 
 export interface PlanApprovalCallbacks {
   onApprove: (plan: MeetingPlan) => void;
@@ -36,6 +37,7 @@ export class PlanApprovalOverlay {
   }
 
   show(plan: MeetingPlan, callbacks: PlanApprovalCallbacks): void {
+    injectUiKit();
     this.currentPlan = plan;
     this.currentCallbacks = callbacks;
     this.container.innerHTML = '';
@@ -131,7 +133,7 @@ export class PlanApprovalOverlay {
     const wrapper = document.createElement('div');
     Object.assign(wrapper.style, { display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap' });
 
-    const btnApprove = this.createButton('✅ Approve & Execute', '#22cc44', '#fff');
+    const btnApprove = this.createButton('✅ Approve & Execute', 'success');
     btnApprove.addEventListener('click', () => {
       if (this.currentPlan && this.currentCallbacks) {
         const plan = this.currentPlan;
@@ -141,12 +143,12 @@ export class PlanApprovalOverlay {
       }
     });
 
-    const btnRevise = this.createButton('✏️ Revise', '#ff9944', '#fff');
+    const btnRevise = this.createButton('✏️ Revise', 'amber');
     btnRevise.addEventListener('click', () => {
       this.renderReviseForm(container);
     });
 
-    const btnCancel = this.createButton('❌ Cancel', '#444', '#fff');
+    const btnCancel = this.createButton('❌ Cancel', 'default');
     btnCancel.addEventListener('click', () => {
       const cb = this.currentCallbacks;
       this.hide();
@@ -182,7 +184,7 @@ export class PlanApprovalOverlay {
     const btnRow = document.createElement('div');
     Object.assign(btnRow.style, { display: 'flex', justifyContent: 'center', gap: '8px', marginTop: '12px' });
 
-    const btnSend = this.createButton('📤 Send Feedback', '#ff9944', '#fff');
+    const btnSend = this.createButton('📤 Send Feedback', 'amber');
     btnSend.addEventListener('click', () => {
       const feedback = textarea.value.trim();
       if (feedback && this.currentCallbacks) {
@@ -192,7 +194,7 @@ export class PlanApprovalOverlay {
       }
     });
 
-    const btnBack = this.createButton('← Back', '#444', '#fff');
+    const btnBack = this.createButton('← Back', 'default');
     btnBack.addEventListener('click', () => {
       this.renderButtons(container);
     });
@@ -204,22 +206,13 @@ export class PlanApprovalOverlay {
     textarea.focus();
   }
 
-  private createButton(text: string, bg: string, fg: string): HTMLButtonElement {
+  private createButton(text: string, variant: UiButtonVariant = 'default'): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.textContent = text;
-    Object.assign(btn.style, {
-      padding: '10px 20px',
-      borderRadius: '6px',
-      border: 'none',
-      background: bg,
-      color: fg,
-      cursor: 'pointer',
-      fontFamily: 'monospace',
-      fontSize: '13px',
-      margin: '0 8px',
-    });
-    btn.addEventListener('mouseenter', () => { btn.style.opacity = '0.85'; });
-    btn.addEventListener('mouseleave', () => { btn.style.opacity = '1'; });
+    btn.className = uiButtonClass(variant);
+    btn.style.padding = '10px 20px';
+    btn.style.margin = '0 8px';
+    btn.style.fontSize = '13px';
     return btn;
   }
 }

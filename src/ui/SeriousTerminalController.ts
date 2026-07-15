@@ -9,6 +9,7 @@ import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { officeManager } from '../office/officeManager';
+import { injectUiKit, uiButtonClass } from './uiKit';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -128,14 +129,14 @@ export class SeriousTerminalController {
 
     const detachBtn = document.createElement('button');
     detachBtn.textContent = 'Detach';
-    detachBtn.style.cssText = this.buttonCss('#2f3754', '#6f8ed8');
+    detachBtn.className = uiButtonClass('primary');
     detachBtn.addEventListener('click', () => {
       void this.closeView({ detach: true });
     });
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close';
-    closeBtn.style.cssText = this.buttonCss('#3a2534', '#c98fbb');
+    closeBtn.className = uiButtonClass('danger');
     closeBtn.addEventListener('click', () => {
       void this.closeView({ detach: true });
     });
@@ -236,15 +237,14 @@ export class SeriousTerminalController {
     const buttonGrid = document.createElement('div');
     buttonGrid.style.cssText = `
       display: grid;
-      grid-template-columns: repeat(2, max-content);
-      gap: 6px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 7px;
       margin-top: 2px;
     `;
-    const footerBtnCss = this.buttonCss('#2a3a4a', '#4a5a6a');
 
     const historyBtn = document.createElement('button');
     historyBtn.textContent = 'Session History';
-    historyBtn.style.cssText = footerBtnCss;
+    historyBtn.className = uiButtonClass('default');
     historyBtn.onclick = () => {
       void this.toggleSessionHistory(historyBtn);
     };
@@ -252,7 +252,7 @@ export class SeriousTerminalController {
 
     const newSessionBtn = document.createElement('button');
     newSessionBtn.textContent = 'New Session';
-    newSessionBtn.style.cssText = footerBtnCss;
+    newSessionBtn.className = uiButtonClass('primary');
     newSessionBtn.onclick = () => {
       void this.handleNewSession();
     };
@@ -260,7 +260,7 @@ export class SeriousTerminalController {
 
     const clearHistoryBtn = document.createElement('button');
     clearHistoryBtn.textContent = 'Clear History';
-    clearHistoryBtn.style.cssText = footerBtnCss;
+    clearHistoryBtn.className = uiButtonClass('default');
     clearHistoryBtn.onclick = () => {
       void this.handleClearHistory();
     };
@@ -268,7 +268,7 @@ export class SeriousTerminalController {
 
     const closeSessionBtn = document.createElement('button');
     closeSessionBtn.textContent = 'Close Session';
-    closeSessionBtn.style.cssText = this.buttonCss('#3a2a2a', '#8f5d5d');
+    closeSessionBtn.className = uiButtonClass('danger');
     closeSessionBtn.onclick = () => {
       void this.handleCloseSession();
     };
@@ -277,20 +277,20 @@ export class SeriousTerminalController {
     // Teams Remote Agents (011): mirror of TerminalOverlay's control (Principle VI).
     this.teamsRemoteBtn = document.createElement('button');
     this.teamsRemoteBtn.textContent = '💬 Teams Remote';
-    this.teamsRemoteBtn.style.cssText = this.buttonCss('#2a3a5a', '#5a6aa0');
+    this.teamsRemoteBtn.className = uiButtonClass('teams');
     this.teamsRemoteBtn.style.display = 'none';
     this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
     buttonGrid.appendChild(this.teamsRemoteBtn);
 
     this.fullscreenBtn = document.createElement('button');
     this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';
-    this.fullscreenBtn.style.cssText = this.buttonCss('#2a2f4a', '#5a6aa0');
+    this.fullscreenBtn.className = uiButtonClass('default');
     this.fullscreenBtn.onclick = () => this.toggleFullWidth();
     buttonGrid.appendChild(this.fullscreenBtn);
 
     const refreshFocusBtn = document.createElement('button');
     refreshFocusBtn.textContent = 'Refresh Focus';
-    refreshFocusBtn.style.cssText = this.buttonCss('#2a3a2a', '#4f7b63');
+    refreshFocusBtn.className = uiButtonClass('success');
     refreshFocusBtn.onclick = () => this.refreshFocusAndGeometry();
     buttonGrid.appendChild(refreshFocusBtn);
     spriteCardRight.appendChild(buttonGrid);
@@ -299,6 +299,7 @@ export class SeriousTerminalController {
     this.spriteCardEl.appendChild(spriteCardRight);
 
     this.ensureXtermStyles();
+    injectUiKit();
     this.container.appendChild(header);
     this.container.appendChild(this.terminalOuterEl);
     this.container.appendChild(this.spriteCardEl);
@@ -679,6 +680,7 @@ export class SeriousTerminalController {
       return;
     }
     this.teamsRemoteBtn.disabled = false;
+    this.teamsRemoteBtn.className = uiButtonClass(online ? 'teams-online' : 'teams');
     this.teamsRemoteBtn.textContent = online ? '🟢 Teams Online' : '💬 Teams Remote';
   }
 
@@ -796,7 +798,8 @@ export class SeriousTerminalController {
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close';
-    closeBtn.style.cssText = `${this.buttonCss('#2a2f4a', '#5a6aa0')} margin-top: 10px;`;
+    closeBtn.className = uiButtonClass('default');
+    closeBtn.style.marginTop = '10px';
     closeBtn.onclick = () => this.closeSessionHistoryPopover();
     pop.appendChild(closeBtn);
 
@@ -1198,19 +1201,5 @@ export class SeriousTerminalController {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}m ${secs}s`;
-  }
-
-  private buttonCss(background: string, border: string): string {
-    return `
-      background: ${background};
-      border: 1px solid ${border};
-      color: #d4dbf9;
-      border-radius: 5px;
-      padding: 6px 10px;
-      font-family: inherit;
-      font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
-    `;
   }
 }

@@ -15,6 +15,7 @@ import {
 } from '../config/notifications';
 import { ZIndex } from '../config/zIndex';
 import { type NotificationService } from './NotificationService';
+import { injectUiKit } from './uiKit';
 
 const ALL_EVENT_TYPES: NotificationEventType[] = [
   'turnEnd',
@@ -57,6 +58,7 @@ export class NotificationSettingsPanel {
 
   open(): void {
     if (this.overlay) return;
+    injectUiKit();
 
     const settings = this.service.getSettings();
 
@@ -184,19 +186,10 @@ export class NotificationSettingsPanel {
       </table>
 
       <div style="margin-top: 20px; display: flex; gap: 12px; justify-content: space-between;">
-        <button id="notif-reset-btn" style="
-          background: #2a1a1a; border: 1px solid #633; border-radius: 6px;
-          padding: 8px 16px; color: #f88; cursor: pointer; font-family: inherit; font-size: 12px;
-        ">Reset to Defaults</button>
+        <button id="notif-reset-btn" class="ui-btn ui-btn--danger">Reset to Defaults</button>
         <div style="display: flex; gap: 8px;">
-          <button id="notif-test-btn" style="
-            background: #1a2a1a; border: 1px solid #363; border-radius: 6px;
-            padding: 8px 16px; color: #8f8; cursor: pointer; font-family: inherit; font-size: 12px;
-          ">🔔 Test Toast</button>
-          <button id="notif-save-btn" style="
-            background: #1a1a3a; border: 1px solid #336; border-radius: 6px;
-            padding: 8px 16px; color: #88f; cursor: pointer; font-family: inherit; font-size: 12px;
-          ">💾 Save</button>
+          <button id="notif-test-btn" class="ui-btn ui-btn--success">🔔 Test Toast</button>
+          <button id="notif-save-btn" class="ui-btn ui-btn--primary">💾 Save</button>
         </div>
       </div>
 
