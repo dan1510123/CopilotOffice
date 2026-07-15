@@ -16,6 +16,7 @@ import {
   resetPlayerColors,
 } from '../config/playerCustomization';
 import { ZIndex } from '../config/zIndex';
+import { injectUiKit } from './uiKit';
 
 function hexToCSS(hex: number): string {
   return '#' + hex.toString(16).padStart(6, '0');
@@ -51,6 +52,7 @@ export class SpriteCustomizerPanel {
     if (this.container) this.hide();
 
     this.currentColors = loadPlayerColors();
+    injectUiKit();
 
     this.container = document.createElement('div');
     this.container.style.cssText = `
@@ -188,17 +190,7 @@ export class SpriteCustomizerPanel {
         ${sections}
       </div>
       <div style="border-top: 1px solid #2a2a3e; padding-top: 16px;">
-        <button id="sprite-customizer-reset" style="
-          width: 100%;
-          background: #2a1a1a;
-          border: 1px solid #633;
-          border-radius: 6px;
-          padding: 8px;
-          color: #f88;
-          cursor: pointer;
-          font-family: 'Cascadia Code', Consolas, monospace;
-          font-size: 12px;
-        ">Reset to Default</button>
+        <button id="sprite-customizer-reset" class="ui-btn ui-btn--danger" style="width: 100%;">Reset to Default</button>
       </div>
     `;
   }

@@ -179,32 +179,18 @@ export const defaultDashboard: DashboardRenderer = {
             display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
           " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set title'}">${metaTitle || 'Untitled session'}</div>
           ${sessionIdBadgeHtml}
-          <button class="session-new-btn" data-agent="${agent.id}" style="
-            margin-top: 2px;
-            align-self: flex-start;
-            background: #2a3a4a; border: 1px solid #4a5a6a; color: #a9cff7;
-            font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
-            cursor: pointer; transition: background 0.15s, border-color 0.15s;
+          <button class="session-new-btn ui-btn ui-btn--primary" data-agent="${agent.id}" style="
+            margin-top: 2px; align-self: flex-start;
           " title="Start a new session for this agent">🔄 New Session</button>
-          <button class="session-close-btn" data-agent="${agent.id}" style="
+          <button class="session-close-btn ui-btn ui-btn--danger" data-agent="${agent.id}" style="
             align-self: flex-start;
-            background: #3a2a2a; border: 1px solid #6a4a4a; color: #f7a9a9;
-            font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
-            cursor: pointer; transition: background 0.15s, border-color 0.15s;
           " title="Close this agent's session (agent returns to slacking)">✖ Close Session</button>
-          ${teamsEnabled ? `<button class="session-teams-btn" data-agent="${agent.id}" style="
+          ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${teamsOnline.has(agent.id) ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}" style="
             align-self: flex-start;
-            background: ${teamsOnline.has(agent.id) ? '#1a3a2a' : '#1a2a3a'};
-            border: 1px solid ${teamsOnline.has(agent.id) ? '#4a8a6a' : '#356'};
-            color: ${teamsOnline.has(agent.id) ? '#8fffaa' : '#8ccfff'};
-            font-size: ${t.sessionButton}; padding: 4px 10px; border-radius: 4px;
-            cursor: pointer; transition: background 0.15s, border-color 0.15s;
           " title="${teamsOnline.has(agent.id) ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'}">${teamsOnline.has(agent.id) ? '🟢 Teams Online' : '💬 Teams Remote'}</button>` : ''}
           <div style="display: flex; justify-content: flex-end;">
-            <button class="session-edit-btn" data-agent="${agent.id}" style="
-              background: none; border: 1px solid #333; color: #667;
-              font-size: ${t.sessionButton}; padding: 2px 8px; border-radius: 4px;
-              cursor: pointer; transition: color 0.15s, border-color 0.15s;
+            <button class="session-edit-btn ui-btn ui-btn--ghost" data-agent="${agent.id}" style="
+              padding: 5px 9px;
             " title="Edit session title">✏️</button>
           </div>
         </div>

@@ -26,6 +26,7 @@ import { AutoStartCoordinator, setAutoStartCoordinator } from './agents/AutoStar
 import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/agentAutoStart';
 import { isYoloEnabled } from './config/yoloMode';
 import { getActiveAdditionalParams } from './config/additionalParams';
+import { injectUiKit } from './ui/uiKit';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -284,6 +285,7 @@ tabsBar.style.cssText = `
 `;
 container.appendChild(tabsBar);
 injectTopBarStyles();
+injectUiKit();
 
 // Main content area (split view)
 const mainContent = document.createElement('div');
@@ -982,41 +984,31 @@ function showNewOfficeDialog() {
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `
-    background: #1e1e2e; border: 2px solid #4488ff; border-radius: 12px;
-    padding: 24px 32px; min-width: 360px; font-family: monospace; color: #eee;
+    background: #1a1e2e; border: 1px solid #33355a; border-radius: 14px;
+    padding: 24px 32px; min-width: 360px;
+    font-family: 'Cascadia Code', Consolas, monospace; color: #d7defa;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.55);
   `;
   dialog.innerHTML = `
-    <h3 style="margin: 0 0 16px; color: #4488ff;">+ New Office</h3>
+    <h3 style="margin: 0 0 16px; color: #8fb7ff;">+ New Office</h3>
     <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Office Name</label>
     <input id="nod-name" type="text" value="New Office" style="
-      width: 100%; padding: 8px; margin-bottom: 12px; background: #2a2a3a; border: 1px solid #555;
-      border-radius: 6px; color: #fff; font-family: monospace; box-sizing: border-box;
+      width: 100%; padding: 8px; margin-bottom: 12px; background: #12141f; border: 1px solid #2c2c46;
+      border-radius: 8px; color: #fff; font-family: inherit; box-sizing: border-box;
     " />
     <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Working Directory</label>
     <input id="nod-path" type="text" value="." style="
-      width: 100%; padding: 8px; margin-bottom: 12px; background: #2a2a3a; border: 1px solid #555;
-      border-radius: 6px; color: #fff; font-family: monospace; box-sizing: border-box;
+      width: 100%; padding: 8px; margin-bottom: 12px; background: #12141f; border: 1px solid #2c2c46;
+      border-radius: 8px; color: #fff; font-family: inherit; box-sizing: border-box;
     " />
     <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Layout</label>
     <div style="display: flex; gap: 8px; margin-bottom: 20px;">
-      <button id="nod-layout-default" style="
-        flex: 1; padding: 10px; background: #4488ff; border: 2px solid #4488ff; border-radius: 6px;
-        color: #fff; cursor: pointer; font-family: monospace; font-size: 13px;
-      ">🏢 Default</button>
-      <button id="nod-layout-fleet" style="
-        flex: 1; padding: 10px; background: #2a2a3a; border: 2px solid #555; border-radius: 6px;
-        color: #ccc; cursor: pointer; font-family: monospace; font-size: 13px;
-      ">🚀 Fleet V-Team</button>
+      <button id="nod-layout-default" class="ui-btn ui-btn--primary" style="flex: 1; padding: 11px;">🏢 Default</button>
+      <button id="nod-layout-fleet" class="ui-btn ui-btn--ghost" style="flex: 1; padding: 11px;">🚀 Fleet V-Team</button>
     </div>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-      <button id="nod-cancel" style="
-        padding: 8px 20px; background: #333; border: 1px solid #555; border-radius: 6px;
-        color: #aaa; cursor: pointer; font-family: monospace;
-      ">Cancel</button>
-      <button id="nod-create" style="
-        padding: 8px 20px; background: #4488ff; border: none; border-radius: 6px;
-        color: #fff; cursor: pointer; font-family: monospace; font-weight: bold;
-      ">Create</button>
+      <button id="nod-cancel" class="ui-btn ui-btn--ghost" style="padding: 8px 20px;">Cancel</button>
+      <button id="nod-create" class="ui-btn ui-btn--primary" style="padding: 8px 20px;">Create</button>
     </div>
   `;
   overlay.appendChild(dialog);
@@ -1031,12 +1023,12 @@ function showNewOfficeDialog() {
     selectedLayout = layout;
     const active = layout === 'default' ? defaultBtn : fleetBtn;
     const inactive = layout === 'default' ? fleetBtn : defaultBtn;
-    active.style.background = '#4488ff';
-    active.style.borderColor = '#4488ff';
-    active.style.color = '#fff';
-    inactive.style.background = '#2a2a3a';
-    inactive.style.borderColor = '#555';
-    inactive.style.color = '#ccc';
+    active.className = 'ui-btn ui-btn--primary';
+    inactive.className = 'ui-btn ui-btn--ghost';
+    active.style.flex = '1';
+    active.style.padding = '11px';
+    inactive.style.flex = '1';
+    inactive.style.padding = '11px';
     if (layout === 'fleet-vteam' && nameInput.value === 'New Office') {
       nameInput.value = 'Fleet V-Team #1';
     } else if (layout === 'default' && nameInput.value === 'Fleet V-Team #1') {
@@ -1096,43 +1088,43 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
   popover.className = 'office-settings-popover';
   popover.style.cssText = `
     position: absolute;
-    background: #1e1e2e;
-    border: 2px solid #4488ff;
-    border-radius: 10px;
+    background: #1a1e2e;
+    border: 1px solid #33355a;
+    border-radius: 12px;
     padding: 16px 20px;
     min-width: 280px;
     font-family: 'Cascadia Code', Consolas, monospace;
-    color: #eee;
+    color: #d7defa;
     z-index: ${ZIndex.TOP_MODAL};
-    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.55);
   `;
 
   const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   popover.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-      <span style="font-size: 13px; font-weight: bold; color: #8af;">⚙ Office Settings</span>
+      <span style="font-size: 13px; font-weight: bold; color: #8fb7ff;">⚙ Office Settings</span>
       <button class="osp-close" style="background: none; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 2px 6px;">✕</button>
     </div>
     <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Name</label>
     <input class="osp-name" type="text" value="${escapeHtml(office.config.name)}" style="
-      width: 100%; padding: 6px 8px; margin-bottom: 10px; background: #12121f; border: 1px solid #333;
-      border-radius: 5px; color: #dde; font-family: inherit; font-size: 12px; box-sizing: border-box;
+      width: 100%; padding: 6px 8px; margin-bottom: 10px; background: #12141f; border: 1px solid #2c2c46;
+      border-radius: 6px; color: #dde; font-family: inherit; font-size: 12px; box-sizing: border-box;
     " />
     <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Working Directory</label>
     <input class="osp-path" type="text" value="${escapeHtml(office.config.workingDirectory)}" style="
-      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12121f; border: 1px solid #333;
-      border-radius: 5px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12141f; border: 1px solid #2c2c46;
+      border-radius: 6px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
     " />
     <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Teams Channel Override <span style="color:#667;">(optional)</span></label>
     <input class="osp-teams" type="text" value="${escapeHtml(office.config.teamsChannelUrl ?? '')}" placeholder="Leave empty to use the default channel" style="
-      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12121f; border: 1px solid #333;
-      border-radius: 5px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12141f; border: 1px solid #2c2c46;
+      border-radius: 6px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
     " />
     <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Teams Mention Override <span style="color:#667;">(optional)</span></label>
     <div style="display: flex; gap: 6px; margin-bottom: 14px;">
       <select class="osp-teams-mention-type" style="
-        padding: 6px 8px; background: #12121f; border: 1px solid #333; border-radius: 5px;
+        padding: 6px 8px; background: #12141f; border: 1px solid #2c2c46; border-radius: 6px;
         color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
       ">
         <option value="none"${(office.config.teamsMentionType ?? 'none') === 'none' ? ' selected' : ''}>Default</option>
@@ -1140,19 +1132,13 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
         <option value="user"${office.config.teamsMentionType === 'user' ? ' selected' : ''}>User</option>
       </select>
       <input class="osp-teams-mention-value" type="text" value="${escapeHtml(office.config.teamsMentionValue ?? '')}" placeholder="Tag name / user (empty = use default)" style="
-        flex: 1; padding: 6px 8px; background: #12121f; border: 1px solid #333; border-radius: 5px;
+        flex: 1; padding: 6px 8px; background: #12141f; border: 1px solid #2c2c46; border-radius: 6px;
         color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
       " />
     </div>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
-      ${canDelete ? `<button class="osp-delete" style="
-        padding: 5px 12px; background: #2a1a1a; border: 1px solid #633; border-radius: 5px;
-        color: #f88; cursor: pointer; font-family: inherit; font-size: 11px; margin-right: auto;
-      ">Delete</button>` : ''}
-      <button class="osp-save" style="
-        padding: 5px 14px; background: #1a1a3a; border: 1px solid #336; border-radius: 5px;
-        color: #88f; cursor: pointer; font-family: inherit; font-size: 11px;
-      ">💾 Save</button>
+      ${canDelete ? `<button class="osp-delete ui-btn ui-btn--danger" style="margin-right: auto;">Delete</button>` : ''}
+      <button class="osp-save ui-btn ui-btn--primary">💾 Save</button>
     </div>
   `;
 
@@ -1242,30 +1228,9 @@ overviewHeader.innerHTML = `
     <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
   </div>
   <div style="display: flex; align-items: center; gap: 8px;">
-    <button id="agent-sort-btn" style="
-      padding: 6px 12px;
-      background: ${agentSortMode === 'recent' ? '#2a3a5a' : '#252538'};
-      color: ${agentSortMode === 'recent' ? '#8af' : '#666'};
-      border: 1px solid ${agentSortMode === 'recent' ? '#4488ff' : '#444'};
-      border-radius: 4px;
-      font-family: 'Cascadia Code', Consolas, monospace;
-      font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: all 0.2s;
-    " title="Sort agents in this office">⇅ ${agentSortMode === 'recent' ? 'Recent' : 'Default'}</button>
-    <button id="close-office-btn" style="
-      display: none;
-      padding: 6px 14px;
-      background: #cc3344;
-      color: #fff;
-      border: none;
-      border-radius: 4px;
-      font-family: 'Cascadia Code', Consolas, monospace;
-      font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
-    ">✕ Close Office</button>
+    <button id="agent-sort-btn" class="ui-btn ${agentSortMode === 'recent' ? 'ui-btn--primary' : 'ui-btn--ghost'}"
+      title="Sort agents in this office">⇅ ${agentSortMode === 'recent' ? 'Recent' : 'Default'}</button>
+    <button id="close-office-btn" class="ui-btn ui-btn--danger" style="display: none;">✕ Close Office</button>
   </div>
 `;
 overviewHost.appendChild(overviewHeader);
@@ -1279,9 +1244,7 @@ document.getElementById('agent-sort-btn')!.addEventListener('click', () => {
   const sortBtn = document.getElementById('agent-sort-btn');
   if (sortBtn) {
     sortBtn.textContent = `⇅ ${agentSortMode === 'recent' ? 'Recent' : 'Default'}`;
-    sortBtn.style.background = agentSortMode === 'recent' ? '#2a3a5a' : '#252538';
-    sortBtn.style.color = agentSortMode === 'recent' ? '#8af' : '#666';
-    sortBtn.style.borderColor = agentSortMode === 'recent' ? '#4488ff' : '#444';
+    sortBtn.className = `ui-btn ${agentSortMode === 'recent' ? 'ui-btn--primary' : 'ui-btn--ghost'}`;
   }
 });
 
@@ -1319,14 +1282,15 @@ statusBar.style.cssText = `
   left: 0;
   right: 0;
   height: 58px;
-  background: #252538;
-  border-top: 1px solid #333;
+  background: #14172480;
+  backdrop-filter: blur(6px);
+  border-top: 1px solid #2c2c46;
   display: flex;
   align-items: center;
   padding: 0 22px;
-  font-family: monospace;
-  font-size: 16px;
-  color: #888;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 13px;
+  color: #9a9ab8;
   z-index: ${ZIndex.STATUS_BAR};
 `;
 document.body.appendChild(statusBar);
@@ -2887,39 +2851,22 @@ function updateStatusBarNow() {
   const thinkingCount = agents.filter(a => a.subState === 'thinking').length;
   const errorCount = agents.filter(a => a.subState === 'error').length;
 
+  const chip = (color: string, label: string) =>
+    `<span style="display:inline-flex;align-items:center;margin-right:10px;padding:4px 11px;border-radius:999px;background:${color}1a;border:1px solid ${color}44;color:${color};font-weight:500;white-space:nowrap;">${label}</span>`;
+
   const html = `
-    <span style="margin-right: 29px; color: #8af;">${officeName}</span>
-    <span style="margin-right: 22px; color: #555;">💤 Slacking ${slackingCount}</span>
-    <span style="margin-right: 22px; color: #ff9944;">🚀 Starting ${startingCount}</span>
-    ${readyCount > 0 ? `<span style="margin-right: 22px; color: #ffffff;">📭 Ready ${readyCount}</span>` : ''}
-    ${doneCount > 0 ? `<span style="margin-right: 22px; color: #4a78ff;">📬 Done ${doneCount}</span>` : ''}
-    <span style="margin-right: 22px; color: #50fa7b;">⚡ Thinking ${thinkingCount}</span>
-    <span style="margin-right: 22px; color: #ffb86c;">⏳ Waiting ${waitingCount}</span>
-    ${errorCount > 0 ? `<span style="margin-right: 22px; color: #f44;">❌ Error ${errorCount}</span>` : ''}
+    <span style="margin-right: 16px; color: #8fb7ff; font-weight: 600; letter-spacing: .3px;">🏢 ${officeName}</span>
+    ${chip('#7a7a99', `💤 Slacking ${slackingCount}`)}
+    ${chip('#ff9944', `🚀 Starting ${startingCount}`)}
+    ${readyCount > 0 ? chip('#e6ebff', `📭 Ready ${readyCount}`) : ''}
+    ${doneCount > 0 ? chip('#6d8bff', `📬 Done ${doneCount}`) : ''}
+    ${chip('#50fa7b', `⚡ Thinking ${thinkingCount}`)}
+    ${chip('#ffb86c', `⏳ Waiting ${waitingCount}`)}
+    ${errorCount > 0 ? chip('#f4556a', `❌ Error ${errorCount}`) : ''}
     <span style="flex: 1;"></span>
-    <button id="reset-sessions-btn" style="
-      background: #3a1a1a;
-      border: 1px solid #c44;
-      color: #f88;
-      font-family: monospace;
-      font-size: 14px;
-      padding: 4px 16px;
-      border-radius: 4px;
-      cursor: pointer;
-      margin-right: 24px;
-    ">⟳ Reset All Sessions</button>
-    <button id="reconnect-statuses-btn" style="
-      background: #1a2a2a;
-      border: 1px solid #4a8;
-      color: #8f8;
-      font-family: monospace;
-      font-size: 14px;
-      padding: 4px 16px;
-      border-radius: 4px;
-      cursor: pointer;
-      margin-right: 24px;
-    ">🔌 Re-connect Statuses</button>
-    <span style="color: #666; font-size: 10px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
+    <button id="reset-sessions-btn" class="ui-btn ui-btn--danger" style="margin-right: 12px;">⟳ Reset All Sessions</button>
+    <button id="reconnect-statuses-btn" class="ui-btn ui-btn--success" style="margin-right: 18px;">🔌 Re-connect Statuses</button>
+    <span style="color: #5b5b78; font-size: 11px;">WASD: Walk | Shift: Run | Space: Talk | F10: Close terminal</span>
   `;
 
   if (html !== lastStatusBarHtml) {

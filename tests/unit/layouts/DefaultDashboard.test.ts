@@ -44,12 +44,12 @@ function ctx(meta: Record<string, { title: string; sessionId?: string }>): Dashb
 describe('DefaultDashboard — session info panel enhancements', () => {
   it('renders the Close Session button alongside New Session for an active agent', () => {
     const html = defaultDashboard.renderCards(ctx({ a1: { title: 'My session' } }));
-    expect(html).toContain('class="session-new-btn"');
-    expect(html).toContain('class="session-close-btn"');
+    expect(html).toContain('class="session-new-btn ');
+    expect(html).toContain('class="session-close-btn ');
     // Close button must carry the same data-agent attribute for delegation.
-    expect(html).toMatch(/class="session-close-btn"[^>]*data-agent="a1"/);
+    expect(html).toMatch(/class="session-close-btn [^"]*"[^>]*data-agent="a1"/);
     // Close button visually distinct (red-ish) and labeled.
-    expect(html).toMatch(/class="session-close-btn"[\s\S]*Close Session/);
+    expect(html).toMatch(/class="session-close-btn [\s\S]*Close Session/);
   });
 
   it('renders a session-id badge with the full id when sessionId is present', () => {

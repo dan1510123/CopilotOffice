@@ -20,6 +20,7 @@ import {
 } from '../config/additionalParams';
 import { ZIndex } from '../config/zIndex';
 import { type NotificationService } from './NotificationService';
+import { injectUiKit } from './uiKit';
 
 const ALL_EVENT_TYPES: NotificationEventType[] = [
   'turnEnd',
@@ -75,6 +76,7 @@ export class SettingsPanel {
 
   open(): void {
     if (this.overlay) return;
+    injectUiKit();
 
     this.overlay = document.createElement('div');
     this.overlay.id = 'settings-overlay';
@@ -160,10 +162,7 @@ export class SettingsPanel {
           Bring agents online in a Microsoft Teams channel so you can drive them from a thread.
           Configure the feature flag and default channel here.
         </p>
-        <button id="settings-teams-btn" style="
-          background: #1a2a3a; border: 1px solid #356; border-radius: 6px;
-          padding: 6px 12px; color: #8cf; cursor: pointer; font-family: inherit; font-size: 12px;
-        ">💬 Open Teams Remote settings…</button>
+        <button id="settings-teams-btn" class="ui-btn ui-btn--teams">💬 Open Teams Remote settings…</button>
       </div>
     `;
   }
@@ -246,16 +245,9 @@ export class SettingsPanel {
         </h3>
         <div style="display: flex; align-items: center; gap: 16px; padding: 8px 0;">
           <span style="color: #aab; font-size: 13px; min-width: 100px;">Background Music</span>
-          <button id="settings-bgm-mute-btn" style="
-            background: #333;
-            border: 1px solid #555;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-            font-family: monospace;
-            padding: 4px 10px;
-            color: ${bgmMuted ? '#ff6666' : '#00ff88'};
+          <button id="settings-bgm-mute-btn" class="ui-btn ui-btn--ghost" style="
             min-width: 60px;
+            color: ${bgmMuted ? '#ff6666' : '#00ff88'};
           ">${bgmMuted ? 'MUTED' : 'ON'}</button>
           <input id="settings-bgm-slider" type="range" min="0" max="100"
             value="${bgmVolume}"
@@ -335,19 +327,10 @@ export class SettingsPanel {
         </table>
 
         <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: space-between;">
-          <button id="settings-notif-reset-btn" style="
-            background: #2a1a1a; border: 1px solid #633; border-radius: 6px;
-            padding: 6px 12px; color: #f88; cursor: pointer; font-family: inherit; font-size: 11px;
-          ">Reset to Defaults</button>
+          <button id="settings-notif-reset-btn" class="ui-btn ui-btn--danger">Reset to Defaults</button>
           <div style="display: flex; gap: 8px;">
-            <button id="settings-notif-test-btn" style="
-              background: #1a2a1a; border: 1px solid #363; border-radius: 6px;
-              padding: 6px 12px; color: #8f8; cursor: pointer; font-family: inherit; font-size: 11px;
-            ">🔔 Test Toast</button>
-            <button id="settings-notif-save-btn" style="
-              background: #1a1a3a; border: 1px solid #336; border-radius: 6px;
-              padding: 6px 12px; color: #88f; cursor: pointer; font-family: inherit; font-size: 11px;
-            ">💾 Save</button>
+            <button id="settings-notif-test-btn" class="ui-btn ui-btn--success">🔔 Test Toast</button>
+            <button id="settings-notif-save-btn" class="ui-btn ui-btn--primary">💾 Save</button>
           </div>
         </div>
 
