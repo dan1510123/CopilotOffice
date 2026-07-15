@@ -1,0 +1,28 @@
+{
+  "$comment": "Patterns scanned by the pre-push hook (scripts/check-internal-references.js). Each 'regex' is a JS RegExp source, matched case-insensitively against added lines in the commits being pushed. Add/remove entries freely. Set SKIP_INTERNAL_REF_CHECK=1 to bypass.",
+  "patterns": [
+    {
+      "name": "Internal ADO / VSTS links",
+      "regex": "\\b(dev\\.azure\\.com|[a-z0-9-]+\\.visualstudio\\.com)\\b"
+    },
+    {
+      "name": "Internal Microsoft domains",
+      "regex": "\\b[a-z0-9.-]+\\.(microsoft\\.com|msft\\.net|windows\\.net|office\\.com|sharepoint\\.com)\\b"
+    },
+    {
+      "name": "Microsoft corp email / alias",
+      "regex": "\\b[a-z0-9._%+-]+@microsoft\\.com\\b"
+    },
+    {
+      "name": "Internal codenames / keywords (edit me)",
+      "regex": "\\b(REPLACE_WITH_CODENAME|CONFIDENTIAL_KEYWORD)\\b"
+    }
+  ],
+  "allowlist": [
+    "223556219\\+Copilot@users\\.noreply\\.github\\.com"
+  ],
+  "ignorePaths": [
+    "internal-references.config.json",
+    "scripts/check-internal-references.js"
+  ]
+}
