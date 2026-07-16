@@ -249,6 +249,51 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   onTeamsToast: (callback: (toast: unknown) => void) => {
     ipcRenderer.on('teams:toast', (_event, toast) => callback(toast));
   },
+
+  // ── Office Orchestrator (spec 016) ─────────────────────────────
+  orchestratorOpen: (): Promise<{ sessionId: string; lifecycle: string; error?: string }> => {
+    return ipcRenderer.invoke('orchestrator:open');
+  },
+  orchestratorInput: (sessionId: string, text: string): Promise<{ ok: boolean; error?: string }> => {
+    return ipcRenderer.invoke('orchestrator:input', { sessionId, text });
+  },
+  orchestratorRespondPermission: (sessionId: string, toolCallId: string, decision: 'approve' | 'deny'): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:permission:respond', { sessionId, toolCallId, decision });
+  },
+  orchestratorClose: (sessionId: string): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:close', { sessionId });
+  },
+  orchestratorRespondCandidates: (requestId: string, candidates: unknown[]): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:candidates:respond', { requestId, candidates });
+  },
+  orchestratorRespondExecute: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:execute:respond', { requestId, result });
+  },
+  onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEvent }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; event: CopilotEvent }) => callback(payload);
+    ipcRenderer.on('orchestrator:event', handler);
+    return () => ipcRenderer.removeListener('orchestrator:event', handler);
+  },
+  onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => callback(payload);
+    ipcRenderer.on('orchestrator:permission:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:permission:request', handler);
+  },
+  onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:candidates:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:candidates:request', handler);
+  },
+  onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:execute:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:execute:request', handler);
+  },
+  onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; reason: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:exit', handler);
+    return () => ipcRenderer.removeListener('orchestrator:exit', handler);
+  },
 });
 
 // Type declaration for the exposed API
@@ -356,7 +401,34 @@ declare global {
       teamsSaveSettings: (settings: TeamsSettingsShape) => Promise<{ success: boolean; parsed?: unknown; error?: string }>;
       onTeamsStatusChanged: (callback: (status: TeamsAgentStatus) => void) => void;
       onTeamsToast: (callback: (toast: { level: string; message: string; durationMs?: number }) => void) => void;
+      orchestratorOpen: () => Promise<{ sessionId: string; lifecycle: string; error?: string }>;
+      orchestratorInput: (sessionId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
+      orchestratorRespondPermission: (sessionId: string, toolCallId: string, decision: 'approve' | 'deny') => Promise<{ ok: boolean }>;
+      orchestratorClose: (sessionId: string) => Promise<{ ok: boolean }>;
+      orchestratorRespondCandidates: (requestId: string, candidates: OrchestratorCandidate[]) => Promise<{ ok: boolean }>;
+      orchestratorRespondExecute: (requestId: string, result: OrchestratorResult) => Promise<{ ok: boolean }>;
+      onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEventData }) => void) => () => void;
+      onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => void) => () => void;
+      onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
+      onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => () => void;
+      onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => () => void;
     };
+  }
+
+  interface OrchestratorCandidate {
+    agentId: string;
+    name: string;
+    skill: string;
+    description: string;
+    source: 'idle-seated' | 'reserve';
+    deskId: string | null;
+    officeId: string;
+  }
+
+  interface OrchestratorResult {
+    agentId: string;
+    outcome: 'started' | 'denied' | 'invalid-target' | 'already-active' | 'failed';
+    message: string;
   }
 
   interface TeamsAgentStatus {

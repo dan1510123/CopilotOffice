@@ -15,6 +15,7 @@ A 2D pixel-art RPG-style desktop game where you walk around a virtual office and
 - **6 reserve agents** — Azure (Cloud Wizard), Val (Validator), Rex (Deployer), Doc (Code Doctor), Scout (Ranger), and Penny (Accountant) have pre-generated sprites ready to seat at an empty desk
 - **Arthur (the Architect)** — hosts Meeting Mode and appears in fleet v-team offices (can be toggled into the default office in config)
 - **Teams remote agents** — bring any agent online in a Microsoft Teams channel thread; anyone can reply in-thread to drive the agent's terminal session and get answers posted back (feature-flagged)
+- **Office Orchestrator** — a concierge agent (its own always-gated Copilot session) that you chat with in natural language ("someone to review my code") and that proposes and, on your approval, brings the right office agent online for you
 - **Multi-office management** — switch between projects with independent agent state and working directories per office
 - **Meeting Mode** — a private meeting room where Arthur decomposes a complex request into a structured, reviewable plan
 - **Fleet execution** — approved plans spin up parallel agent sessions in a dedicated v-team office
@@ -85,6 +86,12 @@ npm run dev
 | `F10` | Close terminal |
 | `Escape` | Close terminal or mini-game |
 | `Ctrl+Shift+N` | New terminal session (terminal focused) |
+
+> The **🎩 Office Orchestrator** button in the top toolbar opens the orchestrator
+> chat. Describe what you need in plain language and it proposes an agent to bring
+> online. Bringing an agent online is **always gated** — the orchestrator runs in
+> its own non-YOLO session, so it asks for your approval every time, regardless of
+> the global YOLO setting.
 
 ## Project Structure
 

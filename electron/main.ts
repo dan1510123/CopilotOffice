@@ -18,6 +18,8 @@ import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
 import { createRelaySender, type MentionResolver } from './teams/relaySender';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
+import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
+import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -165,6 +167,15 @@ app.whenReady().then(async () => {
     onHardReloadRequested: () => { pendingHardReload = true; },
     officeStore,
   });
+
+  // Office Orchestrator agent (spec 016): its own always-gated, non-YOLO SDK
+  // session, separate from the terminal server's office sessions. Panel/stream
+  // teardown detaches only — it never kills office sessions or this session.
+  const orchestratorManager = new OrchestratorSessionManager(
+    makeOrchestratorEmitter(() => mainWindow),
+    process.cwd(),
+  );
+  registerOrchestratorIpc({ manager: orchestratorManager });
 
   await relay.spawnServer(__dirname);
 

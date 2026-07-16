@@ -17,6 +17,10 @@ import { NotificationService } from './ui/NotificationService';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { TeamsSettingsOverlay } from './ui/TeamsSettingsOverlay';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
+import { OrchestratorPanel } from './ui/OrchestratorPanel';
+import { computeBringOnlineCandidates } from './office/orchestratorCandidates';
+import { executeBringOnline } from './office/orchestratorExecute';
+import type { BringOnlineOutcome } from '../electron/orchestrator/types';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool, ToolEntry } from './util/toolStatus';
@@ -824,6 +828,18 @@ function renderOfficeTabs() {
       font-size: 16px;
       user-select: none;
     " title="Settings">⚙</div>
+    <div id="orchestrator-btn" class="tb-pill" style="
+      height: 36px;
+      min-width: 36px;
+      justify-content: center;
+      background: #1e1e30;
+      border: 1px solid #2c2c46;
+      border-radius: 9px;
+      cursor: pointer;
+      color: #b8b8d4;
+      font-size: 16px;
+      user-select: none;
+    " title="Office Orchestrator">🎩</div>
   `;
 
   const html = `
@@ -897,6 +913,10 @@ function renderOfficeTabs() {
 
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     settingsPanel.toggle();
+  });
+
+  document.getElementById('orchestrator-btn')?.addEventListener('click', () => {
+    toggleOrchestratorPanel();
   });
 
   document.getElementById('sprite-customizer-btn')?.addEventListener('click', (e) => {
@@ -1774,7 +1794,67 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
   },
 });
 
-// ── Terminal Content Updates ────────────────────────────────────
+// ── Office Orchestrator (spec 016) ───────────────────────────────
+// A dedicated conversational agent (own non-YOLO SDK session in the main
+// process) that brings other office agents online via a permission-gated tool.
+// The panel is the TUI; this file owns the renderer round-trips because they
+// need OfficeManager (candidate compute + execute) and the scene delegate for
+// reserve activation.
+let orchestratorPanel: OrchestratorPanel | null = null;
+
+function getOrchestratorPanel(): OrchestratorPanel | null {
+  const scene = phaserGameRef?.scene.getScene('OfficeScene');
+  if (!scene) return null;
+  if (!orchestratorPanel) {
+    orchestratorPanel = new OrchestratorPanel(scene);
+  }
+  return orchestratorPanel;
+}
+
+function toggleOrchestratorPanel(): void {
+  const panel = getOrchestratorPanel();
+  if (!panel) return;
+  if (panel.isOpen()) panel.hide();
+  else void panel.show();
+}
+
+// Reserve activation must run inside OfficeScene (spawnReserveAgent is private).
+// Round-trip through a fire-and-forget game event with a response callback.
+function activateReserveViaScene(deskId: string): Promise<BringOnlineOutcome> {
+  return new Promise<BringOnlineOutcome>((resolve) => {
+    if (!phaserGameRef) {
+      resolve('invalid-target');
+      return;
+    }
+    let settled = false;
+    const respond = (outcome: BringOnlineOutcome) => {
+      if (settled) return;
+      settled = true;
+      resolve(outcome);
+    };
+    phaserGameRef.events.emit('orchestrator:activate-reserve', { deskId, respond });
+    // Safety net: if the scene never responds, don't hang the tool.
+    setTimeout(() => respond('failed'), 15000);
+  });
+}
+
+if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
+  window.copilotBridge.onOrchestratorCandidatesRequest(({ requestId }) => {
+    const candidates = computeBringOnlineCandidates();
+    void window.copilotBridge.orchestratorRespondCandidates(requestId, candidates);
+  });
+  window.copilotBridge.onOrchestratorExecuteRequest(({ requestId, agentId }) => {
+    void (async () => {
+      const result = await executeBringOnline(agentId, {
+        startSeated: (officeId, aid) => warmAgentSession(officeId, aid),
+        activateReserve: activateReserveViaScene,
+      });
+      void window.copilotBridge.orchestratorRespondExecute(requestId, result);
+    })();
+  });
+}
+
+
 
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';

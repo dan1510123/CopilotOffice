@@ -49,6 +49,21 @@ test('electron smoke: boot + office create/switch flow', async () => {
 
     await page.locator('.office-tab', { hasText: 'Main Office' }).click();
     await expect(page.locator('#terminal-subtitle')).toContainText('Main Office');
+
+    // Spec 016: open the Office Orchestrator panel via its toolbar button and
+    // assert the TUI renders with an interactive input (smoke only — no real
+    // bring-online is exercised).
+    await page.locator('#orchestrator-btn').click();
+    await expect(page.locator('#orchestrator-overlay')).toBeVisible();
+    const orcInput = page.locator('#orchestrator-overlay input[type="text"]');
+    await expect(orcInput).toBeVisible();
+    await expect(orcInput).toBeEnabled();
+
+    // Closing the panel must not tear down the app (session-integrity: office
+    // agent sessions stay attached; the panel only detaches its own stream).
+    await page.locator('#orchestrator-overlay').click({ position: { x: 5, y: 5 } });
+    await expect(page.locator('#orchestrator-overlay')).toHaveCount(0);
+    await expect(page.locator('#status-bar')).toBeVisible();
   } finally {
     await app.close();
   }
