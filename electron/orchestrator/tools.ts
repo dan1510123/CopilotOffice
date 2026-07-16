@@ -9,11 +9,18 @@
 
 import { defineTool } from '@github/copilot-sdk';
 import type { Tool } from '@github/copilot-sdk';
-import type { BringOnlineCandidate, BringOnlineResult } from './types';
+import type {
+  BringOnlineCandidate,
+  BringOnlineResult,
+  OfficeSummary,
+  SwitchOfficeResult,
+} from './types';
 
 export interface OrchestratorToolDeps {
   requestCandidates: () => Promise<BringOnlineCandidate[]>;
   requestExecute: (agentId: string) => Promise<BringOnlineResult>;
+  requestOffices: () => Promise<OfficeSummary[]>;
+  requestSwitch: (officeId: string) => Promise<SwitchOfficeResult>;
   /** Reserved for future use; officeId is currently derived from candidates. */
   getOfficeId: () => string;
 }
@@ -59,5 +66,43 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     },
   });
 
-  return [listTool, bringOnlineTool];
+  const listOfficesTool = defineTool('list_offices', {
+    description:
+      'List every virtual office (not just the one currently shown), so you can tell ' +
+      'whether the agent the user needs might live in a different office. Returns each ' +
+      'office\'s officeId, name, layout, whether it is the current office, and how many ' +
+      'agents are online there. Takes no arguments.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    skipPermission: true,
+    handler: async () => {
+      const offices = await deps.requestOffices();
+      return { offices };
+    },
+  });
+
+  const switchOfficeTool = defineTool('switch_office', {
+    description:
+      'Switch the desktop to a different office by officeId (use one returned by ' +
+      'list_offices). Do this before bringing an agent online when the right agent lives ' +
+      'in another office. This is a reversible navigation action and is NOT gated. After ' +
+      'switching, call list_office_agents again — the candidate list is scoped to the ' +
+      'newly-selected office.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Target officeId from list_offices.',
+        },
+      },
+      required: ['officeId'],
+      additionalProperties: false,
+    },
+    skipPermission: true,
+    handler: async (args: { officeId: string }) => {
+      return deps.requestSwitch(args.officeId);
+    },
+  });
+
+  return [listTool, listOfficesTool, bringOnlineTool, switchOfficeTool];
 }

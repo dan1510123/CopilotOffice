@@ -41,6 +41,8 @@ function makeManager() {
     emitPermissionRequest: (p) => permissionRequests.push({ toolCallId: p.toolCallId }),
     emitCandidatesRequest: () => {},
     emitExecuteRequest: () => {},
+    emitOfficesRequest: () => {},
+    emitSwitchRequest: () => {},
     emitExit: () => {},
   };
   return { manager: new OrchestratorSessionManager(emitter, '.'), permissionRequests };
@@ -94,5 +96,14 @@ describe('orchestrator IPC surface / session lifecycle', () => {
     expect(permissionRequests).toHaveLength(1);
     manager.close();
     await expect(pending).resolves.toEqual({ kind: 'denied-interactively-by-user' });
+  });
+
+  it('respondOffices / respondSwitch return false for an unknown requestId', async () => {
+    const { manager } = makeManager();
+    await manager.open();
+    expect(manager.respondOffices('nope', [])).toBe(false);
+    expect(
+      manager.respondSwitch('nope', { officeId: 'x', outcome: 'switched', message: 'x' }),
+    ).toBe(false);
   });
 });

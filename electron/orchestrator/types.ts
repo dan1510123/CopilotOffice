@@ -67,3 +67,32 @@ export interface OfficeAgentsSnapshot {
   officeId: string;
   candidates: BringOnlineCandidate[];
 }
+
+/**
+ * One office as seen by the orchestrator's `list_offices` tool. Lets the
+ * orchestrator orient across every office (not just the currently viewed one)
+ * so it can decide whether to `switch_office` before bringing an agent online.
+ * Built in the renderer from OfficeManager.getAllOffices() + per-office status.
+ */
+export interface OfficeSummary {
+  officeId: string;
+  name: string;
+  layout: string;
+  /** True for the office currently shown on the desktop. */
+  isCurrent: boolean;
+  /** Number of agents currently online (active) in this office. */
+  activeAgentCount: number;
+}
+
+/** Outcome of the `switch_office` tool (ungated navigation). */
+export type SwitchOfficeOutcome =
+  | 'switched'
+  | 'already-current'
+  | 'invalid-target'
+  | 'failed';
+
+export interface SwitchOfficeResult {
+  officeId: string;
+  outcome: SwitchOfficeOutcome;
+  message: string;
+}

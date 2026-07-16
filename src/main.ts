@@ -20,6 +20,7 @@ import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { OrchestratorPanel } from './ui/OrchestratorPanel';
 import { computeBringOnlineCandidates } from './office/orchestratorCandidates';
 import { executeBringOnline } from './office/orchestratorExecute';
+import { computeOfficeSummaries, resolveSwitchOffice } from './office/orchestratorOffices';
 import type { BringOnlineOutcome } from '../electron/orchestrator/types';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
@@ -1852,6 +1853,18 @@ if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
       void window.copilotBridge.orchestratorRespondExecute(requestId, result);
     })();
   });
+  if (window.copilotBridge.onOrchestratorOfficesRequest) {
+    window.copilotBridge.onOrchestratorOfficesRequest(({ requestId }) => {
+      const offices = computeOfficeSummaries();
+      void window.copilotBridge.orchestratorRespondOffices(requestId, offices);
+    });
+  }
+  if (window.copilotBridge.onOrchestratorSwitchRequest) {
+    window.copilotBridge.onOrchestratorSwitchRequest(({ requestId, officeId }) => {
+      const result = resolveSwitchOffice(officeId, (id) => switchToOffice(id));
+      void window.copilotBridge.orchestratorRespondSwitch(requestId, result);
+    });
+  }
 }
 
 

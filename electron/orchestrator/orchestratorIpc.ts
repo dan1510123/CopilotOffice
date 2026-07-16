@@ -6,7 +6,7 @@
 
 import { ipcMain, BrowserWindow } from 'electron';
 import type { OrchestratorSessionManager, OrchestratorEmitter } from './orchestratorSessionManager';
-import type { BringOnlineCandidate, BringOnlineResult } from './types';
+import type { BringOnlineCandidate, BringOnlineResult, OfficeSummary, SwitchOfficeResult } from './types';
 
 export interface OrchestratorIpcHooks {
   manager: OrchestratorSessionManager;
@@ -23,6 +23,8 @@ export function makeOrchestratorEmitter(getWindow: () => BrowserWindow | null): 
     emitPermissionRequest: (payload) => send('orchestrator:permission:request', payload),
     emitCandidatesRequest: (payload) => send('orchestrator:candidates:request', payload),
     emitExecuteRequest: (payload) => send('orchestrator:execute:request', payload),
+    emitOfficesRequest: (payload) => send('orchestrator:offices:request', payload),
+    emitSwitchRequest: (payload) => send('orchestrator:switch:request', payload),
     emitExit: (payload) => send('orchestrator:exit', payload),
   };
 }
@@ -73,6 +75,22 @@ export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
     'orchestrator:execute:respond',
     (_e, args: { requestId: string; result: BringOnlineResult }) => {
       const ok = manager.respondExecute(args.requestId, args.result);
+      return { ok };
+    },
+  );
+
+  ipcMain.handle(
+    'orchestrator:offices:respond',
+    (_e, args: { requestId: string; offices: OfficeSummary[] }) => {
+      const ok = manager.respondOffices(args.requestId, args.offices ?? []);
+      return { ok };
+    },
+  );
+
+  ipcMain.handle(
+    'orchestrator:switch:respond',
+    (_e, args: { requestId: string; result: SwitchOfficeResult }) => {
+      const ok = manager.respondSwitch(args.requestId, args.result);
       return { ok };
     },
   );

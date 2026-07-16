@@ -269,6 +269,12 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   orchestratorRespondExecute: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
     return ipcRenderer.invoke('orchestrator:execute:respond', { requestId, result });
   },
+  orchestratorRespondOffices: (requestId: string, offices: unknown[]): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:offices:respond', { requestId, offices });
+  },
+  orchestratorRespondSwitch: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:switch:respond', { requestId, result });
+  },
   onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEvent }) => void) => {
     const handler = (_event: unknown, payload: { sessionId: string; event: CopilotEvent }) => callback(payload);
     ipcRenderer.on('orchestrator:event', handler);
@@ -288,6 +294,16 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string }) => callback(payload);
     ipcRenderer.on('orchestrator:execute:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:execute:request', handler);
+  },
+  onOrchestratorOfficesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:offices:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:offices:request', handler);
+  },
+  onOrchestratorSwitchRequest: (callback: (payload: { sessionId: string; requestId: string; officeId: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; officeId: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:switch:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:switch:request', handler);
   },
   onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => {
     const handler = (_event: unknown, payload: { sessionId: string; reason: string }) => callback(payload);
@@ -407,10 +423,14 @@ declare global {
       orchestratorClose: (sessionId: string) => Promise<{ ok: boolean }>;
       orchestratorRespondCandidates: (requestId: string, candidates: OrchestratorCandidate[]) => Promise<{ ok: boolean }>;
       orchestratorRespondExecute: (requestId: string, result: OrchestratorResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondOffices: (requestId: string, offices: OrchestratorOfficeSummary[]) => Promise<{ ok: boolean }>;
+      orchestratorRespondSwitch: (requestId: string, result: OrchestratorSwitchResult) => Promise<{ ok: boolean }>;
       onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEventData }) => void) => () => void;
       onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => void) => () => void;
       onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
       onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => () => void;
+      onOrchestratorOfficesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
+      onOrchestratorSwitchRequest: (callback: (payload: { sessionId: string; requestId: string; officeId: string }) => void) => () => void;
       onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => () => void;
     };
   }
@@ -428,6 +448,20 @@ declare global {
   interface OrchestratorResult {
     agentId: string;
     outcome: 'started' | 'denied' | 'invalid-target' | 'already-active' | 'failed';
+    message: string;
+  }
+
+  interface OrchestratorOfficeSummary {
+    officeId: string;
+    name: string;
+    layout: string;
+    isCurrent: boolean;
+    activeAgentCount: number;
+  }
+
+  interface OrchestratorSwitchResult {
+    officeId: string;
+    outcome: 'switched' | 'already-current' | 'invalid-target' | 'failed';
     message: string;
   }
 

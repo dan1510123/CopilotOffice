@@ -1,9 +1,12 @@
 # Contract: Orchestrator SDK Tools + Permission Gate
 
 The orchestrator agent's SDK session (`@github/copilot-sdk@1.0.5`) is configured with
-two in-process tools (`SessionConfigBase.tools: Tool<any>[]`, via `defineTool`) and a
+in-process tools (`SessionConfigBase.tools: Tool<any>[]`, via `defineTool`) and a
 bespoke `onPermissionRequest` handler. Types below reference the installed SDK
 (`node_modules/@github/copilot-sdk/dist/types.d.ts`).
+
+The toolset is: `list_office_agents` + `bring_agent_online` (per-agent, current office),
+plus `list_offices` + `switch_office` (cross-office navigation).
 
 ## Tool: `list_office_agents` (read-only, auto-approved)
 
@@ -50,6 +53,52 @@ The single mutation the agent can request.
   `BringOnlineResult` to the model. On `invalid-target` / `already-active` / `failed`,
   the handler returns that outcome so the agent can adjust or inform the user.
 
+## Tool: `list_offices` (read-only, auto-approved)
+
+Lets the agent see every office (not just the current one) so it can decide whether the
+agent the user needs lives elsewhere and whether to `switch_office` first.
+
+- **Registration**: `defineTool('list_offices', { description, parameters, handler, skipPermission: true })`.
+- **Parameters**: `{}` (no args).
+- **Handler** (main): round-trips to the renderer via
+  `orchestrator:offices:request` → `orchestrator:offices:respond` and returns the
+  `OfficeSummary[]`.
+- **Returns** to the model:
+  ```jsonc
+  {
+    "offices": [
+      { "officeId": "office-0", "name": "HQ", "layout": "default",
+        "isCurrent": true, "activeAgentCount": 2 },
+      { "officeId": "office-1", "name": "Fleet", "layout": "fleet-vteam",
+        "isCurrent": false, "activeAgentCount": 0 }
+    ]
+  }
+  ```
+- **Gate**: none (read-only, `skipPermission`).
+
+## Tool: `switch_office` (ungated navigation)
+
+Switches the desktop to a different office. Reversible navigation — **not** gated.
+
+- **Registration**: `defineTool('switch_office', { description, parameters, handler, skipPermission: true })`.
+- **Parameters** (JSON schema):
+  ```jsonc
+  {
+    "type": "object",
+    "properties": {
+      "officeId": { "type": "string", "description": "Target officeId from list_offices" }
+    },
+    "required": ["officeId"]
+  }
+  ```
+- **Handler** (main): round-trips via `orchestrator:switch:request` →
+  `orchestrator:switch:respond`; the renderer validates the id and delegates the actual
+  desktop switch to `switchToOffice()`. Returns a `SwitchOfficeResult` with outcome
+  `switched` / `already-current` / `invalid-target` / `failed`.
+- **Gate**: none (`skipPermission`) per design decision — switching offices is
+  non-destructive and reversible. Note: it changes what the desktop user sees, and after
+  switching the `list_office_agents` candidate list is scoped to the new office.
+
 ## Permission gate (`onPermissionRequest`)
 
 - **Signature** (SDK): `PermissionHandler = (request: PermissionRequest, invocation: { sessionId: string }) => Promise<PermissionRequestResult> | PermissionRequestResult`.
@@ -71,7 +120,7 @@ The single mutation the agent can request.
 ## Session configuration invariants
 
 - Session created via `new CopilotClient({ connection: RuntimeConnection.forStdio(...) })`
-  → `createSession({ workingDirectory, streaming: true, tools: [listTool, bringOnlineTool], onPermissionRequest, onUserInputRequest })`.
+  → `createSession({ workingDirectory, streaming: true, tools: [listTool, listOfficesTool, bringOnlineTool, switchOfficeTool], onPermissionRequest, onUserInputRequest })`.
 - **No `--yolo`**: the stdio SDK backend launches no `--yolo` host; combined with the
   non-YOLO permission handler, bring-online is structurally always gated.
 - Stream consumed via `session.on(evt => …)` → `mapSdkEventToCopilotEvent` → forwarded

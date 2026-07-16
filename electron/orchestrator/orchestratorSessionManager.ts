@@ -21,9 +21,11 @@ import { buildOrchestratorTools } from './tools';
 import type {
   BringOnlineCandidate,
   BringOnlineResult,
+  OfficeSummary,
   OrchestratorLifecycle,
   OrchestratorSessionInfo,
   PermissionDecision,
+  SwitchOfficeResult,
 } from './types';
 import type { CopilotEvent } from '../terminal/events-watcher';
 
@@ -43,8 +45,18 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '4. If there is no good fit, or the candidate list is empty, DO NOT guess — tell the',
   '   user plainly that nothing matches and suggest they pick manually.',
   '',
+  'Working across offices:',
+  '- The candidate list from `list_office_agents` is scoped to the office currently shown',
+  '  on the desktop. If nothing fits there, call `list_offices` to see all offices (each',
+  '  has an `officeId`, `name`, `layout`, `isCurrent`, and `activeAgentCount`).',
+  '- If a better office exists, call `switch_office` with its `officeId`, then call',
+  '  `list_office_agents` again to re-evaluate candidates in that office. Switching is a',
+  '  reversible navigation action and is not gated; it also changes what the desktop user',
+  '  sees, so mention when you switch.',
+  '',
   'Keep replies concise and conversational. Never invent an agentId that was not',
-  'returned by `list_office_agents`.',
+  'returned by `list_office_agents`, and never invent an officeId that was not returned',
+  'by `list_offices`.',
 ].join('\n');
 
 /** Emitters the manager uses to push to the renderer (wired by orchestratorIpc). */
@@ -58,6 +70,8 @@ export interface OrchestratorEmitter {
   }): void;
   emitCandidatesRequest(payload: { sessionId: string; requestId: string }): void;
   emitExecuteRequest(payload: { sessionId: string; requestId: string; agentId: string }): void;
+  emitOfficesRequest(payload: { sessionId: string; requestId: string }): void;
+  emitSwitchRequest(payload: { sessionId: string; requestId: string; officeId: string }): void;
   emitExit(payload: { sessionId: string; reason: string }): void;
 }
 
@@ -76,6 +90,8 @@ export class OrchestratorSessionManager {
   private readonly pendingPermissions = new Map<string, (result: PermissionRequestResult) => void>();
   private readonly pendingCandidates = new Map<string, (candidates: BringOnlineCandidate[]) => void>();
   private readonly pendingExecute = new Map<string, (result: BringOnlineResult) => void>();
+  private readonly pendingOffices = new Map<string, (offices: OfficeSummary[]) => void>();
+  private readonly pendingSwitch = new Map<string, (result: SwitchOfficeResult) => void>();
 
   constructor(
     private readonly emitter: OrchestratorEmitter,
@@ -134,6 +150,8 @@ export class OrchestratorSessionManager {
     const tools = buildOrchestratorTools({
       requestCandidates: () => this.requestCandidates(),
       requestExecute: (agentId) => this.requestExecute(agentId),
+      requestOffices: () => this.requestOffices(),
+      requestSwitch: (officeId) => this.requestSwitch(officeId),
       getOfficeId: () => this.lastOfficeId,
     });
 
@@ -260,6 +278,40 @@ export class OrchestratorSessionManager {
     const resolve = this.pendingExecute.get(requestId);
     if (!resolve) return false;
     this.pendingExecute.delete(requestId);
+    resolve(result);
+    return true;
+  }
+
+  private requestOffices(): Promise<OfficeSummary[]> {
+    const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
+    const requestId = randomUUID();
+    return new Promise<OfficeSummary[]>((resolve) => {
+      this.pendingOffices.set(requestId, resolve);
+      this.emitter.emitOfficesRequest({ sessionId, requestId });
+    });
+  }
+
+  respondOffices(requestId: string, offices: OfficeSummary[]): boolean {
+    const resolve = this.pendingOffices.get(requestId);
+    if (!resolve) return false;
+    this.pendingOffices.delete(requestId);
+    resolve(offices);
+    return true;
+  }
+
+  private requestSwitch(officeId: string): Promise<SwitchOfficeResult> {
+    const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
+    const requestId = randomUUID();
+    return new Promise<SwitchOfficeResult>((resolve) => {
+      this.pendingSwitch.set(requestId, resolve);
+      this.emitter.emitSwitchRequest({ sessionId, requestId, officeId });
+    });
+  }
+
+  respondSwitch(requestId: string, result: SwitchOfficeResult): boolean {
+    const resolve = this.pendingSwitch.get(requestId);
+    if (!resolve) return false;
+    this.pendingSwitch.delete(requestId);
     resolve(result);
     return true;
   }
