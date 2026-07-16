@@ -45,6 +45,8 @@ export class OrchestratorPanel {
   private inputEl: HTMLInputElement | null = null;
   private permissionCard: HTMLDivElement | null = null;
   private statusBanner: HTMLDivElement | null = null;
+  private teamsBtn: HTMLButtonElement | null = null;
+  private teamsOnline = false;
 
   private terminal: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
@@ -145,12 +147,22 @@ export class OrchestratorPanel {
     const title = document.createElement('div');
     title.innerHTML = '🎩 <b>Office Orchestrator</b> <span style="color:#6a6a8a;font-size:12px">— always asks before bringing anyone online</span>';
     title.style.color = '#e0e0e0';
+    const headerRight = document.createElement('div');
+    headerRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
+    const teamsBtn = document.createElement('button');
+    teamsBtn.textContent = '💬 Bring online in Teams';
+    teamsBtn.title = 'Bring the orchestrator online in a Microsoft Teams channel thread so you can drive it remotely.';
+    teamsBtn.style.cssText = 'padding:5px 10px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#cde;font-size:12px;cursor:pointer;';
+    teamsBtn.onclick = () => this.toggleTeams();
+    this.teamsBtn = teamsBtn;
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
     closeBtn.style.cssText = 'background:none;border:none;color:#aaa;font-size:18px;cursor:pointer;';
     closeBtn.onclick = () => this.hide();
+    headerRight.appendChild(teamsBtn);
+    headerRight.appendChild(closeBtn);
     header.appendChild(title);
-    header.appendChild(closeBtn);
+    header.appendChild(headerRight);
 
     // Status banner (hidden until an exit/error).
     const banner = document.createElement('div');
@@ -389,6 +401,42 @@ export class OrchestratorPanel {
     this.permissionCard?.remove();
     this.permissionCard = null;
     void window.copilotBridge.orchestratorRespondPermission(this.sessionId, toolCallId, decision);
+  }
+
+  // ── Teams remote (spec 016 Workstream B) ─────────────────────────
+  private async toggleTeams(): Promise<void> {
+    if (!window.copilotBridge?.teamsRegisterOrchestrator) return;
+    if (this.teamsBtn) this.teamsBtn.disabled = true;
+    try {
+      if (!this.teamsOnline) {
+        const res = await window.copilotBridge.teamsRegisterOrchestrator();
+        if (res?.success) {
+          this.teamsOnline = true;
+          this.showBanner(
+            `Orchestrator is online in Teams${res.handle ? ` as @${res.handle}` : ''}. Reply in its thread to drive it; approvals appear there too.`,
+            'info',
+          );
+        } else {
+          this.showBanner(`Couldn't bring the orchestrator online in Teams: ${res?.error ?? 'unknown error'}.`, 'error');
+        }
+      } else {
+        await window.copilotBridge.teamsStopOrchestrator?.();
+        this.teamsOnline = false;
+        this.showBanner('Orchestrator is offline in Teams.', 'info');
+      }
+    } catch (e) {
+      this.showBanner(`Teams action failed: ${(e as Error)?.message ?? 'threw'}.`, 'error');
+    } finally {
+      this.updateTeamsButton();
+      if (this.teamsBtn) this.teamsBtn.disabled = false;
+    }
+  }
+
+  private updateTeamsButton(): void {
+    if (!this.teamsBtn) return;
+    this.teamsBtn.textContent = this.teamsOnline ? '💬 Teams: online — take offline' : '💬 Bring online in Teams';
+    this.teamsBtn.style.background = this.teamsOnline ? '#1d3a24' : '#16233a';
+    this.teamsBtn.style.borderColor = this.teamsOnline ? '#2f7d4a' : '#33557a';
   }
 
   // ── Banner ───────────────────────────────────────────────────────

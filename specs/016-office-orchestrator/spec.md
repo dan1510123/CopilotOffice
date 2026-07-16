@@ -582,3 +582,32 @@ completes. Enable auto-nudge and confirm a stalled agent is nudged.
   guard, jump-to detach/reattach continuity, and task-board assignment respecting
   concurrency cap and dependency gating including cycle rejection. Run the existing
   Vitest suite for impacted areas and the Playwright smoke path for boot/switch.
+
+---
+
+## Extensions (implemented, folded into this spec)
+
+### Office navigation tools (Workstream A)
+
+Two additional orchestrator SDK tools give it cross-office orientation: **list_offices**
+(read-only) returns every office (id, name, layout, isCurrent, agent counts), and
+**switch_office** (ungated — non-destructive/reversible) changes the currently open
+office. Both follow the existing renderer round-trip pattern and are documented in
+contracts/orchestrator-tools.md.
+
+### Teams-remote orchestrator (Workstream B)
+
+The orchestrator can be brought online as a Microsoft Teams remote agent (reusing the
+spec-011 register/route/reply machinery) so a user can drive it by replying in its
+channel thread. Because the orchestrator is a main-process SDK session (not an office
+terminal session), this uses an alternate OrchestratorSessionGateway selected by a
+CompositeSessionGateway on the synthetic `(__orchestrator__, orchestrator)` key.
+
+**Non-YOLO invariant preserved via a permission relay.** The orchestrator registers
+only onPermissionRequest (no ask_user path), so its always-on approval gate is
+relayed into the thread as a distinct permission-request AgentEvent → Approve/Deny
+prompt. An in-thread `approve`/`A` or `deny`/`D` reply routes to
+gateway.respondPermission(...) (not submitAnswer). Unanswered gates auto-deny after
+5 minutes; a superseding request auto-denies the prior one; goOffline detaches
+without killing the orchestrator session. A remote switch_office also changes the
+on-screen desktop office (accepted + documented).

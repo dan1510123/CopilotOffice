@@ -13,6 +13,13 @@ import { createSafeStorageTokenPersistence } from './teams/tokenCacheStore';
 import { GraphClient } from './teams/graphClient';
 import { TrouterClient } from './teams/trouterClient';
 import { RelaySessionGateway } from './teams/sessionGateway';
+import { OrchestratorSessionGateway } from './teams/orchestratorSessionGateway';
+import { CompositeSessionGateway } from './teams/compositeSessionGateway';
+import {
+  ORCHESTRATOR_OFFICE_ID,
+  ORCHESTRATOR_AGENT_ID,
+  ORCHESTRATOR_DISPLAY_NAME,
+} from './orchestrator/orchestratorIdentity';
 import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
@@ -288,7 +295,11 @@ app.whenReady().then(async () => {
       return s.notifyOnCompleteEnabled && !!s.relayChannelUrl.trim();
     };
     const source = new TrouterClient(tokens);
-    const gateway = new RelaySessionGateway(relay);
+    const officeGateway = new RelaySessionGateway(relay);
+    // spec 016 (Workstream B): route the synthetic orchestrator identity to the
+    // main-process orchestrator session; every office agent keeps the relay path.
+    const orchestratorGateway = new OrchestratorSessionGateway(orchestratorManager);
+    const gateway = new CompositeSessionGateway(officeGateway, orchestratorGateway);
     const store = new FileTeamsOnlineStore(
       FileTeamsOnlineStore.defaultPath(path.join(process.cwd(), '.data')),
     );
@@ -322,6 +333,29 @@ app.whenReady().then(async () => {
           teamsService?.stop().catch((e) => console.error('[Main] Teams stop failed:', e));
         }
       },
+    });
+
+    // spec 016 (Workstream B): bring the Office Orchestrator online in Teams. Ensures its
+    // main-process SDK session is open (so the composite gateway can resolve a sessionId),
+    // then registers the synthetic identity through the normal Teams register flow.
+    ipcMain.handle('teams:registerOrchestrator', async () => {
+      if (!teamsService) return { success: false, error: 'Teams service unavailable.' };
+      try {
+        await orchestratorManager.open();
+      } catch (e) {
+        return { success: false, error: `Orchestrator failed to start: ${(e as Error).message}` };
+      }
+      return teamsService.register({
+        officeId: ORCHESTRATOR_OFFICE_ID,
+        agentId: ORCHESTRATOR_AGENT_ID,
+        displayName: ORCHESTRATOR_DISPLAY_NAME,
+        workingDir: process.cwd(),
+      });
+    });
+
+    ipcMain.handle('teams:stopOrchestrator', async () => {
+      if (!teamsService) return { success: true };
+      return teamsService.goOffline(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID, true);
     });
 
     // Only spin up the receive transport when the feature is enabled.

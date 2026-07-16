@@ -21,7 +21,8 @@ export type AgentEventKind =
   | 'tool-start'
   | 'user-message'
   | 'ask-user' // spec 015 — additive; existing kinds untouched.
-  | 'ask-user-complete'; // spec 015 hardening (h1) — precise local-resolve signal.
+  | 'ask-user-complete' // spec 015 hardening (h1) — precise local-resolve signal.
+  | 'permission-request'; // spec 016 (Workstream B) — orchestrator tool-approval gate relayed to a thread.
 
 export interface AgentEvent {
   agentId: string;
@@ -34,6 +35,19 @@ export interface AgentEvent {
    * precisely clear a locally-answered pending question. '' when unavailable.
    */
   requestId?: string;
+  /**
+   * Populated only when `kind === 'permission-request'` (spec 016 Workstream B). The
+   * orchestrator's always-on approval gate, relayed into the Teams thread as an
+   * Approve/Deny question. `toolCallId` is the single-resolution key routed back via
+   * {@link SessionGateway.respondPermission}.
+   */
+  permission?: {
+    toolCallId: string;
+    /** The gated tool (e.g. `bring_agent_online`). */
+    toolName: string;
+    /** Short human-readable summary of what will happen if approved. */
+    summary: string;
+  };
   /**
    * Populated only when `kind === 'ask-user'` (spec 015). Carries the raw ordered
    * option display text; selector labels (A/B/C…) are assigned by the consumer
@@ -83,6 +97,13 @@ export interface SessionGateway {
    * so the assistant's reply can be captured and posted back to the thread.
    */
   setForwarding(officeId: string, agentId: string, enabled: boolean): void;
+  /**
+   * spec 016 (Workstream B): resolve an orchestrator tool-approval gate that was
+   * relayed into a Teams thread (see `AgentEvent` kind `permission-request`). Only
+   * meaningful for the orchestrator gateway; office-agent gateways treat it as a
+   * no-op (their gates are never relayed).
+   */
+  respondPermission(officeId: string, agentId: string, toolCallId: string, decision: 'approve' | 'deny'): Promise<void>;
   onAgentEvent(cb: (e: AgentEvent) => void): () => void;
   /** Fires when a session ends (agentId's PTY exits). */
   onSessionExit(cb: (agentId: string) => void): () => void;
@@ -115,6 +136,11 @@ export class RelaySessionGateway implements SessionGateway {
 
   setForwarding(officeId: string, agentId: string, enabled: boolean): void {
     this.relay.mainSetAgentForwarding(officeId, agentId, enabled);
+  }
+
+  async respondPermission(): Promise<void> {
+    // Office agents never relay a permission gate into Teams (only the orchestrator
+    // does, via its own gateway). No-op so the composite/default path is total.
   }
 
   async submitAnswer(

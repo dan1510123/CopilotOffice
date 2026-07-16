@@ -93,10 +93,39 @@ export class OrchestratorSessionManager {
   private readonly pendingOffices = new Map<string, (offices: OfficeSummary[]) => void>();
   private readonly pendingSwitch = new Map<string, (result: SwitchOfficeResult) => void>();
 
+  // ── Tap listeners (spec 016 Workstream B) — a secondary subscription surface so
+  // the Teams OrchestratorSessionGateway can observe the SAME stream/permission/exit
+  // signals the IPC emitter pushes to the renderer, without a second SDK session.
+  private readonly eventListeners = new Set<(event: CopilotEvent) => void>();
+  private readonly permissionListeners = new Set<
+    (payload: { toolCallId: string; toolName: string; agentId?: string; reason?: string }) => void
+  >();
+  private readonly exitListeners = new Set<(reason: string) => void>();
+
   constructor(
     private readonly emitter: OrchestratorEmitter,
     private readonly workingDirectory: string,
   ) {}
+
+  /** Subscribe to the orchestrator's mapped CopilotEvent stream (main-process tap). */
+  onSessionEvent(cb: (event: CopilotEvent) => void): () => void {
+    this.eventListeners.add(cb);
+    return () => this.eventListeners.delete(cb);
+  }
+
+  /** Subscribe to gated tool-approval requests (the always-on permission gate). */
+  onPermissionRequested(
+    cb: (payload: { toolCallId: string; toolName: string; agentId?: string; reason?: string }) => void,
+  ): () => void {
+    this.permissionListeners.add(cb);
+    return () => this.permissionListeners.delete(cb);
+  }
+
+  /** Subscribe to session-exit signals (error/ended/failed-to-start). */
+  onSessionExit(cb: (reason: string) => void): () => void {
+    this.exitListeners.add(cb);
+    return () => this.exitListeners.delete(cb);
+  }
 
   getInfo(): OrchestratorSessionInfo | null {
     if (!this.session) return null;
@@ -174,8 +203,10 @@ export class OrchestratorSessionManager {
     this.unsubscribe = this.session.on((evt: unknown) => {
       const event = mapSdkEventToCopilotEvent(evt);
       this.emitter.emitEvent(sessionId, event);
+      for (const cb of this.eventListeners) cb(event);
       if (event.type === 'session.error' || event.type === 'session.ended') {
         this.emitter.emitExit({ sessionId, reason: event.type });
+        for (const cb of this.exitListeners) cb(event.type);
       }
     });
   }
@@ -226,6 +257,9 @@ export class OrchestratorSessionManager {
           toolName: request.toolName,
           args: { agentId: args.agentId, reason: args.reason },
         });
+        for (const cb of this.permissionListeners) {
+          cb({ toolCallId, toolName: request.toolName, agentId: args.agentId, reason: args.reason });
+        }
       });
     }
     // Any other kind (should not occur for this toolset) denies by default.

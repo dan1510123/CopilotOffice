@@ -234,6 +234,12 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   teamsStop: (args: { officeId: string; agentId: string }): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('teams:stop', args);
   },
+  teamsRegisterOrchestrator: (): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> => {
+    return ipcRenderer.invoke('teams:registerOrchestrator');
+  },
+  teamsStopOrchestrator: (): Promise<{ success: boolean }> => {
+    return ipcRenderer.invoke('teams:stopOrchestrator');
+  },
   teamsReconcile: (): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('teams:reconcile');
   },
@@ -412,6 +418,8 @@ declare global {
       teamsStatus: (args?: { officeId?: string; agentId?: string }) => Promise<{ success: boolean; connected: boolean; bindings: TeamsAgentStatus[] }>;
       teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string; officeMentionType?: 'user' | 'tag' | 'none'; officeMentionValue?: string }) => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
       teamsStop: (args: { officeId: string; agentId: string }) => Promise<{ success: boolean }>;
+      teamsRegisterOrchestrator: () => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
+      teamsStopOrchestrator: () => Promise<{ success: boolean }>;
       teamsReconcile: () => Promise<{ success: boolean }>;
       teamsGetSettings: () => Promise<{ success: boolean; settings: TeamsSettingsShape }>;
       teamsSaveSettings: (settings: TeamsSettingsShape) => Promise<{ success: boolean; parsed?: unknown; error?: string }>;

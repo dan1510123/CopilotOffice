@@ -110,7 +110,35 @@ acceptance scenarios.
 
 ---
 
-## Dependencies & Execution Order
+## Phase 5: Extensions — office navigation tools + Teams-remote orchestrator
+
+**Purpose**: Post-MVP extensions folded into spec 016 (not a new spec). See
+`plan.md` "Workstream A / B" in the session plan for full design. Workstream A gives
+the orchestrator cross-office orientation; Workstream B brings it online in Teams with
+its always-on approval gate relayed into the thread.
+
+### Workstream A — office navigation tools
+
+- [X] TA1 Add `OfficeSummary` + `SwitchOfficeResult`/`SwitchOfficeOutcome` types (`electron/orchestrator/types.ts`).
+- [X] TA2 Manager round-trips `requestOffices`/`respondOffices` + `requestSwitch`/`respondSwitch`; pass into `buildOrchestratorTools`; extend system prompt with cross-office guidance.
+- [X] TA3 Add `list_offices` (read-only) + `switch_office` (ungated) tools with `skipPermission` (`tools.ts`).
+- [X] TA4 IPC emitters + `orchestrator:offices:respond`/`orchestrator:switch:respond` handlers (`orchestratorIpc.ts`).
+- [X] TA5 Preload invoke/listeners + Window types (`electron/terminal/preload.ts`).
+- [X] TA6 Renderer helper `src/office/orchestratorOffices.ts` + wiring in `src/main.ts` (build summaries from `OfficeManager`, resolve switch via `switchToOffice`).
+- [X] TA7 Tests: `officeNavigation.test.ts` + extend `ipcSurface.test.ts` round-trips.
+- [X] TA8 Docs: README + `contracts/orchestrator-tools.md`.
+
+### Workstream B — Teams-remote orchestrator
+
+- [X] TB1 Synthetic identity constants + `isOrchestratorKey` (`electron/orchestrator/orchestratorIdentity.ts`).
+- [X] TB2 `OrchestratorSessionGateway` implementing `SessionGateway` over the manager (`electron/teams/orchestratorSessionGateway.ts`).
+- [X] TB3 Permission-relay seam: `AgentEvent` kind `permission-request` + `gateway.respondPermission(...)`; manager tap listeners (`onSessionEvent`/`onPermissionRequested`/`onSessionExit`).
+- [X] TB4 `CompositeSessionGateway` — key-based routing + event/exit fan-in (`electron/teams/compositeSessionGateway.ts`).
+- [X] TB5 TeamsService permission relay: post Approve/Deny prompt, route in-thread reply → `respondPermission`, 5-min timeout → auto-deny, supersede + goOffline cleanup.
+- [X] TB6 "Bring online in Teams" toggle in `OrchestratorPanel` + `teams:registerOrchestrator`/`teams:stopOrchestrator` IPC + preload bridge + main-process composite wiring.
+- [X] TB7 Lifecycle/reconnect/GC verified: synthetic key `getSessionId` null until manager reopened; `goOffline` detaches without killing; 30-day GC applies unchanged.
+- [X] TB8/TB10 Docs: README Teams-remote-orchestrator subsection (non-YOLO relay, desktop-switch side effect) + this task list.
+- [X] TB9 Tests: `tests/unit/orchestrator/teamsGateway.test.ts` (gateway + composite) and `tests/unit/teams/orchestratorPermissionRelay.test.ts` (post → reply → respondPermission; timeout → deny; unrecognized → pending).
 
 ### Phase Dependencies
 

@@ -94,6 +94,14 @@ npm run dev
 > the global YOLO setting. The orchestrator can also **list every office** and
 > **switch offices** for you (ungated navigation) when the agent you need lives in
 > a different office than the one currently on screen.
+>
+> **Bring the orchestrator online in Teams.** The panel's **💬 Bring online in
+> Teams** button registers the orchestrator as a Microsoft Teams remote agent (like
+> office agents — see below), so you can drive it by replying in its channel thread.
+> The non-YOLO gate is preserved: when the remote orchestrator wants to bring an
+> agent online, its approval prompt is **relayed into the thread** — reply
+> `approve`/`A` or `deny`/`D` to decide. Unanswered gates auto-deny after 5 minutes.
+> A remote `switch_office` also changes the on-screen desktop office.
 
 ## Project Structure
 
