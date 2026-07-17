@@ -27,6 +27,7 @@ import { createRelaySender, type MentionResolver } from './teams/relaySender';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
 import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
+import { FileOrchestratorTranscriptStore } from './orchestrator/orchestratorTranscriptStore';
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -181,6 +182,12 @@ app.whenReady().then(async () => {
   const orchestratorManager = new OrchestratorSessionManager(
     makeOrchestratorEmitter(() => mainWindow),
     process.cwd(),
+    // spec 017 (US1): file-backed transcript store under .data (mirrors
+    // FileTeamsOnlineStore); retention bound = panel xterm scrollback (5000).
+    new FileOrchestratorTranscriptStore(
+      FileOrchestratorTranscriptStore.defaultPath(path.join(process.cwd(), '.data')),
+    ),
+    5000,
   );
   registerOrchestratorIpc({ manager: orchestratorManager });
 

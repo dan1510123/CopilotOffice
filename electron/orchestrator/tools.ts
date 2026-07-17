@@ -10,6 +10,10 @@
 import { defineTool } from '@github/copilot-sdk';
 import type { Tool } from '@github/copilot-sdk';
 import type {
+  ActiveAgentSnapshot,
+  ActOnResult,
+  AgentRecentOutput,
+  AwaitingAgent,
   BringOnlineCandidate,
   BringOnlineResult,
   OfficeSummary,
@@ -23,6 +27,16 @@ export interface OrchestratorToolDeps {
   requestSwitch: (officeId: string) => Promise<SwitchOfficeResult>;
   /** Reserved for future use; officeId is currently derived from candidates. */
   getOfficeId: () => string;
+  // ── spec 017: situational awareness (read-only) ────────────────────────────
+  requestActiveAgents: () => Promise<ActiveAgentSnapshot[]>;
+  requestAwaitingAgents: () => Promise<AwaitingAgent[]>;
+  requestAgentOutput: (agentId: string, officeId?: string) => Promise<AgentRecentOutput>;
+  // ── spec 017: act-on tools (gated) ─────────────────────────────────────────
+  requestAnswerAgent: (a: { agentId: string; officeId?: string; answer: string }) => Promise<ActOnResult>;
+  requestSendPrompt: (a: { agentId: string; officeId?: string; prompt: string }) => Promise<ActOnResult>;
+  requestStopAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
+  requestRestartAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
+  requestTeamsPresence: (a: { agentId: string; officeId?: string; online: boolean }) => Promise<ActOnResult>;
 }
 
 export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] {
@@ -104,5 +118,166 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     },
   });
 
-  return [listTool, listOfficesTool, bringOnlineTool, switchOfficeTool];
+  // ── spec 017: read-only situational-awareness tools ────────────────────────
+
+  const getActiveAgentsTool = defineTool('get_active_agents', {
+    description:
+      'List every agent that currently has a live session across ALL offices — ' +
+      'including agents that are done/awaiting-ack, waiting on input, and thinking — ' +
+      "with each agent's office, status, current activity, and how long it has been in " +
+      "that state. Use for any \"what's everyone working on / status roll-up / who is " +
+      'busy" request. Takes no arguments.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    skipPermission: true,
+    handler: async () => {
+      const agents = await deps.requestActiveAgents();
+      return { agents };
+    },
+  });
+
+  const listAwaitingTool = defineTool('list_agents_awaiting_input', {
+    description:
+      'List only the agents that are blocked waiting for user input, with each one\'s ' +
+      'pending question and how long it has been waiting, longest first. Use for "who ' +
+      'needs me / is anyone stuck?" Takes no arguments.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    skipPermission: true,
+    handler: async () => {
+      const agents = await deps.requestAwaitingAgents();
+      return { agents };
+    },
+  });
+
+  const getAgentTranscriptTool = defineTool('get_agent_transcript', {
+    description:
+      "Fetch a bounded window of a specific agent's recent output so you can summarize " +
+      'or relay what it just did — without opening its terminal. Read-only. Provide the ' +
+      'agentId (and officeId if known); if the agent has no recent output, it returns ' +
+      'hasOutput:false ("nothing recent").',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'Target agentId from a status tool.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+      },
+      required: ['agentId'],
+      additionalProperties: false,
+    },
+    skipPermission: true,
+    handler: async (args: { agentId: string; officeId?: string }) => {
+      return deps.requestAgentOutput(args.agentId, args.officeId);
+    },
+  });
+
+  // ── spec 017: gated act-on tools (always gated, non-YOLO) ───────────────────
+
+  const answerAgentTool = defineTool('answer_agent', {
+    description:
+      'Deliver the user\'s answer to an agent that is waiting for input, unblocking it. ' +
+      'Only use an agentId returned by a status tool. Gated: the user must approve.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'The waiting agent to answer.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+        answer: { type: 'string', description: "The user's answer to deliver." },
+      },
+      required: ['agentId', 'answer'],
+      additionalProperties: false,
+    },
+    handler: async (args: { agentId: string; officeId?: string; answer: string }) => {
+      // Reached only AFTER the permission gate approves.
+      return deps.requestAnswerAgent(args);
+    },
+  });
+
+  const sendPromptTool = defineTool('send_prompt_to_agent', {
+    description:
+      'Send a follow-up prompt/task to an already-online agent (by capability or name). ' +
+      'Only use an agentId returned by a status tool. Gated: the user must approve.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'The online agent to prompt.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+        prompt: { type: 'string', description: 'The follow-up prompt/task to deliver.' },
+      },
+      required: ['agentId', 'prompt'],
+      additionalProperties: false,
+    },
+    handler: async (args: { agentId: string; officeId?: string; prompt: string }) => {
+      return deps.requestSendPrompt(args);
+    },
+  });
+
+  const stopAgentTool = defineTool('stop_agent', {
+    description:
+      'Stop / take an online agent offline. Destructive. Only use an agentId returned by ' +
+      'a status tool. Gated: the user must approve.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'The agent to stop / take offline.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+      },
+      required: ['agentId'],
+      additionalProperties: false,
+    },
+    handler: async (args: { agentId: string; officeId?: string }) => {
+      return deps.requestStopAgent(args);
+    },
+  });
+
+  const restartAgentTool = defineTool('restart_agent', {
+    description:
+      "Restart an agent's session and report it ready. Only use an agentId returned by a " +
+      'status tool. Gated: the user must approve.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'The agent to restart.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+      },
+      required: ['agentId'],
+      additionalProperties: false,
+    },
+    handler: async (args: { agentId: string; officeId?: string }) => {
+      return deps.requestRestartAgent(args);
+    },
+  });
+
+  const teamsPresenceTool = defineTool('set_agent_teams_presence', {
+    description:
+      'Bring a specific agent online in Teams (activate its Teams remote) or take it ' +
+      'offline. Gated: the user must approve. If Teams is disabled, the tool reports ' +
+      'unavailable — relay that to the user. Only use an agentId returned by a status tool.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'The agent whose Teams presence to change.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+        online: { type: 'boolean', description: 'true to bring online in Teams, false to take offline.' },
+      },
+      required: ['agentId', 'online'],
+      additionalProperties: false,
+    },
+    handler: async (args: { agentId: string; officeId?: string; online: boolean }) => {
+      return deps.requestTeamsPresence(args);
+    },
+  });
+
+  return [
+    listTool,
+    listOfficesTool,
+    bringOnlineTool,
+    switchOfficeTool,
+    getActiveAgentsTool,
+    listAwaitingTool,
+    getAgentTranscriptTool,
+    answerAgentTool,
+    sendPromptTool,
+    stopAgentTool,
+    restartAgentTool,
+    teamsPresenceTool,
+  ];
 }

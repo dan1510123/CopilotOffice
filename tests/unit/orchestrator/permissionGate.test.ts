@@ -10,7 +10,7 @@ import type { PermissionRequest, PermissionRequestResult } from '@github/copilot
 
 interface Captured {
   toolCallId: string;
-  args: { agentId?: string; reason?: string };
+  args: { agentId?: string; agentName?: string; reason?: string };
 }
 
 function makeManager(): { manager: OrchestratorSessionManager; captured: Captured[] } {
@@ -86,5 +86,28 @@ describe('orchestrator permission gate', () => {
     const other = handlerOf(manager)(bringOnlineRequest({ toolName: 'something_else' }));
     expect(other).toEqual({ kind: 'denied-interactively-by-user' });
     expect(captured).toHaveLength(0);
+  });
+
+  it('includes the office-custom display name (from read-tool cache) in the permission payload', async () => {
+    const { manager, captured } = makeManager();
+    // Simulate a read tool returning an office-custom name for the agentId.
+    (manager as unknown as { cacheAgentNames: (items: Array<{ agentId: string; name: string }>) => void }).cacheAgentNames([
+      { agentId: 'debugger', name: 'Custom Debugger Name' },
+    ]);
+
+    const result = handlerOf(manager)(bringOnlineRequest());
+    expect(captured).toHaveLength(1);
+    expect(captured[0].args.agentName).toBe('Custom Debugger Name');
+
+    manager.respondToPermission({ toolCallId: captured[0].toolCallId, decision: 'approve' });
+    await result;
+  });
+
+  it('leaves agentName undefined when no read tool has cached the agent', async () => {
+    const { manager, captured } = makeManager();
+    const result = handlerOf(manager)(bringOnlineRequest());
+    expect(captured[0].args.agentName).toBeUndefined();
+    manager.respondToPermission({ toolCallId: captured[0].toolCallId, decision: 'approve' });
+    await result;
   });
 });

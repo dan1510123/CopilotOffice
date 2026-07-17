@@ -21,6 +21,7 @@ import { ensureXtermStyles } from './xtermStyles';
 import { showClipboardToast } from './clipboardToast';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { AGENTS, RESERVE_AGENTS } from '../config/agents';
+import { describeOrchestratorPermission } from '../../electron/orchestrator/permissionSummary';
 
 // Instance tag for clipboard diagnostics (Constitution Principle VI).
 const CLIP_TAG = '[ORC0]';
@@ -114,6 +115,11 @@ export class OrchestratorPanel {
       }
       // Minimized during open: keep the live session tracked, but skip UI writes.
       if (!this.isVisible) return;
+      // spec 017 (US1): replay the persisted transcript into the view-only TUI
+      // BEFORE the "ready" line so reopen/restart show full history without asking
+      // the agent to recall it. Historical backfill only — live streaming continues
+      // via onOrchestratorEvent (de-duped by streamedMessageIds).
+      await this.replayTranscript();
       this.terminal?.writeln('\x1b[2mOrchestrator ready. Describe what you need help with…\x1b[0m');
     } catch (e) {
       if (this.isVisible) {
@@ -346,7 +352,13 @@ export class OrchestratorPanel {
 
   private createTerminal(host: HTMLDivElement, outer: HTMLDivElement): void {
     const terminal = new Terminal({
-      theme: { background: '#0a0a14', foreground: '#e0e0e0', cursor: '#00ff88' },
+      theme: {
+        background: '#001200',
+        foreground: '#00ff41',
+        cursor: '#00ff41',
+        green: '#00ff41',
+        brightGreen: '#5bff7a',
+      },
       fontFamily: 'Cascadia Code, Consolas, Monaco, monospace',
       fontSize: 14,
       lineHeight: 1.2,
@@ -489,12 +501,61 @@ export class OrchestratorPanel {
     }
   }
 
-  // ── Approve / deny UI ────────────────────────────────────────────
-  private showPermission(payload: { toolCallId: string; args: { agentId?: string; reason?: string } }): void {
+  /**
+   * spec 017 (US1) — TRANSCRIPT REPLAY. Fetch the persisted transcript for the
+   * live session and render it into the view-only TUI as historical backfill on
+   * open/reopen. Best-effort: any failure leaves the panel usable. The distinctive
+   * banner string below ("Restored conversation") is the T038 renderer bundle
+   * marker asserting this feature shipped in game.bundle.js.
+   */
+  private async replayTranscript(): Promise<void> {
+    if (!this.terminal || !this.sessionId) return;
+    try {
+      const res = await window.copilotBridge.orchestratorGetTranscript?.(this.sessionId);
+      const turns = res?.transcript?.turns;
+      if (!turns || turns.length === 0) return;
+      this.terminal.writeln('\x1b[38;5;28m── Restored conversation (spec017) ──\x1b[0m');
+      for (const turn of turns) this.renderTranscriptTurn(turn);
+      this.terminal.writeln('\x1b[38;5;28m── End of restored conversation ──\x1b[0m');
+    } catch {
+      // Best-effort restore; a fresh session simply shows no history.
+    }
+  }
+
+  /** Render a single persisted transcript turn with role/origin attribution. */
+  private renderTranscriptTurn(turn: OrchestratorTranscriptTurn): void {
+    if (!this.terminal) return;
+    const text = (turn.text ?? '').replace(/\r?\n/g, '\r\n');
+    switch (turn.role) {
+      case 'user': {
+        // Visibly mark Teams-originated prompts so the operator can tell who spoke.
+        const via = turn.origin === 'teams' ? '\x1b[38;5;45m[Teams] \x1b[0m' : '';
+        this.terminal.write(`\r\n\x1b[38;5;40m› \x1b[0m${via}\x1b[38;5;40m${text}\x1b[0m\r\n`);
+        break;
+      }
+      case 'orchestrator': {
+        this.terminal.write(`${text}\r\n`);
+        break;
+      }
+      case 'tool': {
+        this.terminal.write(`\x1b[2m[tool] ${text}\x1b[0m\r\n`);
+        break;
+      }
+      default:
+        this.terminal.write(`${text}\r\n`);
+        break;
+    }
+  }
+  private showPermission(payload: { toolCallId: string; toolName?: string; args: { agentId?: string; agentName?: string; online?: boolean; reason?: string } }): void {
     this.pending = { toolCallId: payload.toolCallId, agentId: payload.args.agentId };
     this.permissionCard?.remove();
 
-    const name = resolveAgentName(payload.args.agentId);
+    const name = payload.args.agentName ?? resolveAgentName(payload.args.agentId);
+    const summary = describeOrchestratorPermission(
+      payload.toolName ?? 'bring_agent_online',
+      { agentId: payload.args.agentId, online: payload.args.online },
+      name,
+    );
     const card = document.createElement('div');
     card.style.cssText = `
       position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
@@ -504,7 +565,7 @@ export class OrchestratorPanel {
     `;
     const q = document.createElement('div');
     q.style.cssText = 'color:#e8e8f0;font-size:14px;margin-bottom:10px;';
-    q.innerHTML = `Bring <b>${name}</b> online?` + (payload.args.reason ? `<div style="color:#9aa;font-size:12px;margin-top:4px;">${payload.args.reason}</div>` : '');
+    q.innerHTML = `<b>${summary}</b>?` + (payload.args.reason ? `<div style="color:#9aa;font-size:12px;margin-top:4px;">${payload.args.reason}</div>` : '');
 
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';

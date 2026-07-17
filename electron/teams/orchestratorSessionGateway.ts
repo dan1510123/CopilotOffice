@@ -12,6 +12,8 @@
 //     AgentEvent and resolved via `respondPermission` → `manager.respondToPermission`.
 
 import type { OrchestratorSessionManager } from '../orchestrator/orchestratorSessionManager';
+import { describeOrchestratorPermission } from '../orchestrator/permissionSummary';
+import { AGENTS, RESERVE_AGENTS } from '../../src/config/agents';
 import {
   ORCHESTRATOR_AGENT_ID,
   ORCHESTRATOR_DISPLAY_NAME,
@@ -20,9 +22,24 @@ import {
 import type { AgentEvent, SessionGateway } from './sessionGateway';
 import { extractMessageContent } from './sessionGateway';
 
+/**
+ * Resolve an agent's friendly display name (e.g. "Alice") from the static roster
+ * so relayed approval prompts read naturally instead of showing the raw agentId.
+ * Mirrors the renderer's OrchestratorPanel resolver; per-office custom names are
+ * not available in the main process, so seated + reserve agents are covered.
+ */
+function resolveAgentDisplayName(agentId?: string): string | undefined {
+  if (!agentId) return undefined;
+  const seated = AGENTS.find((a) => a.id === agentId);
+  if (seated) return seated.name;
+  for (const reserve of Object.values(RESERVE_AGENTS)) {
+    if (reserve.id === agentId) return reserve.name;
+  }
+  return undefined;
+}
+
 export class OrchestratorSessionGateway implements SessionGateway {
   constructor(private readonly manager: OrchestratorSessionManager) {}
-
   async getSessionId(officeId: string, agentId: string): Promise<string | null> {
     if (!isOrchestratorKey(officeId, agentId)) return null;
     return this.manager.getInfo()?.sessionId ?? null;
@@ -42,7 +59,10 @@ export class OrchestratorSessionGateway implements SessionGateway {
     if (!isOrchestratorKey(officeId, agentId)) {
       throw new Error(`OrchestratorSessionGateway cannot submit to ${officeId}:${agentId}`);
     }
-    await this.manager.submitInput(prompt);
+    // spec 017 (FR-002): tag Teams-driven turns with origin 'teams' so they (and the
+    // orchestrator's response) flow through the manager tap into the transcript marked
+    // as Teams-origin.
+    await this.manager.submitInput(prompt, 'teams');
   }
 
   async submitAnswer(): Promise<void> {
@@ -92,15 +112,19 @@ export class OrchestratorSessionGateway implements SessionGateway {
     });
 
     const offPermission = this.manager.onPermissionRequested((p) => {
-      const target = p.agentId ? ` (${p.agentId})` : '';
       const reason = p.reason ? ` — ${p.reason}` : '';
+      const summary = describeOrchestratorPermission(
+        p.toolName,
+        { agentId: p.agentId, online: p.online },
+        p.agentName ?? resolveAgentDisplayName(p.agentId),
+      );
       cb({
         agentId: ORCHESTRATOR_AGENT_ID,
         kind: 'permission-request',
         permission: {
           toolCallId: p.toolCallId,
           toolName: p.toolName,
-          summary: `Bring an agent online${target}${reason}`,
+          summary: `${summary}${reason}`,
         },
       });
     });

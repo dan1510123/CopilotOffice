@@ -284,13 +284,41 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   orchestratorRespondSwitch: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
     return ipcRenderer.invoke('orchestrator:switch:respond', { requestId, result });
   },
+  // ── spec 017: situational-awareness + act-on respond invokers ──────────────
+  orchestratorRespondActiveAgents: (requestId: string, agents: unknown[]): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:active-agents:respond', { requestId, agents });
+  },
+  orchestratorRespondAwaitingAgents: (requestId: string, agents: unknown[]): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:awaiting-agents:respond', { requestId, agents });
+  },
+  orchestratorRespondAgentOutput: (requestId: string, output: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:agent-output:respond', { requestId, output });
+  },
+  orchestratorRespondAnswerAgent: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:answer-agent:respond', { requestId, result });
+  },
+  orchestratorRespondSendPrompt: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:send-prompt:respond', { requestId, result });
+  },
+  orchestratorRespondStopAgent: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:stop-agent:respond', { requestId, result });
+  },
+  orchestratorRespondRestartAgent: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:restart-agent:respond', { requestId, result });
+  },
+  orchestratorRespondTeamsPresence: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:teams-presence:respond', { requestId, result });
+  },
+  orchestratorGetTranscript: (sessionId?: string): Promise<{ transcript: OrchestratorTranscriptData | null }> => {
+    return ipcRenderer.invoke('orchestrator:transcript:get', { sessionId });
+  },
   onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEvent }) => void) => {
     const handler = (_event: unknown, payload: { sessionId: string; event: CopilotEvent }) => callback(payload);
     ipcRenderer.on('orchestrator:event', handler);
     return () => ipcRenderer.removeListener('orchestrator:event', handler);
   },
-  onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => void) => {
-    const handler = (_event: unknown, payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => callback(payload);
+  onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; agentName?: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; reason?: string } }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; agentName?: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; reason?: string } }) => callback(payload);
     ipcRenderer.on('orchestrator:permission:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:permission:request', handler);
   },
@@ -313,6 +341,47 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     const handler = (_event: unknown, payload: { sessionId: string; requestId: string; officeId: string }) => callback(payload);
     ipcRenderer.on('orchestrator:switch:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:switch:request', handler);
+  },
+  // ── spec 017: situational-awareness + act-on request listeners ─────────────
+  onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:active-agents:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:active-agents:request', handler);
+  },
+  onOrchestratorAwaitingAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:awaiting-agents:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:awaiting-agents:request', handler);
+  },
+  onOrchestratorAgentOutputRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:agent-output:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:agent-output:request', handler);
+  },
+  onOrchestratorAnswerAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; answer: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; answer: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:answer-agent:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:answer-agent:request', handler);
+  },
+  onOrchestratorSendPromptRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; prompt: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; prompt: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:send-prompt:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:send-prompt:request', handler);
+  },
+  onOrchestratorStopAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:stop-agent:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:stop-agent:request', handler);
+  },
+  onOrchestratorRestartAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => callback(payload);
+    ipcRenderer.on('orchestrator:restart-agent:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:restart-agent:request', handler);
+  },
+  onOrchestratorTeamsPresenceRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; online: boolean }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; online: boolean }) => callback(payload);
+    ipcRenderer.on('orchestrator:teams-presence:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:teams-presence:request', handler);
   },
   onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => {
     const handler = (_event: unknown, payload: { sessionId: string; reason: string }) => callback(payload);
@@ -437,12 +506,29 @@ declare global {
       orchestratorRespondExecute: (requestId: string, result: OrchestratorResult) => Promise<{ ok: boolean }>;
       orchestratorRespondOffices: (requestId: string, offices: OrchestratorOfficeSummary[]) => Promise<{ ok: boolean }>;
       orchestratorRespondSwitch: (requestId: string, result: OrchestratorSwitchResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondActiveAgents: (requestId: string, agents: OrchestratorActiveAgent[]) => Promise<{ ok: boolean }>;
+      orchestratorRespondAwaitingAgents: (requestId: string, agents: OrchestratorActiveAgent[]) => Promise<{ ok: boolean }>;
+      orchestratorRespondAgentOutput: (requestId: string, output: OrchestratorAgentOutput) => Promise<{ ok: boolean }>;
+      orchestratorRespondAnswerAgent: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondSendPrompt: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondStopAgent: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondRestartAgent: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondTeamsPresence: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
+      orchestratorGetTranscript: (sessionId?: string) => Promise<{ transcript: OrchestratorTranscriptData | null }>;
       onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEventData }) => void) => () => void;
-      onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; reason?: string } }) => void) => () => void;
+      onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; agentName?: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; reason?: string } }) => void) => () => void;
       onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
       onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => () => void;
       onOrchestratorOfficesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
       onOrchestratorSwitchRequest: (callback: (payload: { sessionId: string; requestId: string; officeId: string }) => void) => () => void;
+      onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
+      onOrchestratorAwaitingAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
+      onOrchestratorAgentOutputRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
+      onOrchestratorAnswerAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; answer: string }) => void) => () => void;
+      onOrchestratorSendPromptRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; prompt: string }) => void) => () => void;
+      onOrchestratorStopAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
+      onOrchestratorRestartAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
+      onOrchestratorTeamsPresenceRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; online: boolean }) => void) => () => void;
       onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => () => void;
     };
   }
@@ -475,6 +561,63 @@ declare global {
     officeId: string;
     outcome: 'switched' | 'already-current' | 'invalid-target' | 'failed';
     message: string;
+  }
+
+  interface OrchestratorActiveAgent {
+    agentId: string;
+    name: string;
+    officeId: string;
+    officeName: string;
+    statusKey: string;
+    statusLabel: string;
+    activity: string;
+    timeInState: string;
+    awaitingInput: boolean;
+    pendingQuestion?: string;
+  }
+
+  interface OrchestratorAgentOutput {
+    agentId: string;
+    officeId: string;
+    hasOutput: boolean;
+    lines: string[];
+    summaryHint?: string;
+  }
+
+  interface OrchestratorActOnResult {
+    agentId: string;
+    officeId: string;
+    outcome:
+      | 'delivered'
+      | 'sent'
+      | 'stopped'
+      | 'restarted'
+      | 'taken-offline'
+      | 'online-in-teams'
+      | 'not-online'
+      | 'not-waiting'
+      | 'invalid-target'
+      | 'unavailable'
+      | 'denied'
+      | 'failed';
+    message: string;
+    threadWebUrl?: string;
+  }
+
+  interface OrchestratorTranscriptTurn {
+    seq: number;
+    role: 'user' | 'orchestrator' | 'tool' | 'system';
+    origin: 'desktop' | 'teams';
+    text: string;
+    tool?: { name: string; outcome: string; target?: string };
+    at: number;
+  }
+
+  interface OrchestratorTranscriptData {
+    sessionId: string;
+    lifecycle: 'active' | 'closed';
+    turns: OrchestratorTranscriptTurn[];
+    updatedAt: number;
   }
 
   interface TeamsAgentStatus {

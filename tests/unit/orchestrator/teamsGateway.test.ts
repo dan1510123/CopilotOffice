@@ -9,7 +9,7 @@ import type { AgentEvent, SessionGateway } from '../../../electron/teams/session
 import type { OrchestratorSessionManager } from '../../../electron/orchestrator/orchestratorSessionManager';
 
 type EventCb = (event: { type: string; data?: unknown }) => void;
-type PermCb = (p: { toolCallId: string; toolName: string; agentId?: string; reason?: string }) => void;
+type PermCb = (p: { toolCallId: string; toolName: string; agentId?: string; online?: boolean; reason?: string }) => void;
 type ExitCb = (reason: string) => void;
 
 function makeFakeManager(info: { sessionId: string; lifecycle: string } | null = { sessionId: 's-1', lifecycle: 'ready' }) {
@@ -40,7 +40,7 @@ function makeFakeManager(info: { sessionId: string; lifecycle: string } | null =
     respondToPermission,
     submitInput,
     fireEvent: (e: { type: string; data?: unknown }) => eventCbs.forEach((cb) => cb(e)),
-    firePermission: (p: { toolCallId: string; toolName: string; agentId?: string; reason?: string }) =>
+    firePermission: (p: { toolCallId: string; toolName: string; agentId?: string; online?: boolean; reason?: string }) =>
       permCbs.forEach((cb) => cb(p)),
     fireExit: (reason: string) => exitCbs.forEach((cb) => cb(reason)),
   };
@@ -69,7 +69,9 @@ describe('OrchestratorSessionGateway', () => {
     const { manager, submitInput } = makeFakeManager();
     const gw = new OrchestratorSessionGateway(manager);
     await gw.submitPrompt(...OK, 'bring up a debugger');
-    expect(submitInput).toHaveBeenCalledWith('bring up a debugger');
+    // spec 017 (T011): Teams-driven prompts are tagged with the 'teams' origin so
+    // the persisted transcript can attribute who spoke.
+    expect(submitInput).toHaveBeenCalledWith('bring up a debugger', 'teams');
   });
 
   it('submitAnswer is unsupported (throws)', async () => {
@@ -125,8 +127,31 @@ describe('OrchestratorSessionGateway', () => {
     expect(e.kind).toBe('permission-request');
     expect(e.permission?.toolCallId).toBe('tc-1');
     expect(e.permission?.toolName).toBe('bring_agent_online');
-    expect(e.permission?.summary).toContain('debugger');
+    // agentId 'debugger' now resolves to the friendly display name "Dan".
+    expect(e.permission?.summary).toContain('Dan');
+    expect(e.permission?.summary).toContain('online');
     expect(e.permission?.summary).toContain('fix a bug');
+  });
+
+  it('maps each gated tool to a matching approval summary', () => {
+    const fake = makeFakeManager();
+    const gw = new OrchestratorSessionGateway(fake.manager);
+    const events: AgentEvent[] = [];
+    gw.onAgentEvent((e) => events.push(e));
+
+    const cases: Array<{ toolName: string; online?: boolean; expected: string }> = [
+      { toolName: 'answer_agent', expected: "Answer Dan's question" },
+      { toolName: 'send_prompt_to_agent', expected: 'Send a follow-up prompt to Dan' },
+      { toolName: 'stop_agent', expected: 'Stop Dan' },
+      { toolName: 'restart_agent', expected: 'Restart Dan' },
+      { toolName: 'set_agent_teams_presence', online: true, expected: 'Bring Dan online in Teams' },
+      { toolName: 'set_agent_teams_presence', online: false, expected: 'Take Dan offline in Teams' },
+    ];
+    for (const [i, c] of cases.entries()) {
+      events.length = 0;
+      fake.firePermission({ toolCallId: `tc-${i}`, toolName: c.toolName, agentId: 'debugger', online: c.online });
+      expect(events[0]?.permission?.summary).toContain(c.expected);
+    }
   });
 
   it('onSessionExit reports the synthetic agent id', () => {

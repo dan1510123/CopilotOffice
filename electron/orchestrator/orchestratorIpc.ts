@@ -6,7 +6,16 @@
 
 import { ipcMain, BrowserWindow } from 'electron';
 import type { OrchestratorSessionManager, OrchestratorEmitter } from './orchestratorSessionManager';
-import type { BringOnlineCandidate, BringOnlineResult, OfficeSummary, SwitchOfficeResult } from './types';
+import type {
+  ActiveAgentSnapshot,
+  ActOnResult,
+  AgentRecentOutput,
+  AwaitingAgent,
+  BringOnlineCandidate,
+  BringOnlineResult,
+  OfficeSummary,
+  SwitchOfficeResult,
+} from './types';
 
 export interface OrchestratorIpcHooks {
   manager: OrchestratorSessionManager;
@@ -25,6 +34,15 @@ export function makeOrchestratorEmitter(getWindow: () => BrowserWindow | null): 
     emitExecuteRequest: (payload) => send('orchestrator:execute:request', payload),
     emitOfficesRequest: (payload) => send('orchestrator:offices:request', payload),
     emitSwitchRequest: (payload) => send('orchestrator:switch:request', payload),
+    // ── spec 017: new request channels ────────────────────────────────────────
+    emitActiveAgentsRequest: (payload) => send('orchestrator:active-agents:request', payload),
+    emitAwaitingAgentsRequest: (payload) => send('orchestrator:awaiting-agents:request', payload),
+    emitAgentOutputRequest: (payload) => send('orchestrator:agent-output:request', payload),
+    emitAnswerAgentRequest: (payload) => send('orchestrator:answer-agent:request', payload),
+    emitSendPromptRequest: (payload) => send('orchestrator:send-prompt:request', payload),
+    emitStopAgentRequest: (payload) => send('orchestrator:stop-agent:request', payload),
+    emitRestartAgentRequest: (payload) => send('orchestrator:restart-agent:request', payload),
+    emitTeamsPresenceRequest: (payload) => send('orchestrator:teams-presence:request', payload),
     emitExit: (payload) => send('orchestrator:exit', payload),
   };
 }
@@ -99,4 +117,45 @@ export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
       return { ok };
     },
   );
+
+  // ── spec 017: read-only situational-awareness respond channels ─────────────
+  ipcMain.handle(
+    'orchestrator:active-agents:respond',
+    (_e, args: { requestId: string; agents: ActiveAgentSnapshot[] }) => {
+      const ok = manager.respondActiveAgents(args.requestId, args.agents ?? []);
+      return { ok };
+    },
+  );
+
+  ipcMain.handle(
+    'orchestrator:awaiting-agents:respond',
+    (_e, args: { requestId: string; agents: AwaitingAgent[] }) => {
+      const ok = manager.respondAwaitingAgents(args.requestId, args.agents ?? []);
+      return { ok };
+    },
+  );
+
+  ipcMain.handle(
+    'orchestrator:agent-output:respond',
+    (_e, args: { requestId: string; output: AgentRecentOutput }) => {
+      const ok = manager.respondAgentOutput(args.requestId, args.output);
+      return { ok };
+    },
+  );
+
+  // ── spec 017: gated act-on respond channels (all resolve the shared map) ────
+  const respondActOn = (_e: unknown, args: { requestId: string; result: ActOnResult }) => {
+    const ok = manager.respondActOn(args.requestId, args.result);
+    return { ok };
+  };
+  ipcMain.handle('orchestrator:answer-agent:respond', respondActOn);
+  ipcMain.handle('orchestrator:send-prompt:respond', respondActOn);
+  ipcMain.handle('orchestrator:stop-agent:respond', respondActOn);
+  ipcMain.handle('orchestrator:restart-agent:respond', respondActOn);
+  ipcMain.handle('orchestrator:teams-presence:respond', respondActOn);
+
+  // ── spec 017: transcript restore (pure read; never mutates a session) ──────
+  ipcMain.handle('orchestrator:transcript:get', (_e, _args: { sessionId?: string }) => {
+    return { transcript: manager.getTranscript() };
+  });
 }
