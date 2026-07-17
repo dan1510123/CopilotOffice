@@ -56,6 +56,7 @@ export class OrchestratorPanel {
   private permissionCard: HTMLDivElement | null = null;
   private statusBanner: HTMLDivElement | null = null;
   private teamsBtn: HTMLButtonElement | null = null;
+  private confirmEl: HTMLDivElement | null = null;
   private teamsOnline = false;
 
   private terminal: Terminal | null = null;
@@ -169,6 +170,73 @@ export class OrchestratorPanel {
     this.closeSession();
   }
 
+  /**
+   * Confirm before the red ✕ ends the session. Warns that closing stops the
+   * orchestrator entirely (and, when Teams-online, posts a closing notice and takes
+   * the thread offline), and points at minimize as the keep-running alternative.
+   */
+  private confirmClose(): void {
+    if (!this.overlay || this.confirmEl) return;
+
+    const scrim = document.createElement('div');
+    scrim.style.cssText = `
+      position: absolute; inset: 0; z-index: 5;
+      background: rgba(4, 5, 12, 0.55);
+      display: flex; align-items: center; justify-content: center;
+    `;
+    const teamsWarning = this.teamsOnline
+      ? '<br><span style="color:#ffb27d">It is online in Teams — a closing notice will be posted and the thread will go offline.</span>'
+      : '';
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-label', 'Confirm closing the orchestrator session');
+    dialog.style.cssText = `
+      width: min(420px, 84vw); background: #12121f;
+      border: 1px solid #6a2a2a; border-radius: 10px;
+      box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+      padding: 18px 20px; color: #e0e0e0; font-size: 13px; line-height: 1.5;
+    `;
+    dialog.innerHTML = `
+      <div style="font-size:15px;font-weight:bold;margin-bottom:8px">⚠️ Close orchestrator session?</div>
+      <div style="color:#c4c4d4">This ends the orchestrator session and clears its conversation. Any in-progress requests are cancelled.${teamsWarning}<br><br><span style="color:#8a8aa6">Tip: use minimize (−) to keep it running in the background instead.</span></div>
+    `;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:flex-end;gap:10px;margin-top:16px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Keep running';
+    cancelBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#cde;font-size:13px;cursor:pointer;';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.textContent = 'Close session';
+    confirmBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid #6a2a2a;background:#3a1414;color:#ff9d9d;font-size:13px;cursor:pointer;';
+
+    const dismiss = (): void => {
+      scrim.remove();
+      this.confirmEl = null;
+      setTimeout(() => this.inputEl?.focus(), 0);
+    };
+    cancelBtn.onclick = dismiss;
+    confirmBtn.onclick = () => {
+      this.confirmEl = null;
+      scrim.remove();
+      this.closeSession();
+    };
+    scrim.addEventListener('mousedown', (e) => {
+      if (e.target === scrim) dismiss();
+    });
+    dialog.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); dismiss(); }
+      else if (e.key === 'Enter') { e.stopPropagation(); confirmBtn.click(); }
+    });
+
+    row.appendChild(cancelBtn);
+    row.appendChild(confirmBtn);
+    dialog.appendChild(row);
+    scrim.appendChild(dialog);
+    this.overlay.appendChild(scrim);
+    this.confirmEl = scrim;
+    setTimeout(() => cancelBtn.focus(), 0);
+  }
+
   // ── DOM construction ─────────────────────────────────────────────
   private buildDom(): void {
     const overlay = document.createElement('div');
@@ -220,7 +288,7 @@ export class OrchestratorPanel {
     closeBtn.title = 'Close — end the orchestrator session. If online in Teams, posts a closing notice and goes offline.';
     closeBtn.setAttribute('aria-label', 'Close orchestrator session');
     closeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid #6a2a2a;background:#2a1414;color:#ff7d7d;font-size:15px;line-height:1;cursor:pointer;';
-    closeBtn.onclick = () => this.closeSession();
+    closeBtn.onclick = () => this.confirmClose();
     headerRight.appendChild(teamsBtn);
     headerRight.appendChild(minimizeBtn);
     headerRight.appendChild(closeBtn);
@@ -350,6 +418,7 @@ export class OrchestratorPanel {
     this.fitAddon = null;
     this.permissionCard?.remove();
     this.permissionCard = null;
+    this.confirmEl = null;
     this.overlay?.remove();
     this.overlay = null;
     this.terminalDiv = null;
