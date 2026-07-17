@@ -27,3 +27,17 @@ export function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+/**
+ * Wrap bare http(s) URLs in already-escaped HTML with clickable anchors so Teams
+ * renders them as links (channel messages posted via Graph do not reliably
+ * auto-linkify plain URLs). MUST run on escaped text: a URL run stops at the
+ * first `<`, so inserted `<br>` tags are never swallowed, and any `&amp;` in the
+ * query string decodes correctly inside the double-quoted href attribute.
+ */
+export function linkifyHtml(escaped: string): string {
+  return (escaped ?? '').replace(
+    /https?:\/\/[^\s<]+/g,
+    (url) => `<a href="${url}">${url}</a>`,
+  );
+}
