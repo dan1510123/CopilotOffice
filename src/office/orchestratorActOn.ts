@@ -27,6 +27,12 @@ export interface ActOnDeps {
   ensureOnline: (officeId: string, agentId: string) => Promise<boolean>;
   /** Deliver text into the target's terminal session (terminalWrite + submit). */
   deliverText: (officeId: string, agentId: string, text: string) => Promise<boolean>;
+  /**
+   * Answer a pending `ask_user` via the sanctioned submit-answer channel (resolves
+   * the SDK/ui-server interaction or keystroke-injects for node-pty). Distinct from
+   * `deliverText`: raw typing would only select a choice prompt's highlighted option.
+   */
+  submitAnswer: (officeId: string, agentId: string, answer: string) => Promise<boolean>;
   /** Stop / take an agent offline (terminalKill). */
   stopSession: (officeId: string, agentId: string) => Promise<boolean>;
   /** Restart an agent's session (stop + warm). */
@@ -118,7 +124,7 @@ export async function answerAgent(
   }
   try {
     await deps.ensureOnline(officeId, args.agentId);
-    const ok = await deps.deliverText(officeId, args.agentId, args.answer);
+    const ok = await deps.submitAnswer(officeId, args.agentId, args.answer);
     return ok
       ? { agentId: args.agentId, officeId, outcome: 'delivered', message: `Answer delivered to ${args.agentId}.` }
       : { agentId: args.agentId, officeId, outcome: 'failed', message: `Failed to deliver the answer to ${args.agentId}.` };

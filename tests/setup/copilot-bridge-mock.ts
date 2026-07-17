@@ -8,6 +8,7 @@ export function createMockCopilotBridge(
   const bridge: Partial<MockCopilotBridge> = {
     terminalStart: vi.fn().mockResolvedValue({ success: true, pid: 1, sessionId: 'session-1' }),
     terminalWrite: vi.fn().mockResolvedValue({ success: true }),
+    terminalSubmitAnswer: vi.fn().mockResolvedValue({ success: true }),
     terminalResize: vi.fn().mockResolvedValue({ success: true }),
     terminalKill: vi.fn().mockResolvedValue({ success: true }),
     terminalExists: vi.fn().mockResolvedValue(false),
@@ -34,6 +35,7 @@ export function createMockCopilotBridge(
     onCopilotEvent: vi.fn(),
     onCopilotToolStart: vi.fn(),
     onCopilotToolComplete: vi.fn(),
+    onCopilotAskUser: vi.fn(),
     onCopilotTurnEnd: vi.fn(),
     onCopilotTurnStart: vi.fn(),
     onCopilotUserMessage: vi.fn(),

@@ -36,6 +36,7 @@ function deps(overrides: Partial<ActOnDeps> = {}): ActOnDeps {
   return {
     ensureOnline: vi.fn().mockResolvedValue(true),
     deliverText: vi.fn().mockResolvedValue(true),
+    submitAnswer: vi.fn().mockResolvedValue(true),
     stopSession: vi.fn().mockResolvedValue(true),
     restartSession: vi.fn().mockResolvedValue(true),
     teamsEnabled: vi.fn().mockResolvedValue(true),

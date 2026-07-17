@@ -23,6 +23,13 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-write', officeId, agentId, data);
   },
+  terminalSubmitAnswer: (
+    officeId: string,
+    agentId: string,
+    a: { requestId?: string; answer: string; wasFreeform: boolean },
+  ): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('terminal-submit-answer', officeId, agentId, a);
+  },
   terminalResize: (officeId: string, agentId: string, cols: number, rows: number): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-resize', officeId, agentId, cols, rows);
   },
@@ -442,6 +449,7 @@ declare global {
     copilotBridge: {
       terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
+      terminalSubmitAnswer: (officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) => Promise<{ success: boolean; error?: string }>;
       terminalResize: (officeId: string, agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
       terminalKill: (officeId: string, agentId: string) => Promise<{ success: boolean; error?: string }>;
       setYolo: (enabled: boolean) => Promise<{ success: boolean }>;

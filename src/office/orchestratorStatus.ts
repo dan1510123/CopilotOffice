@@ -8,6 +8,7 @@
 
 import { AGENTS, RESERVE_AGENTS } from '../config/agents';
 import { officeManager } from './officeManager';
+import { getPendingAskUser } from './askUserRegistry';
 import type { AgentStatus } from './officeManager';
 import {
   resolveStatusKey,
@@ -61,10 +62,10 @@ function buildSnapshot(
   const presentation = presentationFor(status);
   const activity = describeActivity(status);
   const awaitingInput = statusKey === 'waiting';
-  // Prefer the actual ask_user question (captured on tool_start into taskSummary)
-  // so the orchestrator can relay real context, not just the generic label. Fall
-  // back to the activity detail / thinkingDetail / a generic notice.
-  const capturedQuestion = status.taskSummary?.trim();
+  // Prefer the REAL ask_user question captured from the copilot-ask-user relay
+  // (authoritative, not subject to tool_start/ask_user event ordering), then the
+  // status task-summary, then activity detail / a generic notice.
+  const capturedQuestion = getPendingAskUser(agentId)?.question?.trim() || status.taskSummary?.trim();
   const pendingQuestion = awaitingInput
     ? capturedQuestion || activity || status.thinkingDetail?.trim() || 'Waiting for your answer'
     : undefined;

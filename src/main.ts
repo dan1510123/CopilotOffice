@@ -24,6 +24,11 @@ import { computeOfficeSummaries, resolveSwitchOffice } from './office/orchestrat
 import { computeActiveAgents, computeAwaitingAgents } from './office/orchestratorStatus';
 import { computeAgentRecentOutput } from './office/orchestratorPeek';
 import {
+  setPendingAskUser,
+  clearPendingAskUser,
+  classifyAnswer,
+} from './office/askUserRegistry';
+import {
   answerAgent,
   sendPromptToAgent,
   stopAgent,
@@ -1912,6 +1917,21 @@ function registerOrchestratorSpec017Resolvers(): void {
       const res = await window.copilotBridge.terminalWrite(officeId, agentId, `${text}\r`);
       return res?.success !== false;
     },
+    submitAnswer: async (officeId, agentId, answer) => {
+      // Answer a pending ask_user through the sanctioned submit-answer channel so
+      // freeform text is delivered verbatim (SDK/ui-server) instead of selecting a
+      // choice prompt's highlighted option. Classify wasFreeform from the captured
+      // options, mirroring the Teams reply path.
+      const { wasFreeform, requestId } = classifyAnswer(agentId, answer);
+      const res = await window.copilotBridge.terminalSubmitAnswer(officeId, agentId, {
+        requestId,
+        answer,
+        wasFreeform,
+      });
+      const ok = res?.success !== false;
+      if (ok) clearPendingAskUser(agentId);
+      return ok;
+    },
     stopSession: async (officeId, agentId) => {
       const res = await window.copilotBridge.terminalKill(officeId, agentId);
       const ok = res?.success !== false;
@@ -2557,6 +2577,9 @@ if (window.copilotBridge) {
 
   window.copilotBridge.onCopilotToolComplete((agentId, toolId, _success) => {
     console.log(`[Office] Tool complete: ${agentId} - ${toolId}`);
+    // Drop any captured ask_user for this agent once its interaction resolves
+    // (toolId-guarded so a stale completion can't wipe a newer question).
+    clearPendingAskUser(agentId, toolId);
 
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
@@ -2603,6 +2626,25 @@ if (window.copilotBridge) {
     phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
+  });
+
+  // spec 017: capture the REAL ask_user question + options so the orchestrator can
+  // report the actual question (US3) and answer it via the submit-answer channel
+  // with the correct wasFreeform flag (US4). Fires for both node-pty and SDK backends.
+  window.copilotBridge.onCopilotAskUser((agentId, toolId, requestId, question, options, freeform) => {
+    setPendingAskUser(agentId, {
+      toolId,
+      requestId,
+      question,
+      options: (options ?? []).map((o) => o.text),
+      freeform,
+    });
+    // Also seed the captured question into the status task-summary so any surface
+    // reading status (dashboards, awaiting list) shows the real question text.
+    const officeId = officeManager.currentOfficeId;
+    if (officeId && question?.trim()) {
+      officeManager.setTaskSummary(officeId, agentId, question.trim());
+    }
   });
 
   window.copilotBridge.onCopilotTurnEnd((agentId) => {

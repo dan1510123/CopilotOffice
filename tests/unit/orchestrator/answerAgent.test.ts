@@ -49,6 +49,7 @@ function deps(overrides: Partial<ActOnDeps> = {}): ActOnDeps {
   return {
     ensureOnline: vi.fn().mockResolvedValue(true),
     deliverText: vi.fn().mockResolvedValue(true),
+    submitAnswer: vi.fn().mockResolvedValue(true),
     stopSession: vi.fn().mockResolvedValue(true),
     restartSession: vi.fn().mockResolvedValue(true),
     teamsEnabled: vi.fn().mockResolvedValue(true),
@@ -71,7 +72,7 @@ describe('answerAgent', () => {
     expect(res.outcome).toBe('delivered');
     expect(res.officeId).toBe('o1');
     expect(d.ensureOnline).toHaveBeenCalledWith('o1', 'coder');
-    expect(d.deliverText).toHaveBeenCalledWith('o1', 'coder', 'use option B');
+    expect(d.submitAnswer).toHaveBeenCalledWith('o1', 'coder', 'use option B');
   });
 
   it('returns not-waiting when the agent is online but not awaiting input', async () => {
@@ -79,7 +80,7 @@ describe('answerAgent', () => {
     const d = deps();
     const res = await answerAgent({ agentId: 'coder', answer: 'hi' }, d);
     expect(res.outcome).toBe('not-waiting');
-    expect(d.deliverText).not.toHaveBeenCalled();
+    expect(d.submitAnswer).not.toHaveBeenCalled();
   });
 
   it('returns not-online for a slacking agent', async () => {
@@ -100,7 +101,7 @@ describe('answerAgent', () => {
 
   it('surfaces failed (never silent) when delivery fails', async () => {
     seat('o1', 'coder', status({ agentId: 'coder', subState: 'waiting' }));
-    const res = await answerAgent({ agentId: 'coder', answer: 'hi' }, deps({ deliverText: vi.fn().mockResolvedValue(false) }));
+    const res = await answerAgent({ agentId: 'coder', answer: 'hi' }, deps({ submitAnswer: vi.fn().mockResolvedValue(false) }));
     expect(res.outcome).toBe('failed');
   });
 
@@ -108,7 +109,7 @@ describe('answerAgent', () => {
     seat('o1', 'coder', status({ agentId: 'coder', subState: 'waiting' }));
     const res = await answerAgent(
       { agentId: 'coder', answer: 'hi' },
-      deps({ deliverText: vi.fn().mockRejectedValue(new Error('pipe broke')) }),
+      deps({ submitAnswer: vi.fn().mockRejectedValue(new Error('pipe broke')) }),
     );
     expect(res.outcome).toBe('failed');
     expect(res.message).toMatch(/pipe broke/);

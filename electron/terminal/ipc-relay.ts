@@ -406,6 +406,15 @@ export class TerminalRelay {
       this.request({ type: 'write', requestId: this.id(), officeId, agentId, data })
     );
 
+    // spec 017: answer a pending ask_user via the sanctioned submit-answer channel
+    // (resolves the SDK/ui-server interaction, or keystroke-injects for node-pty) —
+    // NOT raw `write`, which would only select a choice prompt's highlighted option.
+    ipcMain.handle(
+      'terminal-submit-answer',
+      (_event, officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) =>
+        this.mainSubmitAnswer(officeId, agentId, a),
+    );
+
     ipcMain.handle('terminal-resize', (_event, officeId: string, agentId: string, cols: number, rows: number) => {
       this.send({ type: 'resize', officeId, agentId, cols, rows });
       return { success: true };
