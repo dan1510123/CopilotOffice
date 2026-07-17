@@ -122,4 +122,15 @@ describe('computeActiveAgents', () => {
     offices = [{ id: 'o1', name: 'HQ', agents: new Map() }];
     expect(computeActiveAgents(NOW)).toEqual([]);
   });
+
+  it('resolves a foreign-office agent name via cross-office fallback', () => {
+    // A custom agent seated into HQ (o1) whose name config lives in Annex (o2)
+    // — mirrors the orchestrator seating `office-5-agent-0` into Main Office.
+    offices[0].agents.set('epsilon', status({ agentId: 'epsilon', subState: 'ready' }));
+    const seated = computeActiveAgents(NOW).find(
+      (a) => a.agentId === 'epsilon' && a.officeId === 'o1',
+    )!;
+    expect(seated.name).toBe('Epsilon');
+    expect(seated.officeName).toBe('HQ');
+  });
 });

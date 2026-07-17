@@ -19,6 +19,26 @@ import type { ActiveAgentSnapshot, AwaitingAgent } from '../../electron/orchestr
 
 /** Resolve an agent's display name from office custom roster → default → reserve. */
 function resolveAgentName(officeId: string, agentId: string): string {
+  const local = resolveInOffice(officeId, agentId);
+  if (local) return local;
+  const seated = AGENTS.find((a) => a.id === agentId);
+  if (seated) return seated.name;
+  for (const reserve of Object.values(RESERVE_AGENTS)) {
+    if (reserve.id === agentId) return reserve.name;
+  }
+  // Fall back to any office's custom roster: a session-bearing agent can be
+  // rolled up under a different office than the one that owns its config
+  // (e.g. `office-5-agent-0` surfacing while the current office is `office-0`).
+  for (const config of officeManager.getAllOffices()) {
+    if (config.id === officeId) continue;
+    const found = resolveInOffice(config.id, agentId);
+    if (found) return found;
+  }
+  return agentId;
+}
+
+/** Look up a display name in a single office's custom + custom-reserve rosters. */
+function resolveInOffice(officeId: string, agentId: string): string | undefined {
   const office = officeManager.getOffice(officeId)?.config;
   const custom = office?.customAgents?.find((a) => a.id === agentId);
   if (custom) return custom.name;
@@ -26,12 +46,7 @@ function resolveAgentName(officeId: string, agentId: string): string {
     ? Object.values(office.customReserveAgents).find((a) => a.id === agentId)
     : undefined;
   if (customReserve) return customReserve.name;
-  const seated = AGENTS.find((a) => a.id === agentId);
-  if (seated) return seated.name;
-  for (const reserve of Object.values(RESERVE_AGENTS)) {
-    if (reserve.id === agentId) return reserve.name;
-  }
-  return agentId;
+  return undefined;
 }
 
 /** Build one snapshot for a session-bearing agent (any active state). */
