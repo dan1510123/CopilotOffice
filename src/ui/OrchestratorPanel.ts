@@ -7,11 +7,13 @@
 // prompt; approval brings that agent online — always gated, regardless of the
 // global YOLO toggle.
 //
-// Focus is coordinated through the `settings:open` / `settings:close` event bus
+// Focus is coordinated through optional `onOpen` / `onClose` callbacks the host
+// wires to the `settings:open` / `settings:close` event bus
 // (→ InputManager.suspendGameInput/resumeGameInput), consistent with the other
-// DOM-modal overlays. All IPC goes through `window.copilotBridge`.
+// DOM-modal overlays (SpriteCustomizerPanel, NotificationSettingsPanel). This keeps
+// the panel independent of the Phaser scene so it also works in serious mode, where
+// no Phaser game exists. All IPC goes through `window.copilotBridge`.
 
-import Phaser from 'phaser';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
@@ -28,6 +30,14 @@ interface PendingPermission {
   agentId?: string;
 }
 
+/** Host callbacks so the panel stays decoupled from Phaser (works in game + serious). */
+export interface OrchestratorPanelHost {
+  /** Called when the panel opens — host suspends game input (no-op in serious mode). */
+  onOpen?: () => void;
+  /** Called when the panel closes — host resumes game input. */
+  onClose?: () => void;
+}
+
 function resolveAgentName(agentId?: string): string {
   if (!agentId) return 'an agent';
   const seated = AGENTS.find((a) => a.id === agentId);
@@ -39,7 +49,7 @@ function resolveAgentName(agentId?: string): string {
 }
 
 export class OrchestratorPanel {
-  private readonly scene: Phaser.Scene;
+  private readonly host: OrchestratorPanelHost;
   private overlay: HTMLDivElement | null = null;
   private terminalDiv: HTMLDivElement | null = null;
   private inputEl: HTMLInputElement | null = null;
@@ -60,8 +70,8 @@ export class OrchestratorPanel {
   private disposers: Array<() => void> = [];
   private resizeObserver: ResizeObserver | null = null;
 
-  constructor(scene: Phaser.Scene) {
-    this.scene = scene;
+  constructor(host: OrchestratorPanelHost = {}) {
+    this.host = host;
   }
 
   isOpen(): boolean {
@@ -74,8 +84,8 @@ export class OrchestratorPanel {
     ensureXtermStyles();
     this.buildDom();
     this.registerBridgeListeners();
-    // Focus contract: suspend game input while the modal is open.
-    this.scene.game.events.emit('settings:open');
+    // Focus contract: suspend game input while the modal is open (no-op in serious mode).
+    this.host.onOpen?.();
     this.isVisible = true;
     this.opening = false;
 
@@ -107,7 +117,7 @@ export class OrchestratorPanel {
       void window.copilotBridge.orchestratorClose(this.sessionId);
     }
     this.unregisterBridgeListeners();
-    this.scene.game.events.emit('settings:close');
+    this.host.onClose?.();
     this.teardownDom();
   }
 

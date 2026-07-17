@@ -1803,18 +1803,18 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
 // reserve activation.
 let orchestratorPanel: OrchestratorPanel | null = null;
 
-function getOrchestratorPanel(): OrchestratorPanel | null {
-  const scene = phaserGameRef?.scene.getScene('OfficeScene');
-  if (!scene) return null;
+function getOrchestratorPanel(): OrchestratorPanel {
   if (!orchestratorPanel) {
-    orchestratorPanel = new OrchestratorPanel(scene);
+    orchestratorPanel = new OrchestratorPanel({
+      onOpen: () => { phaserGameRef?.events.emit('settings:open'); },
+      onClose: () => { phaserGameRef?.events.emit('settings:close'); },
+    });
   }
   return orchestratorPanel;
 }
 
 function toggleOrchestratorPanel(): void {
   const panel = getOrchestratorPanel();
-  if (!panel) return;
   if (panel.isOpen()) panel.hide();
   else void panel.show();
 }
