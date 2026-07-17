@@ -25,7 +25,7 @@ import type { ActOnResult } from '../../electron/orchestrator/types';
 export interface ActOnDeps {
   /** Ensure the target has a live session (warmAgentSession); resolves true on success. */
   ensureOnline: (officeId: string, agentId: string) => Promise<boolean>;
-  /** Deliver text into the target's terminal session (terminalWrite + submit). */
+  /** Deliver a follow-up prompt to the target's session (submit-prompt, targeted by agentId). */
   deliverText: (officeId: string, agentId: string, text: string) => Promise<boolean>;
   /**
    * Answer a pending `ask_user` via the sanctioned submit-answer channel (resolves

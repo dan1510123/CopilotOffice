@@ -415,6 +415,17 @@ export class TerminalRelay {
         this.mainSubmitAnswer(officeId, agentId, a),
     );
 
+    // spec 017: send a follow-up prompt to a specific agent via the sanctioned
+    // submit-prompt channel (SDK session.send / bracketed-paste for node-pty),
+    // targeted by agentId. NOT raw `write`, which under the ui-server shared host
+    // routes input to the office's FOREGROUND session — so a background agent's
+    // prompt would land in whichever agent is currently viewed.
+    ipcMain.handle(
+      'terminal-submit-prompt',
+      (_event, officeId: string, agentId: string, prompt: string, label?: string) =>
+        this.mainSubmitPrompt(officeId, agentId, prompt, label),
+    );
+
     ipcMain.handle('terminal-resize', (_event, officeId: string, agentId: string, cols: number, rows: number) => {
       this.send({ type: 'resize', officeId, agentId, cols, rows });
       return { success: true };

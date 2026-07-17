@@ -1913,8 +1913,12 @@ function registerOrchestratorSpec017Resolvers(): void {
   const actOnDeps: ActOnDeps = {
     ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
-      // Same terminal input path the in-world terminals use (terminalWrite + submit).
-      const res = await window.copilotBridge.terminalWrite(officeId, agentId, `${text}\r`);
+      // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
+      // session.send / bracketed-paste for node-pty), targeted by agentId. NOT raw
+      // terminalWrite: under the ui-server shared host, raw input is routed to the
+      // office's FOREGROUND session, so a background agent's prompt would land in
+      // whichever agent is currently viewed (spec 017 US5 mis-delivery fix).
+      const res = await window.copilotBridge.terminalSubmitPrompt(officeId, agentId, text);
       return res?.success !== false;
     },
     submitAnswer: async (officeId, agentId, answer) => {

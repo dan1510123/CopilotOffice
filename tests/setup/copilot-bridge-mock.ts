@@ -9,6 +9,7 @@ export function createMockCopilotBridge(
     terminalStart: vi.fn().mockResolvedValue({ success: true, pid: 1, sessionId: 'session-1' }),
     terminalWrite: vi.fn().mockResolvedValue({ success: true }),
     terminalSubmitAnswer: vi.fn().mockResolvedValue({ success: true }),
+    terminalSubmitPrompt: vi.fn().mockResolvedValue({ success: true }),
     terminalResize: vi.fn().mockResolvedValue({ success: true }),
     terminalKill: vi.fn().mockResolvedValue({ success: true }),
     terminalExists: vi.fn().mockResolvedValue(false),
