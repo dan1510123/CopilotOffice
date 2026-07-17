@@ -13,7 +13,7 @@ import type { AgentStatus } from './officeManager';
 import {
   resolveStatusKey,
   presentationFor,
-  describeActivity,
+  friendlyToolName,
   formatElapsedMmSs,
 } from '../config/agentStatusPresentation';
 import type { ActiveAgentSnapshot, AwaitingAgent } from '../../electron/orchestrator/types';
@@ -50,6 +50,45 @@ function resolveInOffice(officeId: string, agentId: string): string | undefined 
   return undefined;
 }
 
+/**
+ * Describe what an agent is doing for the orchestrator roll-up (US2). Unlike the
+ * badge's `describeActivity` (which deliberately blanks non-waiting states to keep
+ * the in-world card from reflowing, spec 014), the orchestrator surface reports a
+ * meaningful activity for EVERY active state, composed from data OfficeManager
+ * already holds (thinkingDetail / currentTool / lastCompletedAction / recentActions).
+ */
+function describeOrchestratorActivity(status: AgentStatus): string {
+  const detail = status.thinkingDetail?.trim();
+  const tool = status.currentTool?.trim();
+  const lastDone = status.lastCompletedAction?.trim();
+  const lastRecent = mostRecentActionLabel(status);
+  const toolLabel = tool ? friendlyToolName(tool) : '';
+  switch (resolveStatusKey(status)) {
+    case 'thinking':
+      return detail || toolLabel || lastRecent || 'Working…';
+    case 'waiting':
+      return detail || toolLabel || 'Waiting for your answer';
+    case 'starting':
+      return detail || 'Starting up';
+    case 'done':
+      return lastDone || lastRecent || 'Finished its last task';
+    case 'ready':
+      return lastDone || lastRecent || 'Idle — ready for work';
+    case 'error':
+      return detail || 'Hit an error';
+    default:
+      return '';
+  }
+}
+
+/** Human phrase for the most recent tool action in the ring buffer, or '' if none. */
+function mostRecentActionLabel(status: AgentStatus): string {
+  const actions = status.recentActions;
+  if (!actions || actions.length === 0) return '';
+  const last = actions[actions.length - 1];
+  return last?.action ? friendlyToolName(last.action) : '';
+}
+
 /** Build one snapshot for a session-bearing agent (any active state). */
 function buildSnapshot(
   officeId: string,
@@ -60,7 +99,7 @@ function buildSnapshot(
 ): ActiveAgentSnapshot {
   const statusKey = resolveStatusKey(status);
   const presentation = presentationFor(status);
-  const activity = describeActivity(status);
+  const activity = describeOrchestratorActivity(status);
   const awaitingInput = statusKey === 'waiting';
   // Prefer the REAL ask_user question captured from the copilot-ask-user relay
   // (authoritative, not subject to tool_start/ask_user event ordering), then the

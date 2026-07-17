@@ -134,3 +134,59 @@ describe('computeActiveAgents', () => {
     expect(seated.officeName).toBe('HQ');
   });
 });
+
+describe('computeActiveAgents — activity for every state (US2)', () => {
+  function activityFor(overrides: Partial<AgentStatus>): string {
+    offices = [
+      {
+        id: 'o1',
+        name: 'HQ',
+        customAgents: [{ id: 'solo', name: 'Solo' }],
+        agents: new Map<string, AgentStatus>([
+          ['solo', status({ agentId: 'solo', ...overrides })],
+        ]),
+      },
+    ];
+    return computeActiveAgents(NOW).find((a) => a.agentId === 'solo')!.activity;
+  }
+
+  it('thinking prefers thinkingDetail', () => {
+    expect(activityFor({ subState: 'thinking', thinkingDetail: 'Refactoring auth' })).toBe(
+      'Refactoring auth',
+    );
+  });
+
+  it('thinking falls back to a friendly tool name', () => {
+    expect(activityFor({ subState: 'thinking', currentTool: 'edit' })).toBe('Editing a file');
+  });
+
+  it('thinking with nothing captured returns a generic notice', () => {
+    expect(activityFor({ subState: 'thinking' })).toBe('Working…');
+  });
+
+  it('done reports the last completed action (not blank)', () => {
+    expect(
+      activityFor({ subState: 'ready', completionPendingAck: true, lastCompletedAction: 'edit on src/main.ts' }),
+    ).toBe('edit on src/main.ts');
+  });
+
+  it('ready reports the last completed action, else idle', () => {
+    expect(activityFor({ subState: 'ready', lastCompletedAction: 'grep across repo' })).toBe(
+      'grep across repo',
+    );
+    expect(activityFor({ subState: 'ready' })).toBe('Idle — ready for work');
+  });
+
+  it('falls back to the most recent ring-buffer action when nothing else is set', () => {
+    expect(
+      activityFor({
+        subState: 'ready',
+        recentActions: [{ action: 'view', type: 'completed', timestamp: NOW - 5000 }],
+      }),
+    ).toBe('Reading a file');
+  });
+
+  it('error reports its detail', () => {
+    expect(activityFor({ subState: 'error', thinkingDetail: 'Build failed' })).toBe('Build failed');
+  });
+});
