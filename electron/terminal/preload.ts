@@ -269,6 +269,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   orchestratorClose: (sessionId: string): Promise<{ ok: boolean }> => {
     return ipcRenderer.invoke('orchestrator:close', { sessionId });
   },
+  orchestratorEnd: (sessionId: string): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:end', { sessionId });
+  },
   orchestratorRespondCandidates: (requestId: string, candidates: unknown[]): Promise<{ ok: boolean }> => {
     return ipcRenderer.invoke('orchestrator:candidates:respond', { requestId, candidates });
   },
@@ -429,6 +432,7 @@ declare global {
       orchestratorInput: (sessionId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
       orchestratorRespondPermission: (sessionId: string, toolCallId: string, decision: 'approve' | 'deny') => Promise<{ ok: boolean }>;
       orchestratorClose: (sessionId: string) => Promise<{ ok: boolean }>;
+      orchestratorEnd: (sessionId: string) => Promise<{ ok: boolean }>;
       orchestratorRespondCandidates: (requestId: string, candidates: OrchestratorCandidate[]) => Promise<{ ok: boolean }>;
       orchestratorRespondExecute: (requestId: string, result: OrchestratorResult) => Promise<{ ok: boolean }>;
       orchestratorRespondOffices: (requestId: string, offices: OrchestratorOfficeSummary[]) => Promise<{ ok: boolean }>;

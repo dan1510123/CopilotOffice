@@ -63,6 +63,11 @@ export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
     return { ok: true };
   });
 
+  ipcMain.handle('orchestrator:end', async (_e, _args: { sessionId: string }) => {
+    await manager.endSession();
+    return { ok: true };
+  });
+
   ipcMain.handle(
     'orchestrator:candidates:respond',
     (_e, args: { requestId: string; candidates: BringOnlineCandidate[] }) => {

@@ -1815,7 +1815,7 @@ function getOrchestratorPanel(): OrchestratorPanel {
 
 function toggleOrchestratorPanel(): void {
   const panel = getOrchestratorPanel();
-  if (panel.isOpen()) panel.hide();
+  if (panel.isOpen()) panel.minimize();
   else void panel.show();
 }
 

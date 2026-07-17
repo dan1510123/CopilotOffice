@@ -86,6 +86,8 @@ export class OrchestratorSessionManager {
   private unsubscribe: (() => void) | null = null;
   private lifecycle: OrchestratorLifecycle = 'idle';
   private openPromise: Promise<OrchestratorSessionInfo> | null = null;
+  /** True while the orchestrator is online in a Teams thread (a remote approver exists). */
+  private teamsRelayActive = false;
 
   private readonly pendingPermissions = new Map<string, (result: PermissionRequestResult) => void>();
   private readonly pendingCandidates = new Map<string, (candidates: BringOnlineCandidate[]) => void>();
@@ -225,13 +227,60 @@ export class OrchestratorSessionManager {
   }
 
   /**
-   * Detach the panel/stream. MUST NOT kill the SDK session, any office session,
-   * or mutate activeAgentViewers. Resolves any still-pending permission requests
-   * as deny (dismiss-while-pending).
+   * Detach the panel view (minimize / dismiss overlay). MUST NOT kill the SDK
+   * session, any office session, or mutate activeAgentViewers, and MUST NOT
+   * detach the event stream: keeping the stream alive lets a Teams-online
+   * orchestrator keep answering in-thread while its desktop overlay is minimized,
+   * and lets a reopened panel resume streaming without reattaching. Pending
+   * permission gates are denied UNLESS the orchestrator is actually online in a
+   * Teams thread (`teamsRelayActive`), in which case the gate is left open so the
+   * in-thread approver can still respond within its own timeout. (The raw
+   * `permissionListeners` set is always non-empty while the Teams feature is
+   * running, so it is NOT a reliable "reachable approver" signal.)
    */
   close(): void {
-    this.detachStream();
+    if (!this.teamsRelayActive) {
+      this.rejectAllPending();
+    }
+  }
+
+  /**
+   * Set whether the orchestrator is currently online in a Teams thread (i.e. a
+   * remote approver can answer relayed permission gates). Wired from the main
+   * process register/goOffline flow. Governs whether `close()` (minimize) denies
+   * outstanding gates.
+   */
+  setTeamsRelayActive(active: boolean): void {
+    this.teamsRelayActive = active;
+  }
+
+  /**
+   * Fully end the orchestrator session (the panel's red ✕). Denies any pending
+   * gates, resolves any in-flight renderer round-trips, tears down the stream,
+   * disconnects the SDK session, and fires exit listeners with `closed-by-user`
+   * so a Teams-online orchestrator goes offline — the exit chain posts the closing
+   * notice to the thread and removes the binding. After this the next `open()`
+   * starts a fresh session.
+   */
+  async endSession(): Promise<void> {
+    const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     this.rejectAllPending();
+    this.clearPendingRoundTrips();
+    this.detachStream();
+    this.teamsRelayActive = false;
+    const session = this.session;
+    this.session = null;
+    this.openPromise = null;
+    this.lifecycle = 'idle';
+    if (session) {
+      try {
+        await session.disconnect?.();
+      } catch {
+        /* best-effort teardown — disconnect failures must not block exit signalling */
+      }
+    }
+    this.emitter.emitExit({ sessionId, reason: 'closed-by-user' });
+    for (const cb of this.exitListeners) cb('closed-by-user');
   }
 
   private rejectAllPending(): void {
@@ -239,6 +288,28 @@ export class OrchestratorSessionManager {
       resolve({ kind: 'denied-interactively-by-user' });
     }
     this.pendingPermissions.clear();
+  }
+
+  /**
+   * Resolve and drop any in-flight renderer round-trips (candidates/execute/offices/
+   * switch) so an awaiting tool call unblocks and no resolver is retained after the
+   * session ends. Only called on full teardown — NOT on minimize, where the session
+   * (and any in-flight tool round-trip) continues.
+   */
+  private clearPendingRoundTrips(): void {
+    const ended = 'Orchestrator session ended';
+    for (const [, resolve] of this.pendingCandidates) resolve([]);
+    this.pendingCandidates.clear();
+    for (const [, resolve] of this.pendingExecute) {
+      resolve({ agentId: '', outcome: 'failed', message: ended });
+    }
+    this.pendingExecute.clear();
+    for (const [, resolve] of this.pendingOffices) resolve([]);
+    this.pendingOffices.clear();
+    for (const [, resolve] of this.pendingSwitch) {
+      resolve({ officeId: '', outcome: 'failed', message: ended });
+    }
+    this.pendingSwitch.clear();
   }
 
   // ── Permission gate (non-YOLO, always gated) ─────────────────────────────

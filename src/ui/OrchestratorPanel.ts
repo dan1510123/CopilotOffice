@@ -64,6 +64,8 @@ export class OrchestratorPanel {
   private sessionId = '';
   private isVisible = false;
   private opening = false;
+  /** Set when the user closes (red ✕) during startup, before the sessionId is known. */
+  private endRequested = false;
 
   private readonly streamedMessageIds = new Set<string>();
   private pending: PendingPermission | null = null;
@@ -81,9 +83,12 @@ export class OrchestratorPanel {
   async show(): Promise<void> {
     if (this.isVisible || this.opening) return;
     this.opening = true;
+    this.endRequested = false;
     ensureXtermStyles();
     this.buildDom();
     this.registerBridgeListeners();
+    // Reflect a Teams binding that survived a previous minimize (singleton panel).
+    this.updateTeamsButton();
     // Focus contract: suspend game input while the modal is open (no-op in serious mode).
     this.host.onOpen?.();
     this.isVisible = true;
@@ -92,27 +97,43 @@ export class OrchestratorPanel {
     try {
       const res = await window.copilotBridge.orchestratorOpen();
       if (res?.error || !res?.sessionId) {
-        this.showBanner(`Orchestrator failed to start: ${res?.error ?? 'unknown error'}. You can still bring agents online manually.`, 'error');
-      } else {
-        this.sessionId = res.sessionId;
-        this.terminal?.writeln('\x1b[2mOrchestrator ready. Describe what you need help with…\x1b[0m');
+        if (this.isVisible) {
+          this.showBanner(`Orchestrator failed to start: ${res?.error ?? 'unknown error'}. You can still bring agents online manually.`, 'error');
+        }
+        return;
       }
+      this.sessionId = res.sessionId;
+      // The user closed (red ✕) before the session finished opening — end the
+      // now-live session so it doesn't leak in the background.
+      if (this.endRequested) {
+        this.endRequested = false;
+        void window.copilotBridge.orchestratorEnd(this.sessionId);
+        this.sessionId = '';
+        return;
+      }
+      // Minimized during open: keep the live session tracked, but skip UI writes.
+      if (!this.isVisible) return;
+      this.terminal?.writeln('\x1b[2mOrchestrator ready. Describe what you need help with…\x1b[0m');
     } catch (e) {
-      this.showBanner(`Orchestrator failed to start: ${(e as Error)?.message ?? 'threw'}.`, 'error');
+      if (this.isVisible) {
+        this.showBanner(`Orchestrator failed to start: ${(e as Error)?.message ?? 'threw'}.`, 'error');
+      }
     }
     setTimeout(() => this.inputEl?.focus(), 0);
   }
 
-  hide(): void {
+  /**
+   * Minimize the overlay (blue −): tear down the DOM but KEEP the orchestrator
+   * session running server-side (via `orchestratorClose`, which no longer detaches
+   * the event stream). A Teams-online orchestrator keeps answering in-thread while
+   * minimized; reopening rebuilds the DOM and resumes streaming from the same session.
+   */
+  minimize(): void {
     if (!this.isVisible) return;
     this.isVisible = false;
-
-    // Dismiss-while-pending resolves as deny.
-    if (this.pending) {
-      void window.copilotBridge.orchestratorRespondPermission(this.sessionId, this.pending.toolCallId, 'deny');
-      this.pending = null;
-    }
-    // Detach the stream — NEVER kill the session (reopen reattaches).
+    // Do NOT deny a pending gate here — if the orchestrator is online in Teams the
+    // in-thread approver may still respond; otherwise the server denies it on close().
+    this.pending = null;
     if (this.sessionId) {
       void window.copilotBridge.orchestratorClose(this.sessionId);
     }
@@ -121,8 +142,31 @@ export class OrchestratorPanel {
     this.teardownDom();
   }
 
+  /**
+   * Close the session for real (red ✕): ends the SDK session server-side. When the
+   * orchestrator is Teams-online this fires the exit chain that posts the closing
+   * notice to the thread and takes the binding offline. The next open() starts fresh.
+   */
+  closeSession(): void {
+    if (!this.isVisible) return;
+    this.isVisible = false;
+    this.pending = null;
+    // Cover the startup race: if the session hasn't finished opening yet, show()
+    // will see endRequested and end it as soon as the sessionId arrives.
+    this.endRequested = true;
+    if (this.sessionId) {
+      this.endRequested = false;
+      void window.copilotBridge.orchestratorEnd(this.sessionId);
+    }
+    this.sessionId = '';
+    this.teamsOnline = false;
+    this.unregisterBridgeListeners();
+    this.host.onClose?.();
+    this.teardownDom();
+  }
+
   destroy(): void {
-    this.hide();
+    this.closeSession();
   }
 
   // ── DOM construction ─────────────────────────────────────────────
@@ -137,7 +181,7 @@ export class OrchestratorPanel {
       font-family: 'Cascadia Code', Consolas, Monaco, monospace;
     `;
     overlay.addEventListener('mousedown', (e) => {
-      if (e.target === overlay) this.hide();
+      if (e.target === overlay) this.minimize();
     });
 
     const panel = document.createElement('div');
@@ -165,11 +209,20 @@ export class OrchestratorPanel {
     teamsBtn.style.cssText = 'padding:5px 10px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#cde;font-size:12px;cursor:pointer;';
     teamsBtn.onclick = () => this.toggleTeams();
     this.teamsBtn = teamsBtn;
+    const minimizeBtn = document.createElement('button');
+    minimizeBtn.textContent = '−';
+    minimizeBtn.title = 'Minimize — keep the session running (Teams stays online) and hide this overlay.';
+    minimizeBtn.setAttribute('aria-label', 'Minimize orchestrator');
+    minimizeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#7db4ff;font-size:18px;line-height:1;cursor:pointer;';
+    minimizeBtn.onclick = () => this.minimize();
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
-    closeBtn.style.cssText = 'background:none;border:none;color:#aaa;font-size:18px;cursor:pointer;';
-    closeBtn.onclick = () => this.hide();
+    closeBtn.title = 'Close — end the orchestrator session. If online in Teams, posts a closing notice and goes offline.';
+    closeBtn.setAttribute('aria-label', 'Close orchestrator session');
+    closeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid #6a2a2a;background:#2a1414;color:#ff7d7d;font-size:15px;line-height:1;cursor:pointer;';
+    closeBtn.onclick = () => this.closeSession();
     headerRight.appendChild(teamsBtn);
+    headerRight.appendChild(minimizeBtn);
     headerRight.appendChild(closeBtn);
     header.appendChild(title);
     header.appendChild(headerRight);

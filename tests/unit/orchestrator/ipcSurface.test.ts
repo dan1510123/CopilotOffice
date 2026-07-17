@@ -7,6 +7,7 @@ const fakeSession = {
   sessionId: 'orc-session-1',
   on: vi.fn(() => () => {}),
   send: vi.fn().mockResolvedValue(undefined),
+  disconnect: vi.fn().mockResolvedValue(undefined),
 };
 
 vi.mock('@github/copilot-sdk', async (importOriginal) => {
@@ -52,6 +53,7 @@ beforeEach(() => {
   createSessionCalls = 0;
   fakeSession.on.mockClear();
   fakeSession.send.mockClear();
+  fakeSession.disconnect.mockClear();
 });
 
 describe('orchestrator IPC surface / session lifecycle', () => {
@@ -105,5 +107,44 @@ describe('orchestrator IPC surface / session lifecycle', () => {
     expect(
       manager.respondSwitch('nope', { officeId: 'x', outcome: 'switched', message: 'x' }),
     ).toBe(false);
+  });
+
+  it('close() keeps a pending permission open while the Teams relay is active', async () => {
+    const { manager } = makeManager();
+    await manager.open();
+    // Simulate the orchestrator being online in a Teams thread (reachable approver).
+    manager.setTeamsRelayActive(true);
+    const handler = (manager as unknown as {
+      permissionHandler: (r: PermissionRequest, i?: unknown) => Promise<PermissionRequestResult>;
+    }).permissionHandler;
+    let settled = false;
+    const pending = handler({
+      kind: 'custom-tool',
+      toolName: 'bring_agent_online',
+      toolCallId: 'call-relay',
+      toolDescription: 'x',
+      args: { agentId: 'debugger' },
+    } as PermissionRequest).then((r) => { settled = true; return r; });
+    manager.close();
+    await Promise.resolve();
+    // The gate is NOT auto-denied — the in-thread approver still owns it.
+    expect(settled).toBe(false);
+    // The relay can still approve it after the panel was minimized.
+    expect(manager.respondToPermission({ toolCallId: 'call-relay', decision: 'approve' })).toBe(true);
+    await expect(pending).resolves.toEqual({ kind: 'approved' });
+  });
+
+  it('endSession() disconnects the SDK session and fires exit listeners', async () => {
+    const { manager } = makeManager();
+    await manager.open();
+    const exits: string[] = [];
+    manager.onSessionExit((reason) => exits.push(reason));
+    await manager.endSession();
+    expect(fakeSession.disconnect).toHaveBeenCalledTimes(1);
+    expect(exits).toEqual(['closed-by-user']);
+    // The session is gone; a subsequent open() starts a fresh one.
+    expect(manager.getInfo()).toBeNull();
+    await manager.open();
+    expect(createSessionCalls).toBe(2);
   });
 });

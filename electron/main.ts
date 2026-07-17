@@ -345,15 +345,19 @@ app.whenReady().then(async () => {
       } catch (e) {
         return { success: false, error: `Orchestrator failed to start: ${(e as Error).message}` };
       }
-      return teamsService.register({
+      const result = await teamsService.register({
         officeId: ORCHESTRATOR_OFFICE_ID,
         agentId: ORCHESTRATOR_AGENT_ID,
         displayName: ORCHESTRATOR_DISPLAY_NAME,
         workingDir: process.cwd(),
       });
+      // A reachable in-thread approver now exists — let minimize keep gates open.
+      if (result?.success) orchestratorManager.setTeamsRelayActive(true);
+      return result;
     });
 
     ipcMain.handle('teams:stopOrchestrator', async () => {
+      orchestratorManager.setTeamsRelayActive(false);
       if (!teamsService) return { success: true };
       return teamsService.goOffline(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID, true);
     });
