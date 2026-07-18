@@ -135,6 +135,14 @@ export function computeActiveAgents(now: number = Date.now()): ActiveAgentSnapsh
     if (!office) continue;
     for (const [agentId, status] of office.agents) {
       if (status.state !== 'active') continue; // no live session
+      // TEMP DIAGNOSTIC (spec 017 roll-up activity): log the raw activity-bearing
+      // fields so we can tell whether worked agents' data is empty or misattributed.
+      console.log(
+        `[rollup-diag] office=${config.id} agent=${agentId} key=${resolveStatusKey(status)} ` +
+          `recent=${status.recentActions?.length ?? 0} lastDone=${JSON.stringify(status.lastCompletedAction)} ` +
+          `think=${JSON.stringify(status.thinkingDetail)} tool=${JSON.stringify(status.currentTool)} ` +
+          `activity=${JSON.stringify(describeOrchestratorActivity(status))}`,
+      );
       snapshots.push(buildSnapshot(config.id, config.name, agentId, status, now));
     }
   }

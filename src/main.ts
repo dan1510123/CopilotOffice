@@ -2606,6 +2606,7 @@ if (window.copilotBridge) {
       // Track last completed action + recent actions history
       officeManager.setLastCompletedAction(officeId, agentId, completedToolName);
       officeManager.pushRecentAction(officeId, agentId, completedToolName, 'completed');
+      console.log(`[rollup-diag] tool_complete attributed office=${officeId} agent=${agentId} tool=${completedToolName}`);
       notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
 
       // Update status based on remaining tools. Uses `nextSubStateAfterToolComplete`
