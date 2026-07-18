@@ -211,6 +211,15 @@ export class TeamsService {
    */
   private readonly pendingApprovals = new Map<string, PendingApproval>(); // key = agentId
   /**
+   * One-shot origin tags for the NEXT ambient turn per agentId → expiry timestamp
+   * (spec 017). Set when the orchestrator dispatches an approved follow-up prompt so
+   * the target agent's mirrored request reads "🤖 Orchestrator" instead of the default
+   * "👤 Human local request". Consumed by the next ambient user-message; TTL-bounded so
+   * an undelivered prompt can't mislabel a later genuine local request.
+   */
+  private readonly orchestratorPromptOrigins = new Map<string, number>(); // key = agentId → expiry
+  private static readonly ORCH_ORIGIN_TTL_MS = 2 * 60 * 1000;
+  /**
    * Message ids of every message the app has posted (thread roots + replies).
    * Primary self-loop guard: an inbound message whose id is here is our own echo
    * and is dropped before all other processing. Deterministic — does not depend on
@@ -317,6 +326,26 @@ export class TeamsService {
   getStatus(officeId: string, agentId: string): OnlineAgentStatus | null {
     const b = this.findBinding(officeId, agentId);
     return b ? this.toStatus(b) : null;
+  }
+
+  /**
+   * Note that the orchestrator just dispatched an approved follow-up prompt to `agentId`
+   * (spec 017). Tags the agent's NEXT ambient turn so its mirrored request is attributed
+   * to the orchestrator. No-op unless the agent is currently online in Teams (bounds the
+   * flag to a surface where it can matter).
+   */
+  noteOrchestratorPrompt(agentId: string): void {
+    const online = this.bindings.some((b) => b.agentId === agentId && b.online);
+    if (!online) return;
+    this.orchestratorPromptOrigins.set(agentId, this.now() + TeamsService.ORCH_ORIGIN_TTL_MS);
+  }
+
+  /** Consume a pending orchestrator-origin tag for `agentId`; true only if set and unexpired. */
+  private consumeOrchestratorOrigin(agentId: string): boolean {
+    const expiry = this.orchestratorPromptOrigins.get(agentId);
+    if (expiry == null) return false;
+    this.orchestratorPromptOrigins.delete(agentId);
+    return expiry > this.now();
   }
 
   /** Bring an agent online: resolve channel, create thread, bind, start listening. */
@@ -714,7 +743,10 @@ export class TeamsService {
       // Mirror the locally-typed request into the thread (clean prompt text only —
       // empty when the CLI omitted content, in which case we skip silently).
       const text = (e.content ?? '').trim();
-      if (text) void this.postLocalRequest(binding, text);
+      if (text) {
+        const origin = this.consumeOrchestratorOrigin(e.agentId) ? 'orchestrator' : 'human';
+        void this.postLocalRequest(binding, text, origin);
+      }
       return;
     }
 
@@ -794,13 +826,18 @@ export class TeamsService {
   }
 
   /** Post a locally-typed user request into the thread, tagged so it's distinct from replies. */
-  private async postLocalRequest(binding: OnlineAgentBinding, text: string): Promise<void> {
+  private async postLocalRequest(
+    binding: OnlineAgentBinding,
+    text: string,
+    origin: 'human' | 'orchestrator' = 'human',
+  ): Promise<void> {
+    const label =
+      origin === 'orchestrator'
+        ? `🤖 <b>Orchestrator</b> 💬 <i>follow-up:</i>`
+        : `👤 <b>Human</b> 💬 <i>local request:</i>`;
     const chunks = chunkReply(text, 3500);
     for (const chunk of chunks) {
-      await this.safeReply(
-        binding,
-        `👤 <b>Human</b> 💬 <i>local request:</i><br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`,
-      );
+      await this.safeReply(binding, `${label}<br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`);
     }
   }
 
@@ -1392,6 +1429,45 @@ export class TeamsService {
   async reconcileNow(): Promise<void> {
     if (!this.started) return;
     await this.reconcile();
+  }
+
+  /**
+   * Re-online a PERSISTED (offline) binding to its EXISTING thread using the agent's
+   * CURRENT session id (spec 017). Unlike {@link reconcile}, this does NOT require the
+   * new session id to match the stored one — it adopts the current session. Used to
+   * restore the orchestrator's Teams presence on app startup: the orchestrator mints a
+   * fresh session id every launch, so the session-id-match reconnect never fires for it.
+   * No new thread is created; the prior thread is reused. No-op if there is no persisted
+   * binding, no current session, or the agent isn't ready yet (caller may retry).
+   */
+  async reonlineToCurrentSession(
+    officeId: string,
+    agentId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!this.started) return { success: false, error: 'not-started' };
+    const b = this.findBinding(officeId, agentId);
+    if (!b) return { success: false, error: 'no-binding' };
+    if (b.online) return { success: true };
+    let current: string | null = null;
+    try {
+      current = await this.deps.gateway.getSessionId(officeId, agentId);
+    } catch {
+      return { success: false, error: 'no-session' };
+    }
+    if (!current) return { success: false, error: 'no-session' };
+    const ready = await this.deps.gateway.isAgentReady(officeId, agentId).catch(() => false);
+    if (!ready) return { success: false, error: 'not-ready' };
+    if (!this.started) return { success: false, error: 'not-started' };
+    b.sessionId = current;
+    b.online = true;
+    b.lastConnected = this.now();
+    this.deps.gateway.setForwarding(officeId, agentId, true);
+    this.deps.emitStatus(this.toStatus(b));
+    await this.persist();
+    this.updateSourceChannels();
+    tlog(`Re-onlined @${b.handle} to its persisted thread (adopted session ${current}).`);
+    void this.safeReply(b, `${this.agentLabel(b)} 🔄 Reconnected — back online and ready. Reply here to continue.`);
+    return { success: true };
   }
 
   private async reconcile(): Promise<void> {

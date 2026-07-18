@@ -218,6 +218,11 @@ export class OrchestratorSessionManager {
   >();
   private readonly exitListeners = new Set<(reason: string) => void>();
 
+  // spec 017: notified whenever an APPROVED send_prompt_to_agent is dispatched, so the
+  // Teams service can attribute the resulting ambient turn to the orchestrator (not a
+  // local human) in the target agent's thread. Wired from the main process.
+  private sendPromptObserver: ((agentId: string, officeId?: string) => void) | null = null;
+
   constructor(
     private readonly emitter: OrchestratorEmitter,
     private readonly workingDirectory: string,
@@ -245,6 +250,16 @@ export class OrchestratorSessionManager {
   onSessionExit(cb: (reason: string) => void): () => void {
     this.exitListeners.add(cb);
     return () => this.exitListeners.delete(cb);
+  }
+
+  /**
+   * Register a single observer notified whenever an APPROVED `send_prompt_to_agent`
+   * is dispatched to a target agent. Used by the Teams service to label the target
+   * agent's next ambient turn as orchestrator-initiated instead of a local human
+   * request (spec 017).
+   */
+  setSendPromptObserver(cb: ((agentId: string, officeId?: string) => void) | null): void {
+    this.sendPromptObserver = cb;
   }
 
   getInfo(): OrchestratorSessionInfo | null {
@@ -774,6 +789,7 @@ export class OrchestratorSessionManager {
           });
           break;
         case 'send_prompt_to_agent':
+          this.sendPromptObserver?.(args.agentId, args.officeId);
           this.emitter.emitSendPromptRequest?.({
             sessionId,
             requestId,

@@ -342,6 +342,10 @@ app.whenReady().then(async () => {
       },
     });
 
+    // spec 017 (enh 1): attribute orchestrator follow-ups in the target agent's Teams
+    // thread as "🤖 Orchestrator" instead of "👤 Human local request".
+    orchestratorManager.setSendPromptObserver((agentId) => teamsService?.noteOrchestratorPrompt(agentId));
+
     // spec 016 (Workstream B): bring the Office Orchestrator online in Teams. Ensures its
     // main-process SDK session is open (so the composite gateway can resolve a sessionId),
     // then registers the synthetic identity through the normal Teams register flow.
@@ -369,11 +373,39 @@ app.whenReady().then(async () => {
       return teamsService.goOffline(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID, true);
     });
 
+    // spec 017 (enh 2): if the orchestrator was online in Teams when the app closed, its
+    // binding persists in the store (stop() never takes it offline). Bring it back online
+    // on startup: open its (fresh) main-process SDK session, then re-online it to the SAME
+    // persisted thread. The orchestrator mints a new session id each launch, so the normal
+    // session-id-match reconnect can't restore it — we adopt the current session instead.
+    const restoreOrchestratorTeamsPresence = async (): Promise<void> => {
+      const persisted = teamsService?.getStatus(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID);
+      if (!persisted) return; // was not online at shutdown → nothing to restore
+      try {
+        await orchestratorManager.open();
+        const res = await teamsService?.reonlineToCurrentSession(
+          ORCHESTRATOR_OFFICE_ID,
+          ORCHESTRATOR_AGENT_ID,
+        );
+        if (res?.success) {
+          orchestratorManager.setTeamsRelayActive(true);
+          console.log('[TeamsRemote] Restored orchestrator Teams presence on startup.');
+        } else {
+          console.warn(`[TeamsRemote] Orchestrator Teams restore deferred: ${res?.error ?? 'unknown'}.`);
+        }
+      } catch (e) {
+        console.error('[Main] Orchestrator Teams auto-restore failed:', e);
+      }
+    };
+
     // Only spin up the receive transport when the feature is enabled.
     // Fire-and-forget: do NOT await, so token acquisition runs in the
     // background after the window is already visible.
     if (settingsStore.load().enabled) {
-      teamsService.start().catch((e) => console.error('[Main] Teams start failed:', e));
+      teamsService
+        .start()
+        .then(() => restoreOrchestratorTeamsPresence())
+        .catch((e) => console.error('[Main] Teams start failed:', e));
     } else {
       console.log('[TeamsRemote] Feature disabled — service idle (enable it in Settings → Teams Remote).');
     }
