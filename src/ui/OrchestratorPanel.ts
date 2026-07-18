@@ -15,6 +15,7 @@
 // no Phaser game exists. All IPC goes through `window.copilotBridge`.
 
 import { Terminal } from '@xterm/xterm';
+import { teamsLabel } from './teamsIcon';
 import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
 import { ensureXtermStyles } from './xtermStyles';
@@ -278,7 +279,7 @@ export class OrchestratorPanel {
     const headerRight = document.createElement('div');
     headerRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
     const teamsBtn = document.createElement('button');
-    teamsBtn.textContent = '💬 Bring online in Teams';
+    teamsBtn.innerHTML = teamsLabel('Bring online in Teams');
     teamsBtn.title = 'Bring the orchestrator online in a Microsoft Teams channel thread so you can drive it remotely.';
     teamsBtn.style.cssText = 'padding:5px 10px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#cde;font-size:12px;cursor:pointer;';
     teamsBtn.onclick = () => this.toggleTeams();
@@ -627,7 +628,7 @@ export class OrchestratorPanel {
 
   private updateTeamsButton(): void {
     if (!this.teamsBtn) return;
-    this.teamsBtn.textContent = this.teamsOnline ? '💬 Teams: online — take offline' : '💬 Bring online in Teams';
+    this.teamsBtn.innerHTML = teamsLabel(this.teamsOnline ? 'Teams: online — take offline' : 'Bring online in Teams');
     this.teamsBtn.style.background = this.teamsOnline ? '#1d3a24' : '#16233a';
     this.teamsBtn.style.borderColor = this.teamsOnline ? '#2f7d4a' : '#33557a';
   }

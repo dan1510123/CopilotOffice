@@ -1,4 +1,5 @@
 import { Terminal } from '@xterm/xterm';
+import { teamsLabel } from './teamsIcon';
 import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
 import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
@@ -276,7 +277,7 @@ export class SeriousTerminalController {
 
     // Teams Remote Agents (011): mirror of TerminalOverlay's control (Principle VI).
     this.teamsRemoteBtn = document.createElement('button');
-    this.teamsRemoteBtn.textContent = '💬 Teams Remote';
+    this.teamsRemoteBtn.innerHTML = teamsLabel('Teams Remote');
     this.teamsRemoteBtn.className = uiButtonClass('teams');
     this.teamsRemoteBtn.style.display = 'none';
     this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
@@ -675,13 +676,13 @@ export class SeriousTerminalController {
   private setTeamsButtonState(online: boolean, pending = false): void {
     if (!this.teamsRemoteBtn) return;
     if (pending) {
-      this.teamsRemoteBtn.textContent = '💬 Connecting…';
+      this.teamsRemoteBtn.innerHTML = teamsLabel('Connecting…');
       this.teamsRemoteBtn.disabled = true;
       return;
     }
     this.teamsRemoteBtn.disabled = false;
     this.teamsRemoteBtn.className = uiButtonClass(online ? 'teams-online' : 'teams');
-    this.teamsRemoteBtn.textContent = online ? '🟢 Teams Online' : '💬 Teams Remote';
+    this.teamsRemoteBtn.innerHTML = teamsLabel(online ? 'Teams Online' : 'Teams Remote');
   }
 
   private async handleTeamsRemote(): Promise<void> {

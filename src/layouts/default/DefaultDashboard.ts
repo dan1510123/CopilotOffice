@@ -1,4 +1,5 @@
 import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
+import { teamsLabel } from '../../ui/teamsIcon';
 import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
 
 /**
@@ -187,7 +188,7 @@ export const defaultDashboard: DashboardRenderer = {
           " title="Close this agent's session (agent returns to slacking)">✖ Close Session</button>
           ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${teamsOnline.has(agent.id) ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}" style="
             align-self: flex-start;
-          " title="${teamsOnline.has(agent.id) ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'}">${teamsOnline.has(agent.id) ? '🟢 Teams Online' : '💬 Teams Remote'}</button>` : ''}
+          " title="${teamsOnline.has(agent.id) ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'}">${teamsLabel(teamsOnline.has(agent.id) ? 'Teams Online' : 'Teams Remote')}</button>` : ''}
           <div style="display: flex; justify-content: flex-end;">
             <button class="session-edit-btn ui-btn ui-btn--ghost" data-agent="${agent.id}" style="
               padding: 5px 9px;

@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { teamsLabel } from './teamsIcon';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AgentConfig, ADMIN_AGENT_ID } from '../config/agents';
@@ -969,7 +970,7 @@ export class TerminalOverlay {
     // Teams Remote Agents (011): bring the agent online in a Teams channel thread.
     // Rendered only when the feature flag is enabled (visibility set by refreshTeamsButton).
     this.teamsRemoteBtn = document.createElement('button');
-    this.teamsRemoteBtn.textContent = '💬 Teams Remote';
+    this.teamsRemoteBtn.innerHTML = teamsLabel('Teams Remote');
     this.teamsRemoteBtn.className = uiButtonClass('teams');
     this.teamsRemoteBtn.style.display = 'none';
     this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
@@ -1050,13 +1051,13 @@ export class TerminalOverlay {
   private setTeamsButtonState(online: boolean, pending = false): void {
     if (!this.teamsRemoteBtn) return;
     if (pending) {
-      this.teamsRemoteBtn.textContent = '💬 Connecting…';
+      this.teamsRemoteBtn.innerHTML = teamsLabel('Connecting…');
       this.teamsRemoteBtn.disabled = true;
       return;
     }
     this.teamsRemoteBtn.disabled = false;
     this.teamsRemoteBtn.className = uiButtonClass(online ? 'teams-online' : 'teams');
-    this.teamsRemoteBtn.textContent = online ? '🟢 Teams Online' : '💬 Teams Remote';
+    this.teamsRemoteBtn.innerHTML = teamsLabel(online ? 'Teams Online' : 'Teams Remote');
   }
 
   private async handleTeamsRemote(): Promise<void> {
