@@ -23,6 +23,7 @@ import { showClipboardToast } from './clipboardToast';
 import { sanitizeTerminalSelection } from './terminalSelection';
 import { AGENTS, RESERVE_AGENTS } from '../config/agents';
 import { describeOrchestratorPermission } from '../../electron/orchestrator/permissionSummary';
+import { ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID } from '../../electron/orchestrator/orchestratorIdentity';
 
 // Instance tag for clipboard diagnostics (Constitution Principle VI).
 const CLIP_TAG = '[ORC0]';
@@ -90,7 +91,9 @@ export class OrchestratorPanel {
     ensureXtermStyles();
     this.buildDom();
     this.registerBridgeListeners();
-    // Reflect a Teams binding that survived a previous minimize (singleton panel).
+    // Reflect the actual main-process Teams binding — covers a startup restore
+    // (spec 017 enh 2) or a binding that survived a previous minimize (singleton panel).
+    void this.syncTeamsStatus();
     this.updateTeamsButton();
     // Focus contract: suspend game input while the modal is open (no-op in serious mode).
     this.host.onOpen?.();
@@ -261,7 +264,7 @@ export class OrchestratorPanel {
 
     const panel = document.createElement('div');
     panel.style.cssText = `
-      width: min(880px, 92vw); height: min(680px, 88vh);
+      width: min(1320px, 96vw); height: min(1020px, 94vh);
       background: #0a0a14; border: 1px solid #2a2a44; border-radius: 10px;
       box-shadow: 0 12px 48px rgba(0,0,0,0.6);
       display: flex; flex-direction: column; overflow: hidden;
@@ -624,6 +627,21 @@ export class OrchestratorPanel {
       this.updateTeamsButton();
       if (this.teamsBtn) this.teamsBtn.disabled = false;
     }
+  }
+
+  /** Query the main process for the orchestrator's live Teams binding and reflect it locally. */
+  private async syncTeamsStatus(): Promise<void> {
+    if (!window.copilotBridge?.teamsStatus) return;
+    try {
+      const status = await window.copilotBridge.teamsStatus({
+        officeId: ORCHESTRATOR_OFFICE_ID,
+        agentId: ORCHESTRATOR_AGENT_ID,
+      });
+      this.teamsOnline = !!status?.connected;
+    } catch {
+      // Leave the last-known state on error.
+    }
+    this.updateTeamsButton();
   }
 
   private updateTeamsButton(): void {
