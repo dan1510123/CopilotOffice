@@ -833,7 +833,7 @@ export class TeamsService {
   ): Promise<void> {
     const label =
       origin === 'orchestrator'
-        ? `🤖 <b>Orchestrator</b> 💬 <i>follow-up:</i>`
+        ? `🎩 <b>Orchestrator</b> 💬 <i>follow-up:</i>`
         : `👤 <b>Human</b> 💬 <i>local request:</i>`;
     const chunks = chunkReply(text, 3500);
     for (const chunk of chunks) {
