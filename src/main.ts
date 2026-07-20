@@ -1884,6 +1884,35 @@ if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
 }
 
 /**
+ * spec 017 — overlay each active agent's session title onto its `activity` field.
+ * Session titles are the durable per-agent task label; the live `activity` derived
+ * from status often resets to empty after an app restart. Titles are fetched once
+ * per distinct office via `getAllSessionMeta`; agents with no title keep whatever
+ * activity was computed. Failures are swallowed (best-effort enrichment).
+ */
+async function overlaySessionTitlesOntoActivity(
+  snapshots: Array<{ agentId: string; officeId: string; activity: string }>,
+): Promise<void> {
+  if (snapshots.length === 0 || !window.copilotBridge?.getAllSessionMeta) return;
+  const officeIds = [...new Set(snapshots.map((s) => s.officeId))];
+  const metaByOffice = new Map<string, Record<string, { title: string }>>();
+  await Promise.all(
+    officeIds.map(async (officeId) => {
+      try {
+        const meta = await window.copilotBridge!.getAllSessionMeta(officeId);
+        if (meta) metaByOffice.set(officeId, meta);
+      } catch {
+        /* best-effort — leave computed activity in place */
+      }
+    }),
+  );
+  for (const snapshot of snapshots) {
+    const title = metaByOffice.get(snapshot.officeId)?.[snapshot.agentId]?.title?.trim();
+    if (title) snapshot.activity = title;
+  }
+}
+
+/**
  * spec 017 — renderer resolvers for the new situational-awareness (US2/US3/US7)
  * and act-on (US4/US5/US6/US8) round-trips. Runs late in the renderer where
  * OfficeManager, the per-agent session ops (warmAgentSession/terminalWrite/
@@ -1895,8 +1924,15 @@ function registerOrchestratorSpec017Resolvers(): void {
   if (!bridge?.onOrchestratorActiveAgentsRequest) return;
 
   // ── US2: get_active_agents (read-only, all offices) ────────────────────────
+  // Session titles are the durable "what is this agent doing" signal (activity is
+  // frequently empty after an app restart because live status fields reset). Overlay
+  // each agent's session title onto `activity` so the roll-up stays meaningful.
   bridge.onOrchestratorActiveAgentsRequest(({ requestId }) => {
-    void bridge.orchestratorRespondActiveAgents(requestId, computeActiveAgents());
+    void (async () => {
+      const snapshots = computeActiveAgents();
+      await overlaySessionTitlesOntoActivity(snapshots);
+      await bridge.orchestratorRespondActiveAgents(requestId, snapshots);
+    })();
   });
 
   // ── US3: list_agents_awaiting_input (read-only, longest-first) ─────────────
@@ -2606,7 +2642,6 @@ if (window.copilotBridge) {
       // Track last completed action + recent actions history
       officeManager.setLastCompletedAction(officeId, agentId, completedToolName);
       officeManager.pushRecentAction(officeId, agentId, completedToolName, 'completed');
-      console.log(`[rollup-diag] tool_complete attributed office=${officeId} agent=${agentId} tool=${completedToolName}`);
       notifyAgent(agentId, 'toolComplete', { toolName: completedToolName });
 
       // Update status based on remaining tools. Uses `nextSubStateAfterToolComplete`

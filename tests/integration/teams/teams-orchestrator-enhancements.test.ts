@@ -89,7 +89,7 @@ describe('spec 017 enh 1 — orchestrator follow-up attribution in Teams', () =>
     await tick(40);
 
     const joined = h.replies.join('\n');
-    expect(joined).toContain('🤖 <b>Orchestrator</b>');
+    expect(joined).toContain('🎩 <b>Orchestrator</b>');
     expect(joined).toContain('follow-up');
     expect(joined).toContain('thank Gene for me');
     expect(joined).not.toContain('👤 <b>Human</b>');
@@ -122,7 +122,7 @@ describe('spec 017 enh 1 — orchestrator follow-up attribution in Teams', () =>
 
     const first = h.replies.find((r) => r.includes('first (from orch)'));
     const second = h.replies.find((r) => r.includes('second (from human)'));
-    expect(first).toContain('🤖 <b>Orchestrator</b>');
+    expect(first).toContain('🎩 <b>Orchestrator</b>');
     expect(second).toContain('👤 <b>Human</b>');
   });
 
