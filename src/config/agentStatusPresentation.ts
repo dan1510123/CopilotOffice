@@ -246,7 +246,7 @@ export function describeActivity(status: AgentStatus | undefined | null): string
   return key === 'waiting' ? 'Waiting for your answer' : 'Working…';
 }
 
-function friendlyToolName(tool: string): string {
+export function friendlyToolName(tool: string): string {
   const normalized = tool.trim().toLowerCase();
   const map: Record<string, string> = {
     ask_user: 'Waiting for your answer',

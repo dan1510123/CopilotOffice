@@ -17,6 +17,26 @@ import { NotificationService } from './ui/NotificationService';
 import { SettingsPanel } from './ui/SettingsPanel';
 import { TeamsSettingsOverlay } from './ui/TeamsSettingsOverlay';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
+import { OrchestratorPanel } from './ui/OrchestratorPanel';
+import { computeBringOnlineCandidates } from './office/orchestratorCandidates';
+import { executeBringOnline } from './office/orchestratorExecute';
+import { computeOfficeSummaries, resolveSwitchOffice } from './office/orchestratorOffices';
+import { computeActiveAgents, computeAwaitingAgents } from './office/orchestratorStatus';
+import { computeAgentRecentOutput } from './office/orchestratorPeek';
+import {
+  setPendingAskUser,
+  clearPendingAskUser,
+  classifyAnswer,
+} from './office/askUserRegistry';
+import {
+  answerAgent,
+  sendPromptToAgent,
+  stopAgent,
+  restartAgent,
+  setAgentTeamsPresence,
+  type ActOnDeps,
+} from './office/orchestratorActOn';
+import type { BringOnlineOutcome } from '../electron/orchestrator/types';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool, ToolEntry } from './util/toolStatus';
@@ -824,6 +844,18 @@ function renderOfficeTabs() {
       font-size: 16px;
       user-select: none;
     " title="Settings">⚙</div>
+    <div id="orchestrator-btn" class="tb-pill" style="
+      height: 36px;
+      min-width: 36px;
+      justify-content: center;
+      background: #1e1e30;
+      border: 1px solid #2c2c46;
+      border-radius: 9px;
+      cursor: pointer;
+      color: #b8b8d4;
+      font-size: 16px;
+      user-select: none;
+    " title="Office Orchestrator">🎩</div>
   `;
 
   const html = `
@@ -897,6 +929,10 @@ function renderOfficeTabs() {
 
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     settingsPanel.toggle();
+  });
+
+  document.getElementById('orchestrator-btn')?.addEventListener('click', () => {
+    toggleOrchestratorPanel();
   });
 
   document.getElementById('sprite-customizer-btn')?.addEventListener('click', (e) => {
@@ -1774,7 +1810,253 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
   },
 });
 
-// ── Terminal Content Updates ────────────────────────────────────
+// ── Office Orchestrator (spec 016) ───────────────────────────────
+// A dedicated conversational agent (own non-YOLO SDK session in the main
+// process) that brings other office agents online via a permission-gated tool.
+// The panel is the TUI; this file owns the renderer round-trips because they
+// need OfficeManager (candidate compute + execute) and the scene delegate for
+// reserve activation.
+let orchestratorPanel: OrchestratorPanel | null = null;
+
+function getOrchestratorPanel(): OrchestratorPanel {
+  if (!orchestratorPanel) {
+    orchestratorPanel = new OrchestratorPanel({
+      onOpen: () => { phaserGameRef?.events.emit('settings:open'); },
+      onClose: () => { phaserGameRef?.events.emit('settings:close'); },
+    });
+  }
+  return orchestratorPanel;
+}
+
+function toggleOrchestratorPanel(): void {
+  const panel = getOrchestratorPanel();
+  if (panel.isOpen()) panel.minimize();
+  else void panel.show();
+}
+
+// Reserve activation must run inside OfficeScene (spawnReserveAgent is private).
+// Round-trip through a fire-and-forget game event with a response callback.
+function activateReserveViaScene(deskId: string): Promise<BringOnlineOutcome> {
+  return new Promise<BringOnlineOutcome>((resolve) => {
+    if (!phaserGameRef) {
+      resolve('invalid-target');
+      return;
+    }
+    let settled = false;
+    const respond = (outcome: BringOnlineOutcome) => {
+      if (settled) return;
+      settled = true;
+      resolve(outcome);
+    };
+    phaserGameRef.events.emit('orchestrator:activate-reserve', { deskId, respond });
+    // Safety net: if the scene never responds, don't hang the tool.
+    setTimeout(() => respond('failed'), 15000);
+  });
+}
+
+if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
+  window.copilotBridge.onOrchestratorCandidatesRequest(({ requestId }) => {
+    const candidates = computeBringOnlineCandidates();
+    void window.copilotBridge.orchestratorRespondCandidates(requestId, candidates);
+  });
+  window.copilotBridge.onOrchestratorExecuteRequest(({ requestId, agentId }) => {
+    void (async () => {
+      const result = await executeBringOnline(agentId, {
+        startSeated: (officeId, aid) => warmAgentSession(officeId, aid),
+        activateReserve: activateReserveViaScene,
+      });
+      void window.copilotBridge.orchestratorRespondExecute(requestId, result);
+    })();
+  });
+  if (window.copilotBridge.onOrchestratorOfficesRequest) {
+    window.copilotBridge.onOrchestratorOfficesRequest(({ requestId }) => {
+      const offices = computeOfficeSummaries();
+      void window.copilotBridge.orchestratorRespondOffices(requestId, offices);
+    });
+  }
+  if (window.copilotBridge.onOrchestratorSwitchRequest) {
+    window.copilotBridge.onOrchestratorSwitchRequest(({ requestId, officeId }) => {
+      const result = resolveSwitchOffice(officeId, (id) => switchToOffice(id));
+      void window.copilotBridge.orchestratorRespondSwitch(requestId, result);
+    });
+  }
+  registerOrchestratorSpec017Resolvers();
+}
+
+/**
+ * spec 017 — overlay each active agent's session title onto its `activity` field.
+ * Session titles are the durable per-agent task label; the live `activity` derived
+ * from status often resets to empty after an app restart. Titles are fetched once
+ * per distinct office via `getAllSessionMeta`; agents with no title keep whatever
+ * activity was computed. Failures are swallowed (best-effort enrichment).
+ */
+async function overlaySessionTitlesOntoActivity(
+  snapshots: Array<{ agentId: string; officeId: string; activity: string }>,
+): Promise<void> {
+  if (snapshots.length === 0 || !window.copilotBridge?.getAllSessionMeta) return;
+  const officeIds = [...new Set(snapshots.map((s) => s.officeId))];
+  const metaByOffice = new Map<string, Record<string, { title: string }>>();
+  await Promise.all(
+    officeIds.map(async (officeId) => {
+      try {
+        const meta = await window.copilotBridge!.getAllSessionMeta(officeId);
+        if (meta) metaByOffice.set(officeId, meta);
+      } catch {
+        /* best-effort — leave computed activity in place */
+      }
+    }),
+  );
+  for (const snapshot of snapshots) {
+    const title = metaByOffice.get(snapshot.officeId)?.[snapshot.agentId]?.title?.trim();
+    if (title) snapshot.activity = title;
+  }
+}
+
+/**
+ * spec 017 — renderer resolvers for the new situational-awareness (US2/US3/US7)
+ * and act-on (US4/US5/US6/US8) round-trips. Runs late in the renderer where
+ * OfficeManager, the per-agent session ops (warmAgentSession/terminalWrite/
+ * terminalKill), and the Teams bridge are all in scope. Guarded so it is a no-op
+ * on an older preload that lacks the channels.
+ */
+function registerOrchestratorSpec017Resolvers(): void {
+  const bridge = window.copilotBridge;
+  if (!bridge?.onOrchestratorActiveAgentsRequest) return;
+
+  // ── US2: get_active_agents (read-only, all offices) ────────────────────────
+  // Session titles are the durable "what is this agent doing" signal (activity is
+  // frequently empty after an app restart because live status fields reset). Overlay
+  // each agent's session title onto `activity` so the roll-up stays meaningful.
+  bridge.onOrchestratorActiveAgentsRequest(({ requestId }) => {
+    void (async () => {
+      const snapshots = computeActiveAgents();
+      await overlaySessionTitlesOntoActivity(snapshots);
+      await bridge.orchestratorRespondActiveAgents(requestId, snapshots);
+    })();
+  });
+
+  // ── US3: list_agents_awaiting_input (read-only, longest-first) ─────────────
+  bridge.onOrchestratorAwaitingAgentsRequest(({ requestId }) => {
+    void bridge.orchestratorRespondAwaitingAgents(requestId, computeAwaitingAgents());
+  });
+
+  // ── US7: get_agent_transcript (read-only, bounded peek) ────────────────────
+  bridge.onOrchestratorAgentOutputRequest(({ requestId, agentId, officeId }) => {
+    void bridge.orchestratorRespondAgentOutput(requestId, computeAgentRecentOutput(agentId, officeId));
+  });
+
+  // ── Shared act-on deps (reuse sanctioned per-agent session ops) ────────────
+  const actOnDeps: ActOnDeps = {
+    ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
+    deliverText: async (officeId, agentId, text) => {
+      // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
+      // session.send / bracketed-paste for node-pty), targeted by agentId. NOT raw
+      // terminalWrite: under the ui-server shared host, raw input is routed to the
+      // office's FOREGROUND session, so a background agent's prompt would land in
+      // whichever agent is currently viewed (spec 017 US5 mis-delivery fix).
+      const res = await window.copilotBridge.terminalSubmitPrompt(officeId, agentId, text);
+      return res?.success !== false;
+    },
+    submitAnswer: async (officeId, agentId, answer) => {
+      // Answer a pending ask_user through the sanctioned submit-answer channel so
+      // freeform text is delivered verbatim (SDK/ui-server) instead of selecting a
+      // choice prompt's highlighted option. Classify wasFreeform from the captured
+      // options, mirroring the Teams reply path.
+      const { wasFreeform, requestId } = classifyAnswer(agentId, answer);
+      const res = await window.copilotBridge.terminalSubmitAnswer(officeId, agentId, {
+        requestId,
+        answer,
+        wasFreeform,
+      });
+      const ok = res?.success !== false;
+      if (ok) clearPendingAskUser(agentId);
+      return ok;
+    },
+    stopSession: async (officeId, agentId) => {
+      const res = await window.copilotBridge.terminalKill(officeId, agentId);
+      const ok = res?.success !== false;
+      if (ok) {
+        officeManager.setAgentSlacking(officeId, agentId, 'orchestrator_stop');
+        phaserGameRef?.events.emit('agent:status:changed', agentId);
+        updateStatusBar();
+        updateTerminalContent();
+      }
+      return ok;
+    },
+    restartSession: async (officeId, agentId) => {
+      await window.copilotBridge.terminalKill(officeId, agentId).catch(() => {});
+      return warmAgentSession(officeId, agentId);
+    },
+    teamsEnabled: async () => {
+      try {
+        const res = await window.copilotBridge.teamsGetSettings?.();
+        return !!(res?.success && (res.settings as { enabled?: boolean })?.enabled);
+      } catch {
+        return false;
+      }
+    },
+    teamsRegister: async (officeId, agentId) => {
+      const office = officeManager.getOffice(officeId)?.config;
+      const launch = officeId === officeManager.currentOfficeId ? getSeriousLaunchConfig(agentId) : null;
+      const displayName = launch?.name ?? agentId;
+      const workingDir = launch?.workingDir || office?.workingDirectory || officeManager.getCurrentWorkingDirectory();
+      const res = await window.copilotBridge.teamsRegister({
+        officeId,
+        agentId,
+        displayName,
+        workingDir,
+        officeChannelUrl: office?.teamsChannelUrl,
+        officeMentionType: office?.teamsMentionType,
+        officeMentionValue: office?.teamsMentionValue,
+      });
+      return { success: !!res?.success, threadWebUrl: res?.threadWebUrl, error: res?.error };
+    },
+    teamsStop: async (officeId, agentId) => {
+      const res = await window.copilotBridge.teamsStop({ officeId, agentId });
+      return res?.success !== false;
+    },
+  };
+
+  // ── US4: answer_agent (gated — emitted only after approval) ────────────────
+  bridge.onOrchestratorAnswerAgentRequest(({ requestId, agentId, officeId, answer }) => {
+    void (async () => {
+      const result = await answerAgent({ agentId, officeId, answer }, actOnDeps);
+      void bridge.orchestratorRespondAnswerAgent(requestId, result);
+    })();
+  });
+
+  // ── US5: send_prompt_to_agent (gated) ──────────────────────────────────────
+  bridge.onOrchestratorSendPromptRequest(({ requestId, agentId, officeId, prompt }) => {
+    void (async () => {
+      const result = await sendPromptToAgent({ agentId, officeId, prompt }, actOnDeps);
+      void bridge.orchestratorRespondSendPrompt(requestId, result);
+    })();
+  });
+
+  // ── US6: stop_agent / restart_agent (gated) ────────────────────────────────
+  bridge.onOrchestratorStopAgentRequest(({ requestId, agentId, officeId }) => {
+    void (async () => {
+      const result = await stopAgent({ agentId, officeId }, actOnDeps);
+      void bridge.orchestratorRespondStopAgent(requestId, result);
+    })();
+  });
+  bridge.onOrchestratorRestartAgentRequest(({ requestId, agentId, officeId }) => {
+    void (async () => {
+      const result = await restartAgent({ agentId, officeId }, actOnDeps);
+      void bridge.orchestratorRespondRestartAgent(requestId, result);
+    })();
+  });
+
+  // ── US8: set_agent_teams_presence (gated) ──────────────────────────────────
+  bridge.onOrchestratorTeamsPresenceRequest(({ requestId, agentId, officeId, online }) => {
+    void (async () => {
+      const result = await setAgentTeamsPresence({ agentId, officeId, online }, actOnDeps);
+      void bridge.orchestratorRespondTeamsPresence(requestId, result);
+    })();
+  });
+}
+
+
 
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
@@ -2335,6 +2617,9 @@ if (window.copilotBridge) {
 
   window.copilotBridge.onCopilotToolComplete((agentId, toolId, _success) => {
     console.log(`[Office] Tool complete: ${agentId} - ${toolId}`);
+    // Drop any captured ask_user for this agent once its interaction resolves
+    // (toolId-guarded so a stale completion can't wipe a newer question).
+    clearPendingAskUser(agentId, toolId);
 
     const officeId = officeManager.currentOfficeId;
     if (!officeId) return;
@@ -2381,6 +2666,25 @@ if (window.copilotBridge) {
     phaserGameRef?.events.emit('agent:status:changed', agentId);
     updateTerminalContent();
     updateStatusBar();
+  });
+
+  // spec 017: capture the REAL ask_user question + options so the orchestrator can
+  // report the actual question (US3) and answer it via the submit-answer channel
+  // with the correct wasFreeform flag (US4). Fires for both node-pty and SDK backends.
+  window.copilotBridge.onCopilotAskUser((agentId, toolId, requestId, question, options, freeform) => {
+    setPendingAskUser(agentId, {
+      toolId,
+      requestId,
+      question,
+      options: (options ?? []).map((o) => o.text),
+      freeform,
+    });
+    // Also seed the captured question into the status task-summary so any surface
+    // reading status (dashboards, awaiting list) shows the real question text.
+    const officeId = officeManager.currentOfficeId;
+    if (officeId && question?.trim()) {
+      officeManager.setTaskSummary(officeId, agentId, question.trim());
+    }
   });
 
   window.copilotBridge.onCopilotTurnEnd((agentId) => {

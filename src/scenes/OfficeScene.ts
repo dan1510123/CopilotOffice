@@ -459,6 +459,19 @@ export class OfficeScene extends Phaser.Scene {
       this.updateSessionBadges();
     }, this);
 
+    // Orchestrator (spec 016): activate a reserve agent on request. The
+    // orchestrator's bring-online execution (renderer, OfficeManager-owned)
+    // cannot call the private spawnReserveAgent directly, so it delegates via
+    // this event and awaits the outcome through the provided respond callback.
+    this.game.events.on(
+      'orchestrator:activate-reserve',
+      (payload: { deskId: string; respond?: (outcome: 'started' | 'already-active' | 'invalid-target') => void }) => {
+        const outcome = this.spawnReserveAgent(payload.deskId);
+        payload.respond?.(outcome);
+      },
+      this,
+    );
+
     // FR-013: stall signal from the renderer's 1s ticker. Toggles the amber
     // stall ring on the matching NPC badge (distinct from the normal pulse).
     this.game.events.on('agent:stall', (agentId: string, stalled: boolean) => {
@@ -1674,21 +1687,22 @@ export class OfficeScene extends Phaser.Scene {
     console.log(`[OfficeScene] Setup ${count} empty seat(s) for reserve agent hiring`);
   }
 
-  /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance. */
-  private spawnReserveAgent(deskId: string): void {
+  /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance.
+   *  Returns the bring-online outcome so the orchestrator delegation can resolve it. */
+  private spawnReserveAgent(deskId: string): 'started' | 'already-active' | 'invalid-target' {
     // Guards
     if (this.animating) {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: animating`);
-      return;
+      return 'already-active';
     }
     const reserveConfig = RESERVE_AGENTS[deskId];
     if (!reserveConfig) {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: no reserve config`);
-      return;
+      return 'invalid-target';
     }
     if (AGENTS.find(a => a.id === reserveConfig.id)) {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: ${reserveConfig.id} already spawned`);
-      return;
+      return 'already-active';
     }
 
     console.log(`[OfficeScene] Spawning reserve agent: ${reserveConfig.name} (${reserveConfig.id}) at seat ${deskId}`);
@@ -1738,6 +1752,7 @@ export class OfficeScene extends Phaser.Scene {
 
     // Force dashboard refresh
     this.game.events.emit('office:agents:changed');
+    return 'started';
   }
 
   /** Dismiss an agent: kill terminal, walk them out, free the seat if reserve. */

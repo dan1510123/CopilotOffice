@@ -5,6 +5,7 @@ import {
   NOTIFICATION_EVENT_LABELS,
   resetNotificationSettings,
 } from '../config/notifications';
+import { teamsLabel } from './teamsIcon';
 import {
   getAgentAutoStartSettings,
   setAgentAutoStartSettings,
@@ -156,13 +157,13 @@ export class SettingsPanel {
     return `
       <div class="settings-section" style="margin-bottom: 20px;">
         <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
-          💬 Teams Remote
+          ${teamsLabel('Teams Remote')}
         </h3>
         <p style="margin: 0 0 12px; font-size: 11px; color: #778;">
           Bring agents online in a Microsoft Teams channel so you can drive them from a thread.
           Configure the feature flag and default channel here.
         </p>
-        <button id="settings-teams-btn" class="ui-btn ui-btn--teams">💬 Open Teams Remote settings…</button>
+      <button id="settings-teams-btn" class="ui-btn ui-btn--teams">${teamsLabel('Open Teams Remote settings…')}</button>
       </div>
     `;
   }

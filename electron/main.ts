@@ -13,11 +13,21 @@ import { createSafeStorageTokenPersistence } from './teams/tokenCacheStore';
 import { GraphClient } from './teams/graphClient';
 import { TrouterClient } from './teams/trouterClient';
 import { RelaySessionGateway } from './teams/sessionGateway';
+import { OrchestratorSessionGateway } from './teams/orchestratorSessionGateway';
+import { CompositeSessionGateway } from './teams/compositeSessionGateway';
+import {
+  ORCHESTRATOR_OFFICE_ID,
+  ORCHESTRATOR_AGENT_ID,
+  ORCHESTRATOR_DISPLAY_NAME,
+} from './orchestrator/orchestratorIdentity';
 import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
 import { createRelaySender, type MentionResolver } from './teams/relaySender';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
+import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
+import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
+import { FileOrchestratorTranscriptStore } from './orchestrator/orchestratorTranscriptStore';
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -166,6 +176,21 @@ app.whenReady().then(async () => {
     officeStore,
   });
 
+  // Office Orchestrator agent (spec 016): its own always-gated, non-YOLO SDK
+  // session, separate from the terminal server's office sessions. Panel/stream
+  // teardown detaches only — it never kills office sessions or this session.
+  const orchestratorManager = new OrchestratorSessionManager(
+    makeOrchestratorEmitter(() => mainWindow),
+    process.cwd(),
+    // spec 017 (US1): file-backed transcript store under .data (mirrors
+    // FileTeamsOnlineStore); retention bound = panel xterm scrollback (5000).
+    new FileOrchestratorTranscriptStore(
+      FileOrchestratorTranscriptStore.defaultPath(path.join(process.cwd(), '.data')),
+    ),
+    5000,
+  );
+  registerOrchestratorIpc({ manager: orchestratorManager });
+
   await relay.spawnServer(__dirname);
 
   // Show the UI as soon as the terminal server is ready. The Teams service below
@@ -277,7 +302,11 @@ app.whenReady().then(async () => {
       return s.notifyOnCompleteEnabled && !!s.relayChannelUrl.trim();
     };
     const source = new TrouterClient(tokens);
-    const gateway = new RelaySessionGateway(relay);
+    const officeGateway = new RelaySessionGateway(relay);
+    // spec 016 (Workstream B): route the synthetic orchestrator identity to the
+    // main-process orchestrator session; every office agent keeps the relay path.
+    const orchestratorGateway = new OrchestratorSessionGateway(orchestratorManager);
+    const gateway = new CompositeSessionGateway(officeGateway, orchestratorGateway);
     const store = new FileTeamsOnlineStore(
       FileTeamsOnlineStore.defaultPath(path.join(process.cwd(), '.data')),
     );
@@ -313,11 +342,70 @@ app.whenReady().then(async () => {
       },
     });
 
+    // spec 017 (enh 1): attribute orchestrator follow-ups in the target agent's Teams
+    // thread as "🤖 Orchestrator" instead of "👤 Human local request".
+    orchestratorManager.setSendPromptObserver((agentId) => teamsService?.noteOrchestratorPrompt(agentId));
+
+    // spec 016 (Workstream B): bring the Office Orchestrator online in Teams. Ensures its
+    // main-process SDK session is open (so the composite gateway can resolve a sessionId),
+    // then registers the synthetic identity through the normal Teams register flow.
+    ipcMain.handle('teams:registerOrchestrator', async () => {
+      if (!teamsService) return { success: false, error: 'Teams service unavailable.' };
+      try {
+        await orchestratorManager.open();
+      } catch (e) {
+        return { success: false, error: `Orchestrator failed to start: ${(e as Error).message}` };
+      }
+      const result = await teamsService.register({
+        officeId: ORCHESTRATOR_OFFICE_ID,
+        agentId: ORCHESTRATOR_AGENT_ID,
+        displayName: ORCHESTRATOR_DISPLAY_NAME,
+        workingDir: process.cwd(),
+      });
+      // A reachable in-thread approver now exists — let minimize keep gates open.
+      if (result?.success) orchestratorManager.setTeamsRelayActive(true);
+      return result;
+    });
+
+    ipcMain.handle('teams:stopOrchestrator', async () => {
+      orchestratorManager.setTeamsRelayActive(false);
+      if (!teamsService) return { success: true };
+      return teamsService.goOffline(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID, true);
+    });
+
+    // spec 017 (enh 2): if the orchestrator was online in Teams when the app closed, its
+    // binding persists in the store (stop() never takes it offline). Bring it back online
+    // on startup: open its (fresh) main-process SDK session, then re-online it to the SAME
+    // persisted thread. The orchestrator mints a new session id each launch, so the normal
+    // session-id-match reconnect can't restore it — we adopt the current session instead.
+    const restoreOrchestratorTeamsPresence = async (): Promise<void> => {
+      const persisted = teamsService?.getStatus(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID);
+      if (!persisted) return; // was not online at shutdown → nothing to restore
+      try {
+        await orchestratorManager.open();
+        const res = await teamsService?.reonlineToCurrentSession(
+          ORCHESTRATOR_OFFICE_ID,
+          ORCHESTRATOR_AGENT_ID,
+        );
+        if (res?.success) {
+          orchestratorManager.setTeamsRelayActive(true);
+          console.log('[TeamsRemote] Restored orchestrator Teams presence on startup.');
+        } else {
+          console.warn(`[TeamsRemote] Orchestrator Teams restore deferred: ${res?.error ?? 'unknown'}.`);
+        }
+      } catch (e) {
+        console.error('[Main] Orchestrator Teams auto-restore failed:', e);
+      }
+    };
+
     // Only spin up the receive transport when the feature is enabled.
     // Fire-and-forget: do NOT await, so token acquisition runs in the
     // background after the window is already visible.
     if (settingsStore.load().enabled) {
-      teamsService.start().catch((e) => console.error('[Main] Teams start failed:', e));
+      teamsService
+        .start()
+        .then(() => restoreOrchestratorTeamsPresence())
+        .catch((e) => console.error('[Main] Teams start failed:', e));
     } else {
       console.log('[TeamsRemote] Feature disabled — service idle (enable it in Settings → Teams Remote).');
     }

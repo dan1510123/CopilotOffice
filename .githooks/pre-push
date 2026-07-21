@@ -1,0 +1,7 @@
+#!/bin/sh
+# pre-push hook: block pushes that contain internal references.
+# Runs scripts/check-internal-references.js, forwarding git's argv + stdin.
+# Bypass: SKIP_INTERNAL_REF_CHECK=1 git push   (or git push --no-verify)
+
+DIR=$(dirname "$0")
+exec node "$DIR/../scripts/check-internal-references.js" "$@"

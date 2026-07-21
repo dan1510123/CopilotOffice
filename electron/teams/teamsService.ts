@@ -16,7 +16,7 @@ import { normalizeHandle, assignHandle } from './handleRegistry';
 import { parseChannelLink } from './channelLink';
 import { resolveChannel, activeChannelSet } from './channelResolver';
 import { chunkReply } from './chunk';
-import { escapeHtml } from './htmlText';
+import { escapeHtml, linkifyHtml } from './htmlText';
 import { extractImageMarkers, loadHostedImages, hostedImagesHtml } from './imageMarker';
 import type { HostedImage } from './imageMarker';
 import { extractFileMarkers, loadAttachmentFiles } from './fileMarker';
@@ -135,6 +135,26 @@ interface AmbientTurn {
   settleTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * A relayed orchestrator tool-approval gate awaiting an in-thread Approve/Deny reply
+ * (spec 016 Workstream B). At most one per online agent; transient, in-memory,
+ * main-process only (never persisted). Distinct from {@link PendingQuestion} — it
+ * resolves via `gateway.respondPermission`, NOT `submitAnswer`.
+ */
+interface PendingApproval {
+  agentId: string;
+  officeId: string;
+  binding: OnlineAgentBinding;
+  toolCallId: string;
+  toolName: string;
+  summary: string;
+  /** Single-resolution latch — first Approve/Deny (or the timeout) wins. */
+  resolved: boolean;
+  createdAt: number;
+  /** Auto-deny timer; cleared on resolution. */
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 const RECONCILE_MS = 15_000;
 
 /**
@@ -150,6 +170,14 @@ const TURN_SETTLE_MS = 2500;
 
 /** Long-lived duration (ms) for the actionable "run az login" credential toast. */
 const AUTH_TOAST_DURATION_MS = 60_000;
+
+/**
+ * spec 016 (Workstream B): how long a relayed orchestrator approval waits for an
+ * in-thread Approve/Deny reply before it auto-resolves as DENY. Preserves the
+ * non-YOLO invariant (nothing runs without an explicit approval) even when the
+ * remote driver goes silent.
+ */
+const PERMISSION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** While the credential stays broken, re-emit the az-login toast at most this often. */
 const AUTH_TOAST_REPEAT_MS = 5 * 60 * 1000;
@@ -176,6 +204,21 @@ export class TeamsService {
    * {@link pending} (in-flight Teams dispatches) and {@link ambient}.
    */
   private readonly pendingQuestions = new Map<string, PendingQuestion>(); // key = agentId
+  /**
+   * Pending orchestrator tool-approval gates awaiting an in-thread Approve/Deny reply
+   * (spec 016 Workstream B), keyed by agentId. At most one per online agent; transient,
+   * in-memory. Resolved via `gateway.respondPermission` — never `submitAnswer`.
+   */
+  private readonly pendingApprovals = new Map<string, PendingApproval>(); // key = agentId
+  /**
+   * One-shot origin tags for the NEXT ambient turn per agentId → expiry timestamp
+   * (spec 017). Set when the orchestrator dispatches an approved follow-up prompt so
+   * the target agent's mirrored request reads "🤖 Orchestrator" instead of the default
+   * "👤 Human local request". Consumed by the next ambient user-message; TTL-bounded so
+   * an undelivered prompt can't mislabel a later genuine local request.
+   */
+  private readonly orchestratorPromptOrigins = new Map<string, number>(); // key = agentId → expiry
+  private static readonly ORCH_ORIGIN_TTL_MS = 2 * 60 * 1000;
   /**
    * Message ids of every message the app has posted (thread roots + replies).
    * Primary self-loop guard: an inbound message whose id is here is our own echo
@@ -285,6 +328,26 @@ export class TeamsService {
     return b ? this.toStatus(b) : null;
   }
 
+  /**
+   * Note that the orchestrator just dispatched an approved follow-up prompt to `agentId`
+   * (spec 017). Tags the agent's NEXT ambient turn so its mirrored request is attributed
+   * to the orchestrator. No-op unless the agent is currently online in Teams (bounds the
+   * flag to a surface where it can matter).
+   */
+  noteOrchestratorPrompt(agentId: string): void {
+    const online = this.bindings.some((b) => b.agentId === agentId && b.online);
+    if (!online) return;
+    this.orchestratorPromptOrigins.set(agentId, this.now() + TeamsService.ORCH_ORIGIN_TTL_MS);
+  }
+
+  /** Consume a pending orchestrator-origin tag for `agentId`; true only if set and unexpired. */
+  private consumeOrchestratorOrigin(agentId: string): boolean {
+    const expiry = this.orchestratorPromptOrigins.get(agentId);
+    if (expiry == null) return false;
+    this.orchestratorPromptOrigins.delete(agentId);
+    return expiry > this.now();
+  }
+
   /** Bring an agent online: resolve channel, create thread, bind, start listening. */
   async register(
     ctx: RegisterContext,
@@ -391,6 +454,19 @@ export class TeamsService {
         await this.safeReply(b, `${this.agentLabel(b)} ⚠️ This question is no longer answerable (agent offline).`);
       }
     }
+    // spec 016 (Workstream B): auto-deny any outstanding orchestrator approval so its gate
+    // promise doesn't hang, then clear the record.
+    const abandonedApproval = this.pendingApprovals.get(agentId);
+    if (abandonedApproval) {
+      this.pendingApprovals.delete(agentId);
+      if (abandonedApproval.timer) clearTimeout(abandonedApproval.timer);
+      if (!abandonedApproval.resolved) {
+        abandonedApproval.resolved = true;
+        void this.deps.gateway
+          .respondPermission(officeId, agentId, abandonedApproval.toolCallId, 'deny')
+          .catch((err) => twarn('respondPermission (offline) failed:', (err as Error).message));
+      }
+    }
     if (postNotice && b.online && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
@@ -449,6 +525,17 @@ export class TeamsService {
     if (content === '/stop') {
       tlog(`/stop received in @${binding.handle}'s thread — taking offline.`);
       await this.goOffline(binding.officeId, binding.agentId, true);
+      return;
+    }
+
+    // spec 016 (Workstream B): if this agent has a pending orchestrator approval gate,
+    // a thread reply is an Approve/Deny decision, not a new prompt. Route it to the
+    // approval resolver (→ gateway.respondPermission), not the dispatch queue.
+    const pendingApp = this.pendingApprovals.get(binding.agentId);
+    if (pendingApp) {
+      if (!pendingApp.resolved) {
+        await this.resolveApproval(pendingApp, msg.content);
+      }
       return;
     }
 
@@ -545,6 +632,12 @@ export class TeamsService {
   }
 
   private onAgentEvent(e: AgentEvent): void {
+    // spec 016 (Workstream B): an orchestrator tool-approval gate relayed into the
+    // thread. Handle before the ask-user/dispatch split so it never streams as output.
+    if (e.kind === 'permission-request') {
+      void this.onPermissionRequestEvent(e);
+      return;
+    }
     // spec 015: an `ask-user` question is handled regardless of whether the current turn
     // was Teams- or locally-initiated (FR-013). Intercept before the dispatch/ambient
     // split so it never streams as ordinary output.
@@ -650,7 +743,10 @@ export class TeamsService {
       // Mirror the locally-typed request into the thread (clean prompt text only —
       // empty when the CLI omitted content, in which case we skip silently).
       const text = (e.content ?? '').trim();
-      if (text) void this.postLocalRequest(binding, text);
+      if (text) {
+        const origin = this.consumeOrchestratorOrigin(e.agentId) ? 'orchestrator' : 'human';
+        void this.postLocalRequest(binding, text, origin);
+      }
       return;
     }
 
@@ -730,13 +826,18 @@ export class TeamsService {
   }
 
   /** Post a locally-typed user request into the thread, tagged so it's distinct from replies. */
-  private async postLocalRequest(binding: OnlineAgentBinding, text: string): Promise<void> {
+  private async postLocalRequest(
+    binding: OnlineAgentBinding,
+    text: string,
+    origin: 'human' | 'orchestrator' = 'human',
+  ): Promise<void> {
+    const label =
+      origin === 'orchestrator'
+        ? `🎩 <b>Orchestrator</b> 💬 <i>follow-up:</i>`
+        : `👤 <b>Human</b> 💬 <i>local request:</i>`;
     const chunks = chunkReply(text, 3500);
     for (const chunk of chunks) {
-      await this.safeReply(
-        binding,
-        `👤 <b>Human</b> 💬 <i>local request:</i><br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`,
-      );
+      await this.safeReply(binding, `${label}<br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`);
     }
   }
 
@@ -857,6 +958,107 @@ export class TeamsService {
     if (this.pendingQuestions.get(e.agentId) === record) {
       record.postedMessageId = firstId;
     }
+  }
+
+  /**
+   * Handle a `permission-request` AgentEvent (spec 016 Workstream B): relay the
+   * orchestrator's always-on approval gate into the thread as an Approve/Deny question.
+   * Supersedes any prior pending approval for the agent, posts the prompt, and arms an
+   * auto-deny timeout so the non-YOLO invariant holds even if nobody replies.
+   */
+  private async onPermissionRequestEvent(e: AgentEvent): Promise<void> {
+    if (!e.permission) return;
+    const binding = this.bindings.find((b) => b.agentId === e.agentId && b.online);
+    if (!binding) return;
+
+    // Supersede any prior pending approval for this agent (auto-deny the old one so the
+    // orchestrator's earlier gate promise doesn't hang).
+    const prior = this.pendingApprovals.get(e.agentId);
+    if (prior && !prior.resolved) {
+      prior.resolved = true;
+      if (prior.timer) clearTimeout(prior.timer);
+      void this.deps.gateway
+        .respondPermission(prior.officeId, prior.agentId, prior.toolCallId, 'deny')
+        .catch((err) => twarn('respondPermission (superseded) failed:', (err as Error).message));
+    }
+
+    const record: PendingApproval = {
+      agentId: e.agentId,
+      officeId: binding.officeId,
+      binding,
+      toolCallId: e.permission.toolCallId,
+      toolName: e.permission.toolName,
+      summary: e.permission.summary,
+      resolved: false,
+      createdAt: this.now(),
+      timer: null,
+    };
+    record.timer = setTimeout(() => this.onApprovalTimeout(record), PERMISSION_TIMEOUT_MS);
+    this.pendingApprovals.set(e.agentId, record);
+
+    tlog(`permission-request → @${binding.handle}: ${record.toolName} — "${truncate(record.summary, 80)}"`);
+    await this.safeReply(binding, this.composeApproval(record));
+  }
+
+  /** Compose the Approve/Deny prompt for a relayed orchestrator approval gate. */
+  private composeApproval(record: PendingApproval): string {
+    return [
+      `${this.agentLabel(record.binding)} 🔐 <b>needs your approval</b>`,
+      `<br><br>${escapeHtml(record.summary)}`,
+      `<br><br><i>Reply <b>approve</b> (or <b>A</b>) to allow, or <b>deny</b> (or <b>D</b>) to reject.</i>`,
+    ].join('');
+  }
+
+  /**
+   * Resolve a thread reply against a pending orchestrator approval (spec 016 Workstream B).
+   * Accepts approve/deny (or A/D, yes/no, y/n). An unrecognized reply nudges and leaves the
+   * gate pending. First resolver wins (single-resolution); routes to `respondPermission`.
+   */
+  private async resolveApproval(record: PendingApproval, rawText: string): Promise<void> {
+    const token = (rawText.trim().split(/\s+/)[0] ?? '').replace(/[).:]$/, '').toLowerCase();
+    const approve = token === 'approve' || token === 'a' || token === 'yes' || token === 'y';
+    const deny = token === 'deny' || token === 'd' || token === 'no' || token === 'n';
+    if (!approve && !deny) {
+      await this.safeReply(
+        record.binding,
+        `${this.agentLabel(record.binding)} 🤔 Reply <b>approve</b> (A) or <b>deny</b> (D).`,
+      );
+      return;
+    }
+    if (record.resolved) return; // latch: already claimed (or timed out)
+    record.resolved = true;
+    if (record.timer) clearTimeout(record.timer);
+    const decision: 'approve' | 'deny' = approve ? 'approve' : 'deny';
+    tlog(`approval → @${record.binding.handle}: ${decision} (${record.toolName})`);
+    try {
+      await this.deps.gateway.respondPermission(record.officeId, record.agentId, record.toolCallId, decision);
+    } catch (err) {
+      twarn('respondPermission failed:', (err as Error).message);
+    }
+    if (this.pendingApprovals.get(record.agentId) === record) {
+      this.pendingApprovals.delete(record.agentId);
+    }
+    await this.safeReply(
+      record.binding,
+      `${this.agentLabel(record.binding)} ${approve ? '✅ Approved.' : '🚫 Denied.'}`,
+    );
+  }
+
+  /** Auto-deny a relayed approval that went unanswered past {@link PERMISSION_TIMEOUT_MS}. */
+  private onApprovalTimeout(record: PendingApproval): void {
+    if (record.resolved) return;
+    if (this.pendingApprovals.get(record.agentId) !== record) return;
+    record.resolved = true;
+    record.timer = null;
+    this.pendingApprovals.delete(record.agentId);
+    tlog(`approval timed out → @${record.binding.handle}: auto-deny (${record.toolName})`);
+    void this.deps.gateway
+      .respondPermission(record.officeId, record.agentId, record.toolCallId, 'deny')
+      .catch((err) => twarn('respondPermission (timeout) failed:', (err as Error).message));
+    void this.safeReply(
+      record.binding,
+      `${this.agentLabel(record.binding)} ⏱️ No approval within ${Math.round(PERMISSION_TIMEOUT_MS / 60000)} min — denied.`,
+    );
   }
 
   /** Compose the HTML for a pending question: attention framing + question + labeled
@@ -1039,7 +1241,8 @@ export class TeamsService {
     if (cleaned) {
       const chunks = chunkReply(cleaned, 3500);
       for (const chunk of chunks) {
-        await this.safeReply(binding, `${prefix}<br>${escapeHtml(chunk).replace(/\n/g, '<br>')}`);
+        const bodyHtml = linkifyHtml(escapeHtml(chunk).replace(/\n/g, '<br>'));
+        await this.safeReply(binding, `${prefix}<br>${bodyHtml}`);
       }
     }
 
@@ -1226,6 +1429,45 @@ export class TeamsService {
   async reconcileNow(): Promise<void> {
     if (!this.started) return;
     await this.reconcile();
+  }
+
+  /**
+   * Re-online a PERSISTED (offline) binding to its EXISTING thread using the agent's
+   * CURRENT session id (spec 017). Unlike {@link reconcile}, this does NOT require the
+   * new session id to match the stored one — it adopts the current session. Used to
+   * restore the orchestrator's Teams presence on app startup: the orchestrator mints a
+   * fresh session id every launch, so the session-id-match reconnect never fires for it.
+   * No new thread is created; the prior thread is reused. No-op if there is no persisted
+   * binding, no current session, or the agent isn't ready yet (caller may retry).
+   */
+  async reonlineToCurrentSession(
+    officeId: string,
+    agentId: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!this.started) return { success: false, error: 'not-started' };
+    const b = this.findBinding(officeId, agentId);
+    if (!b) return { success: false, error: 'no-binding' };
+    if (b.online) return { success: true };
+    let current: string | null = null;
+    try {
+      current = await this.deps.gateway.getSessionId(officeId, agentId);
+    } catch {
+      return { success: false, error: 'no-session' };
+    }
+    if (!current) return { success: false, error: 'no-session' };
+    const ready = await this.deps.gateway.isAgentReady(officeId, agentId).catch(() => false);
+    if (!ready) return { success: false, error: 'not-ready' };
+    if (!this.started) return { success: false, error: 'not-started' };
+    b.sessionId = current;
+    b.online = true;
+    b.lastConnected = this.now();
+    this.deps.gateway.setForwarding(officeId, agentId, true);
+    this.deps.emitStatus(this.toStatus(b));
+    await this.persist();
+    this.updateSourceChannels();
+    tlog(`Re-onlined @${b.handle} to its persisted thread (adopted session ${current}).`);
+    void this.safeReply(b, `${this.agentLabel(b)} 🔄 Reconnected — back online and ready. Reply here to continue.`);
+    return { success: true };
   }
 
   private async reconcile(): Promise<void> {

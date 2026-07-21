@@ -55,6 +55,12 @@ export const ZIndex = {
    *  the same `settings:open` / `settings:close` bus. */
   TEAMS_SETTINGS: 18000,
 
+  /** Office Orchestrator agent panel — a focused chat TUI overlay that dims the
+   *  game. Sits above the terminal/serious surfaces and the Teams settings modal
+   *  but below the main Settings panel, so Settings can still open on top. Routed
+   *  via the same `settings:open` / `settings:close` focus bus (spec 016). */
+  ORCHESTRATOR_PANEL: 19000,
+
   /** Settings panel modal. */
   SETTINGS: 20000,
 
