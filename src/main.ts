@@ -71,8 +71,16 @@ function getCurrentAgents() {
  *   the persisted last-activity timestamp for this office+agent, so the order
  *   survives an app restart. Agents with no recorded activity score 0. Stable,
  *   so equal-score agents keep config order.
+ *
+ * Regardless of recency, agents whose session is inactive (not in the 'active'
+ * state) OR has a blank title are ALWAYS ordered below live, titled sessions —
+ * these "empty" cards sink to the bottom so the meaningful sessions stay on top.
  */
-function sortAgentsByMode(agents: AgentConfig[], office: OfficeData | null): AgentConfig[] {
+function sortAgentsByMode(
+  agents: AgentConfig[],
+  office: OfficeData | null,
+  sessionMeta: Record<string, SessionMetaSnapshot>,
+): AgentConfig[] {
   if (agentSortMode !== 'recent' || !office) return agents;
   const persisted = getOfficeAgentActivityTimes(office.config.id);
   const recency = (id: string): number => {
@@ -86,7 +94,18 @@ function sortAgentsByMode(agents: AgentConfig[], office: OfficeData | null): Age
     }
     return t;
   };
-  return [...agents].sort((a, b) => recency(b.id) - recency(a.id));
+  // True for sessions that should sink to the bottom: inactive OR blank-title.
+  const sinksToBottom = (id: string): boolean => {
+    const isActive = office.agents.get(id)?.state === 'active';
+    const hasTitle = !!sessionMeta[id]?.title?.trim();
+    return !isActive || !hasTitle;
+  };
+  return [...agents].sort((a, b) => {
+    const aBottom = sinksToBottom(a.id);
+    const bBottom = sinksToBottom(b.id);
+    if (aBottom !== bBottom) return aBottom ? 1 : -1;
+    return recency(b.id) - recency(a.id);
+  });
 }
 
 function getCurrentAgentTools(): Map<string, ToolEntry[]> {
@@ -2186,7 +2205,7 @@ function updateTerminalContentNow() {
   // Delegate card rendering to the layout-specific dashboard renderer
   const layout = getLayout(getCurrentLayout());
   const html = layout.dashboard.renderCards({
-    agents: sortAgentsByMode(layout.agents, office || null),
+    agents: sortAgentsByMode(layout.agents, office || null, cachedSessionMeta),
     office: office || null,
     selectedAgentId,
     cachedSessionMeta,
