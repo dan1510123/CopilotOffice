@@ -209,6 +209,13 @@ export class TeamsSettingsOverlay {
     checkIn.row.style.marginTop = '10px';
     wrap.appendChild(checkIn.row);
 
+    const autoRender = this.toggleRow(
+      'Auto-render markdown replies as images',
+      settings.autoRenderMarkdownImages,
+    );
+    autoRender.row.style.marginTop = '10px';
+    wrap.appendChild(autoRender.row);
+
     const error = document.createElement('div');
     error.style.cssText = 'margin-top: 12px; font-size: 12px; color: #ff8888; min-height: 16px;';
     wrap.appendChild(error);
@@ -233,6 +240,7 @@ export class TeamsSettingsOverlay {
         notifyOnCompleteEnabled: notifyComplete.input.checked,
         ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,
+        autoRenderMarkdownImages: autoRender.input.checked,
       };
       try {
         const res = await window.copilotBridge.teamsSaveSettings(next);

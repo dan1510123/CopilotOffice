@@ -16,6 +16,7 @@ export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
   checkInThrottleMs: 60_000,
+  autoRenderMarkdownImages: false,
 };
 
 export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | undefined): TeamsSettings {
@@ -30,6 +31,7 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,
     checkInThrottleMs: partial?.checkInThrottleMs ?? DEFAULT_TEAMS_SETTINGS.checkInThrottleMs,
+    autoRenderMarkdownImages: partial?.autoRenderMarkdownImages ?? DEFAULT_TEAMS_SETTINGS.autoRenderMarkdownImages,
   };
 }
 

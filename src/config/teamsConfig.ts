@@ -31,6 +31,11 @@ export interface TeamsSettings {
   checkInThresholdMs: number;
   /** Minimum interval (ms) between check-ins. */
   checkInThrottleMs: number;
+  /**
+   * Opt-in gate (default OFF) for auto-rendering a qualifying markdown reply as an inline
+   * Teams image at idle-finalize (spec 018, FR-010). When false the auto-render path is inert.
+   */
+  autoRenderMarkdownImages: boolean;
 }
 
 export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
@@ -44,6 +49,7 @@ export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
   checkInThrottleMs: 60_000,
+  autoRenderMarkdownImages: false,
 };
 
 /** Merge a partial (possibly persisted) settings object over the defaults. */
@@ -59,5 +65,6 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,
     checkInThrottleMs: partial?.checkInThrottleMs ?? DEFAULT_TEAMS_SETTINGS.checkInThrottleMs,
+    autoRenderMarkdownImages: partial?.autoRenderMarkdownImages ?? DEFAULT_TEAMS_SETTINGS.autoRenderMarkdownImages,
   };
 }

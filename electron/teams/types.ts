@@ -37,6 +37,13 @@ export interface TeamsSettings {
   checkInThresholdMs: number;
   /** Minimum interval (ms) between check-ins. */
   checkInThrottleMs: number;
+  /**
+   * Opt-in gate (default OFF) for auto-rendering a qualifying markdown reply as an inline
+   * Teams image at idle-finalize (spec 018, FR-010). When false the whole auto-render path
+   * is inert — replies post as plain text exactly as before. Absent in older settings files
+   * ⇒ normalizes to false (backward compatible).
+   */
+  autoRenderMarkdownImages: boolean;
 }
 
 /** Parsed channel coordinates from a Teams deep-link. */
