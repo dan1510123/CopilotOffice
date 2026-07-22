@@ -31,7 +31,7 @@ describe('autoImageRenderer — render() passes workingDir straight through as -
     });
 
     const renderer = createAutoImageRenderer({
-      rendererPath: 'C:\\repo\\.github\\skills\\office-image-teams-reply\\render-markdown-image.mjs',
+      rendererPath: 'C:\\repo\\electron\\teams\\render-markdown-image.mjs',
       probe: () => true,
       spawn: spawn as never,
     });

@@ -51,19 +51,32 @@ function defaultRendererPath(): string {
 }
 
 /**
- * Best-effort capability probe: the renderer script exists AND its runtime deps
- * (`playwright` + `marked`) resolve from the app's own node_modules. Both are
- * declared in the root package.json, so Node finds them by walking up from the
- * script's directory to the repo root.
+ * Best-effort capability probe. Returns true only when a render can plausibly
+ * succeed, so the caller can skip the (expensive) child-process spawn otherwise:
+ *   1. the renderer script exists,
+ *   2. `marked` resolves from the app's own node_modules, AND
+ *   3. an actual Chromium *browser binary* is installed.
+ *
+ * (3) is the check that matters: `marked` + `playwright` are declared root deps
+ * (guaranteed by `npm install`), but the Chromium binary is a SEPARATE download
+ * (`npx playwright install chromium`) that `npm install playwright` does NOT
+ * perform. So a package-only probe would report available while `chromium.launch()`
+ * still fails. We ask Playwright's own resolver for the expected binary path and
+ * confirm it exists on disk — version/platform specifics handled by Playwright.
  */
 function defaultProbe(rendererPath: string): boolean {
   try {
     if (!fs.existsSync(rendererPath)) return false;
     // repo root is two levels up from dist/electron (matches defaultRendererPath).
     const repoRoot = path.resolve(__dirname, '..', '..');
-    const playwrightPkg = path.join(repoRoot, 'node_modules', 'playwright', 'package.json');
-    const markedPkg = path.join(repoRoot, 'node_modules', 'marked', 'package.json');
-    return fs.existsSync(playwrightPkg) && fs.existsSync(markedPkg);
+    if (!fs.existsSync(path.join(repoRoot, 'node_modules', 'marked', 'package.json'))) return false;
+    // Lazy runtime require (playwright is marked external in the esbuild bundle) so the
+    // heavy package never loads unless the probe actually runs. executablePath() returns
+    // the expected Chromium path without launching a browser.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { chromium } = require('playwright') as typeof import('playwright');
+    const exe = chromium.executablePath();
+    return typeof exe === 'string' && exe.length > 0 && fs.existsSync(exe);
   } catch {
     return false;
   }
