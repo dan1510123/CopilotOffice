@@ -203,9 +203,9 @@ type AutoRenderOutcome =
   | 'skipped-existing-sentinel'
   | 'skipped-no-markdown'
   | 'skipped-no-renderer'
-  | 'skipped-offline'
   | 'fallback-render-error'
   | 'fallback-image-rejected'
+  | 'fallback-send-failed'
   | 'fallback-error'
   | 'rendered';
 
@@ -754,6 +754,9 @@ export class TeamsService {
     const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
     tlog(`Reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
     rec.lastReplyText = text;
+    // Spec 018 (replace-with-fallback): if this reply qualifies for auto-render, post ONLY
+    // the rendered image and skip the plain text. Any skip/failure returns false → post text.
+    if (await this.tryRenderReplacingText(rec.binding, text)) return;
     await this.postReply(rec.binding, text);
   }
 
@@ -838,6 +841,8 @@ export class TeamsService {
     const elapsed = Math.round((this.now() - rec.startedAt) / 1000);
     tlog(`Local reply → @${rec.binding.handle} thread (${text.length} chars, ${elapsed}s): ${truncate(text, 80)}`);
     rec.lastReplyText = text;
+    // Spec 018 (replace-with-fallback): image-only for qualifying replies; else post text.
+    if (await this.tryRenderReplacingText(rec.binding, text)) return;
     await this.postReply(rec.binding, text);
   }
 
@@ -853,9 +858,8 @@ export class TeamsService {
     // locally-driven agent is idle — so the operator gets notified in Teams even though
     // the reply content itself was posted under their own (un-notifying) identity.
     await this.maybeNotifyComplete(rec.binding, rec.lastReplyText);
-    // Spec 018: additively auto-render a qualifying markdown reply as an inline image
-    // (gated OFF by default). Evaluated on the final accumulated reply text; never throws.
-    await this.maybeAutoRenderImage(rec.binding, rec.lastReplyText);
+    // Spec 018 auto-render happens per-turn in flushAmbient (replace-with-fallback), so the
+    // defensive flush above already handled any qualifying residual text — nothing to do here.
   }
 
   /** Post a locally-typed user request into the thread, tagged so it's distinct from replies. */
@@ -891,9 +895,8 @@ export class TeamsService {
     // now that the agent is idle — so the operator gets notified even though the reply
     // content itself was posted under their own identity.
     await this.maybeNotifyComplete(rec.binding, rec.lastReplyText);
-    // Spec 018: additively auto-render a qualifying markdown reply as an inline image
-    // (gated OFF by default). Evaluated on the final accumulated reply text; never throws.
-    await this.maybeAutoRenderImage(rec.binding, rec.lastReplyText);
+    // Spec 018 auto-render happens per-turn in flushTurn (replace-with-fallback); the
+    // defensive flush above already covered any qualifying residual text.
     rec.resolve();
   }
 
@@ -933,39 +936,44 @@ export class TeamsService {
   }
 
   /**
-   * Spec 018 (FR-002/004/005/007/008/009/010): at idle-finalize, ADDITIVELY render a
-   * qualifying markdown reply as an inline Teams image, in addition to the already-posted
-   * plain text. Strictly additive and non-throwing — every failure path falls back to the
-   * plain text that already streamed, so no reply is ever dropped. Returns an
-   * {@link AutoRenderOutcome} purely for logging/testing.
+   * Spec 018 (replace-with-fallback): when a turn's reply qualifies for auto-render,
+   * post ONLY the rendered image and return `true` so the caller SUPPRESSES the plain-text
+   * post. Returns `false` for every non-qualifying case AND every failure (render error,
+   * image rejected, image send failed) so the caller falls back to posting the original
+   * text — the reply is therefore never dropped. Non-throwing (VI-2/FR-008).
+   *
+   * Called from the per-turn flush path ({@link flushTurn}/{@link flushAmbient}) BEFORE the
+   * text is posted, so a qualifying message shows up in Teams as the image alone. The
+   * original text is posted by the caller only when this returns `false`.
    */
-  private async maybeAutoRenderImage(
+  private async tryRenderReplacingText(
     binding: OnlineAgentBinding,
     replyText?: string,
-  ): Promise<AutoRenderOutcome> {
+  ): Promise<boolean> {
     let outcome: AutoRenderOutcome = 'disabled';
     try {
-      // 1. Opt-in gate (FR-010) — FIRST check; default OFF ⇒ fully inert.
-      if (!this.deps.getSettings().autoRenderMarkdownImages) return (outcome = 'disabled');
+      // 1. Opt-in gate (FR-010) — FIRST check; default OFF ⇒ fully inert (post text).
+      if (!this.deps.getSettings().autoRenderMarkdownImages) return ((outcome = 'disabled'), false);
 
-      // Nothing was said this response → nothing to render.
+      // Nothing was said this turn → nothing to render (caller no-ops on empty anyway).
       const text = replyText ?? '';
-      if (!text.trim()) return (outcome = 'skipped-empty');
+      if (!text.trim()) return ((outcome = 'skipped-empty'), false);
 
-      // 2. No-double-render guard (FR-009): the agent already attached an image.
-      if (hasExistingImageSentinel(text)) return (outcome = 'skipped-existing-sentinel');
+      // 2. No-double-render guard (FR-009): the agent already attached its own image —
+      // leave postReply's existing explicit-sentinel handling untouched (post text+image).
+      if (hasExistingImageSentinel(text)) return ((outcome = 'skipped-existing-sentinel'), false);
 
       // 3. Structure + length predicate (FR-002).
-      if (!shouldAutoRenderMarkdown(text)) return (outcome = 'skipped-no-markdown');
+      if (!shouldAutoRenderMarkdown(text)) return ((outcome = 'skipped-no-markdown'), false);
 
       // 4. Capability pre-check (FR-007/R1): renderer + playwright resolvable.
-      if (!this.autoRenderer.isAvailable()) return (outcome = 'skipped-no-renderer');
+      if (!this.autoRenderer.isAvailable()) return ((outcome = 'skipped-no-renderer'), false);
 
       // 5. Render via the child process (never throws → {ok:false,reason}).
       const result = await this.autoRenderer.render(text, binding.workingDir);
       if (!result.ok || !result.sentinel) {
         twarn(`office-image auto-render: render failed for @${binding.handle}: ${result.reason ?? 'unknown'}`);
-        return (outcome = 'fallback-render-error');
+        return ((outcome = 'fallback-render-error'), false); // → caller posts text
       }
 
       // 6. Load the produced image via the EXISTING security-hardened path (FR-011):
@@ -975,24 +983,23 @@ export class TeamsService {
         baseDir: binding.workingDir,
         warn: (m) => twarn(m),
       });
-      if (images.length === 0) return (outcome = 'fallback-image-rejected');
+      if (images.length === 0) return ((outcome = 'fallback-image-rejected'), false); // → text
 
-      // 7. Re-check the binding is still online before posting (do not post to a stale
-      // thread if the agent went offline mid-render).
-      const live = this.bindings.find((b) => b.agentId === binding.agentId && b.online);
-      if (!live) return (outcome = 'skipped-offline');
-
-      // 8. Post the image ADDITIVELY (augment, FR-004) — plain text is NOT re-posted.
-      await this.safeReply(
-        live,
-        `${this.agentLabel(live)}<br>${hostedImagesHtml(images)}`,
+      // 7. Post the image IN PLACE OF the text. If the Graph send fails, safeReply returns
+      // undefined — fall back to the text so the reply is never dropped ("only send the
+      // original text if the render sending fails").
+      const messageId = await this.safeReply(
+        binding,
+        `${this.agentLabel(binding)}<br>${hostedImagesHtml(images)}`,
         images,
       );
-      return (outcome = 'rendered');
+      if (!messageId) return ((outcome = 'fallback-send-failed'), false); // → caller posts text
+
+      return ((outcome = 'rendered'), true); // image posted → suppress text
     } catch (e) {
-      // Belt-and-suspenders: the hook must NEVER throw (VI-2/FR-008).
+      // Belt-and-suspenders: the hook must NEVER throw (VI-2/FR-008) → post text.
       twarn('office-image auto-render: unexpected error (falling back to plain text):', (e as Error).message);
-      return (outcome = 'fallback-error');
+      return ((outcome = 'fallback-error'), false);
     } finally {
       tlog(`office-image auto-render → @${binding.handle}: ${outcome}`);
     }

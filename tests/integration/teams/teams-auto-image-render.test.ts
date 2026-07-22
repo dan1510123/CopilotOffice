@@ -11,9 +11,10 @@ import type { TokenProvider } from '../../../electron/teams/auth';
 import type { InboundMessage, TeamsSettings } from '../../../electron/teams/types';
 import type { AutoImageRenderer, AutoRenderResult } from '../../../electron/teams/autoImageRenderer';
 
-// Spec 018 — auto-render markdown replies as Teams images.
-// These integration tests drive the finalize hook end-to-end with an injected fake
-// renderer, asserting the augment (US1), never-drop fallback (US2), no-double-render
+// Spec 018 — auto-render markdown replies as Teams images (replace-with-fallback).
+// These integration tests drive the per-turn flush hook end-to-end with an injected
+// fake renderer, asserting the REPLACE behavior (US1: image only, text suppressed),
+// never-drop fallback (US2: text posted on any render/send failure), no-double-render
 // (US3), opt-in/out gate (US4), and security-path (FR-011) behaviors.
 
 const RELATIVE_PNG = '.office-images/reply.png';
@@ -56,6 +57,8 @@ interface HarnessOpts {
   renderResult?: AutoRenderResult;
   isAvailable?: boolean;
   workingDir?: string;
+  /** Simulate the Graph image post failing (safeReply returns undefined → text fallback). */
+  failImagePost?: boolean;
 }
 
 function makeHarness(opts: HarnessOpts = {}) {
@@ -67,6 +70,9 @@ function makeHarness(opts: HarnessOpts = {}) {
   const graph: GraphSender = {
     createThread: vi.fn(async () => ({ threadRootId: 'root-1', webUrl: 'https://web/thread' })),
     replyToThread: vi.fn(async (p: any) => {
+      if (opts.failImagePost && Array.isArray(p.hostedImages) && p.hostedImages.length) {
+        throw new Error('graph image post failed');
+      }
       replies.push(p.html);
       replyImages.push(p.hostedImages);
       return { messageId: `reply-${replies.length}` };
@@ -168,7 +174,7 @@ async function driveAmbient(h: ReturnType<typeof makeHarness>, replyText: string
 const imagePosts = (h: ReturnType<typeof makeHarness>) =>
   h.replies.filter((html) => html.includes('../hostedContents/'));
 
-describe('spec 018 — Teams auto-image render (US1 augment)', () => {
+describe('spec 018 — Teams auto-image render (US1 replace)', () => {
   let tmpDir: string;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'auto-img-'));
@@ -183,7 +189,7 @@ describe('spec 018 — Teams auto-image render (US1 augment)', () => {
     }
   });
 
-  it('appends a rendered image AFTER the plain-text reply on a dispatched turn (FR-004/FR-005)', async () => {
+  it('posts ONLY the rendered image (plain text suppressed) on a dispatched turn (FR-004/FR-005)', async () => {
     const h = makeHarness({ workingDir: tmpDir });
     await h.service.start();
     await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: tmpDir });
@@ -191,20 +197,17 @@ describe('spec 018 — Teams auto-image render (US1 augment)', () => {
     const md = qualifyingMarkdown();
     await driveDispatch(h, md);
 
-    // Plain text streamed first.
-    const textIdx = h.replies.findIndex((r) => r.includes('detailed explanation'));
-    expect(textIdx).toBeGreaterThanOrEqual(0);
-    // An additional image post came AFTER the plain text.
-    const imgIdx = h.replies.findIndex((r) => r.includes('../hostedContents/'));
-    expect(imgIdx).toBeGreaterThan(textIdx);
+    // Exactly one image post, and NO plain-text reply (the image replaced it).
     expect(imagePosts(h)).toHaveLength(1);
     expect(h.renderSpy).toHaveBeenCalledTimes(1);
+    expect(h.replies.some((r) => r.includes('detailed explanation'))).toBe(false);
     // The image reply carried hostedImages (inline attachment).
+    const imgIdx = h.replies.findIndex((r) => r.includes('../hostedContents/'));
     const imgReplyPos = h.replyImages[imgIdx];
     expect(Array.isArray(imgReplyPos) && imgReplyPos!.length).toBeTruthy();
   });
 
-  it('appends a rendered image on an ambient (locally-driven) turn (FR-005)', async () => {
+  it('posts ONLY the rendered image (plain text suppressed) on an ambient turn (FR-005)', async () => {
     const h = makeHarness({ workingDir: tmpDir });
     await h.service.start();
     await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: tmpDir });
@@ -213,6 +216,8 @@ describe('spec 018 — Teams auto-image render (US1 augment)', () => {
 
     expect(imagePosts(h)).toHaveLength(1);
     expect(h.renderSpy).toHaveBeenCalledTimes(1);
+    // The reply body text was replaced by the image (the mirrored user request may remain).
+    expect(h.replies.some((r) => r.includes('detailed explanation'))).toBe(false);
   });
 
   it('does NOT render a non-qualifying plain-prose reply (no image, plain text intact)', async () => {
@@ -300,6 +305,18 @@ describe('spec 018 — never drop a reply on render failure (US2, FR-008)', () =
     } finally {
       fs.rmSync(emptyDir, { recursive: true, force: true });
     }
+  });
+  it('falls back to plain text when the image POST itself fails (safeReply returns undefined)', async () => {
+    const h = makeHarness({ workingDir: tmpDir, failImagePost: true });
+    await h.service.start();
+    await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: tmpDir });
+
+    await driveDispatch(h, qualifyingMarkdown());
+
+    // Render succeeded and was attempted, but the Graph image post threw → text fallback.
+    expect(h.renderSpy).toHaveBeenCalledTimes(1);
+    expect(imagePosts(h)).toHaveLength(0);
+    expect(h.replies.join('\n')).toContain('detailed explanation');
   });
 });
 
