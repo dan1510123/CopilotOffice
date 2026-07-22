@@ -8,6 +8,7 @@ import type { ToolEntry } from '../util/toolStatus';
 import {
   createBridgePersistencePort,
   deserializeOffices,
+  normalizeWorkingDir,
   serializeOffices,
   type OfficePersistencePort,
 } from './officePersistence';
@@ -131,6 +132,7 @@ export class OfficeManager {
   
   // Create a new office
   createOffice(name: string, workingDirectory: string, layout: OfficeLayout = 'default'): OfficeData {
+    workingDirectory = normalizeWorkingDir(workingDirectory);
     const existingIndices = Array.from(this.offices.values()).map(o => parseInt(o.config.id.replace('office-', ''), 10));
     const nextIndex = existingIndices.length > 0 ? Math.max(...existingIndices) + 1 : 0;
     const id = `office-${nextIndex}`;
@@ -226,7 +228,7 @@ export class OfficeManager {
     if (!office) return false;
     
     if (updates.name !== undefined) office.config.name = updates.name;
-    if (updates.workingDirectory !== undefined) office.config.workingDirectory = updates.workingDirectory;
+    if (updates.workingDirectory !== undefined) office.config.workingDirectory = normalizeWorkingDir(updates.workingDirectory);
     if (updates.layout !== undefined) office.config.layout = updates.layout;
     if (updates.teamsChannelUrl !== undefined) office.config.teamsChannelUrl = updates.teamsChannelUrl;
     if (updates.teamsMentionType !== undefined) office.config.teamsMentionType = updates.teamsMentionType;

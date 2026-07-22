@@ -20,8 +20,9 @@ import { escapeHtml, linkifyHtml } from './htmlText';
 import { extractImageMarkers, loadHostedImages, hostedImagesHtml } from './imageMarker';
 import type { HostedImage } from './imageMarker';
 import { shouldAutoRenderMarkdown, hasExistingImageSentinel } from './markdownDetect';
-import { createAutoImageRenderer, stripWrappingQuotes } from './autoImageRenderer';
+import { createAutoImageRenderer } from './autoImageRenderer';
 import type { AutoImageRenderer } from './autoImageRenderer';
+import { normalizeWorkingDir } from './workingDir';
 import { extractFileMarkers, loadAttachmentFiles } from './fileMarker';
 import type { AttachmentFile } from './fileMarker';
 import { pickAckQuip } from './ackQuips';
@@ -398,7 +399,7 @@ export class TeamsService {
     }
 
     const displayName = ctx.displayName || agentId;
-    const workingDir = ctx.workingDir || '';
+    const workingDir = normalizeWorkingDir(ctx.workingDir || '');
 
     // Already online? Return existing binding.
     const existing = this.findBinding(officeId, agentId);
@@ -971,7 +972,7 @@ export class TeamsService {
       // sandbox confinement + magic-byte validation + per-file/count/aggregate caps.
       const { paths } = extractImageMarkers(result.sentinel);
       const images = await loadHostedImages(paths, {
-        baseDir: stripWrappingQuotes(binding.workingDir),
+        baseDir: binding.workingDir,
         warn: (m) => twarn(m),
       });
       if (images.length === 0) return (outcome = 'fallback-image-rejected');
@@ -1320,7 +1321,7 @@ export class TeamsService {
     let images: HostedImage[] = [];
     if (paths.length) {
       tlog(`office-image: @${binding.handle} reply has ${paths.length} sentinel(s): ${paths.join(', ')} (baseDir=${binding.workingDir})`);
-      images = await loadHostedImages(paths, { baseDir: stripWrappingQuotes(binding.workingDir), warn: (m) => twarn(m) });
+      images = await loadHostedImages(paths, { baseDir: binding.workingDir, warn: (m) => twarn(m) });
       if (images.length) {
         tlog(`office-image: loaded ${images.length}/${paths.length} image(s) for @${binding.handle} — will attach inline.`);
       } else {

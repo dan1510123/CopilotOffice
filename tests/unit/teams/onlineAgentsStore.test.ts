@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { gcStale } from '../../../electron/teams/onlineAgentsStore';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { gcStale, FileTeamsOnlineStore } from '../../../electron/teams/onlineAgentsStore';
 import type { OnlineAgentBinding } from '../../../electron/teams/types';
 
 function b(id: string, lastConnected: number): OnlineAgentBinding {
@@ -36,5 +39,25 @@ describe('gcStale', () => {
     const edge = b('edge', now - thirtyDays);
     const { kept } = gcStale([edge], now);
     expect(kept).toHaveLength(1);
+  });
+});
+
+describe('FileTeamsOnlineStore.load — heals quoted workingDir', () => {
+  it('strips wrapping quotes from a persisted binding workingDir on load', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teams-store-'));
+    const file = path.join(dir, 'teams-online-agents.json');
+    const quoted = b('gene', 1);
+    quoted.workingDir = '"C:\\Users\\me\\repos\\proj"';
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ version: 1, bindings: [quoted], knownThreads: [] }),
+      'utf-8',
+    );
+
+    const store = new FileTeamsOnlineStore(file);
+    const state = await store.load();
+    expect(state.bindings[0].workingDir).toBe('C:\\Users\\me\\repos\\proj');
+
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

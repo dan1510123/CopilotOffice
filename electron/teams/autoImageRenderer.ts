@@ -41,18 +41,6 @@ export interface CreateAutoImageRendererOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/**
- * Strip a single pair of wrapping quotes from a filesystem path. Some stored bindings
- * carry a workingDir with literal surrounding double- (or single-) quotes, e.g.
- * `"C:\\path\\to\\dir"`. Passed verbatim to path.resolve, the quoted string is treated as
- * a relative segment appended to cwd, yielding an invalid path with embedded quotes (ENOENT
- * on mkdir → exit 1). Callers that hand a workingDir to the renderer or to loadHostedImages
- * MUST normalize through this first.
- */
-export function stripWrappingQuotes(p: string): string {
-  return p.replace(/^"(.*)"$/s, '$1').replace(/^'(.*)'$/s, '$1');
-}
-
 /** Resolve the default renderer script path under the repo's skills folder. */
 function defaultRendererPath(): string {
   // electron/teams/autoImageRenderer.ts → repo root is two levels up.
@@ -110,9 +98,9 @@ export function createAutoImageRenderer(
         resolve(r);
       };
 
-      // Some stored bindings carry a workingDir with literal surrounding quotes; normalize
-      // so path.resolve in the renderer produces a valid cwd (see stripWrappingQuotes).
-      const cwd = stripWrappingQuotes(workingDir);
+      // workingDir is normalized upstream (see normalizeWorkingDir at the office/
+      // register boundaries), so it can be passed straight through as the cwd.
+      const cwd = workingDir;
 
       let child: import('child_process').ChildProcess;
       try {

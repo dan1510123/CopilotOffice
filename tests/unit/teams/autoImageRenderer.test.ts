@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
-import { createAutoImageRenderer, stripWrappingQuotes } from '../../../electron/teams/autoImageRenderer';
+import { createAutoImageRenderer } from '../../../electron/teams/autoImageRenderer';
 
 /** Minimal fake ChildProcess that emits a valid sentinel then closes with exit 0. */
 function fakeChild(sentinel: string) {
@@ -22,23 +22,8 @@ function fakeChild(sentinel: string) {
   return child;
 }
 
-describe('autoImageRenderer — stripWrappingQuotes', () => {
-  it('strips a single pair of wrapping double quotes', () => {
-    expect(stripWrappingQuotes('"C:\\a\\b"')).toBe('C:\\a\\b');
-  });
-  it('strips wrapping single quotes', () => {
-    expect(stripWrappingQuotes("'C:\\a\\b'")).toBe('C:\\a\\b');
-  });
-  it('leaves an unquoted path untouched', () => {
-    expect(stripWrappingQuotes('C:\\a\\b')).toBe('C:\\a\\b');
-  });
-  it('does not strip quotes that only appear mid-string', () => {
-    expect(stripWrappingQuotes('C:\\a"b')).toBe('C:\\a"b');
-  });
-});
-
-describe('autoImageRenderer — render() de-quotes workingDir before spawning', () => {
-  it('passes an unquoted --cwd to the child even when workingDir is quoted', async () => {
+describe('autoImageRenderer — render() passes workingDir straight through as --cwd', () => {
+  it('forwards the (already-normalized) workingDir verbatim to the child', async () => {
     const spawnCalls: string[][] = [];
     const spawn = vi.fn((_exe: string, args: readonly string[]) => {
       spawnCalls.push([...args]);
@@ -51,7 +36,7 @@ describe('autoImageRenderer — render() de-quotes workingDir before spawning', 
       spawn: spawn as never,
     });
 
-    const res = await renderer.render('# hi\n\n' + 'x'.repeat(1200), '"C:\\Users\\me\\repos\\proj"');
+    const res = await renderer.render('# hi\n\n' + 'x'.repeat(1200), 'C:\\Users\\me\\repos\\proj');
     expect(res.ok).toBe(true);
 
     // args = [rendererPath, '--cwd', cwd]
@@ -59,6 +44,5 @@ describe('autoImageRenderer — render() de-quotes workingDir before spawning', 
     const cwdIdx = args.indexOf('--cwd');
     expect(cwdIdx).toBeGreaterThanOrEqual(0);
     expect(args[cwdIdx + 1]).toBe('C:\\Users\\me\\repos\\proj');
-    expect(args[cwdIdx + 1]).not.toContain('"');
   });
 });
