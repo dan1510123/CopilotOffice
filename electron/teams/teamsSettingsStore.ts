@@ -11,12 +11,12 @@ export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   relayChannelUrl: '',
   relayMentionType: 'none',
   relayMentionValue: '',
-  notifyOnCompleteEnabled: true,
+  notifyOnCompleteEnabled: false,
   ackEnabled: true,
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
   checkInThrottleMs: 60_000,
-  autoRenderMarkdownImages: false,
+  autoRenderMarkdownImages: true,
 };
 
 export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | undefined): TeamsSettings {

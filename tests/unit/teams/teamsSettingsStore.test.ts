@@ -4,15 +4,15 @@ import {
   normalizeTeamsSettings,
 } from '../../../electron/teams/teamsSettingsStore';
 
-// Spec 018 FR-010 / VI-6: the opt-in auto-render gate defaults OFF, survives a
-// normalize round-trip when present, and a settings file lacking the key
-// normalizes to false (backward compatible).
+// Spec 018 FR-010 / VI-6: the auto-render gate now defaults ON (per user request —
+// when Teams is enabled the other toggles are on by default). It survives a normalize
+// round-trip when present; a settings file lacking the key inherits the new default (true).
 describe('teamsSettingsStore — autoRenderMarkdownImages gate (FR-010)', () => {
-  it('defaults autoRenderMarkdownImages to false', () => {
-    expect(DEFAULT_TEAMS_SETTINGS.autoRenderMarkdownImages).toBe(false);
+  it('defaults autoRenderMarkdownImages to true', () => {
+    expect(DEFAULT_TEAMS_SETTINGS.autoRenderMarkdownImages).toBe(true);
   });
 
-  it('normalizes a missing autoRenderMarkdownImages key to false (backward compatible)', () => {
+  it('normalizes a missing autoRenderMarkdownImages key to the default (true)', () => {
     const legacy = {
       enabled: true,
       defaultChannelUrl: 'https://x',
@@ -25,14 +25,14 @@ describe('teamsSettingsStore — autoRenderMarkdownImages gate (FR-010)', () => 
       checkInThresholdMs: 120_000,
       checkInThrottleMs: 60_000,
     };
-    // No autoRenderMarkdownImages key present at all.
+    // No autoRenderMarkdownImages key present at all → inherits the new default (true).
     const normalized = normalizeTeamsSettings(legacy);
-    expect(normalized.autoRenderMarkdownImages).toBe(false);
+    expect(normalized.autoRenderMarkdownImages).toBe(true);
   });
 
-  it('normalizes null/undefined input to the default (false)', () => {
-    expect(normalizeTeamsSettings(null).autoRenderMarkdownImages).toBe(false);
-    expect(normalizeTeamsSettings(undefined).autoRenderMarkdownImages).toBe(false);
+  it('normalizes null/undefined input to the default (true)', () => {
+    expect(normalizeTeamsSettings(null).autoRenderMarkdownImages).toBe(true);
+    expect(normalizeTeamsSettings(undefined).autoRenderMarkdownImages).toBe(true);
   });
 
   it('preserves autoRenderMarkdownImages: true through a normalize round-trip', () => {
