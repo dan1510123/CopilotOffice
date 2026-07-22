@@ -19,7 +19,8 @@
     }
   ],
   "allowlist": [
-    "223556219\\+Copilot@users\\.noreply\\.github\\.com"
+    "223556219\\+Copilot@users\\.noreply\\.github\\.com",
+    "teams\\.microsoft\\.com"
   ],
   "ignorePaths": [
     "internal-references.config.json",
