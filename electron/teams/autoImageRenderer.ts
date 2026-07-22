@@ -101,8 +101,13 @@ export function createAutoImageRenderer(
       let child: import('child_process').ChildProcess;
       try {
         // Use process.execPath (the running node/electron node) for a robust interpreter.
+        // In the Electron MAIN process, process.execPath is electron.exe, which by default
+        // boots its argument as a GUI app (exiting non-zero, e.g. code 2) instead of running
+        // it as Node. ELECTRON_RUN_AS_NODE=1 makes electron.exe behave as a plain Node runtime
+        // so the .mjs renderer executes correctly. Harmless when execPath is already node.
         child = spawnFn(process.execPath, [rendererPath, '--cwd', workingDir], {
           stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         });
       } catch (e) {
         warn(`autoImageRenderer: spawn threw: ${(e as Error).message}`);
