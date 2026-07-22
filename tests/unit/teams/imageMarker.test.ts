@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import * as path from 'path';
 import {
   extractImageMarkers,
   loadHostedImages,
@@ -96,7 +97,7 @@ describe('loadHostedImages (sandbox + validation)', () => {
     ]);
   });
 
-  it('rejects absolute paths (sandbox escape)', async () => {
+  it('rejects absolute paths that escape the sandbox', async () => {
     const warnings: string[] = [];
     const images = await loadHostedImages(['/etc/passwd', 'C:\\secrets.txt'], {
       baseDir: '/work',
@@ -105,6 +106,18 @@ describe('loadHostedImages (sandbox + validation)', () => {
     });
     expect(images).toEqual([]);
     expect(warnings.filter((w) => w.includes('outside agent sandbox')).length).toBe(2);
+  });
+
+  it('accepts an absolute path that resolves INSIDE the sandbox', async () => {
+    // A locally-trusted agent may emit an absolute sentinel into its own
+    // <workingDir>/.office-images. That is confined, so it must load.
+    const base = path.resolve('/work');
+    const absInside = path.join(base, '.office-images', 'reply.png');
+    const images = await loadHostedImages([absInside], {
+      baseDir: '/work',
+      readFile: async () => PNG,
+    });
+    expect(images).toEqual([{ id: '1', contentType: 'image/png', contentBytesBase64: PNG.toString('base64') }]);
   });
 
   it('rejects ".." traversal that escapes the sandbox', async () => {
@@ -210,7 +223,12 @@ describe('resolveWithinBase', () => {
     const r = resolveWithinBase('sub/a.png', '/work');
     expect(r?.replace(/\\/g, '/')).toContain('/work/sub/a.png');
   });
-  it('returns null for absolute paths, traversal, and missing base', () => {
+  it('resolves an absolute path that stays inside the sandbox', () => {
+    const base = path.resolve('/work');
+    const absInside = path.join(base, 'sub', 'a.png');
+    expect(resolveWithinBase(absInside, '/work')).toBe(absInside);
+  });
+  it('returns null for escaping absolute paths, traversal, and missing base', () => {
     expect(resolveWithinBase('/etc/passwd', '/work')).toBeNull();
     expect(resolveWithinBase('../out.png', '/work')).toBeNull();
     expect(resolveWithinBase('a.png', undefined)).toBeNull();
