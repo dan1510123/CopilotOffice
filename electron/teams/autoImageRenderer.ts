@@ -1,7 +1,8 @@
 // Main-process helper that renders a markdown reply to a PNG by invoking the
-// existing skill renderer as a node child process (spec 018, FR-007). Isolated
-// from teamsService and fully injectable so the finalize hook stays testable and
-// the side effect is contained. See contracts/render-child-process.md.
+// app-owned renderer script (electron/teams/render-markdown-image.mjs) as a node
+// child process (spec 018, FR-007). Isolated from teamsService and fully
+// injectable so the finalize hook stays testable and the side effect is
+// contained. See contracts/render-child-process.md.
 //
 // This module NEVER throws: every failure path (renderer unavailable, spawn
 // ENOENT, non-zero exit, timeout, no sentinel) resolves to `{ ok: false, reason }`
@@ -41,27 +42,28 @@ export interface CreateAutoImageRendererOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/** Resolve the default renderer script path under the repo's skills folder. */
+/** Resolve the default renderer script path — the app-owned copy colocated in electron/teams. */
 function defaultRendererPath(): string {
-  // electron/teams/autoImageRenderer.ts → repo root is two levels up.
-  return path.resolve(
-    __dirname,
-    '..',
-    '..',
-    '.github',
-    'skills',
-    'office-image-teams-reply',
-    'render-markdown-image.mjs',
-  );
+  // At runtime this module is bundled to dist/electron/main.js, so __dirname is
+  // <repo>/dist/electron. The .mjs is NOT bundled (it is spawned as a child
+  // process), so resolve it from the source tree: repo root → electron/teams.
+  return path.resolve(__dirname, '..', '..', 'electron', 'teams', 'render-markdown-image.mjs');
 }
 
-/** Best-effort capability probe: renderer script exists AND its playwright dep resolves. */
+/**
+ * Best-effort capability probe: the renderer script exists AND its runtime deps
+ * (`playwright` + `marked`) resolve from the app's own node_modules. Both are
+ * declared in the root package.json, so Node finds them by walking up from the
+ * script's directory to the repo root.
+ */
 function defaultProbe(rendererPath: string): boolean {
   try {
     if (!fs.existsSync(rendererPath)) return false;
-    const skillDir = path.dirname(rendererPath);
-    const playwrightPkg = path.join(skillDir, 'node_modules', 'playwright', 'package.json');
-    return fs.existsSync(playwrightPkg);
+    // repo root is two levels up from dist/electron (matches defaultRendererPath).
+    const repoRoot = path.resolve(__dirname, '..', '..');
+    const playwrightPkg = path.join(repoRoot, 'node_modules', 'playwright', 'package.json');
+    const markedPkg = path.join(repoRoot, 'node_modules', 'marked', 'package.json');
+    return fs.existsSync(playwrightPkg) && fs.existsSync(markedPkg);
   } catch {
     return false;
   }
