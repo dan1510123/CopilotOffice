@@ -41,6 +41,18 @@ export interface CreateAutoImageRendererOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * Strip a single pair of wrapping quotes from a filesystem path. Some stored bindings
+ * carry a workingDir with literal surrounding double- (or single-) quotes, e.g.
+ * `"C:\\path\\to\\dir"`. Passed verbatim to path.resolve, the quoted string is treated as
+ * a relative segment appended to cwd, yielding an invalid path with embedded quotes (ENOENT
+ * on mkdir → exit 1). Callers that hand a workingDir to the renderer or to loadHostedImages
+ * MUST normalize through this first.
+ */
+export function stripWrappingQuotes(p: string): string {
+  return p.replace(/^"(.*)"$/s, '$1').replace(/^'(.*)'$/s, '$1');
+}
+
 /** Resolve the default renderer script path under the repo's skills folder. */
 function defaultRendererPath(): string {
   // electron/teams/autoImageRenderer.ts → repo root is two levels up.
@@ -98,6 +110,10 @@ export function createAutoImageRenderer(
         resolve(r);
       };
 
+      // Some stored bindings carry a workingDir with literal surrounding quotes; normalize
+      // so path.resolve in the renderer produces a valid cwd (see stripWrappingQuotes).
+      const cwd = stripWrappingQuotes(workingDir);
+
       let child: import('child_process').ChildProcess;
       try {
         // Use process.execPath (the running node/electron node) for a robust interpreter.
@@ -105,7 +121,7 @@ export function createAutoImageRenderer(
         // boots its argument as a GUI app (exiting non-zero, e.g. code 2) instead of running
         // it as Node. ELECTRON_RUN_AS_NODE=1 makes electron.exe behave as a plain Node runtime
         // so the .mjs renderer executes correctly. Harmless when execPath is already node.
-        child = spawnFn(process.execPath, [rendererPath, '--cwd', workingDir], {
+        child = spawnFn(process.execPath, [rendererPath, '--cwd', cwd], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         });
@@ -143,8 +159,9 @@ export function createAutoImageRenderer(
       child.on('close', (code: number | null) => {
         clearTimeout(timer);
         if (code !== 0) {
-          if (stderr.trim()) warn(`autoImageRenderer: renderer stderr: ${stderr.trim()}`);
-          done({ ok: false, reason: `exit-${code}` });
+          const errTail = stderr.trim();
+          if (errTail) warn(`autoImageRenderer: renderer stderr: ${errTail}`);
+          done({ ok: false, reason: errTail ? `exit-${code}: ${errTail.slice(-300)}` : `exit-${code}` });
           return;
         }
         // Fresh, non-shared regex — parse stdout for a valid sentinel with a non-empty path.
