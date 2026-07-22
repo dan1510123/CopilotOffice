@@ -20,6 +20,19 @@ const settings: TeamsSettings = {
   checkInThrottleMs: 60000,
 };
 
+/**
+ * Poll `predicate` every 5ms until it is true or `timeoutMs` elapses. Replaces
+ * fixed `setTimeout` waits for assertions that depend on an async post completing,
+ * so the test is deterministic regardless of CPU scheduling under a full parallel run.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 function makeHarness() {
   const store = new InMemoryTeamsOnlineStore();
   const tokens: TokenProvider = { getToken: async () => 'fake' };
@@ -272,9 +285,12 @@ describe('teams online round-trip (US1)', () => {
 
     h.agent()({ agentId: 'generalist', kind: 'message', content: `Here is your export:\n<!--office-file:${rel}-->` });
     h.agent()({ agentId: 'generalist', kind: 'turn-end' });
-    await new Promise((r) => setTimeout(r, 40));
 
-    const calls = (h.graph.replyToThread as unknown as { mock: { calls: Array<[{ html: string; attachments?: Array<{ name: string; contentType: string; bytes: Buffer }> }]> } }).mock.calls;
+    const replyMock = h.graph.replyToThread as unknown as { mock: { calls: Array<[{ html: string; attachments?: Array<{ name: string; contentType: string; bytes: Buffer }> }]> } };
+    // Wait until the raw-upload reply has actually been posted (deterministic under load).
+    await waitFor(() => replyMock.mock.calls.some((c) => (c[0].attachments?.length ?? 0) > 0));
+
+    const calls = replyMock.mock.calls;
     // The sentinel comment never reaches Teams (stripped from every posted html).
     expect(calls.every((c) => !c[0].html.includes('<!--office-file:'))).toBe(true);
     // Exactly one reply carries the raw file attachment with basename + inferred type.

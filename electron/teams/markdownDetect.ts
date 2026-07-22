@@ -49,11 +49,14 @@ export function hasBlockStructure(text: string): boolean {
   // Blockquote: `^>\s`.
   if (lines.some((l) => /^\s*>\s/.test(l))) return true;
 
-  // Pipe table: a `|...|` row immediately followed by a delimiter row.
+  // Pipe table: a `|...|` row immediately followed by a delimiter row. The delimiter
+  // row must itself contain a `|` (so a bare `---` thematic break is NOT mistaken for a
+  // delimiter), which also lets a single-column table (`| h |` / `|---|`) qualify.
   const pipeRow = /^\s*\|?.*\|.*$/;
-  const delimRow = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
+  const delimRow = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/;
   for (let i = 0; i < lines.length - 1; i++) {
-    if (delimRow.test(lines[i + 1]) && lines[i].includes('|') && pipeRow.test(lines[i])) {
+    const next = lines[i + 1];
+    if (next.includes('|') && delimRow.test(next) && lines[i].includes('|') && pipeRow.test(lines[i])) {
       return true;
     }
   }

@@ -39,6 +39,14 @@ describe('hasBlockStructure — positive block constructs', () => {
     expect(hasBlockStructure('| A | B |\n|:---|---:|\n| 1 | 2 |')).toBe(true);
   });
 
+  it('detects a single-column pipe table', () => {
+    expect(hasBlockStructure('| Header |\n| --- |\n| value |')).toBe(true);
+  });
+
+  it('detects a pipe table without outer pipes', () => {
+    expect(hasBlockStructure('A | B\n---|---\n1 | 2')).toBe(true);
+  });
+
   it('detects an ATX heading', () => {
     expect(hasBlockStructure('# Title\nsome text')).toBe(true);
     expect(hasBlockStructure('###### h6\ntext')).toBe(true);
@@ -92,6 +100,12 @@ describe('hasBlockStructure — negatives (must NOT count)', () => {
 
   it('a pipe row without a delimiter row does not count', () => {
     expect(hasBlockStructure('| A | B |\n| 1 | 2 |')).toBe(false);
+  });
+
+  it('a bare dashed delimiter without pipes is not a single-column table', () => {
+    // `---|---` is not a setext underline (has a pipe), and the preceding line has no
+    // pipe, so the loosened single-column delimiter must not false-trigger a table.
+    expect(hasBlockStructure('plain prose line\n---|---')).toBe(false);
   });
 
   it('empty / whitespace-only does not count', () => {

@@ -30,12 +30,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 function parseArgs(argv) {
-  const args = { cwd: process.cwd(), input: null, outDir: '.office-images', visible: false };
+  const args = { cwd: process.cwd(), input: null, outDir: '.office-images', visible: false, timeout: 25_000 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--cwd') args.cwd = argv[++i];
     else if (a === '--input') args.input = argv[++i];
     else if (a === '--out-dir') args.outDir = argv[++i];
+    else if (a === '--timeout') args.timeout = Math.max(0, parseInt(argv[++i], 10) || 0);
     else if (a === '--visible') args.visible = true;
   }
   return args;
@@ -71,8 +72,41 @@ function pageHtml(bodyHtml) {
   </style></head><body>${bodyHtml}</body></html>`;
 }
 
+// The live browser handle, tracked at module scope so the SIGTERM handler and the
+// internal watchdog can always tear it down — even mid-render — so this process never
+// leaves an orphaned Chromium behind when the parent times out and terminates it.
+let browser = null;
+
+async function closeBrowserQuietly() {
+  const b = browser;
+  browser = null;
+  try {
+    if (b) await b.close();
+  } catch {
+    /* best effort */
+  }
+}
+
+// Parent (autoImageRenderer) sends SIGTERM on timeout; close our browser then exit so
+// no chrome.exe is orphaned. (A subsequent SIGKILL from the parent is a harmless backstop.)
+process.on('SIGTERM', () => {
+  closeBrowserQuietly().finally(() => process.exit(1));
+});
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  // Self-watchdog: if the render outlives our own budget (e.g. Chromium wedged), close the
+  // browser and exit BEFORE the parent has to force-kill — the primary orphan-prevention path.
+  let watchdog = null;
+  if (args.timeout > 0) {
+    watchdog = setTimeout(() => {
+      console.error(`office-image-reply: internal timeout after ${args.timeout}ms — aborting.`);
+      closeBrowserQuietly().finally(() => process.exit(1));
+    }, args.timeout);
+    watchdog.unref?.();
+  }
+
   const md = args.input ? fs.readFileSync(args.input, 'utf8') : await readStdin();
   if (!md.trim()) {
     console.error('office-image-reply: no markdown provided (use --input <file> or pipe via stdin).');
@@ -85,15 +119,20 @@ async function main() {
   const fileName = `reply-${stamp}.png`;
   const outAbs = path.join(outDirAbs, fileName);
 
+  // Bound every Playwright step slightly UNDER the watchdog budget so Playwright's own
+  // timeout (which tears down the browser it spawned) fires first on a hang — the abrupt
+  // watchdog exit then only ever acts as a last-resort backstop.
+  const pwTimeout = args.timeout > 0 ? Math.max(1000, args.timeout - 1000) : 25_000;
   const bodyHtml = marked.parse(md);
-  const browser = await chromium.launch();
+  browser = await chromium.launch({ timeout: pwTimeout });
   try {
     const page = await browser.newPage({ deviceScaleFactor: 2 });
-    await page.setContent(pageHtml(bodyHtml), { waitUntil: 'networkidle' });
+    await page.setContent(pageHtml(bodyHtml), { waitUntil: 'networkidle', timeout: pwTimeout });
     const el = await page.$('body');
     await el.screenshot({ type: 'png', path: outAbs });
   } finally {
-    await browser.close();
+    await closeBrowserQuietly();
+    if (watchdog) clearTimeout(watchdog);
   }
 
   // Relative POSIX-style path for the sentinel (CopilotOffice resolves it against workingDir).
@@ -107,5 +146,5 @@ async function main() {
 
 main().catch((e) => {
   console.error('office-image-reply: render failed:', e?.message ?? e);
-  process.exit(1);
+  closeBrowserQuietly().finally(() => process.exit(1));
 });

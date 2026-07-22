@@ -22,14 +22,14 @@ export interface AutoRenderResult {
 }
 
 export interface AutoImageRenderer {
-  /** True iff the skill renderer + its playwright dependency are resolvable (R1 pre-check). */
+  /** True iff the app-owned renderer script + `marked` + an installed Chromium binary are resolvable (R1 pre-check). */
   isAvailable(): boolean;
   /** Render `markdown` to a PNG under `workingDir/.office-images`; return its sentinel. */
   render(markdown: string, workingDir: string): Promise<AutoRenderResult>;
 }
 
 export interface CreateAutoImageRendererOptions {
-  /** Absolute path to render-markdown-image.mjs (default: resolve under .github/skills/...). */
+  /** Absolute path to render-markdown-image.mjs (default: the app-owned copy in electron/teams). */
   rendererPath?: string;
   /** Bounded render timeout in ms (default 30000). */
   timeoutMs?: number;
@@ -94,12 +94,15 @@ export function createAutoImageRenderer(
   let cachedAvailable: boolean | null = null;
 
   function isAvailable(): boolean {
-    if (cachedAvailable === null) {
-      try {
-        cachedAvailable = probe();
-      } catch {
-        cachedAvailable = false;
-      }
+    // Memoize only a positive result (the browser binary won't vanish mid-session).
+    // A negative result is re-probed on each call — cheap fs checks — so a Chromium
+    // install performed AFTER app start (`npx playwright install`) is picked up
+    // without requiring a restart.
+    if (cachedAvailable === true) return true;
+    try {
+      cachedAvailable = probe();
+    } catch {
+      cachedAvailable = false;
     }
     return cachedAvailable;
   }
@@ -124,7 +127,13 @@ export function createAutoImageRenderer(
         // boots its argument as a GUI app (exiting non-zero, e.g. code 2) instead of running
         // it as Node. ELECTRON_RUN_AS_NODE=1 makes electron.exe behave as a plain Node runtime
         // so the .mjs renderer executes correctly. Harmless when execPath is already node.
-        child = spawnFn(process.execPath, [rendererPath, '--cwd', cwd], {
+        //
+        // --timeout gives the child its OWN watchdog (a few seconds shorter than the parent
+        // budget) so it closes its Chromium browser and exits cleanly BEFORE the parent has to
+        // force-kill — preventing an orphaned chrome.exe when a render hangs (the parent's
+        // SIGKILL would otherwise skip the .mjs's `browser.close()`).
+        const childTimeoutMs = Math.max(1000, timeoutMs - 2000);
+        child = spawnFn(process.execPath, [rendererPath, '--cwd', cwd, '--timeout', String(childTimeoutMs)], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         });
@@ -137,12 +146,24 @@ export function createAutoImageRenderer(
       let stdout = '';
       let stderr = '';
       const timer = setTimeout(() => {
-        warn(`autoImageRenderer: render timed out after ${timeoutMs}ms — killing child.`);
+        warn(`autoImageRenderer: render timed out after ${timeoutMs}ms — terminating child.`);
+        // Graceful SIGTERM first: the .mjs handles it by closing its Chromium browser (no
+        // orphaned process), then a short grace period before SIGKILL guarantees the child
+        // dies even if it ignored SIGTERM. The grace timer is unref'd so it never keeps the
+        // event loop alive; a SIGKILL to an already-exited child is a harmless no-op.
         try {
-          child.kill('SIGKILL');
+          child.kill('SIGTERM');
         } catch {
           /* ignore */
         }
+        const graceKill = setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* ignore */
+          }
+        }, 2000);
+        if (typeof graceKill.unref === 'function') graceKill.unref();
         done({ ok: false, reason: 'timeout' });
       }, timeoutMs);
 
