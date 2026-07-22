@@ -38,10 +38,11 @@ export interface TeamsSettings {
   /** Minimum interval (ms) between check-ins. */
   checkInThrottleMs: number;
   /**
-   * Opt-in gate (default OFF) for auto-rendering a qualifying markdown reply as an inline
-   * Teams image at idle-finalize (spec 018, FR-010). When false the whole auto-render path
-   * is inert — replies post as plain text exactly as before. Absent in older settings files
-   * ⇒ normalizes to false (backward compatible).
+   * Gate for the spec-018 auto-render feature (FR-010): when ON, a qualifying markdown
+   * reply is posted as an inline Teams image IN PLACE OF its plain text (replace-with-
+   * fallback — the original text is posted only if the render or its send fails). When
+   * false the whole auto-render path is inert and replies post as plain text. Defaults ON;
+   * absent in older settings files ⇒ inherits the default (true).
    */
   autoRenderMarkdownImages: boolean;
 }

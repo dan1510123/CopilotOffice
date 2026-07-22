@@ -86,7 +86,8 @@ export interface TeamsServiceDeps {
   /**
    * Optional child-process markdown→image renderer for the spec-018 auto-render feature.
    * Injected in tests; defaults to {@link createAutoImageRenderer} in production. The whole
-   * auto-render path is additionally gated OFF by {@link TeamsSettings.autoRenderMarkdownImages}.
+   * auto-render path is additionally gated by {@link TeamsSettings.autoRenderMarkdownImages}
+   * (default ON).
    */
   autoRenderer?: AutoImageRenderer;
   /** Emit a per-agent status change to the renderer. */
