@@ -420,7 +420,7 @@ export class TeamsService {
     }
 
     const subject = sessionTitle ? `${displayName}: ${sessionTitle}` : `${displayName}: ${handle}`;
-    const introHtml = this.buildIntro({ displayName, workingDir }, handle, sessionTitle);
+    const introHtml = this.buildIntro({ displayName, workingDir }, handle, sessionTitle, sessionId);
 
     let thread: { threadRootId: string; webUrl: string };
     try {
@@ -1640,7 +1640,7 @@ export class TeamsService {
 
   // ── Helpers ──────────────────────────────────────────────────
 
-  private buildIntro(info: AgentInfo, handle: string, sessionTitle: string): string {
+  private buildIntro(info: AgentInfo, handle: string, sessionTitle: string, sessionId: string): string {
     const lines = [
       `<p>🟢 <b>${escapeHtml(info.displayName)}</b> is now online via Copilot Office.</p>`,
       `<p>Reply in this thread to talk to the agent. Send <code>/stop</code> to take it offline.</p>`,
@@ -1650,6 +1650,7 @@ export class TeamsService {
     ];
     if (sessionTitle) lines.push(`<li><b>Session:</b> ${escapeHtml(sessionTitle)}</li>`);
     lines.push(`</ul>`);
+    if (sessionId) lines.push(`<p><i>Session ID:</i> <code>${escapeHtml(sessionId)}</code></p>`);
     return lines.join('');
   }
 

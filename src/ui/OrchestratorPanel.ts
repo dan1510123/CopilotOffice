@@ -550,14 +550,14 @@ export class OrchestratorPanel {
         break;
     }
   }
-  private showPermission(payload: { toolCallId: string; toolName?: string; args: { agentId?: string; agentName?: string; online?: boolean; reason?: string } }): void {
+  private showPermission(payload: { toolCallId: string; toolName?: string; args: { agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string } }): void {
     this.pending = { toolCallId: payload.toolCallId, agentId: payload.args.agentId };
     this.permissionCard?.remove();
 
     const name = payload.args.agentName ?? resolveAgentName(payload.args.agentId);
     const summary = describeOrchestratorPermission(
       payload.toolName ?? 'bring_agent_online',
-      { agentId: payload.args.agentId, online: payload.args.online },
+      { agentId: payload.args.agentId, online: payload.args.online, title: payload.args.title },
       name,
     );
     const card = document.createElement('div');

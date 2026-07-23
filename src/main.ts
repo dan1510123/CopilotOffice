@@ -21,7 +21,7 @@ import { OrchestratorPanel } from './ui/OrchestratorPanel';
 import { computeBringOnlineCandidates } from './office/orchestratorCandidates';
 import { executeBringOnline } from './office/orchestratorExecute';
 import { computeOfficeSummaries, resolveSwitchOffice } from './office/orchestratorOffices';
-import { computeActiveAgents, computeAwaitingAgents } from './office/orchestratorStatus';
+import { computeActiveAgents, computeAwaitingAgents, computeAgentStatusLookup } from './office/orchestratorStatus';
 import { computeAgentRecentOutput } from './office/orchestratorPeek';
 import {
   setPendingAskUser,
@@ -34,6 +34,7 @@ import {
   stopAgent,
   restartAgent,
   setAgentTeamsPresence,
+  setAgentTitle,
   type ActOnDeps,
 } from './office/orchestratorActOn';
 import type { BringOnlineOutcome } from '../electron/orchestrator/types';
@@ -1964,6 +1965,36 @@ function registerOrchestratorSpec017Resolvers(): void {
     void bridge.orchestratorRespondAgentOutput(requestId, computeAgentRecentOutput(agentId, officeId));
   });
 
+  // ── get_agent_status: cheap single-agent lookup + Teams presence ───────────
+  bridge.onOrchestratorAgentStatusRequest(({ requestId, agent, officeId }) => {
+    void (async () => {
+      const lookup = computeAgentStatusLookup(agent, officeId);
+      if (lookup.outcome === 'found' && lookup.agent) {
+        try {
+          const settings = await window.copilotBridge.teamsGetSettings?.();
+          const enabled = !!(settings?.success && (settings.settings as { enabled?: boolean })?.enabled);
+          let online = false;
+          let threadWebUrl: string | undefined;
+          if (enabled) {
+            const status = await window.copilotBridge.teamsStatus({
+              officeId: lookup.agent.officeId,
+              agentId: lookup.agent.agentId,
+            });
+            const binding = status?.bindings?.find(
+              (b) => b.agentId === lookup.agent!.agentId && b.officeId === lookup.agent!.officeId,
+            );
+            online = !!binding?.online;
+            threadWebUrl = binding?.threadWebUrl;
+          }
+          lookup.teams = { enabled, online, ...(threadWebUrl ? { threadWebUrl } : {}) };
+        } catch {
+          lookup.teams = { enabled: false, online: false };
+        }
+      }
+      await bridge.orchestratorRespondAgentStatus(requestId, lookup);
+    })();
+  });
+
   // ── Shared act-on deps (reuse sanctioned per-agent session ops) ────────────
   const actOnDeps: ActOnDeps = {
     ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
@@ -2034,6 +2065,10 @@ function registerOrchestratorSpec017Resolvers(): void {
       const res = await window.copilotBridge.teamsStop({ officeId, agentId });
       return res?.success !== false;
     },
+    setTitle: async (officeId, agentId, title) => {
+      const res = await window.copilotBridge.setSessionMeta(officeId, agentId, { title });
+      return res?.success !== false;
+    },
   };
 
   // ── US4: answer_agent (gated — emitted only after approval) ────────────────
@@ -2071,6 +2106,14 @@ function registerOrchestratorSpec017Resolvers(): void {
     void (async () => {
       const result = await setAgentTeamsPresence({ agentId, officeId, online }, actOnDeps);
       void bridge.orchestratorRespondTeamsPresence(requestId, result);
+    })();
+  });
+
+  // ── set_agent_title (gated) ────────────────────────────────────────────────
+  bridge.onOrchestratorSetTitleRequest(({ requestId, agentId, officeId, title }) => {
+    void (async () => {
+      const result = await setAgentTitle({ agentId, officeId, title }, actOnDeps);
+      void bridge.orchestratorRespondSetTitle(requestId, result);
     })();
   });
 }

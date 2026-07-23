@@ -42,6 +42,7 @@ function deps(overrides: Partial<ActOnDeps> = {}): ActOnDeps {
     teamsEnabled: vi.fn().mockResolvedValue(true),
     teamsRegister: vi.fn().mockResolvedValue({ success: true, threadWebUrl: 'https://teams/x' }),
     teamsStop: vi.fn().mockResolvedValue(true),
+    setTitle: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
 }
@@ -67,6 +68,31 @@ describe('setAgentTeamsPresence', () => {
     const res = await setAgentTeamsPresence({ agentId: 'coder', online: false }, d);
     expect(res.outcome).toBe('taken-offline');
     expect(d.teamsStop).toHaveBeenCalledWith('o1', 'coder');
+  });
+
+  it('auto-warms a dormant agent before Teams registration (bring-up + online in one call)', async () => {
+    seat('o1', 'coder', status({ agentId: 'coder', state: 'slacking' }));
+    const d = deps();
+    const res = await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
+    expect(res.outcome).toBe('online-in-teams');
+    expect(d.ensureOnline).toHaveBeenCalledWith('o1', 'coder');
+    expect(d.teamsRegister).toHaveBeenCalledWith('o1', 'coder');
+  });
+
+  it('does not auto-warm an already-online agent', async () => {
+    seat('o1', 'coder', status({ agentId: 'coder' }));
+    const d = deps();
+    await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
+    expect(d.ensureOnline).not.toHaveBeenCalled();
+    expect(d.teamsRegister).toHaveBeenCalledWith('o1', 'coder');
+  });
+
+  it('fails without registering when the auto-warm cannot bring the agent up', async () => {
+    seat('o1', 'coder', status({ agentId: 'coder', state: 'slacking' }));
+    const d = deps({ ensureOnline: vi.fn().mockResolvedValue(false) });
+    const res = await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
+    expect(res.outcome).toBe('failed');
+    expect(d.teamsRegister).not.toHaveBeenCalled();
   });
 
   it('returns unavailable when the Teams feature is disabled', async () => {

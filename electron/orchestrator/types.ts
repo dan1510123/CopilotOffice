@@ -146,6 +146,45 @@ export interface ActiveAgentSnapshot {
  */
 export type AwaitingAgent = ActiveAgentSnapshot;
 
+// ── Single-agent status lookup (get_agent_status) ─────────────────────────────
+
+/** Teams presence for one agent, resolved from the Teams bridge. */
+export interface AgentTeamsPresence {
+  /** Teams feature flag on? */
+  enabled: boolean;
+  /** This agent currently bound to a Teams thread? */
+  online: boolean;
+  /** Deep link to the agent's Teams thread when online. */
+  threadWebUrl?: string;
+}
+
+/** One disambiguation choice when a name/id resolves to more than one agent. */
+export interface AgentLookupMatch {
+  agentId: string;
+  name: string;
+  officeId: string;
+  officeName: string;
+}
+
+/**
+ * Result of the cheap single-agent `get_agent_status` lookup: resolves ONE agent
+ * by fuzzy name or agentId and reports its session status + Teams presence,
+ * without enumerating every agent across every office.
+ */
+export interface AgentStatusLookup {
+  /** The raw name/id that was searched for. */
+  query: string;
+  outcome: 'found' | 'ambiguous' | 'not-found';
+  /** Present when `outcome === 'found'`. `hasSession` is false for a known-but-dormant agent. */
+  agent?: ActiveAgentSnapshot & { hasSession: boolean };
+  /** Present when `outcome === 'found'` (even if the agent has no live session). */
+  teams?: AgentTeamsPresence;
+  /** Present when `outcome === 'ambiguous'`: the competing matches to disambiguate. */
+  matches?: AgentLookupMatch[];
+  /** Human-readable summary for the model to relay. */
+  message: string;
+}
+
 // ── US7: Agent recent-output window (FR-011, FR-012) ──────────────────────────
 
 /** Bounded, read-only recent output for one target agent (peek). */
@@ -170,6 +209,7 @@ export type ActOnOutcome =
   | 'restarted' // restart_agent success
   | 'taken-offline' // set_agent_teams_presence off / stop_agent variant
   | 'online-in-teams' // set_agent_teams_presence on
+  | 'title-set' // set_agent_title success
   | 'not-online' // target not online (send/answer/stop/restart/teams)
   | 'not-waiting' // answer_agent: target isn't awaiting input
   | 'invalid-target' // unknown/ineligible/orchestrator-identity/wrong-office

@@ -101,6 +101,9 @@ describe('teams online round-trip (US1)', () => {
     expect(reg.success).toBe(true);
     expect(reg.handle).toBe('gene');
     expect(h.graph.createThread).toHaveBeenCalledOnce();
+    // The intro (thread root) includes the runtime session id for later reference.
+    expect((h.graph.createThread as unknown as { mock: { calls: Array<[{ html: string }]> } }).mock.calls[0][0].html)
+      .toContain('session-1');
 
     // A human replies in the bound thread.
     h.inbound()({

@@ -22,6 +22,7 @@ import type {
   ActiveAgentSnapshot,
   ActOnResult,
   AgentRecentOutput,
+  AgentStatusLookup,
   AwaitingAgent,
   BringOnlineCandidate,
   BringOnlineResult,
@@ -48,6 +49,7 @@ const ACT_ON_TOOLS = new Set([
   'stop_agent',
   'restart_agent',
   'set_agent_teams_presence',
+  'set_agent_title',
 ]);
 
 /** Union of all gated tool names (baseline bring_agent_online + act-on tools). */
@@ -96,17 +98,33 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '- For "what did X just do / summarize what X is doing", call `get_agent_transcript`',
   '  with that agent\'s `agentId` (and `officeId` if you know it). It returns a bounded,',
   '  read-only window of recent output; if there is nothing recent, say so.',
+  '- When the user asks about ONE specific agent by name or id ("is Olivia online?", "is',
+  '  Dan on Teams?"), prefer `get_agent_status` ({ agent }) over `get_active_agents` — it',
+  '  is cheaper and resolves a fuzzy name, returning that one agent\'s session status AND',
+  '  Teams presence (online + thread link). If it returns outcome:"ambiguous", ask the',
+  '  user which of the listed matches they mean.',
   '- To unblock a waiting agent with the user\'s answer, call `answer_agent`',
   '  ({ agentId, answer }). To hand an already-online agent a follow-up task, call',
   '  `send_prompt_to_agent` ({ agentId, prompt }). To stop / take an agent offline call',
   '  `stop_agent`, to restart it call `restart_agent`, and to bring it online in Teams (or',
-  '  take it offline there) call `set_agent_teams_presence` ({ agentId, online }). If Teams',
-  '  is disabled the tool will say so — relay that to the user.',
-  '- Every act-on tool (answer/send/stop/restart/teams-presence) is ALWAYS gated: the user',
-  '  must approve before it takes effect, so state your pick and target clearly. Only ever',
-  '  use an `agentId`/`officeId` returned by a discovery/status tool — never invent one. If',
-  '  a tool reports a typed outcome like `not-online`, `not-waiting`, or `invalid-target`,',
-  '  relay it plainly and suggest the sensible next step.',
+  '  take it offline there) call `set_agent_teams_presence` ({ agentId, online }). Bringing',
+  '  an agent online in Teams automatically starts its session first if it is not up yet —',
+  '  you do NOT need a separate step. To rename an agent\'s session title call',
+  '  `set_agent_title` ({ agentId, title }). If Teams is disabled the presence tool will',
+  '  say so — relay that to the user.',
+  '- Every act-on tool (answer/send/stop/restart/teams-presence/title) is ALWAYS gated: the',
+  '  user must approve before it takes effect, so state your pick and target clearly. Only',
+  '  ever use an `agentId`/`officeId` returned by a discovery/status tool — never invent',
+  '  one. If a tool reports a typed outcome like `not-online`, `not-waiting`, or',
+  '  `invalid-target`, relay it plainly and suggest the sensible next step.',
+  '- NEVER claim an agent lacks a session, is not online, or is not connected to Teams from',
+  '  memory or assumption. Before saying an action "failed" or "can\'t be done" because of',
+  '  the agent\'s state, you MUST first confirm its current state — use `get_agent_status`',
+  '  for a single named agent (or `get_active_agents` / `list_office_agents` when you need',
+  '  the full picture) — then attempt the actual tool call (`send_prompt_to_agent`,',
+  '  `set_agent_teams_presence`, etc.) and report its real, typed result. Only tell the',
+  '  user to act manually (e.g. "open the terminal yourself") after a tool call has',
+  '  actually failed with an outcome like `not-online`.',
 ].join('\n');
 
 /** Emitters the manager uses to push to the renderer (wired by orchestratorIpc). */
@@ -123,6 +141,7 @@ export interface OrchestratorEmitter {
       answer?: string;
       prompt?: string;
       online?: boolean;
+      title?: string;
       reason?: string;
     };
   }): void;
@@ -137,6 +156,12 @@ export interface OrchestratorEmitter {
     sessionId: string;
     requestId: string;
     agentId: string;
+    officeId?: string;
+  }): void;
+  emitAgentStatusRequest?(payload: {
+    sessionId: string;
+    requestId: string;
+    agent: string;
     officeId?: string;
   }): void;
   emitAnswerAgentRequest?(payload: {
@@ -172,6 +197,13 @@ export interface OrchestratorEmitter {
     officeId?: string;
     online: boolean;
   }): void;
+  emitSetTitleRequest?(payload: {
+    sessionId: string;
+    requestId: string;
+    agentId: string;
+    officeId?: string;
+    title: string;
+  }): void;
   emitExit(payload: { sessionId: string; reason: string }): void;
 }
 
@@ -199,6 +231,7 @@ export class OrchestratorSessionManager {
   private readonly pendingActiveAgents = new Map<string, (agents: ActiveAgentSnapshot[]) => void>();
   private readonly pendingAwaitingAgents = new Map<string, (agents: AwaitingAgent[]) => void>();
   private readonly pendingAgentOutput = new Map<string, (output: AgentRecentOutput) => void>();
+  private readonly pendingAgentStatus = new Map<string, (lookup: AgentStatusLookup) => void>();
   private readonly pendingActOn = new Map<string, (result: ActOnResult) => void>();
 
   /** agentId → resolved display name (office-custom aware), populated by read tools. */
@@ -214,7 +247,7 @@ export class OrchestratorSessionManager {
   // signals the IPC emitter pushes to the renderer, without a second SDK session.
   private readonly eventListeners = new Set<(event: CopilotEvent) => void>();
   private readonly permissionListeners = new Set<
-    (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; reason?: string }) => void
+    (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string }) => void
   >();
   private readonly exitListeners = new Set<(reason: string) => void>();
 
@@ -240,7 +273,7 @@ export class OrchestratorSessionManager {
 
   /** Subscribe to gated tool-approval requests (the always-on permission gate). */
   onPermissionRequested(
-    cb: (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; reason?: string }) => void,
+    cb: (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string }) => void,
   ): () => void {
     this.permissionListeners.add(cb);
     return () => this.permissionListeners.delete(cb);
@@ -372,11 +405,13 @@ export class OrchestratorSessionManager {
       requestActiveAgents: async () => this.cacheAgentNames(await this.requestActiveAgents()),
       requestAwaitingAgents: async () => this.cacheAgentNames(await this.requestAwaitingAgents()),
       requestAgentOutput: (agentId, officeId) => this.requestAgentOutput(agentId, officeId),
+      requestAgentStatus: (agent, officeId) => this.requestAgentStatus(agent, officeId),
       requestAnswerAgent: (a) => this.requestActOn('answer_agent', a),
       requestSendPrompt: (a) => this.requestActOn('send_prompt_to_agent', a),
       requestStopAgent: (a) => this.requestActOn('stop_agent', a),
       requestRestartAgent: (a) => this.requestActOn('restart_agent', a),
       requestTeamsPresence: (a) => this.requestActOn('set_agent_teams_presence', a),
+      requestSetTitle: (a) => this.requestActOn('set_agent_title', a),
     });
 
     this.session = await this.client.createSession({
@@ -553,6 +588,10 @@ export class OrchestratorSessionManager {
       resolve({ agentId: '', officeId: '', hasOutput: false, lines: [] });
     }
     this.pendingAgentOutput.clear();
+    for (const [, resolve] of this.pendingAgentStatus) {
+      resolve({ query: '', outcome: 'not-found', message: ended });
+    }
+    this.pendingAgentStatus.clear();
     for (const [, resolve] of this.pendingActOn) {
       resolve({ agentId: '', officeId: '', outcome: 'failed', message: ended });
     }
@@ -573,6 +612,7 @@ export class OrchestratorSessionManager {
         answer?: string;
         prompt?: string;
         online?: boolean;
+        title?: string;
         reason?: string;
       };
       const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
@@ -601,11 +641,12 @@ export class OrchestratorSessionManager {
             answer: args.answer,
             prompt: args.prompt,
             online: args.online,
+            title: args.title,
             reason: args.reason,
           },
         });
         for (const cb of this.permissionListeners) {
-          cb({ toolCallId, toolName, agentId: args.agentId, agentName, online: args.online, reason: args.reason });
+          cb({ toolCallId, toolName, agentId: args.agentId, agentName, online: args.online, title: args.title, reason: args.reason });
         }
       });
     }
@@ -758,13 +799,30 @@ export class OrchestratorSessionManager {
     return true;
   }
 
+  private requestAgentStatus(agent: string, officeId?: string): Promise<AgentStatusLookup> {
+    const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
+    const requestId = randomUUID();
+    return new Promise<AgentStatusLookup>((resolve) => {
+      this.pendingAgentStatus.set(requestId, resolve);
+      this.emitter.emitAgentStatusRequest?.({ sessionId, requestId, agent, officeId });
+    });
+  }
+
+  respondAgentStatus(requestId: string, lookup: AgentStatusLookup): boolean {
+    const resolve = this.pendingAgentStatus.get(requestId);
+    if (!resolve) return false;
+    this.pendingAgentStatus.delete(requestId);
+    resolve(lookup);
+    return true;
+  }
+
   // ── spec 017: gated act-on round-trips ─────────────────────────────────────
   // A single map keyed by requestId serves all act-on tools; the tool name is
   // captured in the closure so the outcome can be recorded to the transcript.
 
   private requestActOn(
     toolName: string,
-    args: { agentId: string; officeId?: string; answer?: string; prompt?: string; online?: boolean },
+    args: { agentId: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; title?: string },
   ): Promise<ActOnResult> {
     // Reached only AFTER the permission gate approves (the SDK will not invoke the
     // tool handler on denial). Emit the matching request channel.
@@ -821,6 +879,15 @@ export class OrchestratorSessionManager {
             agentId: args.agentId,
             officeId: args.officeId,
             online: args.online ?? false,
+          });
+          break;
+        case 'set_agent_title':
+          this.emitter.emitSetTitleRequest?.({
+            sessionId,
+            requestId,
+            agentId: args.agentId,
+            officeId: args.officeId,
+            title: args.title ?? '',
           });
           break;
         default:

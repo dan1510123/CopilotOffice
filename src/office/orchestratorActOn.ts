@@ -46,6 +46,8 @@ export interface ActOnDeps {
   ) => Promise<{ success: boolean; threadWebUrl?: string; error?: string }>;
   /** Take the target offline in Teams (teams:stop; posts the closing notice). */
   teamsStop: (officeId: string, agentId: string) => Promise<boolean>;
+  /** Set the target's session title (setSessionMeta); resolves true on success. */
+  setTitle: (officeId: string, agentId: string, title: string) => Promise<boolean>;
 }
 
 interface ResolvedTarget {
@@ -222,6 +224,20 @@ export async function setAgentTeamsPresence(
       };
     }
     if (args.online) {
+      // Auto-warm: TeamsService.registerAgent requires a live session (it fails
+      // with "Open its terminal first" otherwise). If the target has no session,
+      // bring it up first so a single approval covers "bring up + go online".
+      if (!resolved.online) {
+        const up = await deps.ensureOnline(officeId, args.agentId);
+        if (!up) {
+          return {
+            agentId: args.agentId,
+            officeId,
+            outcome: 'failed',
+            message: `Could not bring ${args.agentId} up before Teams registration.`,
+          };
+        }
+      }
       const res = await deps.teamsRegister(officeId, args.agentId);
       if (res.success) {
         return {
@@ -253,6 +269,34 @@ export async function setAgentTeamsPresence(
           outcome: 'failed',
           message: `Failed to take ${args.agentId} offline in Teams.`,
         };
+  } catch (err) {
+    return failed(args.agentId, officeId, err);
+  }
+}
+
+// ── set an agent's session title ─────────────────────────────────────────────
+
+export async function setAgentTitle(
+  args: { agentId: string; officeId?: string; title: string },
+  deps: ActOnDeps,
+): Promise<ActOnResult> {
+  const resolved = resolveTarget(args.agentId, args.officeId);
+  if (!resolved) return invalidTarget(args.agentId, args.officeId);
+  const { officeId } = resolved;
+  const title = (args.title ?? '').trim();
+  if (!title) {
+    return {
+      agentId: args.agentId,
+      officeId,
+      outcome: 'invalid-target',
+      message: 'A non-empty title is required.',
+    };
+  }
+  try {
+    const ok = await deps.setTitle(officeId, args.agentId, title);
+    return ok
+      ? { agentId: args.agentId, officeId, outcome: 'title-set', message: `${args.agentId} title set to "${title}".` }
+      : { agentId: args.agentId, officeId, outcome: 'failed', message: `Failed to set the title for ${args.agentId}.` };
   } catch (err) {
     return failed(args.agentId, officeId, err);
   }

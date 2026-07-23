@@ -13,6 +13,7 @@ import type {
   ActiveAgentSnapshot,
   ActOnResult,
   AgentRecentOutput,
+  AgentStatusLookup,
   AwaitingAgent,
   BringOnlineCandidate,
   BringOnlineResult,
@@ -31,12 +32,15 @@ export interface OrchestratorToolDeps {
   requestActiveAgents: () => Promise<ActiveAgentSnapshot[]>;
   requestAwaitingAgents: () => Promise<AwaitingAgent[]>;
   requestAgentOutput: (agentId: string, officeId?: string) => Promise<AgentRecentOutput>;
+  /** Cheap single-agent status + Teams presence lookup by fuzzy name or agentId. */
+  requestAgentStatus: (agent: string, officeId?: string) => Promise<AgentStatusLookup>;
   // ── spec 017: act-on tools (gated) ─────────────────────────────────────────
   requestAnswerAgent: (a: { agentId: string; officeId?: string; answer: string }) => Promise<ActOnResult>;
   requestSendPrompt: (a: { agentId: string; officeId?: string; prompt: string }) => Promise<ActOnResult>;
   requestStopAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
   requestRestartAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
   requestTeamsPresence: (a: { agentId: string; officeId?: string; online: boolean }) => Promise<ActOnResult>;
+  requestSetTitle: (a: { agentId: string; officeId?: string; title: string }) => Promise<ActOnResult>;
 }
 
 export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] {
@@ -169,6 +173,30 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     },
   });
 
+  const getAgentStatusTool = defineTool('get_agent_status', {
+    description:
+      'Check ONE specific agent by name or agentId — cheaper than get_active_agents ' +
+      'when the user names a single agent. Returns whether it has a live session, its ' +
+      'status/activity, and its Teams presence (whether it is already online in a Teams ' +
+      'thread, with the thread link). Use this to CONFIRM an agent\'s real state before ' +
+      'claiming it is offline or unreachable. `agent` may be a fuzzy name (e.g. "Olivia") ' +
+      'or an exact agentId; pass `officeId` if you know it. If the name matches more than ' +
+      'one agent it returns outcome:"ambiguous" with the choices.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agent: { type: 'string', description: 'Agent name (fuzzy) or exact agentId to look up.' },
+        officeId: { type: 'string', description: 'Optional office to scope/disambiguate the lookup.' },
+      },
+      required: ['agent'],
+      additionalProperties: false,
+    },
+    skipPermission: true,
+    handler: async (args: { agent: string; officeId?: string }) => {
+      return deps.requestAgentStatus(args.agent, args.officeId);
+    },
+  });
+
   // ── spec 017: gated act-on tools (always gated, non-YOLO) ───────────────────
 
   const answerAgentTool = defineTool('answer_agent', {
@@ -266,6 +294,26 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     },
   });
 
+  const setAgentTitleTool = defineTool('set_agent_title', {
+    description:
+      "Rename an agent's session title (the short label shown for what it is working " +
+      'on). Only use an agentId returned by a discovery/status tool. Gated: the user ' +
+      'must approve.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'The agent whose session title to set.' },
+        title: { type: 'string', description: 'The new session title.' },
+        officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
+      },
+      required: ['agentId', 'title'],
+      additionalProperties: false,
+    },
+    handler: async (args: { agentId: string; officeId?: string; title: string }) => {
+      return deps.requestSetTitle(args);
+    },
+  });
+
   return [
     listTool,
     listOfficesTool,
@@ -274,10 +322,12 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     getActiveAgentsTool,
     listAwaitingTool,
     getAgentTranscriptTool,
+    getAgentStatusTool,
     answerAgentTool,
     sendPromptTool,
     stopAgentTool,
     restartAgentTool,
     teamsPresenceTool,
+    setAgentTitleTool,
   ];
 }

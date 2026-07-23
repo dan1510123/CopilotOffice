@@ -16,7 +16,12 @@ import {
   friendlyToolName,
   formatElapsedMmSs,
 } from '../config/agentStatusPresentation';
-import type { ActiveAgentSnapshot, AwaitingAgent } from '../../electron/orchestrator/types';
+import type {
+  ActiveAgentSnapshot,
+  AgentLookupMatch,
+  AgentStatusLookup,
+  AwaitingAgent,
+} from '../../electron/orchestrator/types';
 
 /** Resolve an agent's display name from office custom roster → default → reserve. */
 function resolveAgentName(officeId: string, agentId: string): string {
@@ -163,4 +168,169 @@ export function computeAwaitingAgents(now: number = Date.now()): AwaitingAgent[]
   // Longest-waiting first → smallest (oldest) activityStartTime first.
   waiting.sort((a, b) => a.startedAt - b.startedAt);
   return waiting.map((w) => w.snapshot);
+}
+
+// ── Single-agent status lookup (get_agent_status) ────────────────────────────
+
+interface AgentMatch extends AgentLookupMatch {
+  hasSession: boolean;
+  status?: AgentStatus;
+  /** True when the query matched the agentId or name exactly (case-insensitive). */
+  exact: boolean;
+}
+
+/**
+ * Resolve a fuzzy name OR agentId to concrete agent(s). Session-bearing agents
+ * (across ALL offices) are matched first — they are the authoritative live
+ * instances. Then office-specific dormant agents (custom + custom-reserve) across
+ * all offices, then default/reserve agents scoped to the hint/current office only
+ * (they exist in every office, so scanning them everywhere would be needlessly
+ * ambiguous). Every match is office-qualified and deduped by `officeId::agentId`;
+ * the same agentId in two offices stays as two matches so the caller can detect
+ * genuine cross-office ambiguity.
+ */
+function collectAgentMatches(query: string, officeHint?: string): AgentMatch[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const seen = new Set<string>();
+  const raw: AgentMatch[] = [];
+
+  const consider = (
+    officeId: string,
+    officeName: string,
+    agentId: string,
+    name: string,
+    status: AgentStatus | undefined,
+  ): void => {
+    const key = `${officeId}::${agentId}`;
+    if (seen.has(key)) return;
+    const idHit = agentId.toLowerCase() === q;
+    const nameLc = name.toLowerCase();
+    const nameExact = nameLc === q;
+    const nameFuzzy = nameLc.includes(q) || q.includes(nameLc);
+    if (!idHit && !nameExact && !nameFuzzy) return;
+    seen.add(key);
+    raw.push({
+      agentId,
+      name,
+      officeId,
+      officeName,
+      hasSession: status?.state === 'active',
+      status,
+      exact: idHit || nameExact,
+    });
+  };
+
+  // Pass A: session-bearing agents across all offices.
+  for (const config of officeManager.getAllOffices()) {
+    const office = officeManager.getOffice(config.id);
+    if (!office) continue;
+    for (const [agentId, status] of office.agents) {
+      if (status.state !== 'active') continue;
+      consider(config.id, config.name, agentId, resolveAgentName(config.id, agentId), status);
+    }
+  }
+
+  // Pass B: office-specific dormant agents (custom + custom-reserve) across all offices.
+  for (const config of officeManager.getAllOffices()) {
+    const office = officeManager.getOffice(config.id);
+    const officeSpecific = [
+      ...(config.customAgents ?? []),
+      ...Object.values(config.customReserveAgents ?? {}),
+    ];
+    for (const a of officeSpecific) {
+      consider(config.id, config.name, a.id, a.name, office?.agents.get(a.id));
+    }
+  }
+
+  // Pass C: default + reserve agents, scoped to a VALID hint office, else the
+  // current office. A bogus officeHint must not synthesize matches for a
+  // non-existent office, so resolve it against the real roster first.
+  const all = officeManager.getAllOffices();
+  let scopeConfig = officeHint ? all.find((c) => c.id === officeHint) : undefined;
+  if (!scopeConfig && officeManager.currentOfficeId) {
+    scopeConfig = all.find((c) => c.id === officeManager.currentOfficeId);
+  }
+  if (scopeConfig) {
+    const office = officeManager.getOffice(scopeConfig.id);
+    for (const a of [...AGENTS, ...Object.values(RESERVE_AGENTS)]) {
+      consider(scopeConfig.id, scopeConfig.name, a.id, a.name, office?.agents.get(a.id));
+    }
+  }
+
+  // NOTE: no collapse-by-agentId here. `consider` already dedups by
+  // `officeId::agentId`, so the same agentId living in TWO offices yields two
+  // distinct office-qualified matches — which must stay separate so the lookup
+  // can report genuine cross-office ambiguity rather than an arbitrary pick.
+  return raw;
+}
+
+/** Build the found-agent snapshot; works for any state (dormant → slacking presentation). */
+function buildLookupSnapshot(
+  match: AgentMatch,
+  now: number,
+): ActiveAgentSnapshot & { hasSession: boolean } {
+  if (match.status) {
+    return { ...buildSnapshot(match.officeId, match.officeName, match.agentId, match.status, now), hasSession: match.hasSession };
+  }
+  // Known-but-never-tracked agent: no status object → dormant/slacking presentation.
+  return {
+    agentId: match.agentId,
+    name: match.name,
+    officeId: match.officeId,
+    officeName: match.officeName,
+    statusKey: resolveStatusKey(undefined),
+    statusLabel: presentationFor(undefined).label,
+    activity: '',
+    timeInState: '',
+    awaitingInput: false,
+    hasSession: false,
+  };
+}
+
+/**
+ * Resolve ONE agent by fuzzy name or agentId and report its session status. The
+ * caller (renderer resolver) fills in `teams` presence via the Teams bridge; this
+ * compute is pure over OfficeManager. Returns `not-found` / `ambiguous` / `found`.
+ */
+export function computeAgentStatusLookup(
+  query: string,
+  officeHint?: string,
+  now: number = Date.now(),
+): AgentStatusLookup {
+  const trimmed = (query ?? '').trim();
+  if (!trimmed) {
+    return { query: trimmed, outcome: 'not-found', message: 'No agent name or id was provided.' };
+  }
+  const matches = collectAgentMatches(trimmed, officeHint);
+  if (matches.length === 0) {
+    return {
+      query: trimmed,
+      outcome: 'not-found',
+      message: `No agent matching "${trimmed}" was found.`,
+    };
+  }
+  // Prefer exact id/name matches when present, then prefer a live session so a
+  // single online instance wins over dormant seats of the same agent elsewhere.
+  const exacts = matches.filter((m) => m.exact);
+  let pool = exacts.length > 0 ? exacts : matches;
+  if (pool.length > 1) {
+    const live = pool.filter((m) => m.hasSession);
+    if (live.length >= 1) pool = live;
+  }
+  if (pool.length > 1) {
+    return {
+      query: trimmed,
+      outcome: 'ambiguous',
+      matches: pool.map((m) => ({ agentId: m.agentId, name: m.name, officeId: m.officeId, officeName: m.officeName })),
+      message: `"${trimmed}" matches ${pool.length} agents — specify which one (by agentId or office).`,
+    };
+  }
+  const match = pool[0];
+  const snapshot = buildLookupSnapshot(match, now);
+  const where = snapshot.officeName || snapshot.officeId;
+  const message = snapshot.hasSession
+    ? `${snapshot.name} (${where}) is online — ${snapshot.statusLabel}.`
+    : `${snapshot.name} (${where}) is known but has no live session.`;
+  return { query: trimmed, outcome: 'found', agent: snapshot, message };
 }
