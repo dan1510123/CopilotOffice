@@ -19,8 +19,30 @@ export const ACK_QUIPS: string[] = [
   'Feeding the machine spirit…',
 ];
 
+export const ORCHESTRATOR_ACK_QUIPS: string[] = [
+  'Reviewing the mission board…',
+  'Coordinating the crew…',
+  'Lining up the workstreams…',
+  'Mapping the dependencies…',
+  'Putting the fleet in formation…',
+  'Checking the command deck…',
+  'Turning this into a battle plan…',
+  'Assigning the right minds…',
+  'Synchronizing the moving parts…',
+  'Warming up the strategy engine…',
+];
+
+function pickQuip(quips: string[], fallback: string, rng: () => number): string {
+  if (quips.length === 0) return fallback;
+  return quips[Math.floor(rng() * quips.length)] ?? quips[0];
+}
+
 /** Pick a random ack quip. Falls back to a stable default if the list is empty. */
 export function pickAckQuip(rng: () => number = Math.random): string {
-  if (ACK_QUIPS.length === 0) return 'Working on this…';
-  return ACK_QUIPS[Math.floor(rng() * ACK_QUIPS.length)] ?? ACK_QUIPS[0];
+  return pickQuip(ACK_QUIPS, 'Working on this…', rng);
+}
+
+/** Pick a random orchestrator ack quip from its dedicated personality pool. */
+export function pickOrchestratorAckQuip(rng: () => number = Math.random): string {
+  return pickQuip(ORCHESTRATOR_ACK_QUIPS, 'Coordinating the team…', rng);
 }

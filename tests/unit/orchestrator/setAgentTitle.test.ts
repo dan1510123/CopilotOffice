@@ -14,6 +14,7 @@ vi.mock('../../../src/office/officeManager', () => ({
       return currentOfficeId;
     },
     getAllOffices: () => [...statusByOffice.keys()].map((id) => ({ id, name: id })),
+    getOffice: (id: string) => (statusByOffice.has(id) ? { config: { id, name: id } } : undefined),
     getAgentStatus: (officeId: string, agentId: string) => statusByOffice.get(officeId)?.get(agentId),
   },
 }));
@@ -34,6 +35,7 @@ function seat(officeId: string, agentId: string, st: AgentStatus): void {
 function deps(overrides: Partial<ActOnDeps> = {}): ActOnDeps {
   return {
     ensureOnline: vi.fn().mockResolvedValue(true),
+    bringOnline: vi.fn().mockResolvedValue(true),
     deliverText: vi.fn().mockResolvedValue(true),
     submitAnswer: vi.fn().mockResolvedValue(true),
     stopSession: vi.fn().mockResolvedValue(true),

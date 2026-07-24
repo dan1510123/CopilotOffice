@@ -15,6 +15,7 @@ vi.mock('../../../src/office/officeManager', () => ({
       return currentOfficeId;
     },
     getAllOffices: () => [...statusByOffice.keys()].map((id) => ({ id, name: id })),
+    getOffice: (id: string) => (statusByOffice.has(id) ? { config: { id, name: id } } : undefined),
     getAgentStatus: (officeId: string, agentId: string) => statusByOffice.get(officeId)?.get(agentId),
   },
 }));
@@ -35,6 +36,7 @@ function seat(officeId: string, agentId: string, st: AgentStatus): void {
 function deps(overrides: Partial<ActOnDeps> = {}): ActOnDeps {
   return {
     ensureOnline: vi.fn().mockResolvedValue(true),
+    bringOnline: vi.fn().mockResolvedValue(true),
     deliverText: vi.fn().mockResolvedValue(true),
     submitAnswer: vi.fn().mockResolvedValue(true),
     stopSession: vi.fn().mockResolvedValue(true),
@@ -75,7 +77,7 @@ describe('setAgentTeamsPresence', () => {
     const d = deps();
     const res = await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
     expect(res.outcome).toBe('online-in-teams');
-    expect(d.ensureOnline).toHaveBeenCalledWith('o1', 'coder');
+    expect(d.bringOnline).toHaveBeenCalledWith('o1', 'coder');
     expect(d.teamsRegister).toHaveBeenCalledWith('o1', 'coder');
   });
 
@@ -83,16 +85,27 @@ describe('setAgentTeamsPresence', () => {
     seat('o1', 'coder', status({ agentId: 'coder' }));
     const d = deps();
     await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
-    expect(d.ensureOnline).not.toHaveBeenCalled();
+    expect(d.bringOnline).not.toHaveBeenCalled();
     expect(d.teamsRegister).toHaveBeenCalledWith('o1', 'coder');
   });
 
   it('fails without registering when the auto-warm cannot bring the agent up', async () => {
     seat('o1', 'coder', status({ agentId: 'coder', state: 'slacking' }));
-    const d = deps({ ensureOnline: vi.fn().mockResolvedValue(false) });
+    const d = deps({ bringOnline: vi.fn().mockResolvedValue(false) });
     const res = await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
     expect(res.outcome).toBe('failed');
     expect(d.teamsRegister).not.toHaveBeenCalled();
+  });
+
+  it('brings a never-started reserve agent (no status entry) online in Teams in one call', async () => {
+    // No seat() → getAgentStatus returns undefined for every office. A default/reserve
+    // roster member must still resolve as an offline target and auto-bring-online.
+    currentOfficeId = 'o1';
+    statusByOffice.set('o1', new Map());
+    const d = deps();
+    const res = await setAgentTeamsPresence({ agentId: 'generalist', online: true }, d);
+    expect(res.outcome).toBe('online-in-teams');
+    expect(d.bringOnline).toHaveBeenCalledWith('o1', 'generalist');
   });
 
   it('returns unavailable when the Teams feature is disabled', async () => {

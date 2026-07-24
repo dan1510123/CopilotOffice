@@ -25,9 +25,10 @@ import type { AutoImageRenderer } from './autoImageRenderer';
 import { normalizeWorkingDir } from './workingDir';
 import { extractFileMarkers, loadAttachmentFiles } from './fileMarker';
 import type { AttachmentFile } from './fileMarker';
-import { pickAckQuip } from './ackQuips';
+import { pickAckQuip, pickOrchestratorAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import { isAzLoginError } from './auth';
+import { isOrchestratorKey } from '../orchestrator/orchestratorIdentity';
 import type {
   TeamsSettings,
   OnlineAgentBinding,
@@ -596,7 +597,10 @@ export class TeamsService {
     // if a prior turn is still draining. Routed through safeReply so its own Teams
     // echo is recorded in postedMessageIds and never dispatched back (self-loop guard).
     if (this.deps.getSettings().ackEnabled) {
-      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ ${escapeHtml(pickAckQuip())} <i>(message received)</i>`);
+      const quip = isOrchestratorKey(binding.officeId, binding.agentId)
+        ? pickOrchestratorAckQuip()
+        : pickAckQuip();
+      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ ${escapeHtml(quip)} <i>(message received)</i>`);
     }
   }
 
@@ -1729,4 +1733,3 @@ function selectorLabel(index: number): string {
   } while (n >= 0);
   return s;
 }
-

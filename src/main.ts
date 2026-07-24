@@ -1576,6 +1576,43 @@ async function warmAgentSession(
   return res?.success !== false;
 }
 
+/**
+ * Bring a dormant agent FULLY online for the Teams auto-online path: idle-seated
+ * agents warm their PTY directly, reserve agents are spawned via the scene
+ * delegate (NPC + seat + fire-and-forget terminalStart). Because reserve spawn
+ * does not await the PTY, we then wait until the agent's session id is actually
+ * available so a follow-up teamsRegister (which requires a live session) succeeds.
+ */
+async function bringAgentFullyOnline(officeId: string, agentId: string): Promise<boolean> {
+  if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
+    return waitForSessionReady(officeId, agentId);
+  }
+  const result = await executeBringOnline(agentId, {
+    startSeated: (oid, aid) => warmAgentSession(oid, aid),
+    activateReserve: activateReserveViaScene,
+  });
+  if (result.outcome !== 'started' && result.outcome !== 'already-active') return false;
+  return waitForSessionReady(officeId, agentId);
+}
+
+/**
+ * Poll until the agent's terminal session id is registered server-side (the signal
+ * that teamsRegister's getSessionId check will pass), bounded by `timeoutMs`.
+ */
+async function waitForSessionReady(officeId: string, agentId: string, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const meta = await window.copilotBridge?.getAllSessionMeta(officeId);
+      if (meta?.[agentId]?.sessionId) return true;
+    } catch {
+      /* transient — retry until deadline */
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
 /** Cold-warm one-shot state — see warmAllTeamsBoundAgents. */
 let teamsColdWarmDone = false;
 let teamsColdWarmInFlight = false;
@@ -1998,6 +2035,7 @@ function registerOrchestratorSpec017Resolvers(): void {
   // ── Shared act-on deps (reuse sanctioned per-agent session ops) ────────────
   const actOnDeps: ActOnDeps = {
     ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
+    bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
       // session.send / bracketed-paste for node-pty), targeted by agentId. NOT raw

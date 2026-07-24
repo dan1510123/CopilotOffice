@@ -6,6 +6,7 @@ import type { MessageSource } from '../../../electron/teams/chatsvcClient';
 import type { SessionGateway, AgentEvent } from '../../../electron/teams/sessionGateway';
 import type { TokenProvider } from '../../../electron/teams/auth';
 import type { InboundMessage, TeamsSettings, OnlineAgentBinding } from '../../../electron/teams/types';
+import { ACK_QUIPS, ORCHESTRATOR_ACK_QUIPS } from '../../../electron/teams/ackQuips';
 
 const CH_A = '19:aaa@thread.tacv2';
 const CH_B = '19:bbb@thread.tacv2';
@@ -153,6 +154,26 @@ describe('teams acknowledgment + agent-name prefix (US5)', () => {
     h.inbound()(inbound(CH_A, 'root-1', 'do a task'));
     await new Promise((r) => setTimeout(r, 20));
     expect(h.replies.some((r) => /message received/i.test(r.html))).toBe(false);
+  });
+
+  it('uses the dedicated orchestrator quip pool for orchestrator dispatches', async () => {
+    const h = makeHarness({ settings: baseSettings({ ackEnabled: true }) });
+    h.sessionByAgent.orchestrator = 'orchestrator-session';
+    await h.service.start();
+    await h.service.register({
+      officeId: '__orchestrator__',
+      agentId: 'orchestrator',
+      displayName: 'Office Orchestrator',
+      workingDir: '.',
+    });
+
+    h.inbound()(inbound(CH_A, 'root-1', 'coordinate the team'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const ack = h.replies.find((r) => /message received/i.test(r.html));
+    expect(ack).toBeDefined();
+    expect(ORCHESTRATOR_ACK_QUIPS.some((quip) => ack!.html.includes(quip))).toBe(true);
+    expect(ACK_QUIPS.some((quip) => ack!.html.includes(quip))).toBe(false);
   });
 
   it('prefixes the assistant reply with the bold agent name', async () => {
