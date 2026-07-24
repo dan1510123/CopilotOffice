@@ -242,7 +242,7 @@ export class TeamsService {
   /**
    * One-shot origin tags for the NEXT ambient turn per agentId → expiry timestamp
    * (spec 017). Set when the orchestrator dispatches an approved follow-up prompt so
-   * the target agent's mirrored request reads "🤖 Orchestrator" instead of the default
+   * the target agent's mirrored request reads "🎩 Orchestrator" instead of the default
    * "👤 Human local request". Consumed by the next ambient user-message; TTL-bounded so
    * an undelivered prompt can't mislabel a later genuine local request.
    */
@@ -1318,7 +1318,10 @@ export class TeamsService {
   }
 
   private agentLabel(binding: OnlineAgentBinding): string {
-    return `🤖 <b>${escapeHtml(binding.displayName)}</b>`;
+    // The Office Orchestrator wears a top hat 🎩 (matching its desktop panel/toolbar
+    // icon); every other agent uses the 🤖 badge.
+    const icon = isOrchestratorKey(binding.officeId, binding.agentId) ? '🎩' : '🤖';
+    return `${icon} <b>${escapeHtml(binding.displayName)}</b>`;
   }
 
   private async postReply(binding: OnlineAgentBinding, text: string): Promise<void> {

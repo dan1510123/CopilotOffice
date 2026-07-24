@@ -94,6 +94,9 @@ describe('TeamsService orchestrator permission relay (spec 016 B)', () => {
     const html = (replyToThread.mock.calls[0][0] as { html: string }).html ?? JSON.stringify(replyToThread.mock.calls[0][0]);
     expect(html.toLowerCase()).toContain('approv');
     expect(html.toLowerCase()).toContain('deny');
+    // The orchestrator's own Teams messages wear a top hat 🎩, not the 🤖 agent badge.
+    expect(html).toContain('🎩');
+    expect(html).not.toContain('🤖');
   });
 
   it('routes an in-thread "approve" reply to respondPermission(approve)', async () => {
