@@ -20,16 +20,26 @@ export const ACK_QUIPS: string[] = [
 ];
 
 export const ORCHESTRATOR_ACK_QUIPS: string[] = [
-  'Reviewing the mission board…',
-  'Coordinating the crew…',
-  'Lining up the workstreams…',
-  'Mapping the dependencies…',
-  'Putting the fleet in formation…',
-  'Checking the command deck…',
-  'Turning this into a battle plan…',
-  'Assigning the right minds…',
-  'Synchronizing the moving parts…',
-  'Warming up the strategy engine…',
+  'Delegating recursively until the problem disappears…',
+  'Converting ambiguity into parallel confusion…',
+  'Moving the pawns; the strategy arrives later…',
+  'Asking the hive mind to achieve consensus—adorable…',
+  'Distributing context on a need-to-guess basis…',
+  'Assigning agents according to the sacred spreadsheet…',
+  'Turning one hard problem into six smaller arguments…',
+  'Deploying minions with enterprise-grade confidence…',
+  'Parallelizing the mistakes for faster delivery…',
+  'Giving the worker bees a strongly worded roadmap…',
+  'Optimizing the swarm for maximum plausible deniability…',
+  'Scheduling the pawns for strategic advancement…',
+  'Spending tokens to save thoughts…',
+  'Informing the agents that failure is merely telemetry…',
+  'Promoting the boldest guess to architecture…',
+  'Letting the hive mind overthink this in parallel…',
+  'Assigning ownership before anyone understands it…',
+  'Scaling headcount instead of comprehension…',
+  'Orchestrating chaos with deterministic identifiers…',
+  'Dispatching agents—the org chart demands tribute…',
 ];
 
 function pickQuip(quips: string[], fallback: string, rng: () => number): string {
