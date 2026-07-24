@@ -24,6 +24,7 @@ import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
 import { createRelaySender, type MentionResolver } from './teams/relaySender';
+import { createResilientGraphSender } from './teams/graphResilience';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
 import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
@@ -296,7 +297,12 @@ app.whenReady().then(async () => {
     // as it did before the relay feature existed. The relay/Dump channel is used ONLY for
     // the end-of-response completion NOTIFICATION (a single distinct-identity Flow-bot
     // @mention), gated by notifyOnCompleteEnabled + a configured relay Dump channel URL.
-    const graph = allowlistedGraph;
+    //
+    // Wrap the content sender for resilience: replies to a given thread are serialized
+    // (one in-flight write per thread) and retried on 429/5xx, which eliminates the
+    // Graph `ConcurrentRequestLimitExceeded-ETag mismatch for thread resource` errors
+    // caused by the several independent fire-and-forget post paths overlapping.
+    const graph = createResilientGraphSender(allowlistedGraph, { warn: (m) => console.warn(`[TeamsRemote] ${m}`) });
     const isNotifyActive = () => {
       const s = getTeamsSettingsCached();
       return s.notifyOnCompleteEnabled && !!s.relayChannelUrl.trim();

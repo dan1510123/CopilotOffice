@@ -9,6 +9,35 @@ import type { AttachmentFile } from './fileMarker';
 import { embedMarker } from './marker';
 import { randomUUID } from 'crypto';
 
+/**
+ * Typed Graph HTTP error carrying the response status and (when present) the parsed
+ * `Retry-After` delay. Lets a resilience decorator distinguish retryable throttling
+ * (429/5xx) from permanent failures and honor the server-advised backoff. The message
+ * keeps the historical `Graph <op> failed: <status> <body>` shape so existing log lines
+ * are unchanged.
+ */
+export class GraphError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfterMs?: number,
+    readonly body?: string,
+  ) {
+    super(message);
+    this.name = 'GraphError';
+  }
+}
+
+/** Parse a `Retry-After` header (delta-seconds or HTTP-date) into ms; undefined when absent/unparseable. */
+export function parseRetryAfterMs(headerValue: string | null | undefined, now: () => number = Date.now): number | undefined {
+  if (!headerValue) return undefined;
+  const secs = Number(headerValue);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const when = Date.parse(headerValue);
+  if (Number.isFinite(when)) return Math.max(0, when - now());
+  return undefined;
+}
+
 export interface CreateThreadParams {
   teamId: string;
   channelId: string;
@@ -127,7 +156,8 @@ export class GraphClient implements GraphSender {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`Graph createThread failed: ${res.status} ${await safeText(res)}`);
+      const body = await safeText(res);
+      throw new GraphError(`Graph createThread failed: ${res.status} ${body}`, res.status, parseRetryAfterMs(res.headers.get('retry-after')), body);
     }
     const json = (await res.json()) as { id?: string; webUrl?: string };
     if (!json.id) throw new Error('Graph createThread: response missing message id');
@@ -151,7 +181,8 @@ export class GraphClient implements GraphSender {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      throw new Error(`Graph replyToThread failed: ${res.status} ${await safeText(res)}`);
+      const body = await safeText(res);
+      throw new GraphError(`Graph replyToThread failed: ${res.status} ${body}`, res.status, parseRetryAfterMs(res.headers.get('retry-after')), body);
     }
     const json = (await res.json()) as { id?: string };
     return { messageId: json.id || '' };
