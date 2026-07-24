@@ -56,3 +56,43 @@ describe('teamsSettingsStore — autoRenderMarkdownImages gate (FR-010)', () => 
     expect(normalized.autoRenderMarkdownImages).toBe(true);
   });
 });
+
+// Orchestrator channel/@mention overrides (mirrors per-office overrides). Default empty
+// / 'none' so an unset override falls back to the default channel + global relay mention.
+describe('teamsSettingsStore — orchestrator channel/mention overrides', () => {
+  it('defaults the orchestrator override fields to empty / none', () => {
+    expect(DEFAULT_TEAMS_SETTINGS.orchestratorChannelUrl).toBe('');
+    expect(DEFAULT_TEAMS_SETTINGS.orchestratorMentionType).toBe('none');
+    expect(DEFAULT_TEAMS_SETTINGS.orchestratorMentionValue).toBe('');
+  });
+
+  it('normalizes missing orchestrator override keys to the defaults', () => {
+    const legacy = {
+      enabled: true,
+      defaultChannelUrl: 'https://x',
+      relayChannelUrl: '',
+      relayMentionType: 'none' as const,
+      relayMentionValue: '',
+      notifyOnCompleteEnabled: true,
+      ackEnabled: true,
+      checkInEnabled: true,
+      checkInThresholdMs: 120_000,
+      checkInThrottleMs: 60_000,
+    };
+    const normalized = normalizeTeamsSettings(legacy);
+    expect(normalized.orchestratorChannelUrl).toBe('');
+    expect(normalized.orchestratorMentionType).toBe('none');
+    expect(normalized.orchestratorMentionValue).toBe('');
+  });
+
+  it('preserves orchestrator override values through a normalize round-trip', () => {
+    const n = normalizeTeamsSettings({
+      orchestratorChannelUrl: 'https://teams/orch',
+      orchestratorMentionType: 'tag',
+      orchestratorMentionValue: 'oncall',
+    });
+    expect(n.orchestratorChannelUrl).toBe('https://teams/orch');
+    expect(n.orchestratorMentionType).toBe('tag');
+    expect(n.orchestratorMentionValue).toBe('oncall');
+  });
+});

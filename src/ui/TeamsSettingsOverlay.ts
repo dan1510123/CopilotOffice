@@ -194,6 +194,61 @@ export class TeamsSettingsOverlay {
     mentionType.onchange = syncMentionEnabled;
     syncMentionEnabled();
 
+    // ── Office Orchestrator channel + @mention override (mirrors per-office overrides) ──
+    const orchLabel = document.createElement('label');
+    orchLabel.textContent = 'Orchestrator channel override (optional)';
+    orchLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    wrap.appendChild(orchLabel);
+
+    const orchChannelInput = document.createElement('input');
+    orchChannelInput.type = 'text';
+    orchChannelInput.value = settings.orchestratorChannelUrl;
+    orchChannelInput.placeholder = 'Leave empty to use the default channel';
+    orchChannelInput.style.cssText =
+      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+    wrap.appendChild(orchChannelInput);
+
+    const orchHint = document.createElement('p');
+    orchHint.textContent =
+      'The 🎩 Office Orchestrator posts its own Teams thread here instead of the default channel. Empty ⇒ uses the default channel.';
+    orchHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    wrap.appendChild(orchHint);
+
+    const orchMentionRow = document.createElement('div');
+    orchMentionRow.style.cssText = 'display: flex; gap: 8px; margin-top: 8px;';
+
+    const orchMentionType = document.createElement('select');
+    orchMentionType.style.cssText =
+      'flex: 0 0 110px; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+    for (const [val, label] of [
+      ['none', 'None'],
+      ['user', 'User'],
+      ['tag', 'Tag'],
+    ] as const) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (settings.orchestratorMentionType === val) opt.selected = true;
+      orchMentionType.appendChild(opt);
+    }
+    orchMentionRow.appendChild(orchMentionType);
+
+    const orchMentionValue = document.createElement('input');
+    orchMentionValue.type = 'text';
+    orchMentionValue.value = settings.orchestratorMentionValue;
+    orchMentionValue.placeholder = 'Orchestrator @mention (user UPN / display name, or tag name)';
+    orchMentionValue.style.cssText =
+      'flex: 1; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+    orchMentionRow.appendChild(orchMentionValue);
+    wrap.appendChild(orchMentionRow);
+
+    const syncOrchMentionEnabled = () => {
+      orchMentionValue.disabled = orchMentionType.value === 'none';
+      orchMentionValue.style.opacity = orchMentionValue.disabled ? '0.5' : '1';
+    };
+    orchMentionType.onchange = syncOrchMentionEnabled;
+    syncOrchMentionEnabled();
+
     const notifyComplete = this.toggleRow(
       'Notify me when an agent finishes (distinct identity, needs relay Dump channel)',
       settings.notifyOnCompleteEnabled,
@@ -238,6 +293,9 @@ export class TeamsSettingsOverlay {
         relayChannelUrl: relayInput.value.trim(),
         relayMentionType: mentionType.value as 'user' | 'tag' | 'none',
         relayMentionValue: mentionValue.value.trim(),
+        orchestratorChannelUrl: orchChannelInput.value.trim(),
+        orchestratorMentionType: orchMentionType.value as 'user' | 'tag' | 'none',
+        orchestratorMentionValue: orchMentionValue.value.trim(),
         notifyOnCompleteEnabled: notifyComplete.input.checked,
         ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,

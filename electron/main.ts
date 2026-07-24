@@ -233,12 +233,13 @@ app.whenReady().then(async () => {
     // so every send path (threads, replies, acks, check-ins, notices) is validated.
     // Cached with a short TTL so the disk-backed settings/office reads don't run on
     // every send (and to shrink the mid-write file-lock window).
-    const getAllowedChannels = createCachedAllowedChannels(() =>
-      allowedChannelIdSet(
-        settingsStore.load().defaultChannelUrl,
-        officeChannelOverridesFromJson(officeStore.load().data),
-      ),
-    );
+    const getAllowedChannels = createCachedAllowedChannels(() => {
+      const s = settingsStore.load();
+      return allowedChannelIdSet(s.defaultChannelUrl, [
+        ...officeChannelOverridesFromJson(officeStore.load().data),
+        s.orchestratorChannelUrl,
+      ]);
+    });
     // Short-TTL cache of the disk-backed settings so the per-send relay lookups
     // (URL + active check) don't re-read the file on every outbound post.
     let cachedTeamsSettings = settingsStore.load();
@@ -362,11 +363,17 @@ app.whenReady().then(async () => {
       } catch (e) {
         return { success: false, error: `Orchestrator failed to start: ${(e as Error).message}` };
       }
+      const settings = settingsStore.load();
       const result = await teamsService.register({
         officeId: ORCHESTRATOR_OFFICE_ID,
         agentId: ORCHESTRATOR_AGENT_ID,
         displayName: ORCHESTRATOR_DISPLAY_NAME,
         workingDir: process.cwd(),
+        // Orchestrator channel/@mention overrides (mirrors per-office overrides).
+        // Empty/none ⇒ falls back to the default channel + global relay mention.
+        officeChannelUrl: settings.orchestratorChannelUrl,
+        officeMentionType: settings.orchestratorMentionType,
+        officeMentionValue: settings.orchestratorMentionValue,
       });
       // A reachable in-thread approver now exists — let minimize keep gates open.
       if (result?.success) orchestratorManager.setTeamsRelayActive(true);

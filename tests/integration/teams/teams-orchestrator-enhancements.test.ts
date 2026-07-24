@@ -172,3 +172,46 @@ describe('spec 017 enh 2 — restore orchestrator Teams presence on startup', ()
     expect(res.error).toBe('no-binding');
   });
 });
+
+describe('orchestrator channel/@mention override', () => {
+  const ORCH_CHANNEL =
+    'https://teams.microsoft.com/l/channel/19%3Aorchhub%40thread.tacv2/Orchestrator?groupId=team-9&tenantId=tenant-9';
+
+  it('creates the orchestrator thread in the override channel, not the default', async () => {
+    const h = makeHarness();
+    await h.service.start();
+    // The registerOrchestrator handler forwards settings.orchestrator* as the office* ctx.
+    const res = await h.service.register({
+      officeId: '__orchestrator__',
+      agentId: 'orchestrator',
+      displayName: 'Office Orchestrator',
+      workingDir: '.',
+      officeChannelUrl: ORCH_CHANNEL,
+      officeMentionType: 'tag',
+      officeMentionValue: 'oncall',
+    });
+    expect(res.success).toBe(true);
+    const call = (h.service as unknown as { bindings: Array<{ agentId: string; channelId: string; mentionType?: string; mentionValue?: string }> }).bindings.find(
+      (b) => b.agentId === 'orchestrator',
+    );
+    expect(call?.channelId).toBe('19:orchhub@thread.tacv2');
+    expect(call?.mentionType).toBe('tag');
+    expect(call?.mentionValue).toBe('oncall');
+  });
+
+  it('falls back to the default channel when the override is empty', async () => {
+    const h = makeHarness();
+    await h.service.start();
+    await h.service.register({
+      officeId: '__orchestrator__',
+      agentId: 'orchestrator',
+      displayName: 'Office Orchestrator',
+      workingDir: '.',
+      officeChannelUrl: '',
+    });
+    const call = (h.service as unknown as { bindings: Array<{ agentId: string; channelId: string }> }).bindings.find(
+      (b) => b.agentId === 'orchestrator',
+    );
+    expect(call?.channelId).toBe('19:abc@thread.tacv2');
+  });
+});

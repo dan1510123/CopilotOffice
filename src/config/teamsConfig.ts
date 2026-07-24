@@ -17,6 +17,12 @@ export interface TeamsSettings {
   relayMentionType: 'user' | 'tag' | 'none';
   /** Mention target value — a UPN/oid/display-name (user) or tag display-name/tagId (tag). */
   relayMentionValue: string;
+  /** Optional per-orchestrator channel override deep-link (empty ⇒ use defaultChannelUrl). */
+  orchestratorChannelUrl: string;
+  /** @mention kind for the orchestrator's own thread: 'user', 'tag', or 'none'. */
+  orchestratorMentionType: 'user' | 'tag' | 'none';
+  /** @mention value for the orchestrator's own thread. */
+  orchestratorMentionValue: string;
   /**
    * When true (and a relay Dump channel is configured), post one distinct-identity
    * @mention notification via the relay flow when an agent finishes replying (once per
@@ -45,6 +51,9 @@ export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   relayChannelUrl: '',
   relayMentionType: 'none',
   relayMentionValue: '',
+  orchestratorChannelUrl: '',
+  orchestratorMentionType: 'none',
+  orchestratorMentionValue: '',
   notifyOnCompleteEnabled: false,
   ackEnabled: true,
   checkInEnabled: true,
@@ -61,6 +70,9 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
     relayChannelUrl: partial?.relayChannelUrl ?? DEFAULT_TEAMS_SETTINGS.relayChannelUrl,
     relayMentionType: partial?.relayMentionType ?? DEFAULT_TEAMS_SETTINGS.relayMentionType,
     relayMentionValue: partial?.relayMentionValue ?? DEFAULT_TEAMS_SETTINGS.relayMentionValue,
+    orchestratorChannelUrl: partial?.orchestratorChannelUrl ?? DEFAULT_TEAMS_SETTINGS.orchestratorChannelUrl,
+    orchestratorMentionType: partial?.orchestratorMentionType ?? DEFAULT_TEAMS_SETTINGS.orchestratorMentionType,
+    orchestratorMentionValue: partial?.orchestratorMentionValue ?? DEFAULT_TEAMS_SETTINGS.orchestratorMentionValue,
     notifyOnCompleteEnabled: partial?.notifyOnCompleteEnabled ?? DEFAULT_TEAMS_SETTINGS.notifyOnCompleteEnabled,
     ackEnabled: partial?.ackEnabled ?? DEFAULT_TEAMS_SETTINGS.ackEnabled,
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
