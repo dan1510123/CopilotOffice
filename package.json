@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "build:game": "esbuild src/main.ts --bundle --outfile=dist/game.bundle.js --platform=browser --format=iife --global-name=CopilotOffice",
-    "build:electron": "esbuild electron/main.ts electron/terminal/preload.ts electron/cli-bridge.ts electron/terminal/events-watcher.ts electron/terminal/server.ts electron/terminal/protocol.ts electron/terminal/ipc-relay.ts electron/dataBackup.ts --bundle --outdir=dist/electron --platform=node --format=cjs --external:electron --external:node-pty --external:ws",
+    "build:electron": "esbuild electron/main.ts electron/terminal/preload.ts electron/cli-bridge.ts electron/terminal/events-watcher.ts electron/terminal/server.ts electron/terminal/protocol.ts electron/terminal/ipc-relay.ts electron/dataBackup.ts --bundle --outdir=dist/electron --platform=node --format=cjs --external:electron --external:node-pty --external:ws --external:playwright",
     "build": "npm run build:game && npm run build:electron",
     "prepare": "node scripts/setup-hooks.js",
     "hooks:setup": "node scripts/setup-hooks.js",
@@ -54,8 +54,10 @@
     "@xterm/xterm": "^6.0.0",
     "ansi-to-html": "^0.7.2",
     "electron": "^40.6.1",
+    "marked": "^12.0.2",
     "node-pty": "^1.1.0",
     "phaser": "^3.90.0",
+    "playwright": "^1.61.1",
     "ws": "^8.21.0"
   },
   "devDependencies": {

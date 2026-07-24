@@ -29,8 +29,37 @@ export class TerminalRelay {
   private shuttingDown = false;
   /** Requests that arrived while the server was not connected. Flushed on ready. */
   private queuedRequests: Array<{ msg: MainToServer & { requestId: string }; resolve: (v: unknown) => void }> = [];
-  /** Timeout for IPC request/response round-trips (ms). */
+  /** Default timeout for IPC request/response round-trips (ms). */
   private static readonly REQUEST_TIMEOUT_MS = 10_000;
+  /**
+   * Longer timeout for requests whose server handler can block on a COLD
+   * ui-server host bring-up: spawn `copilot --ui-server --port 0` → discover the
+   * control port (≤15s, {@link UiServerHostRuntime} listeningTimeout) → attach
+   * the SDK `CopilotClient`. This budget must exceed that 15s window so we
+   * prioritize completing a real ui-server session over a premature 10s timeout.
+   * A genuine start failure still falls back to node-pty per session (T039), so
+   * the extra wait only applies to a slow-but-succeeding bring-up.
+   */
+  private static readonly UI_SERVER_START_TIMEOUT_MS = 30_000;
+  /**
+   * Request types whose handler may await ui-server host startup:
+   * - `start`  → startTerminalForAgent → sessionBackend.start (spins up the host)
+   * - `attach` → foreground switch → getStartedClient → host whenListening()
+   * All other types (fast polls like `query-agent-statuses`, metadata, session
+   * file ops) keep the default {@link REQUEST_TIMEOUT_MS} so a genuinely wedged
+   * server surfaces quickly instead of hanging the UI for 30s.
+   */
+  private static readonly SLOW_START_TYPES: ReadonlySet<MainToServer['type']> = new Set([
+    'start',
+    'attach',
+  ]);
+
+  /** Resolve the request-timeout budget for a given message type. */
+  private timeoutFor(type: MainToServer['type']): number {
+    return TerminalRelay.SLOW_START_TYPES.has(type)
+      ? TerminalRelay.UI_SERVER_START_TIMEOUT_MS
+      : TerminalRelay.REQUEST_TIMEOUT_MS;
+  }
   /** Latest backend-selection outcome reported by the server on 'ready'. */
   private backendInfo: BackendSelectionInfo | null = null;
 
@@ -174,13 +203,14 @@ export class TerminalRelay {
         this.queuedRequests.push({ msg, resolve });
       });
     }
+    const timeoutMs = this.timeoutFor(msg.type);
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         if (this.pendingRequests.delete(msg.requestId)) {
-          console.warn(`[Relay] Request ${msg.type} (${msg.requestId}) timed out after ${TerminalRelay.REQUEST_TIMEOUT_MS}ms`);
+          console.warn(`[Relay] Request ${msg.type} (${msg.requestId}) timed out after ${timeoutMs}ms`);
           resolve({ success: false, error: 'Request timed out' });
         }
-      }, TerminalRelay.REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
 
       this.pendingRequests.set(msg.requestId, (result) => {
         clearTimeout(timeout);

@@ -11,11 +11,12 @@ export const DEFAULT_TEAMS_SETTINGS: TeamsSettings = {
   relayChannelUrl: '',
   relayMentionType: 'none',
   relayMentionValue: '',
-  notifyOnCompleteEnabled: true,
+  notifyOnCompleteEnabled: false,
   ackEnabled: true,
   checkInEnabled: true,
   checkInThresholdMs: 120_000,
   checkInThrottleMs: 60_000,
+  autoRenderMarkdownImages: true,
 };
 
 export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | undefined): TeamsSettings {
@@ -30,6 +31,7 @@ export function normalizeTeamsSettings(partial: Partial<TeamsSettings> | null | 
     checkInEnabled: partial?.checkInEnabled ?? DEFAULT_TEAMS_SETTINGS.checkInEnabled,
     checkInThresholdMs: partial?.checkInThresholdMs ?? DEFAULT_TEAMS_SETTINGS.checkInThresholdMs,
     checkInThrottleMs: partial?.checkInThrottleMs ?? DEFAULT_TEAMS_SETTINGS.checkInThrottleMs,
+    autoRenderMarkdownImages: partial?.autoRenderMarkdownImages ?? DEFAULT_TEAMS_SETTINGS.autoRenderMarkdownImages,
   };
 }
 

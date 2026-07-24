@@ -17,11 +17,12 @@
 //
 // SECURITY: the marker path is remote-triggerable (a Teams user drives the agent),
 // so it is treated as UNTRUSTED. `loadHostedImages` (1) confines every path to the
-// agent's workingDir sandbox — rejecting absolute paths and `..` traversal that
-// escape it, (2) validates real image magic bytes rather than trusting the file
-// extension, and (3) caps per-file size, image count, and aggregate bytes. This
-// prevents a remote user from exfiltrating arbitrary local files (e.g. secrets)
-// as Teams "images".
+// agent's workingDir sandbox — rejecting `..` traversal and any absolute/UNC path
+// that resolves OUTSIDE it (an absolute path that stays inside the workingDir is
+// allowed, since it is no more privileged than the equivalent relative path), (2)
+// validates real image magic bytes rather than trusting the file extension, and (3)
+// caps per-file size, image count, and aggregate bytes. This prevents a remote user
+// from exfiltrating arbitrary local files (e.g. secrets) as Teams "images".
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -131,23 +132,17 @@ export function sniffImageType(buf: Buffer): string | null {
 
 /**
  * Resolve an untrusted marker path against the sandbox root and return the
- * absolute path only if it stays inside the root. Returns null for absolute
- * paths, `..` traversal, or when no root is configured. Blocks arbitrary local
- * file reads driven by a remote Teams user.
+ * absolute path only if it stays inside the root. Returns null for `..` traversal,
+ * absolute/UNC/other-drive paths that land OUTSIDE the root, or when no root is
+ * configured. An absolute path that resolves INSIDE the root is allowed: the agent
+ * already fully controls its own workingDir, so an in-sandbox absolute path is no
+ * more privileged than the equivalent relative one (a locally-trusted agent
+ * legitimately emits an absolute sentinel into its own `<workingDir>/.office-images`).
+ * The containment check below is the sole security boundary — it rejects every path
+ * that escapes the sandbox regardless of whether it was written absolute or relative.
  */
 export function resolveWithinBase(rawPath: string, baseDir?: string): string | null {
   if (!baseDir) return null; // no sandbox → cannot safely contain; reject
-  // Reject absolute paths under BOTH POSIX and Windows semantics so a
-  // Windows-style path (`C:\`, `\\UNC`) is blocked even when running on Linux
-  // (and a POSIX `/abs` path on Windows). `path.isAbsolute` alone is
-  // platform-dependent and would let the other platform's form escape.
-  if (
-    path.isAbsolute(rawPath) ||
-    path.win32.isAbsolute(rawPath) ||
-    path.posix.isAbsolute(rawPath)
-  ) {
-    return null; // absolute/UNC paths escape the sandbox
-  }
   // Normalize backslashes to forward slashes so Windows-style `..\` traversal is
   // detected even on POSIX, where `\` is an ordinary filename character.
   const normalizedRaw = rawPath.replace(/\\/g, '/');
@@ -155,6 +150,9 @@ export function resolveWithinBase(rawPath: string, baseDir?: string): string | n
   const resolved = path.resolve(root, normalizedRaw);
   const rel = path.relative(root, resolved);
   // Inside the root iff the relative path doesn't climb out and isn't absolute.
+  // An escaping absolute path (different drive / UNC / outside dir) yields a `..`-
+  // prefixed or absolute `rel` and is rejected here; a confined absolute path yields
+  // a plain relative `rel` and is accepted.
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   return resolved;
 }

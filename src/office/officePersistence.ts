@@ -22,6 +22,30 @@
 import type { AgentConfig } from '../config/agents';
 import type { OfficeConfig, OfficeLayout, SeatedAgent } from './officeManager';
 
+/**
+ * Normalize a working-directory string captured from user input.
+ *
+ * Windows Explorer's "Copy as path" wraps the path in literal double quotes
+ * (e.g. `"C:\\path\\to\\dir"`); pasted verbatim into the office path field, the
+ * quotes survive `String.trim()` and get persisted into `workingDirectory`.
+ * Downstream consumers hand this to `path.resolve`, which treats the quoted
+ * string as a relative segment → an invalid path with embedded quotes. Strip a
+ * single wrapping pair of double- or single-quotes (and surrounding whitespace)
+ * at every point where a working dir is captured or loaded, so quotes never
+ * enter the persisted state in the first place.
+ */
+export function normalizeWorkingDir(p: string): string {
+  let s = p.trim();
+  if (s.length >= 2) {
+    const first = s[0];
+    const last = s[s.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  return s;
+}
+
 /** On-disk / localStorage shape. */
 export interface StoredOfficeState {
   currentOfficeId: string | null;
@@ -97,7 +121,7 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
 
     const name = typeof cfg.name === 'string' ? cfg.name : `Office ${i}`;
     const workingDirectory =
-      typeof cfg.workingDirectory === 'string' ? cfg.workingDirectory : '.';
+      typeof cfg.workingDirectory === 'string' ? normalizeWorkingDir(cfg.workingDirectory) : '.';
     const createdAt = typeof cfg.createdAt === 'number' ? cfg.createdAt : Date.now();
     const layout: OfficeLayout =
       cfg.layout === 'fleet-vteam' ? 'fleet-vteam' : 'default';

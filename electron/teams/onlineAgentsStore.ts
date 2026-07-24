@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { TeamsStoreState, OnlineAgentBinding } from './types';
 import { terror } from './log';
+import { normalizeWorkingDir } from './workingDir';
 
 /** Persistence port. */
 export interface TeamsOnlineStore {
@@ -51,8 +52,17 @@ export class FileTeamsOnlineStore implements TeamsOnlineStore {
     try {
       const raw = await fs.promises.readFile(this.filePath, 'utf-8');
       const parsed = JSON.parse(raw) as Partial<TeamsStoreState> & { version?: number };
+      // Heal any binding whose workingDir was persisted with wrapping quotes
+      // (from a "Copy as path" value) before source-side normalization existed.
+      const bindings = Array.isArray(parsed.bindings)
+        ? parsed.bindings.map((b) =>
+            typeof b?.workingDir === 'string'
+              ? { ...b, workingDir: normalizeWorkingDir(b.workingDir) }
+              : b,
+          )
+        : [];
       return {
-        bindings: Array.isArray(parsed.bindings) ? parsed.bindings : [],
+        bindings,
         knownThreads: Array.isArray(parsed.knownThreads) ? parsed.knownThreads : [],
       };
     } catch (e: unknown) {

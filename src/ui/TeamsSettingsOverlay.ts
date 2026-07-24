@@ -197,6 +197,7 @@ export class TeamsSettingsOverlay {
     const notifyComplete = this.toggleRow(
       'Notify me when an agent finishes (distinct identity, needs relay Dump channel)',
       settings.notifyOnCompleteEnabled,
+      'Off by default. When on, a Power Automate flow watching your relay "Dump" channel re-posts an end-of-turn ping under a distinct bot identity, so it can @mention you or a Teams tag inside the agent\'s own thread (Teams never notifies you about your own messages). Useful for getting pinged the moment a long-running agent finishes — requires a configured relay channel and flow.',
     );
     notifyComplete.row.style.marginTop = '10px';
     wrap.appendChild(notifyComplete.row);
@@ -208,6 +209,13 @@ export class TeamsSettingsOverlay {
     const checkIn = this.toggleRow('Post interim check-ins on long turns', settings.checkInEnabled);
     checkIn.row.style.marginTop = '10px';
     wrap.appendChild(checkIn.row);
+
+    const autoRender = this.toggleRow(
+      'Auto-render markdown replies as images',
+      settings.autoRenderMarkdownImages,
+    );
+    autoRender.row.style.marginTop = '10px';
+    wrap.appendChild(autoRender.row);
 
     const error = document.createElement('div');
     error.style.cssText = 'margin-top: 12px; font-size: 12px; color: #ff8888; min-height: 16px;';
@@ -233,6 +241,7 @@ export class TeamsSettingsOverlay {
         notifyOnCompleteEnabled: notifyComplete.input.checked,
         ackEnabled: ack.input.checked,
         checkInEnabled: checkIn.input.checked,
+        autoRenderMarkdownImages: autoRender.input.checked,
       };
       try {
         const res = await window.copilotBridge.teamsSaveSettings(next);
@@ -252,17 +261,33 @@ export class TeamsSettingsOverlay {
     return wrap;
   }
 
-  private toggleRow(label: string, checked: boolean): { row: HTMLElement; input: HTMLInputElement } {
+  private toggleRow(
+    label: string,
+    checked: boolean,
+    hint?: string,
+  ): { row: HTMLElement; input: HTMLInputElement } {
     const row = document.createElement('label');
     row.style.cssText =
       'display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; font-size: 13px; color: #cdd;';
+    const left = document.createElement('span');
+    left.style.cssText = 'display: inline-flex; align-items: center; gap: 6px;';
     const span = document.createElement('span');
     span.textContent = label;
+    left.appendChild(span);
+    if (hint) {
+      const info = document.createElement('span');
+      info.textContent = 'ⓘ';
+      info.title = hint;
+      info.setAttribute('aria-label', hint);
+      // Native hover tooltip via title; help cursor signals the info affordance.
+      info.style.cssText = 'cursor: help; color: #7aa7d9; font-size: 12px;';
+      left.appendChild(info);
+    }
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = checked;
     input.style.cssText = 'width: 18px; height: 18px; cursor: pointer;';
-    row.appendChild(span);
+    row.appendChild(left);
     row.appendChild(input);
     return { row, input };
   }

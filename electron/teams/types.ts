@@ -37,6 +37,14 @@ export interface TeamsSettings {
   checkInThresholdMs: number;
   /** Minimum interval (ms) between check-ins. */
   checkInThrottleMs: number;
+  /**
+   * Gate for the spec-018 auto-render feature (FR-010): when ON, a qualifying markdown
+   * reply is posted as an inline Teams image IN PLACE OF its plain text (replace-with-
+   * fallback — the original text is posted only if the render or its send fails). When
+   * false the whole auto-render path is inert and replies post as plain text. Defaults ON;
+   * absent in older settings files ⇒ inherits the default (true).
+   */
+  autoRenderMarkdownImages: boolean;
 }
 
 /** Parsed channel coordinates from a Teams deep-link. */
