@@ -8,6 +8,7 @@
 export interface PermissionSummaryArgs {
   agentId?: string;
   online?: boolean;
+  title?: string;
 }
 
 /**
@@ -36,6 +37,10 @@ export function describeOrchestratorPermission(
       return args.online === false
         ? `Take ${who} offline in Teams`
         : `Bring ${who} online in Teams`;
+    case 'set_agent_title':
+      return args.title
+        ? `Set ${who}'s title to "${args.title.trim()}"`
+        : `Set ${who}'s title`;
     default:
       return `Run ${toolName} on ${who}`;
   }

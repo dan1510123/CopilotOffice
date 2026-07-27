@@ -115,7 +115,7 @@ export class OrchestratorSessionGateway implements SessionGateway {
       const reason = p.reason ? ` — ${p.reason}` : '';
       const summary = describeOrchestratorPermission(
         p.toolName,
-        { agentId: p.agentId, online: p.online },
+        { agentId: p.agentId, online: p.online, title: p.title },
         p.agentName ?? resolveAgentDisplayName(p.agentId),
       );
       cb({

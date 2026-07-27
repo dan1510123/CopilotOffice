@@ -11,9 +11,9 @@
 // teamsRegister / teams:stop) via injected deps, and returns a typed ActOnResult.
 // Reused ops preserve the agent-viewers.ts dual-key invariants (Principle III) —
 // these helpers never touch activeAgentViewers directly.
-
 import { officeManager } from './officeManager';
 import { resolveStatusKey } from '../config/agentStatusPresentation';
+import { AGENTS, RESERVE_AGENTS } from '../config/agents';
 import {
   ORCHESTRATOR_AGENT_ID,
   ORCHESTRATOR_OFFICE_ID,
@@ -25,6 +25,13 @@ import type { ActOnResult } from '../../electron/orchestrator/types';
 export interface ActOnDeps {
   /** Ensure the target has a live session (warmAgentSession); resolves true on success. */
   ensureOnline: (officeId: string, agentId: string) => Promise<boolean>;
+  /**
+   * Bring a dormant agent fully online (idle-seated OR reserve, incl. scene spawn),
+   * then wait until its session is actually ready. Distinct from `ensureOnline`,
+   * which only warms a PTY for an already-seated agent and does NOT spawn a reserve
+   * NPC. Resolves true once the agent is online with a live session.
+   */
+  bringOnline: (officeId: string, agentId: string) => Promise<boolean>;
   /** Deliver a follow-up prompt to the target's session (submit-prompt, targeted by agentId). */
   deliverText: (officeId: string, agentId: string, text: string) => Promise<boolean>;
   /**
@@ -46,6 +53,8 @@ export interface ActOnDeps {
   ) => Promise<{ success: boolean; threadWebUrl?: string; error?: string }>;
   /** Take the target offline in Teams (teams:stop; posts the closing notice). */
   teamsStop: (officeId: string, agentId: string) => Promise<boolean>;
+  /** Set the target's session title (setSessionMeta); resolves true on success. */
+  setTitle: (officeId: string, agentId: string, title: string) => Promise<boolean>;
 }
 
 interface ResolvedTarget {
@@ -63,9 +72,29 @@ function isOrchestratorTarget(agentId: string, officeId?: string): boolean {
 }
 
 /**
+ * Is `agentId` a plausible agent to act on in `officeId` even if it has no live
+ * status entry yet (e.g. a dormant reserve like Scout that was never started)?
+ * Checks the office's custom rosters plus the default seated + reserve registries.
+ * Permissive by design: the actual bring-online (executeBringOnline) re-validates
+ * hard rules like reserve-seat availability and layout support.
+ */
+function isKnownDormantAgent(agentId: string, officeId: string): boolean {
+  const config = officeManager.getOffice?.(officeId)?.config;
+  if (config?.customAgents?.some((a) => a.id === agentId)) return true;
+  if (config?.customReserveAgents && Object.values(config.customReserveAgents).some((a) => a.id === agentId)) {
+    return true;
+  }
+  if (AGENTS.some((a) => a.id === agentId)) return true;
+  if (Object.values(RESERVE_AGENTS).some((a) => a.id === agentId)) return true;
+  return false;
+}
+
+/**
  * Resolve the office-qualified target at execution time. Disambiguation order:
  * the provided office, else the current office, else any office with a status
- * entry. Returns null for unknown / orchestrator-identity targets.
+ * entry. Falls back to roster membership (scoped to the hint/current office) so a
+ * dormant, never-started agent still resolves as a valid — offline — target rather
+ * than `invalid-target`. Returns null for unknown / orchestrator-identity targets.
  */
 function resolveTarget(agentId: string, officeId?: string): ResolvedTarget | null {
   const target = (agentId ?? '').trim();
@@ -87,6 +116,14 @@ function resolveTarget(agentId: string, officeId?: string): ResolvedTarget | nul
       online: status.state === 'active',
       waiting: resolveStatusKey(status) === 'waiting',
     };
+  }
+
+  // No status entry anywhere → a dormant agent that has never been started. Accept
+  // it as an offline target if it is a known member of the hint/current office's
+  // roster (default, reserve, or custom), scoped like the bring-online candidate list.
+  const scopeOffice = officeId ?? current ?? undefined;
+  if (scopeOffice && isKnownDormantAgent(target, scopeOffice)) {
+    return { officeId: scopeOffice, online: false, waiting: false };
   }
   return null;
 }
@@ -222,6 +259,22 @@ export async function setAgentTeamsPresence(
       };
     }
     if (args.online) {
+      // Auto-bring-online: TeamsService.registerAgent requires a live session (it
+      // fails with "Open its terminal first" otherwise). If the target has no live
+      // session, bring it fully online first — via bringOnline, which handles both
+      // idle-seated and reserve (scene spawn) agents AND waits for the session to be
+      // ready — so a single approval covers "bring up + go online in Teams".
+      if (!resolved.online) {
+        const up = await deps.bringOnline(officeId, args.agentId);
+        if (!up) {
+          return {
+            agentId: args.agentId,
+            officeId,
+            outcome: 'failed',
+            message: `Could not bring ${args.agentId} up before Teams registration.`,
+          };
+        }
+      }
       const res = await deps.teamsRegister(officeId, args.agentId);
       if (res.success) {
         return {
@@ -253,6 +306,34 @@ export async function setAgentTeamsPresence(
           outcome: 'failed',
           message: `Failed to take ${args.agentId} offline in Teams.`,
         };
+  } catch (err) {
+    return failed(args.agentId, officeId, err);
+  }
+}
+
+// ── set an agent's session title ─────────────────────────────────────────────
+
+export async function setAgentTitle(
+  args: { agentId: string; officeId?: string; title: string },
+  deps: ActOnDeps,
+): Promise<ActOnResult> {
+  const resolved = resolveTarget(args.agentId, args.officeId);
+  if (!resolved) return invalidTarget(args.agentId, args.officeId);
+  const { officeId } = resolved;
+  const title = (args.title ?? '').trim();
+  if (!title) {
+    return {
+      agentId: args.agentId,
+      officeId,
+      outcome: 'invalid-target',
+      message: 'A non-empty title is required.',
+    };
+  }
+  try {
+    const ok = await deps.setTitle(officeId, args.agentId, title);
+    return ok
+      ? { agentId: args.agentId, officeId, outcome: 'title-set', message: `${args.agentId} title set to "${title}".` }
+      : { agentId: args.agentId, officeId, outcome: 'failed', message: `Failed to set the title for ${args.agentId}.` };
   } catch (err) {
     return failed(args.agentId, officeId, err);
   }

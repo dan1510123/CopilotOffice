@@ -25,9 +25,10 @@ import type { AutoImageRenderer } from './autoImageRenderer';
 import { normalizeWorkingDir } from './workingDir';
 import { extractFileMarkers, loadAttachmentFiles } from './fileMarker';
 import type { AttachmentFile } from './fileMarker';
-import { pickAckQuip } from './ackQuips';
+import { pickAckQuip, pickOrchestratorAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import { isAzLoginError } from './auth';
+import { isOrchestratorKey } from '../orchestrator/orchestratorIdentity';
 import type {
   TeamsSettings,
   OnlineAgentBinding,
@@ -241,7 +242,7 @@ export class TeamsService {
   /**
    * One-shot origin tags for the NEXT ambient turn per agentId → expiry timestamp
    * (spec 017). Set when the orchestrator dispatches an approved follow-up prompt so
-   * the target agent's mirrored request reads "🤖 Orchestrator" instead of the default
+   * the target agent's mirrored request reads "🎩 Orchestrator" instead of the default
    * "👤 Human local request". Consumed by the next ambient user-message; TTL-bounded so
    * an undelivered prompt can't mislabel a later genuine local request.
    */
@@ -420,7 +421,7 @@ export class TeamsService {
     }
 
     const subject = sessionTitle ? `${displayName}: ${sessionTitle}` : `${displayName}: ${handle}`;
-    const introHtml = this.buildIntro({ displayName, workingDir }, handle, sessionTitle);
+    const introHtml = this.buildIntro({ displayName, workingDir }, handle, sessionTitle, sessionId);
 
     let thread: { threadRootId: string; webUrl: string };
     try {
@@ -596,7 +597,10 @@ export class TeamsService {
     // if a prior turn is still draining. Routed through safeReply so its own Teams
     // echo is recorded in postedMessageIds and never dispatched back (self-loop guard).
     if (this.deps.getSettings().ackEnabled) {
-      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ ${escapeHtml(pickAckQuip())} <i>(message received)</i>`);
+      const quip = isOrchestratorKey(binding.officeId, binding.agentId)
+        ? pickOrchestratorAckQuip()
+        : pickAckQuip();
+      void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ ${escapeHtml(quip)} <i>(message received)</i>`);
     }
   }
 
@@ -1314,7 +1318,10 @@ export class TeamsService {
   }
 
   private agentLabel(binding: OnlineAgentBinding): string {
-    return `🤖 <b>${escapeHtml(binding.displayName)}</b>`;
+    // The Office Orchestrator wears a top hat 🎩 (matching its desktop panel/toolbar
+    // icon); every other agent uses the 🤖 badge.
+    const icon = isOrchestratorKey(binding.officeId, binding.agentId) ? '🎩' : '🤖';
+    return `${icon} <b>${escapeHtml(binding.displayName)}</b>`;
   }
 
   private async postReply(binding: OnlineAgentBinding, text: string): Promise<void> {
@@ -1640,7 +1647,7 @@ export class TeamsService {
 
   // ── Helpers ──────────────────────────────────────────────────
 
-  private buildIntro(info: AgentInfo, handle: string, sessionTitle: string): string {
+  private buildIntro(info: AgentInfo, handle: string, sessionTitle: string, sessionId: string): string {
     const lines = [
       `<p>🟢 <b>${escapeHtml(info.displayName)}</b> is now online via Copilot Office.</p>`,
       `<p>Reply in this thread to talk to the agent. Send <code>/stop</code> to take it offline.</p>`,
@@ -1650,6 +1657,7 @@ export class TeamsService {
     ];
     if (sessionTitle) lines.push(`<li><b>Session:</b> ${escapeHtml(sessionTitle)}</li>`);
     lines.push(`</ul>`);
+    if (sessionId) lines.push(`<p><i>Session ID:</i> <code>${escapeHtml(sessionId)}</code></p>`);
     return lines.join('');
   }
 
@@ -1728,4 +1736,3 @@ function selectorLabel(index: number): string {
   } while (n >= 0);
   return s;
 }
-

@@ -22,6 +22,7 @@ const GATED = [
   'stop_agent',
   'restart_agent',
   'set_agent_teams_presence',
+  'set_agent_title',
 ];
 
 interface Captured {

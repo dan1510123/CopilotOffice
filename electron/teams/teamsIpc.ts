@@ -63,6 +63,12 @@ export function registerTeamsIpc(hooks: TeamsIpcHooks): void {
         return { success: false, error: 'The relay trigger channel link could not be parsed.' };
       }
     }
+    // Validate the orchestrator channel override link if provided.
+    if (settings.orchestratorChannelUrl.trim()) {
+      if (!parseChannelLink(settings.orchestratorChannelUrl)) {
+        return { success: false, error: 'The orchestrator channel link could not be parsed.' };
+      }
+    }
     settingsStore.save(settings);
     hooks.onSettingsChanged?.(settings);
     return { success: true, parsed };

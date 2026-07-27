@@ -22,6 +22,17 @@ export interface TeamsSettings {
   /** Mention target value — a UPN/oid/display-name (user) or tag display-name/tagId (tag). */
   relayMentionValue: string;
   /**
+   * Optional per-orchestrator channel override deep-link. When non-empty, the Office
+   * Orchestrator's Teams thread is created in this channel instead of {@link defaultChannelUrl}
+   * — the orchestrator analogue of a per-office `OfficeConfig.teamsChannelUrl`. Empty ⇒ the
+   * orchestrator uses the default channel.
+   */
+  orchestratorChannelUrl: string;
+  /** @mention kind for the orchestrator's own thread: 'user', 'tag', or 'none' (empty/none ⇒ global relay mention). */
+  orchestratorMentionType: 'user' | 'tag' | 'none';
+  /** @mention value for the orchestrator's own thread (UPN/oid/display-name or tag name). */
+  orchestratorMentionValue: string;
+  /**
    * When true (and a relay Dump channel is configured), post ONE distinct-identity
    * @mention notification via the relay flow each time an agent finishes replying to a
    * Teams message — once per response, when the agent goes idle. The reply content itself

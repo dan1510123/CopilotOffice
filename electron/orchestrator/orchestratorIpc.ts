@@ -10,6 +10,7 @@ import type {
   ActiveAgentSnapshot,
   ActOnResult,
   AgentRecentOutput,
+  AgentStatusLookup,
   AwaitingAgent,
   BringOnlineCandidate,
   BringOnlineResult,
@@ -38,11 +39,13 @@ export function makeOrchestratorEmitter(getWindow: () => BrowserWindow | null): 
     emitActiveAgentsRequest: (payload) => send('orchestrator:active-agents:request', payload),
     emitAwaitingAgentsRequest: (payload) => send('orchestrator:awaiting-agents:request', payload),
     emitAgentOutputRequest: (payload) => send('orchestrator:agent-output:request', payload),
+    emitAgentStatusRequest: (payload) => send('orchestrator:agent-status:request', payload),
     emitAnswerAgentRequest: (payload) => send('orchestrator:answer-agent:request', payload),
     emitSendPromptRequest: (payload) => send('orchestrator:send-prompt:request', payload),
     emitStopAgentRequest: (payload) => send('orchestrator:stop-agent:request', payload),
     emitRestartAgentRequest: (payload) => send('orchestrator:restart-agent:request', payload),
     emitTeamsPresenceRequest: (payload) => send('orchestrator:teams-presence:request', payload),
+    emitSetTitleRequest: (payload) => send('orchestrator:set-title:request', payload),
     emitExit: (payload) => send('orchestrator:exit', payload),
   };
 }
@@ -143,6 +146,14 @@ export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
     },
   );
 
+  ipcMain.handle(
+    'orchestrator:agent-status:respond',
+    (_e, args: { requestId: string; lookup: AgentStatusLookup }) => {
+      const ok = manager.respondAgentStatus(args.requestId, args.lookup);
+      return { ok };
+    },
+  );
+
   // ── spec 017: gated act-on respond channels (all resolve the shared map) ────
   const respondActOn = (_e: unknown, args: { requestId: string; result: ActOnResult }) => {
     const ok = manager.respondActOn(args.requestId, args.result);
@@ -153,6 +164,7 @@ export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
   ipcMain.handle('orchestrator:stop-agent:respond', respondActOn);
   ipcMain.handle('orchestrator:restart-agent:respond', respondActOn);
   ipcMain.handle('orchestrator:teams-presence:respond', respondActOn);
+  ipcMain.handle('orchestrator:set-title:respond', respondActOn);
 
   // ── spec 017: transcript restore (pure read; never mutates a session) ──────
   ipcMain.handle('orchestrator:transcript:get', (_e, _args: { sessionId?: string }) => {

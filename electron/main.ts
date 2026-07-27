@@ -24,6 +24,7 @@ import { FileTeamsOnlineStore } from './teams/onlineAgentsStore';
 import { createTeamsSettingsStore } from './teams/teamsSettingsStore';
 import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverridesFromJson, createCachedAllowedChannels } from './teams/channelAllowlist';
 import { createRelaySender, type MentionResolver } from './teams/relaySender';
+import { createResilientGraphSender } from './teams/graphResilience';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
 import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
 import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
@@ -232,12 +233,13 @@ app.whenReady().then(async () => {
     // so every send path (threads, replies, acks, check-ins, notices) is validated.
     // Cached with a short TTL so the disk-backed settings/office reads don't run on
     // every send (and to shrink the mid-write file-lock window).
-    const getAllowedChannels = createCachedAllowedChannels(() =>
-      allowedChannelIdSet(
-        settingsStore.load().defaultChannelUrl,
-        officeChannelOverridesFromJson(officeStore.load().data),
-      ),
-    );
+    const getAllowedChannels = createCachedAllowedChannels(() => {
+      const s = settingsStore.load();
+      return allowedChannelIdSet(s.defaultChannelUrl, [
+        ...officeChannelOverridesFromJson(officeStore.load().data),
+        s.orchestratorChannelUrl,
+      ]);
+    });
     // Short-TTL cache of the disk-backed settings so the per-send relay lookups
     // (URL + active check) don't re-read the file on every outbound post.
     let cachedTeamsSettings = settingsStore.load();
@@ -296,7 +298,12 @@ app.whenReady().then(async () => {
     // as it did before the relay feature existed. The relay/Dump channel is used ONLY for
     // the end-of-response completion NOTIFICATION (a single distinct-identity Flow-bot
     // @mention), gated by notifyOnCompleteEnabled + a configured relay Dump channel URL.
-    const graph = allowlistedGraph;
+    //
+    // Wrap the content sender for resilience: replies to a given thread are serialized
+    // (one in-flight write per thread) and retried on 429/5xx, which eliminates the
+    // Graph `ConcurrentRequestLimitExceeded-ETag mismatch for thread resource` errors
+    // caused by the several independent fire-and-forget post paths overlapping.
+    const graph = createResilientGraphSender(allowlistedGraph, { warn: (m) => console.warn(`[TeamsRemote] ${m}`) });
     const isNotifyActive = () => {
       const s = getTeamsSettingsCached();
       return s.notifyOnCompleteEnabled && !!s.relayChannelUrl.trim();
@@ -356,11 +363,17 @@ app.whenReady().then(async () => {
       } catch (e) {
         return { success: false, error: `Orchestrator failed to start: ${(e as Error).message}` };
       }
+      const settings = settingsStore.load();
       const result = await teamsService.register({
         officeId: ORCHESTRATOR_OFFICE_ID,
         agentId: ORCHESTRATOR_AGENT_ID,
         displayName: ORCHESTRATOR_DISPLAY_NAME,
         workingDir: process.cwd(),
+        // Orchestrator channel/@mention overrides (mirrors per-office overrides).
+        // Empty/none ⇒ falls back to the default channel + global relay mention.
+        officeChannelUrl: settings.orchestratorChannelUrl,
+        officeMentionType: settings.orchestratorMentionType,
+        officeMentionValue: settings.orchestratorMentionValue,
       });
       // A reachable in-thread approver now exists — let minimize keep gates open.
       if (result?.success) orchestratorManager.setTeamsRelayActive(true);
