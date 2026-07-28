@@ -9,7 +9,8 @@ import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay } from './events-watcher';
-import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses } from './protocol';
+import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry } from './protocol';
+import { coerceHistory, pushArchivedEntry } from './session-history';
 import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession } from './terminal-backend';
 import {
   addAgentViewer,
@@ -135,7 +136,7 @@ const OFFICES_FILE = path.join(DATA_DIR, 'copilot-offices.json');
 // Per-office session state
 interface OfficeSessionData {
   sessionIds: Map<string, string>;          // agentId → current sessionId
-  sessionHistory: Map<string, string[]>;    // agentId → past sessionIds
+  sessionHistory: Map<string, SessionHistoryEntry[]>; // agentId → past sessions (spec 019)
   sessionMeta: Map<string, { title: string }>; // agentId → metadata
 }
 
@@ -212,7 +213,7 @@ async function loadOfficeSessionFile(officeId: string): Promise<void> {
       if (parsed.current && typeof parsed.current === 'object') {
         data.sessionIds = new Map(Object.entries(parsed.current));
         data.sessionHistory = new Map(
-          Object.entries(parsed.history || {}).map(([k, v]) => [k, v as string[]])
+          Object.entries(parsed.history || {}).map(([k, v]) => [k, coerceHistory(v)])
         );
         data.sessionMeta = new Map(
           Object.entries(parsed.metadata || {}).map(([k, v]) => [k, v as { title: string }])
@@ -273,10 +274,9 @@ function archiveSessionId(officeId: string, agentId: string): void {
   const oldId = data.sessionIds.get(agentId);
   if (oldId) {
     const history = data.sessionHistory.get(agentId) || [];
-    if (!history.includes(oldId)) {
-      history.push(oldId);
-      data.sessionHistory.set(agentId, history);
-    }
+    // Snapshot the current title at archive time; dedupe by id (spec 019).
+    pushArchivedEntry(history, oldId, data.sessionMeta.get(agentId)?.title);
+    data.sessionHistory.set(agentId, history);
   }
 }
 

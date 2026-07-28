@@ -156,11 +156,29 @@ export interface MsgResetSession {
   agentId: string;
 }
 
+/**
+ * One archived session in an agent's history (spec 019).
+ *
+ * The response payload of `get-session-history` is `SessionHistoryEntry[]`
+ * (previously `string[]`). Legacy on-disk bare-string entries are coerced to
+ * `{ id }` at load time; see `coerceHistory` in `server.ts`.
+ */
+export interface SessionHistoryEntry {
+  /** Opaque, stable session identifier — the sole identifier, always present & copyable. */
+  id: string;
+  /**
+   * Human-readable title snapshotted from sessionMeta at archive time.
+   * Optional: absent for legacy (pre-019) records and sessions archived with no title.
+   */
+  title?: string;
+}
+
 export interface MsgGetSessionHistory {
   type: 'get-session-history';
   requestId: string;
   officeId: string;
   agentId: string;
+  /** Response payload type: `SessionHistoryEntry[]` (spec 019; was `string[]`). */
 }
 
 export interface MsgClearSessionHistory {

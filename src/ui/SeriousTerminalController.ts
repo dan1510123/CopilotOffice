@@ -11,6 +11,7 @@ import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { officeManager } from '../office/officeManager';
 import { injectUiKit, uiButtonClass } from './uiKit';
+import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
 
 type SeriousTerminalOpenOptions = {
   officeId: string;
@@ -757,7 +758,7 @@ export class SeriousTerminalController {
       return;
     }
 
-    let history: string[] = [];
+    let history: SessionHistoryEntry[] = [];
     try {
       history = await window.copilotBridge.getSessionHistory(this.activeOfficeId, this.activeAgentId);
     } catch {
@@ -793,7 +794,9 @@ export class SeriousTerminalController {
       body.textContent = 'No history yet.';
       body.style.cssText = 'color: #77839f; font-style: italic;';
     } else {
-      body.textContent = history.join('\n');
+      // Per-entry rendering: #N + literal-text title + exact copyable id (spec 019, FR-014).
+      body.style.whiteSpace = 'normal';
+      body.appendChild(renderSessionHistoryList(history));
     }
     pop.appendChild(body);
 

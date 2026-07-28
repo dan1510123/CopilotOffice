@@ -13,6 +13,7 @@ import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { injectUiKit, uiButtonClass } from './uiKit';
+import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1238,7 +1239,7 @@ export class TerminalOverlay {
     }
     if (!this.currentAgentId) return;
 
-    let history: string[] = [];
+    let history: SessionHistoryEntry[] = [];
     try {
       history = await withTimeout(
         window.copilotBridge.getSessionHistory(this.getOfficeId(), this.currentAgentId),
@@ -1273,21 +1274,8 @@ export class TerminalOverlay {
       title.style.cssText = 'color: #4a9eff; font-weight: bold; margin-bottom: 8px; font-size: 13px;';
       this.historyPopover.appendChild(title);
 
-      // Show most recent first
-      for (let i = history.length - 1; i >= 0; i--) {
-        const entry = document.createElement('div');
-        entry.style.cssText = `
-          color: #888;
-          padding: 4px 8px;
-          border-radius: 3px;
-          margin-bottom: 2px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        `;
-        entry.innerHTML = `<span style="color: #555;">#${i + 1}</span><span style="color: #aaa; user-select: all;">${history[i]}</span>`;
-        this.historyPopover.appendChild(entry);
-      }
+      // Show most recent first (#N numbering + title + exact copyable id, spec 019).
+      this.historyPopover.appendChild(renderSessionHistoryList(history));
     }
 
     // Position relative to the footer
