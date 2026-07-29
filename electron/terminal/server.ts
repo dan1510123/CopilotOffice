@@ -1302,13 +1302,15 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       agentScrollbackBytes.delete(ck);
       activeAgentViewers.delete(ck);
       clearForegroundIf(msg.officeId, ck);
-      // Clear session metadata
       const officeDataReset = getOfficeSession(msg.officeId);
+      // Archive old session ID (snapshots the current title) BEFORE clearing
+      // metadata, otherwise the archived entry loses its title (spec 019).
+      archiveSessionId(msg.officeId, msg.agentId);
+      // Clear session metadata
       officeDataReset.sessionMeta.delete(msg.agentId);
       hasAutoTitled.delete(ck);
       send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: '' } });
-      // Archive old session ID and generate new one (but don't start PTY)
-      archiveSessionId(msg.officeId, msg.agentId);
+      // Generate new session ID (but don't start PTY)
       const newSessionId = crypto.randomUUID();
       officeDataReset.sessionIds.set(msg.agentId, newSessionId);
       await saveOfficeSessionFile(msg.officeId);

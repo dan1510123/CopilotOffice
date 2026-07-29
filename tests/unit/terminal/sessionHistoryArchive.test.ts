@@ -44,4 +44,35 @@ describe('spec 019 — archiveSessionId snapshot + dedupe', () => {
     pushArchivedEntry(history, 'c', 'Title C');
     expect(history.map((e) => e.id)).toEqual(['a', 'b', 'c']);
   });
+
+  // Regression: the reset-session path in server.ts must archive (snapshot the
+  // title) BEFORE clearing sessionMeta, otherwise the archived entry loses its
+  // title. This models that call ordering against the same map + helper the
+  // server uses. (Reproduces the "closed a session, title not saved" bug.)
+  it('archives the title before sessionMeta is cleared on reset (ordering)', () => {
+    const sessionMeta = new Map<string, { title: string }>([
+      ['dan', { title: 'debug the reset flow' }],
+    ]);
+    const history: SessionHistoryEntry[] = [];
+
+    // Correct order: snapshot first…
+    pushArchivedEntry(history, 'sess-1', sessionMeta.get('dan')?.title);
+    // …then clear metadata for the new session.
+    sessionMeta.delete('dan');
+
+    expect(history).toEqual([{ id: 'sess-1', title: 'debug the reset flow' }]);
+  });
+
+  it('demonstrates the bug when meta is cleared before archiving (ordering)', () => {
+    const sessionMeta = new Map<string, { title: string }>([
+      ['dan', { title: 'debug the reset flow' }],
+    ]);
+    const history: SessionHistoryEntry[] = [];
+
+    // Wrong order (the fixed bug): delete first, snapshot reads nothing.
+    sessionMeta.delete('dan');
+    pushArchivedEntry(history, 'sess-1', sessionMeta.get('dan')?.title);
+
+    expect(history[0]).not.toHaveProperty('title');
+  });
 });
