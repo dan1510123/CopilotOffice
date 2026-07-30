@@ -14,6 +14,7 @@ import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { injectUiKit, uiButtonClass } from './uiKit';
 import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
+import { perfMark } from './terminalPerf';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -451,6 +452,9 @@ export class TerminalOverlay {
     const isSwitchingAgent =
       previousAgentId !== null && (previousAgentId !== agent.id || previousOfficeId !== nextOfficeId);
 
+    const perfTarget = `${nextOfficeId}:${agent.id}`;
+    perfMark('overlay', 'switch:request', perfTarget);
+
     if (previousAgentId && previousAgentId !== agent.id) {
       this.acknowledgeCompletedWork(previousOfficeId, previousAgentId);
     }
@@ -479,11 +483,13 @@ export class TerminalOverlay {
       this.onDataDisposable = null;
       try {
         const detachStartedAt = Date.now();
+        perfMark('overlay', 'switch:detach-start', `${previousOfficeId}:${previousAgentId}`);
         await withTimeout(
           window.copilotBridge.terminalDetach(previousOfficeId, previousAgentId),
           IPC_TIMEOUT,
           'terminalDetach',
         );
+        perfMark('overlay', 'switch:detach-done', `${previousOfficeId}:${previousAgentId}`);
         if (DEBUG_COLD_START) {
           console.log(
             `[TerminalOverlay] switch from=${previousAgentId} to=${agent.id} detachMs=${
@@ -528,6 +534,7 @@ export class TerminalOverlay {
         sessionTitle = meta.title;
       }
     } catch (_) { /* ignore */ }
+    perfMark('overlay', 'switch:meta-done', perfTarget);
     const sessionTitleHtml = sessionTitle
       ? ` <span style="color: #aab; font-size: 15px;">— ${sessionTitle.replace(/</g, '&lt;')}</span>`
       : '';
@@ -617,8 +624,13 @@ export class TerminalOverlay {
         );
         if (!exists) {
           this.isReplaying = false;
+          perfMark('overlay', 'switch:exists-done', perfTarget, 0);
+          perfMark('overlay', 'switch:activate-start', perfTarget);
           await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory(), officeId);
+          perfMark('overlay', 'switch:activate-done', perfTarget);
         } else {
+          perfMark('overlay', 'switch:exists-done', perfTarget, 1);
+          perfMark('overlay', 'switch:activate-start', perfTarget);
           this.fitAndResizeTerminal({ officeId, agentId: agent.id });
           // Session exists - reattach and replay scrollback to sync xterm with PTY state.
           // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
@@ -635,10 +647,13 @@ export class TerminalOverlay {
               IPC_TIMEOUT, 'getSessionId'
             ),
           ]);
+          perfMark('overlay', 'switch:activate-done', perfTarget);
 
-          console.log(`[TerminalOverlay] Scrollback replay for ${agent.id}: ${attachResult?.scrollback?.length ?? 0} bytes`);
+          const scrollbackBytes = attachResult?.scrollback?.length ?? 0;
+          console.log(`[TerminalOverlay] Scrollback replay for ${agent.id}: ${scrollbackBytes} bytes`);
           if (attachResult?.scrollback && this.terminal) {
             this.terminal.write(attachResult.scrollback);
+            perfMark('overlay', 'switch:scrollback-write', perfTarget, scrollbackBytes);
           }
           this.isReplaying = false;
 
@@ -696,6 +711,7 @@ export class TerminalOverlay {
 
     // V7: focus AFTER attach has resolved and onData is bound to the new agent.
     this.focusTerminal();
+    perfMark('overlay', 'switch:first-ready', perfTarget);
   }
 
   private drawAgentSprite(agent: AgentConfig): void {
