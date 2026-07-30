@@ -938,22 +938,30 @@ async function startTerminalForAgentImpl(
     });
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
-      send({ type: 'terminal-exit', agentId, exitCode });
       unregisterPty(proc.pid);
-      ptyProcesses.delete(terminalKey);
-      activeAgentViewers.delete(ck);
-      clearForegroundIf(officeId, ck);
-      agentScrollbackBuffers.delete(ck);
-      agentScrollbackBytes.delete(ck);
-      agentReadyState.delete(ck);
-      agentInTurn.delete(ck);
-      lastPtyDataAt.delete(ck);
-      userMessageSeq.delete(ck);
-      lastUserMessageText.delete(ck);
-      const w = agentWatchers.get(ck);
-      if (w) { w.stop(); agentWatchers.delete(ck); }
+      // Identity guard: only tear down the shared per-agent (ck / terminalKey) state
+      // if THIS process is still the registered one. A kill-then-relaunch under the
+      // same composite key (e.g. spec 020 restore-session) can start a new PTY before
+      // this old process's async onExit fires; without this guard the stale exit would
+      // delete the *new* session's tracking entries and orphan it.
+      if (ptyProcesses.get(terminalKey)?.process === proc) {
+        send({ type: 'terminal-exit', agentId, exitCode });
+        ptyProcesses.delete(terminalKey);
+        activeAgentViewers.delete(ck);
+        clearForegroundIf(officeId, ck);
+        agentScrollbackBuffers.delete(ck);
+        agentScrollbackBytes.delete(ck);
+        agentReadyState.delete(ck);
+        agentInTurn.delete(ck);
+        lastPtyDataAt.delete(ck);
+        userMessageSeq.delete(ck);
+        lastUserMessageText.delete(ck);
+        const w = agentWatchers.get(ck);
+        if (w) { w.stop(); agentWatchers.delete(ck); }
+      }
       // spec 015 hardening (h3): GC any pending ask_user resolvers owned by this
       // session so an agent torn down mid-question can't leak an unresolved resolver.
+      // Session-scoped (not ck-scoped) — safe to run unconditionally for the dead id.
       const dropped = clearPendingUserInputForSession(sessionId);
       if (dropped > 0) {
         console.log(`[TermServer] Cleared ${dropped} pending ask_user interaction(s) for exited session ${sessionId} (${ck})`);
@@ -1261,22 +1269,29 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const current = officeData.sessionIds.get(msg.agentId);
       const history = officeData.sessionHistory.get(msg.agentId) || [];
 
-      // (1) Target must exist in this agent's history.
-      if (!history.some((e) => e.id === target)) {
+      // (1) Target already current → no-op success. Checked BEFORE the history-
+      // membership guard so a duplicate/late restore (whose target was already
+      // promoted out of history by the first request) is still an idempotent no-op
+      // rather than a spurious "not in history" error.
+      if (current && current.trim().toLowerCase() === target) {
+        send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: current } });
+        break;
+      }
+
+      // (2) Target must exist in this agent's history. Match on NORMALIZED ids so a
+      // legacy / externally-edited entry whose stored id isn't canonical lowercase
+      // still resolves; operate on the entry's exact stored id thereafter.
+      const targetEntry = history.find((e) => e.id.trim().toLowerCase() === target);
+      if (!targetEntry) {
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'target session not in history' } });
         break;
       }
+      const targetId = targetEntry.id;
 
-      // (2) Target already current → no-op success (do not corrupt/duplicate history).
-      if (target === current) {
-        send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: target } });
-        break;
-      }
-
-      // (3) Collision guard — reuse the set-session-id loop verbatim: reject an id
-      // already active for another agent in the same office (no mutation).
+      // (3) Collision guard — reuse the set-session-id loop: reject an id already
+      // active for another agent in the same office (no mutation).
       for (const [otherAgent, otherSid] of officeData.sessionIds) {
-        if (otherAgent !== msg.agentId && otherSid === target) {
+        if (otherAgent !== msg.agentId && otherSid.trim().toLowerCase() === target) {
           console.warn(`[TermServer] Rejected restore-session ${target} for ${ck} — already in use by ${otherAgent}`);
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'sessionId already in use by another agent in this office' } });
           return;
@@ -1286,12 +1301,13 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // (4) Archive the CURRENT session (title snapshot BEFORE meta clear; dedupe — 019).
       archiveSessionId(msg.officeId, msg.agentId);
 
-      // (5) Promote: remove the target from history, capturing its title snapshot.
-      const promoted = promoteHistoryEntry(history, target);
+      // (5) Promote: remove the target from history (by its exact stored id),
+      // capturing its title snapshot.
+      const promoted = promoteHistoryEntry(history, targetId);
       officeData.sessionHistory.set(msg.agentId, history);
 
-      // (6) Set the current pointer to the promoted session.
-      officeData.sessionIds.set(msg.agentId, target);
+      // (6) Set the current pointer to the promoted session's exact id.
+      officeData.sessionIds.set(msg.agentId, targetId);
 
       // (7) Restore the promoted entry's title into meta (legacy no-title clears it).
       const restoredTitle = promoted?.title ?? '';
@@ -1326,10 +1342,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
       // (9) Persist the new { current, history, metadata } mapping.
       await saveOfficeSessionFile(msg.officeId);
-      console.log(`[TermServer] Restored session for ${ck}: ${current ?? '(none)'} -> ${target}`);
+      console.log(`[TermServer] Restored session for ${ck}: ${current ?? '(none)'} -> ${targetId}`);
 
       // (10) Respond.
-      send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: target, resumeContextUncertain } });
+      send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: targetId, resumeContextUncertain } });
       break;
     }
 
