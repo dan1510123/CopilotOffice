@@ -10,7 +10,7 @@ import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry } from './protocol';
-import { coerceHistory, pushArchivedEntry } from './session-history';
+import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
 import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession } from './terminal-backend';
 import {
   addAgentViewer,
@@ -1248,6 +1248,88 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       }
 
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
+    case 'restore-session': {
+      // Spec 020: restore/switch an agent's active session to a previously-archived
+      // session. Reject-before-mutate — steps 1–3 make NO state change on failure.
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      const officeData = getOfficeSession(msg.officeId);
+      // Normalize the target the same way set-session-id does.
+      const target = msg.sessionId.trim().toLowerCase();
+      const current = officeData.sessionIds.get(msg.agentId);
+      const history = officeData.sessionHistory.get(msg.agentId) || [];
+
+      // (1) Target must exist in this agent's history.
+      if (!history.some((e) => e.id === target)) {
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'target session not in history' } });
+        break;
+      }
+
+      // (2) Target already current → no-op success (do not corrupt/duplicate history).
+      if (target === current) {
+        send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: target } });
+        break;
+      }
+
+      // (3) Collision guard — reuse the set-session-id loop verbatim: reject an id
+      // already active for another agent in the same office (no mutation).
+      for (const [otherAgent, otherSid] of officeData.sessionIds) {
+        if (otherAgent !== msg.agentId && otherSid === target) {
+          console.warn(`[TermServer] Rejected restore-session ${target} for ${ck} — already in use by ${otherAgent}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'sessionId already in use by another agent in this office' } });
+          return;
+        }
+      }
+
+      // (4) Archive the CURRENT session (title snapshot BEFORE meta clear; dedupe — 019).
+      archiveSessionId(msg.officeId, msg.agentId);
+
+      // (5) Promote: remove the target from history, capturing its title snapshot.
+      const promoted = promoteHistoryEntry(history, target);
+      officeData.sessionHistory.set(msg.agentId, history);
+
+      // (6) Set the current pointer to the promoted session.
+      officeData.sessionIds.set(msg.agentId, target);
+
+      // (7) Restore the promoted entry's title into meta (legacy no-title clears it).
+      const restoredTitle = promoted?.title ?? '';
+      if (restoredTitle) officeData.sessionMeta.set(msg.agentId, { title: restoredTitle });
+      else officeData.sessionMeta.delete(msg.agentId);
+      hasAutoTitled.delete(ck);
+      send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: restoredTitle } });
+
+      // (8) Kill the existing PTY (if any) + clean up so the renderer's normal
+      // attach/start flow relaunches `copilot --session-id=<target>`. Reuse the
+      // kill/reset cleanup sequence — do NOT mutate proc.sessionId in place (that
+      // keeps the OLD session running).
+      const restoreKey = getTerminalKey(msg.officeId, msg.agentId);
+      const restoreProc = restoreKey ? ptyProcesses.get(restoreKey) : null;
+      if (restoreProc) {
+        killPtyProcess(restoreProc);
+        ptyProcesses.delete(restoreKey!);
+        agentToTerminal.delete(ck);
+        clearForegroundIf(msg.officeId, ck);
+      }
+      const restoreWatcher = agentWatchers.get(ck);
+      if (restoreWatcher) { restoreWatcher.stop(); agentWatchers.delete(ck); }
+      agentReadyState.delete(ck);
+      agentInTurn.delete(ck);
+      // Clear the outgoing session's scrollback so the restored session starts clean.
+      agentScrollbackBuffers.delete(ck);
+      agentScrollbackBytes.delete(ck);
+
+      // Best-effort resume (FR-013): the CLI resume is not guaranteed to rehydrate
+      // prior context, so the renderer surfaces an advisory.
+      const resumeContextUncertain = true;
+
+      // (9) Persist the new { current, history, metadata } mapping.
+      await saveOfficeSessionFile(msg.officeId);
+      console.log(`[TermServer] Restored session for ${ck}: ${current ?? '(none)'} -> ${target}`);
+
+      // (10) Respond.
+      send({ type: 'response', requestId: msg.requestId, result: { success: true, sessionId: target, resumeContextUncertain } });
       break;
     }
 

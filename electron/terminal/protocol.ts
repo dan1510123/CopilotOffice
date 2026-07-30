@@ -121,6 +121,25 @@ export interface MsgSetSessionId {
   sessionId: string;
 }
 
+/**
+ * Restore/switch an agent's active session to a previously-archived session (spec 020).
+ * `sessionId` is the target archived session id to promote to current — it MUST exist in
+ * this agent's history. The response travels on the existing `SrvResponse` envelope with a
+ * `RestoreSessionResult` payload.
+ */
+export interface MsgRestoreSession {
+  type: 'restore-session';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  sessionId: string;
+}
+
+/** Response payload of `restore-session` (carried in `SrvResponse.result`). */
+export type RestoreSessionResult =
+  | { success: true; sessionId: string; resumeContextUncertain?: boolean }
+  | { success: false; error: string };
+
 export interface MsgPopOut {
   type: 'pop-out';
   requestId: string;
@@ -253,6 +272,7 @@ export type MainToServer =
   | MsgExists
   | MsgGetSessionId
   | MsgSetSessionId
+  | MsgRestoreSession
   | MsgPopOut
   | MsgShutdown
   | MsgSetYolo

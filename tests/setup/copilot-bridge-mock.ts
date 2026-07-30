@@ -20,6 +20,7 @@ export function createMockCopilotBridge(
     setSessionId: vi.fn().mockResolvedValue({ success: true }),
     resetAllSessions: vi.fn().mockResolvedValue({ success: true }),
     resetSession: vi.fn().mockResolvedValue({ success: true, sessionId: 'session-1' }),
+    restoreSession: vi.fn().mockResolvedValue({ success: true, sessionId: 'session-1' }),
     // spec 019: resolves to SessionHistoryEntry[] (default []). Populated-history tests
     // pass entry objects, e.g. mockResolvedValue([{ id: 'u1', title: 'T' }, { id: 'u2' }]).
     getSessionHistory: vi.fn().mockResolvedValue([] as { id: string; title?: string }[]),

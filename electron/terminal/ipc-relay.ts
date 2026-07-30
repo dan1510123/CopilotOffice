@@ -499,6 +499,10 @@ export class TerminalRelay {
       this.request({ type: 'reset-session', requestId: this.id(), officeId, agentId })
     );
 
+    ipcMain.handle('terminal-restore-session', (_event, officeId: string, agentId: string, sessionId: string) =>
+      this.request({ type: 'restore-session', requestId: this.id(), officeId, agentId, sessionId })
+    );
+
     ipcMain.handle('terminal-get-session-history', (_event, officeId: string, agentId: string) =>
       this.request({ type: 'get-session-history', requestId: this.id(), officeId, agentId }) as Promise<SessionHistoryEntry[]>
     );

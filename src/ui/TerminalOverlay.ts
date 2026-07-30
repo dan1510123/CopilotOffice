@@ -83,6 +83,8 @@ export class TerminalOverlay {
   private attachedOfficeId: string | null = null;
   private isReadOnly: boolean = false;
   private isReplaying: boolean = false;
+  /** Spec 020: single-flight latch so a rapid double-confirm can't launch overlapping switches (FR-010). */
+  private restoreInFlight: boolean = false;
   private launchMode: TerminalLaunchMode = 'copilot';
   private pendingInputLine: string = '';
   // Spec 007: awaitingSessionIdRefresh / sessionRefresh*Timer fields removed
@@ -1275,7 +1277,14 @@ export class TerminalOverlay {
       this.historyPopover.appendChild(title);
 
       // Show most recent first (#N numbering + title + exact copyable id, spec 019).
-      this.historyPopover.appendChild(renderSessionHistoryList(history));
+      // Spec 020: rows are clickable to restore/switch to a past session (disabled in
+      // read-only meeting views, FR-017).
+      const onSelect = this.isReadOnly
+        ? undefined
+        : (entry: SessionHistoryEntry) => { void this.handleRestoreSession(entry); };
+      this.historyPopover.appendChild(
+        renderSessionHistoryList(history, { readOnly: this.isReadOnly, onSelect })
+      );
     }
 
     // Position relative to the footer
@@ -1300,6 +1309,53 @@ export class TerminalOverlay {
       this.historyPopover.parentNode.removeChild(this.historyPopover);
     }
     this.historyPopover = null;
+  }
+
+  /**
+   * Spec 020: restore/switch the current agent to a previously-archived session (FR-003).
+   * Shows a confirmation dialog (harder warning mid-turn, FR-016), calls the bridge under a
+   * single-flight latch (FR-010), surfaces errors/advisories, and re-renders the terminal to
+   * reflect the new current session. Cancel is a strict no-op (FR-004). Disabled in read-only
+   * views (FR-017). Mirrors SeriousTerminalController.handleRestoreSession for parity (FR-011).
+   */
+  private async handleRestoreSession(entry: SessionHistoryEntry): Promise<void> {
+    if (this.isReadOnly) return;                       // FR-017
+    if (this.restoreInFlight) return;                  // FR-010 latch
+    if (!this.currentAgentId || !this.currentAgent || !window.copilotBridge) return;
+
+    const officeId = this.attachedOfficeId ?? this.getOfficeId();
+    const agentId = this.currentAgentId;
+
+    const title = (typeof entry.title === 'string' && entry.title.trim()) ? entry.title.trim() : entry.id;
+    const midTurn = officeManager.getAgentStatus(officeId, agentId)?.subState === 'thinking';
+    const message = midTurn
+      ? `This agent is MID-TURN. Switching to session "${title}" will interrupt in-progress work and archive the current session. Continue?`
+      : `Switch to session "${title}"? The current session will be archived into history.`;
+    if (!confirm(message)) return;                     // FR-004 no-op on cancel
+
+    this.restoreInFlight = true;
+    try {
+      const res = await withTimeout(
+        window.copilotBridge.restoreSession(officeId, agentId, entry.id),
+        IPC_TIMEOUT, 'restoreSession'
+      );
+      if (!res.success) {
+        showClipboardToast(`Restore failed: ${res.error || 'unknown error'}`, 'error');  // FR-009
+        return;
+      }
+      if (res.resumeContextUncertain) {
+        showClipboardToast('Switched session — context may not be restored', 'info');     // FR-013
+      }
+      // Refresh the history popover + re-render the terminal to reflect the new current
+      // session (FR-003). The server killed the old PTY, so show() re-attaches/relaunches.
+      this.closeHistoryPopover();
+      const onClose = this.onCloseCallback ?? (() => {});
+      await this.show(this.currentAgent, onClose, { readOnly: this.isReadOnly, launchMode: this.launchMode });
+    } catch (e) {
+      showClipboardToast(`Restore failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
+    } finally {
+      this.restoreInFlight = false;
+    }
   }
 
   private async handleClearHistory(): Promise<void> {

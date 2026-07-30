@@ -67,6 +67,8 @@ export class SeriousTerminalController {
   private openedAt = 0;
   private sessionId: string | null = null;
   private activeOptions: SeriousTerminalOpenOptions | null = null;
+  /** Spec 020: single-flight latch so a rapid double-confirm can't launch overlapping switches (FR-010). */
+  private restoreInFlight = false;
   private isFullWidth = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
@@ -795,8 +797,10 @@ export class SeriousTerminalController {
       body.style.cssText = 'color: #77839f; font-style: italic;';
     } else {
       // Per-entry rendering: #N + literal-text title + exact copyable id (spec 019, FR-014).
+      // Spec 020: rows are clickable to restore/switch to a past session (dual-surface parity, FR-011).
       body.style.whiteSpace = 'normal';
-      body.appendChild(renderSessionHistoryList(history));
+      const onSelect = (entry: SessionHistoryEntry) => { void this.handleRestoreSession(entry); };
+      body.appendChild(renderSessionHistoryList(history, { readOnly: false, onSelect }));
     }
     pop.appendChild(body);
 
@@ -818,6 +822,47 @@ export class SeriousTerminalController {
       this.historyPopover.parentElement.removeChild(this.historyPopover);
     }
     this.historyPopover = null;
+  }
+
+  /**
+   * Spec 020: restore/switch the current agent to a previously-archived session (FR-003).
+   * Byte-for-byte behavioral parity with TerminalOverlay.handleRestoreSession (FR-011):
+   * confirmation dialog (harder warning mid-turn, FR-016), single-flight latch (FR-010),
+   * error/advisory surfacing, then re-render. Cancel is a strict no-op (FR-004).
+   */
+  private async handleRestoreSession(entry: SessionHistoryEntry): Promise<void> {
+    if (this.restoreInFlight) return;                  // FR-010 latch
+    if (!this.activeOptions || !this.activeOfficeId || !this.activeAgentId || !window.copilotBridge) return;
+
+    const officeId = this.activeOfficeId;
+    const agentId = this.activeAgentId;
+    const options = this.activeOptions;
+
+    const title = (typeof entry.title === 'string' && entry.title.trim()) ? entry.title.trim() : entry.id;
+    const midTurn = officeManager.getAgentStatus(officeId, agentId)?.subState === 'thinking';
+    const message = midTurn
+      ? `This agent is MID-TURN. Switching to session "${title}" will interrupt in-progress work and archive the current session. Continue?`
+      : `Switch to session "${title}"? The current session will be archived into history.`;
+    if (!confirm(message)) return;                     // FR-004 no-op on cancel
+
+    this.restoreInFlight = true;
+    try {
+      const res = await window.copilotBridge.restoreSession(officeId, agentId, entry.id);
+      if (!res.success) {
+        showClipboardToast(`Restore failed: ${res.error || 'unknown error'}`, 'error');  // FR-009
+        return;
+      }
+      if (res.resumeContextUncertain) {
+        showClipboardToast('Switched session — context may not be restored', 'info');     // FR-013
+      }
+      // Refresh the popover + re-render the terminal to reflect the new current session (FR-003).
+      this.closeSessionHistoryPopover();
+      await this.openAgentTerminal(options);
+    } catch (e) {
+      showClipboardToast(`Restore failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
+    } finally {
+      this.restoreInFlight = false;
+    }
   }
 
   private copySessionId(): void {

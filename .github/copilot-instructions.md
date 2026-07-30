@@ -168,5 +168,5 @@ Switching offices detaches viewers from the prior office; the existing flow reli
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at specs/019-session-history-titles/plan.md
+at specs/020-session-history-restore/plan.md
 <!-- SPECKIT END -->

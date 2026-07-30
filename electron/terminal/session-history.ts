@@ -55,3 +55,23 @@ export function pushArchivedEntry(
   history.push(title ? { id: oldId, title } : { id: oldId });
   return history;
 }
+
+/**
+ * Remove and return the history entry matching `sessionId` (spec 020 "promote").
+ *
+ * - Uses exact-string-equality matching on `id` (no normalization) — the caller normalizes
+ *   the target the same way `set-session-id` does before invoking this helper.
+ * - Removes exactly ONE matching entry (the first) and returns it, preserving the order and
+ *   contents of every other entry.
+ * - Returns `undefined` and leaves `history` unchanged when the id is absent (no-op).
+ *
+ * Mirrors `pushArchivedEntry`: pure, mutating, no `server.ts` import — unit-testable.
+ */
+export function promoteHistoryEntry(
+  history: SessionHistoryEntry[],
+  sessionId: string
+): SessionHistoryEntry | undefined {
+  const idx = history.findIndex((e) => e.id === sessionId);
+  if (idx < 0) return undefined;
+  return history.splice(idx, 1)[0];
+}
