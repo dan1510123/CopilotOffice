@@ -10,6 +10,7 @@ import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { officeManager } from '../office/officeManager';
+import { perfMark } from './terminalPerf';
 import { injectUiKit, uiButtonClass } from './uiKit';
 import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
 
@@ -378,6 +379,8 @@ export class SeriousTerminalController {
 
   async openAgentTerminal(options: SeriousTerminalOpenOptions): Promise<void> {
     if (!window.copilotBridge || !this.terminal) return;
+    const perfTarget = `${options.officeId}:${options.agentId}`;
+    perfMark('serious', 'switch:request', perfTarget);
     const switchingTarget = this.activeOfficeId !== options.officeId || this.activeAgentId !== options.agentId;
     if (switchingTarget) {
       await this.closeView({ detach: true, silent: true });
@@ -473,6 +476,7 @@ export class SeriousTerminalController {
         window.copilotBridge.terminalAttach(options.officeId, options.agentId, true),
         window.copilotBridge.getSessionId(options.officeId, options.agentId),
       ]);
+      perfMark('serious', 'switch:activate-done', perfTarget);
       if (!attachResult.success) {
         this.terminal.writeln('\r\nFailed to attach terminal session.');
         this.setStatus('Attach failed');
@@ -481,6 +485,7 @@ export class SeriousTerminalController {
 
       if (attachResult.scrollback) {
         this.terminal.write(attachResult.scrollback);
+        perfMark('serious', 'switch:scrollback-write', perfTarget, attachResult.scrollback.length);
       }
       if (attachedSessionId) {
         this.sessionId = attachedSessionId;
@@ -490,6 +495,7 @@ export class SeriousTerminalController {
       this.focusTerminalHardened();
       this.debouncedRefit(options.officeId, options.agentId);
       this.refreshCardFromOverview();
+      perfMark('serious', 'switch:first-ready', perfTarget);
     } catch (error) {
       this.terminal.writeln(`\r\nTerminal error: ${(error as Error)?.message || String(error)}`);
       this.setStatus('Error');

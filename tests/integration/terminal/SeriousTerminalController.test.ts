@@ -135,4 +135,58 @@ describe('integration/SeriousTerminalController', () => {
     expect(menu, 'context menu should be installed after openAgentTerminal').toBeTruthy();
     expect((controller as any).terminalContextMenu).toBe(menu);
   });
+
+  it('spec 021 Phase 1: warm switch attaches once, reads session id once, and records switch perf spans', async () => {
+    const { countTerminalPerfEntries, resetTerminalPerf, setTerminalPerfEnabled } = await import(
+      '../../../src/ui/terminalPerf'
+    );
+    resetTerminalPerf();
+    setTerminalPerfEnabled(true);
+
+    const existsFor = new Set<string>();
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn((_office: string, agentId: string) => Promise.resolve(existsFor.has(agentId))),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-A' }),
+      terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: 'abc' }),
+      getSessionId: vi.fn().mockResolvedValue('sess-B'),
+      getSessionMeta: vi.fn().mockResolvedValue({ title: 'T' }),
+    });
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    controller = new SeriousTerminalController(host);
+
+    // Cold-open agent A.
+    await controller.openAgentTerminal({
+      officeId: 'office-0', agentId: 'generalist', name: 'Gene',
+      description: 'General', workingDir: '.', launchMode: 'copilot',
+    });
+
+    existsFor.add('debugger');
+    (bridge.terminalAttach as any).mockClear();
+    (bridge.getSessionId as any).mockClear();
+
+    // Warm-switch to agent B.
+    await controller.openAgentTerminal({
+      officeId: 'office-0', agentId: 'debugger', name: 'Dan',
+      description: 'Debugger', workingDir: '.', launchMode: 'copilot',
+    });
+
+    const attachCalls = (bridge.terminalAttach as any).mock.calls.filter(
+      (c: unknown[]) => c[0] === 'office-0' && c[1] === 'debugger' && c[2] === true,
+    ).length;
+    const getIdCalls = (bridge.getSessionId as any).mock.calls.filter(
+      (c: unknown[]) => c[0] === 'office-0' && c[1] === 'debugger',
+    ).length;
+    expect(attachCalls).toBe(1);
+    expect(getIdCalls).toBe(1);
+
+    const target = 'office-0:debugger';
+    expect(countTerminalPerfEntries('switch:request', { surface: 'serious', target })).toBe(1);
+    expect(countTerminalPerfEntries('switch:activate-done', { surface: 'serious', target })).toBe(1);
+    expect(countTerminalPerfEntries('switch:first-ready', { surface: 'serious', target })).toBe(1);
+
+    setTerminalPerfEnabled(false);
+    resetTerminalPerf();
+  });
 });
