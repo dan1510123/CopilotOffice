@@ -465,7 +465,14 @@ export class SeriousTerminalController {
         }
       }
 
-      const attachResult = await window.copilotBridge.terminalAttach(options.officeId, options.agentId, true);
+      // Perf (switch quick-win): the saved session-id read is independent of the
+      // attach, so fire both concurrently to shave a round-trip off the switch
+      // critical path. Metadata/title is already off the critical path here
+      // (updateSessionTitle is fired unawaited above).
+      const [attachResult, attachedSessionId] = await Promise.all([
+        window.copilotBridge.terminalAttach(options.officeId, options.agentId, true),
+        window.copilotBridge.getSessionId(options.officeId, options.agentId),
+      ]);
       if (!attachResult.success) {
         this.terminal.writeln('\r\nFailed to attach terminal session.');
         this.setStatus('Attach failed');
@@ -475,7 +482,6 @@ export class SeriousTerminalController {
       if (attachResult.scrollback) {
         this.terminal.write(attachResult.scrollback);
       }
-      const attachedSessionId = await window.copilotBridge.getSessionId(options.officeId, options.agentId);
       if (attachedSessionId) {
         this.sessionId = attachedSessionId;
         this.updateSessionIdDisplay();

@@ -461,6 +461,15 @@ export class TerminalOverlay {
     // ack flag; it never detaches or kills the session (Principle III).
     this.acknowledgeCompletedWork(nextOfficeId, agent.id);
 
+    // Perf (switch quick-win): kick off the session-metadata read now so it runs
+    // concurrently with the detach round-trip below instead of adding its own
+    // serial round-trip to the switch critical path. It only feeds the header /
+    // sprite-card title and never gates attach; awaited where the header is built.
+    const sessionMetaPromise: Promise<{ title?: string } | null> =
+      window.copilotBridge?.getSessionMeta
+        ? window.copilotBridge.getSessionMeta(nextOfficeId, agent.id).catch(() => null)
+        : Promise.resolve(null);
+
     // Feature 002 (US1, C2/V5): detach the previous agent BEFORE mutating
     // currentAgentId. Awaiting here prevents the in-flight onData/onTerminalData
     // race that produced input-lock and shared-session symptoms on cold start.
@@ -510,16 +519,15 @@ export class TerminalOverlay {
 
     // Update header with inception indicator for admin
     const inceptionBadge = agent.id === ADMIN_AGENT_ID ? ' 🎭 INCEPTION MODE' : '';
-    // Fetch session title for header and sprite card
+    // Session title for header and sprite card — resolved from the read started
+    // before the detach above so it overlaps the switch critical path.
     let sessionTitle: string | null = null;
-    if (window.copilotBridge?.getSessionMeta) {
-      try {
-        const meta = await window.copilotBridge.getSessionMeta(officeId, agent.id);
-        if (meta?.title) {
-          sessionTitle = meta.title;
-        }
-      } catch (_) { /* ignore */ }
-    }
+    try {
+      const meta = await sessionMetaPromise;
+      if (meta?.title) {
+        sessionTitle = meta.title;
+      }
+    } catch (_) { /* ignore */ }
     const sessionTitleHtml = sessionTitle
       ? ` <span style="color: #aab; font-size: 15px;">— ${sessionTitle.replace(/</g, '&lt;')}</span>`
       : '';
@@ -614,11 +622,19 @@ export class TerminalOverlay {
           this.fitAndResizeTerminal({ officeId, agentId: agent.id });
           // Session exists - reattach and replay scrollback to sync xterm with PTY state.
           // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
-          // at the same position as the live PTY.
-          const attachResult = await withTimeout(
-            window.copilotBridge.terminalAttach(officeId, agent.id, true),
-            IPC_TIMEOUT, 'terminalAttach'
-          );
+          // at the same position as the live PTY. Perf (switch quick-win): the saved
+          // session-id read is independent of attach, so fire both concurrently to
+          // shave a round-trip off the switch critical path.
+          const [attachResult, savedId] = await Promise.all([
+            withTimeout(
+              window.copilotBridge.terminalAttach(officeId, agent.id, true),
+              IPC_TIMEOUT, 'terminalAttach'
+            ),
+            withTimeout(
+              window.copilotBridge.getSessionId(officeId, agent.id),
+              IPC_TIMEOUT, 'getSessionId'
+            ),
+          ]);
 
           console.log(`[TerminalOverlay] Scrollback replay for ${agent.id}: ${attachResult?.scrollback?.length ?? 0} bytes`);
           if (attachResult?.scrollback && this.terminal) {
@@ -632,11 +648,6 @@ export class TerminalOverlay {
           // Do NOT fit() here — the container may not be visible/laid out yet.
           // All sizing is deferred to the post-layout rAF block below.
 
-          // Try to get saved session ID
-          const savedId = await withTimeout(
-            window.copilotBridge.getSessionId(officeId, agent.id),
-            IPC_TIMEOUT, 'getSessionId'
-          );
           if (savedId) {
             this.sessionId = savedId;
             this.updateSessionDisplay();
