@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { SessionHistoryEntry } from './protocol';
 
 // Copilot event types
 export interface CopilotEvent {
@@ -78,7 +79,14 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   resetSession: (officeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
     return ipcRenderer.invoke('terminal-reset-session', officeId, agentId);
   },
-  getSessionHistory: (officeId: string, agentId: string): Promise<string[]> => {
+  restoreSession: (
+    officeId: string,
+    agentId: string,
+    sessionId: string
+  ): Promise<{ success: boolean; sessionId?: string; resumeContextUncertain?: boolean; error?: string }> => {
+    return ipcRenderer.invoke('terminal-restore-session', officeId, agentId, sessionId);
+  },
+  getSessionHistory: (officeId: string, agentId: string): Promise<SessionHistoryEntry[]> => {
     return ipcRenderer.invoke('terminal-get-session-history', officeId, agentId);
   },
   clearSessionHistory: (officeId: string, agentId: string): Promise<{ success: boolean }> => {
@@ -487,7 +495,8 @@ declare global {
       setSessionId: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       resetAllSessions: (officeId: string) => Promise<{ success: boolean }>;
       resetSession: (officeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
-      getSessionHistory: (officeId: string, agentId: string) => Promise<string[]>;
+      restoreSession: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean; sessionId?: string; resumeContextUncertain?: boolean; error?: string }>;
+      getSessionHistory: (officeId: string, agentId: string) => Promise<SessionHistoryEntry[]>;
       clearSessionHistory: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       listActiveTerminals: () => Promise<string[]>;
       queryAgentStatuses: (officeId?: string) => Promise<Record<string, { alive: boolean; ready: boolean; inTurn: boolean }>>;
