@@ -61,6 +61,10 @@ export class SeriousTerminalController {
   private resizeObserver: ResizeObserver | null = null;
   private resizeHandler: (() => void) | null = null;
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
+  // Serious mode tears down Phaser (no InputManager), so this controller is the
+  // sole owner of xterm focus retention. These timers back the focus verify+retry
+  // and are kept separate from refitTimers (which debouncedRefit clears).
+  private focusRetryTimers: ReturnType<typeof setTimeout>[] = [];
   private activeOfficeId: string | null = null;
   private activeAgentId: string | null = null;
   private visible = false;
@@ -164,7 +168,14 @@ export class SeriousTerminalController {
     this.terminalDivEl = document.createElement('div');
     this.terminalDivEl.style.cssText = 'width: 100%; height: 100%;';
     this.terminalOuterEl.appendChild(this.terminalDivEl);
-    this.terminalOuterEl.addEventListener('mousedown', () => this.terminal?.focus());
+    // Any click in the terminal area must (re-)assert xterm keyboard focus.
+    // mousedown alone loses the race when the browser settles focus after the
+    // click (e.g. focus was on a sprite-card button/history row), so re-assert
+    // on mouseup as well. Mirrors TerminalOverlay's proven handling.
+    this.terminalOuterEl.addEventListener('mousedown', () => this.focusTerminalHardened());
+    this.terminalOuterEl.addEventListener('mouseup', () => {
+      requestAnimationFrame(() => this.focusTerminalHardened());
+    });
 
     this.spriteCardEl = document.createElement('div');
     this.spriteCardEl.style.cssText = `
@@ -470,7 +481,7 @@ export class SeriousTerminalController {
         this.updateSessionIdDisplay();
       }
       this.setStatus(`Attached · ${this.formatElapsed(this.openedAt)}`);
-      this.terminal.focus();
+      this.focusTerminalHardened();
       this.debouncedRefit(options.officeId, options.agentId);
       this.refreshCardFromOverview();
     } catch (error) {
@@ -569,6 +580,7 @@ export class SeriousTerminalController {
     this.updateSessionIdDisplay();
     this.setStatus('');
     this.clearRefitTimers();
+    this.clearFocusRetryTimers();
     this.closeSessionHistoryPopover();
     this.applyPanelLayout();
 
@@ -822,6 +834,10 @@ export class SeriousTerminalController {
       this.historyPopover.parentElement.removeChild(this.historyPopover);
     }
     this.historyPopover = null;
+    // Interacting with the popover moved focus off the terminal; restore it so
+    // the cursor reactivates and keystrokes reach the PTY again. No-op while the
+    // view is hidden (guarded inside focusTerminalHardened).
+    this.focusTerminalHardened();
   }
 
   /**
@@ -1208,7 +1224,7 @@ export class SeriousTerminalController {
 
   private refreshFocusAndGeometry(): void {
     if (!this.visible || !this.activeOfficeId || !this.activeAgentId) return;
-    this.terminal?.focus();
+    this.focusTerminalHardened();
     this.debouncedRefit(this.activeOfficeId, this.activeAgentId);
   }
 
@@ -1217,6 +1233,8 @@ export class SeriousTerminalController {
     localStorage.setItem(SeriousTerminalController.FULL_WIDTH_STORAGE_KEY, String(this.isFullWidth));
     this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';
     this.applyPanelLayout();
+    // Return focus to the terminal so the toggle button doesn't keep keyboard focus.
+    this.focusTerminalHardened();
   }
 
   private applyPanelLayout(): void {
@@ -1242,6 +1260,41 @@ export class SeriousTerminalController {
   private clearRefitTimers(): void {
     for (const timer of this.refitTimers) clearTimeout(timer);
     this.refitTimers.length = 0;
+  }
+
+  /**
+   * Give keyboard focus to the xterm hidden textarea, with a short verify+retry.
+   *
+   * Serious mode tears down Phaser (no InputManager), so this controller is the
+   * sole owner of terminal focus. Clicking a sprite-card button or a history row
+   * (role="button") moves DOM focus off the xterm textarea; a single focus() can
+   * lose the race against the browser's post-click focus settling. Without this
+   * re-assert the cursor renders hollow and keystrokes — Space in particular,
+   * which a focused button/row swallows as an activation key — never reach the
+   * PTY. Mirrors InputManager.focusTerminalXterm's retry (game mode gets this via
+   * InputManager; serious mode needs it inline).
+   */
+  private focusTerminalHardened(): void {
+    const term = this.terminal;
+    if (!term || !this.visible) return;
+    try { term.focus(); } catch { /* terminal may be mid-teardown */ }
+    const verify = (attempt: number, delay: number): void => {
+      const timer = setTimeout(() => {
+        if (!this.visible) return;
+        const textarea = (term as unknown as { textarea?: HTMLTextAreaElement }).textarea;
+        if (textarea && document.activeElement !== textarea) {
+          try { term.focus(); } catch { /* ignore */ }
+          if (attempt < 3) verify(attempt + 1, delay * 2);
+        }
+      }, delay);
+      this.focusRetryTimers.push(timer);
+    };
+    verify(1, 50);
+  }
+
+  private clearFocusRetryTimers(): void {
+    for (const timer of this.focusRetryTimers) clearTimeout(timer);
+    this.focusRetryTimers.length = 0;
   }
 
   private formatElapsed(startTime: number): string {
