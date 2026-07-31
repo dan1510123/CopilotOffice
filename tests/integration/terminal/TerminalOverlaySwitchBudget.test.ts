@@ -8,6 +8,10 @@ vi.mock('@xterm/addon-fit', () => ({ FitAddon: MockFitAddon }));
 
 import { TerminalOverlay } from '../../../src/ui/TerminalOverlay';
 import {
+  AutoStartCoordinator,
+  setAutoStartCoordinator,
+} from '../../../src/agents/AutoStartCoordinator';
+import {
   countTerminalPerfEntries,
   resetTerminalPerf,
   setTerminalPerfEnabled,
@@ -158,5 +162,82 @@ describe('integration/TerminalOverlay switch operation budget (baseline)', () =>
     expect(callsWithArgs(bridge.terminalStart, 'office-0', 'debugger')).toBe(1);
     expect(callsWithArgs(bridge.terminalAttach, 'office-0', 'debugger', true)).toBe(0);
     expect(countTerminalPerfEntries('switch:activate-done', { target: 'office-0:debugger' })).toBe(1);
+  });
+});
+
+/**
+ * Spec 021 session-action budget — the New Session action must NOT make a
+ * redundant getSessionId round-trip: the server-side reset already mints and
+ * returns the new session id, which the coordinator now threads back through
+ * replaceSession(). This locks in that saving and records session-action spans.
+ */
+describe('integration/TerminalOverlay New Session action budget', () => {
+  let overlay: TerminalOverlay | null = null;
+
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <div id="game-container">
+        <div id="office-panel"></div>
+        <div id="terminal-panel"></div>
+      </div>
+    `;
+    localStorage.clear();
+    resetTerminalPerf();
+    setTerminalPerfEnabled(true);
+  });
+
+  afterEach(() => {
+    setAutoStartCoordinator(null as any);
+    setTerminalPerfEnabled(false);
+    resetTerminalPerf();
+    overlay?.destroy();
+    overlay = null;
+  });
+
+  it('uses the reset-minted session id and performs zero getSessionId round-trips', async () => {
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-old' }),
+      resetSession: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-fresh-42' }),
+      getSessionMeta: vi.fn().mockResolvedValue(null),
+    });
+
+    // Wire a real coordinator whose resetSession dep threads the bridge's minted id.
+    const coordinator = new AutoStartCoordinator({
+      getCurrentOfficeId: () => 'office-0',
+      getCanonicalAgentIds: () => ['generalist'],
+      getSessionMeta: async () => ({}),
+      getCurrentSessionId: async () => null,
+      getAgentLaunchConfig: () => ({ workingDir: '.', launchMode: 'copilot' }),
+      resetSession: async (oid, aid) => {
+        const r = await bridge.resetSession(oid, aid);
+        return r?.sessionId ?? null;
+      },
+      warmAgentSession: async () => { /* no-op for this test */ },
+      getSettings: () => ({ autoStartKnownAgents: true }),
+    });
+    setAutoStartCoordinator(coordinator);
+
+    overlay = new TerminalOverlay(createSceneStub() as any, createInputManager() as any, () => 'office-0');
+    await overlay.show(createAgent({ id: 'generalist' }), vi.fn());
+
+    // Isolate the New Session action's IPC budget.
+    (bridge.getSessionId as any).mockClear();
+    (bridge.resetSession as any).mockClear();
+
+    await (overlay as any).handleNewSession();
+
+    // Reset happened once; getSessionId was NOT called (id came from reset).
+    expect(callsWithArgs(bridge.resetSession, 'office-0', 'generalist')).toBe(1);
+    expect((bridge.getSessionId as any).mock.calls.length).toBe(0);
+
+    // UI shows the freshly-minted id.
+    const sessionDisplay = document.querySelector('.session-id-display') as HTMLElement;
+    expect(sessionDisplay?.textContent).toBe('sess-fresh-42');
+
+    // Session-action perf spans recorded once.
+    const target = 'office-0:generalist';
+    expect(countTerminalPerfEntries('session:new-request', { target })).toBe(1);
+    expect(countTerminalPerfEntries('session:new-done', { target })).toBe(1);
   });
 });

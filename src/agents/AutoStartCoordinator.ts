@@ -76,23 +76,34 @@ export class WarmedOfficeRegistry {
 /** Per-agent in-flight "New Session" replacement promises.
  *  Source of truth for FR-014 / SC-005 / SC-008 coalescing. */
 export class AgentReplaceTracker {
-  private inFlight = new Map<string, Promise<void>>();
+  private inFlight = new Map<string, Promise<ReplaceSessionResult>>();
 
   has(agentId: string): boolean {
     return this.inFlight.has(agentId);
   }
 
-  get(agentId: string): Promise<void> | undefined {
+  get(agentId: string): Promise<ReplaceSessionResult> | undefined {
     return this.inFlight.get(agentId);
   }
 
-  set(agentId: string, p: Promise<void>): void {
+  set(agentId: string, p: Promise<ReplaceSessionResult>): void {
     this.inFlight.set(agentId, p);
   }
 
   delete(agentId: string): void {
     this.inFlight.delete(agentId);
   }
+}
+
+/**
+ * Result of {@link AutoStartCoordinator.replaceSession}. Carries the
+ * freshly-minted session id that `resetSession` already returned, so callers
+ * (New Session handlers) can update the session-id display WITHOUT a redundant
+ * follow-up `getSessionId` round-trip (spec 021 session-action budget). `null`
+ * when the reset dep could not surface an id (e.g. bridge unavailable).
+ */
+export interface ReplaceSessionResult {
+  sessionId: string | null;
 }
 
 export interface AutoStartCoordinatorDeps {
@@ -114,8 +125,11 @@ export interface AutoStartCoordinatorDeps {
     officeId: string,
     agentId: string,
   ): { workingDir: string; launchMode: 'copilot' | 'shell' };
-  /** Per-agent close (reset) — wraps copilotBridge.resetSession. */
-  resetSession(officeId: string, agentId: string): Promise<void>;
+  /** Per-agent close (reset) — wraps copilotBridge.resetSession. Returns the
+   *  freshly-minted session id the server mints on reset (or null when
+   *  unavailable) so `replaceSession` can surface it without an extra
+   *  `getSessionId` round-trip. */
+  resetSession(officeId: string, agentId: string): Promise<string | null>;
   /** Spawn (or reattach to) the PTY for the agent. Server-side dedup ensures
    *  no second PTY if one is already alive (R5 / FR-006). */
   warmAgentSession(officeId: string, agentId: string): Promise<void>;
@@ -204,15 +218,18 @@ export class AutoStartCoordinator {
 
   /** Rule #3 trigger. Returns the in-flight promise for an existing replace,
    *  otherwise starts and tracks a new one. Setting OFF short-circuits to
-   *  just resetSession (acts like Close Session, per FR-017). */
-  replaceSession(officeId: string, agentId: string): Promise<void> {
+   *  just resetSession (acts like Close Session, per FR-017). Resolves with the
+   *  freshly-minted session id from the reset (spec 021 — lets the New Session
+   *  UI update the id display without a redundant getSessionId round-trip). */
+  replaceSession(officeId: string, agentId: string): Promise<ReplaceSessionResult> {
     const existing = this.replaceTracker.get(agentId);
     if (existing) return existing;
-    const p = (async () => {
-      await this.deps.resetSession(officeId, agentId);
+    const p = (async (): Promise<ReplaceSessionResult> => {
+      const sessionId = (await this.deps.resetSession(officeId, agentId)) ?? null;
       if (this.deps.getSettings().autoStartKnownAgents) {
         await this.deps.warmAgentSession(officeId, agentId);
       }
+      return { sessionId };
     })().finally(() => {
       this.replaceTracker.delete(agentId);
     });

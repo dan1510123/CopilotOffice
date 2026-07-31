@@ -612,7 +612,7 @@ function installE2eDebugHook(): void {
     getAutoStartTerminalStartCount: () => autoStartTerminalStartCount,
     triggerAutoStartForCurrentOffice: () => autoStartCoordinator.tryWarmCurrentOffice(),
     replaceAgentSession: (officeId: string, agentId: string) =>
-      autoStartCoordinator.replaceSession(officeId, agentId),
+      autoStartCoordinator.replaceSession(officeId, agentId).then(() => {}),
     setAutoStartEnabled: (enabled: boolean) => {
       setAgentAutoStartSettings({ autoStartKnownAgents: enabled });
     },
@@ -1777,8 +1777,9 @@ const autoStartCoordinator = new AutoStartCoordinator({
     };
   },
   resetSession: async (oid, aid) => {
-    if (!window.copilotBridge) return;
-    await window.copilotBridge.resetSession(oid, aid);
+    if (!window.copilotBridge) return null;
+    const r = await window.copilotBridge.resetSession(oid, aid);
+    return r?.sessionId ?? null;
   },
   warmAgentSession: async (oid, aid) => {
     await warmAgentSession(oid, aid);

@@ -1181,22 +1181,33 @@ export class TerminalOverlay {
     // singleton has not been wired (defensive — should not happen in prod).
     const coordinator = getAutoStartCoordinator();
     if (coordinator) {
+      perfMark('overlay', 'session:new-request', `${officeId}:${agentId}`);
+      let replacedSessionId: string | null = null;
       try {
-        await coordinator.replaceSession(officeId, agentId);
+        const result = await coordinator.replaceSession(officeId, agentId);
+        replacedSessionId = result.sessionId;
       } catch (err) {
         this.terminal?.writeln(`Failed to start terminal: ${(err as Error)?.message || String(err)}`);
       }
-      // After the coordinator's warm path, refresh the session id from the
-      // bridge so the UI shows the freshly-minted uuid.
-      try {
-        if (window.copilotBridge?.getSessionId) {
-          const sid = await window.copilotBridge.getSessionId(officeId, agentId);
-          if (sid) {
-            this.sessionId = sid;
-            this.updateSessionDisplay();
+      // Perf (spec 021 session-action budget): replaceSession already surfaced
+      // the freshly-minted session id from the server-side reset, so use it
+      // directly instead of a redundant getSessionId round-trip. Only fall back
+      // to a fetch when the coordinator could not surface one (e.g. failure).
+      if (replacedSessionId) {
+        this.sessionId = replacedSessionId;
+        this.updateSessionDisplay();
+      } else {
+        try {
+          if (window.copilotBridge?.getSessionId) {
+            const sid = await window.copilotBridge.getSessionId(officeId, agentId);
+            if (sid) {
+              this.sessionId = sid;
+              this.updateSessionDisplay();
+            }
           }
-        }
-      } catch { /* ignore */ }
+        } catch { /* ignore */ }
+      }
+      perfMark('overlay', 'session:new-done', `${officeId}:${agentId}`);
       return;
     }
 
@@ -1242,6 +1253,7 @@ export class TerminalOverlay {
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
     console.log(`[TerminalOverlay] handleCloseSession: agent=${this.currentAgentId}, office=${officeId}`);
 
+    perfMark('overlay', 'session:close-request', `${officeId}:${this.currentAgentId}`);
     try {
       const result = await withTimeout(
         window.copilotBridge.resetSession(officeId, this.currentAgentId),
@@ -1253,6 +1265,7 @@ export class TerminalOverlay {
         this.updateSessionTitleDisplay(null);
       }
     } catch { /* ignore */ }
+    perfMark('overlay', 'session:close-done', `${officeId}:${this.currentAgentId}`);
 
     // Notify the app to set this agent to slacking
     this.scene.game.events.emit('agent:session:closed', this.currentAgentId);
