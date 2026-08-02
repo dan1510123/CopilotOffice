@@ -90,6 +90,12 @@ describe('computeAwaitingAgents', () => {
     expect(ids).toEqual(['oldest', 'middle', 'recent']);
   });
 
+  it('scopes to a single office when officeId is provided', () => {
+    expect(computeAwaitingAgents(NOW, 'o1').map((a) => a.agentId)).toEqual(['oldest', 'recent']);
+    expect(computeAwaitingAgents(NOW, 'o2').map((a) => a.agentId)).toEqual(['middle']);
+    expect(computeAwaitingAgents(NOW, 'nope')).toEqual([]);
+  });
+
   it('flags every returned agent as awaitingInput with a pendingQuestion', () => {
     for (const a of computeAwaitingAgents(NOW)) {
       expect(a.awaitingInput).toBe(true);

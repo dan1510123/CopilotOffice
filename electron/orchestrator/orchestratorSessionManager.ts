@@ -86,15 +86,20 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '',
   'Situational awareness & acting on agents (across ALL offices):',
   '- For any "what is everyone working on / give me a status roll-up / who is busy"',
-  '  request, call `get_active_agents` (no arguments). It lists every agent with a live',
-  '  session across all offices — including agents that are done, waiting, or thinking —',
-  '  with each one\'s office, status, current activity, and how long it has been in that',
-  '  state. Report from that; do not guess. When you present the roll-up, order the',
-  '  columns as Office, Name, Status (then activity and time-in-state) — lead with the',
-  '  office, not the raw agentId.',
+  '  request, call `get_active_agents`. With no arguments it lists every agent with a live',
+  '  session across ALL offices; when the user asks about ONE named office ("who is in',
+  '  Dan\'s office", "agents in the QA office"), FIRST resolve that office to its `officeId`',
+  '  via `list_offices`, then call `get_active_agents` with that `officeId` so the roll-up',
+  '  is scoped to that office only. Each result carries its own `officeName`/`officeId` —',
+  '  NEVER relabel agents from the unscoped (all-offices) list as belonging to one office;',
+  '  if you did not pass an `officeId`, group the rows by their `officeName` and say the',
+  '  list spans all offices. Report from the tool result; do not guess. When you present the',
+  '  roll-up, order the columns as Office, Name, Status (then activity and time-in-state) —',
+  '  lead with the office, not the raw agentId.',
   '- For "who is stuck / who needs me / is anyone waiting on me", call',
-  '  `list_agents_awaiting_input` (no arguments) — it returns only the blocked agents,',
-  '  longest-waiting first, each with its pending question.',
+  '  `list_agents_awaiting_input` — with no arguments across all offices, or with an',
+  '  `officeId` to scope to one office. It returns only the blocked agents, longest-waiting',
+  '  first, each with its pending question.',
   '- For "what did X just do / summarize what X is doing", call `get_agent_transcript`',
   '  with that agent\'s `agentId` (and `officeId` if you know it). It returns a bounded,',
   '  read-only window of recent output; if there is nothing recent, say so.',
@@ -150,8 +155,8 @@ export interface OrchestratorEmitter {
   emitOfficesRequest(payload: { sessionId: string; requestId: string }): void;
   emitSwitchRequest(payload: { sessionId: string; requestId: string; officeId: string }): void;
   // ── spec 017 (new request channels) ────────────────────────────────────────
-  emitActiveAgentsRequest?(payload: { sessionId: string; requestId: string }): void;
-  emitAwaitingAgentsRequest?(payload: { sessionId: string; requestId: string }): void;
+  emitActiveAgentsRequest?(payload: { sessionId: string; requestId: string; officeId?: string }): void;
+  emitAwaitingAgentsRequest?(payload: { sessionId: string; requestId: string; officeId?: string }): void;
   emitAgentOutputRequest?(payload: {
     sessionId: string;
     requestId: string;
@@ -402,8 +407,8 @@ export class OrchestratorSessionManager {
       requestOffices: () => this.requestOffices(),
       requestSwitch: (officeId) => this.requestSwitch(officeId),
       getOfficeId: () => this.lastOfficeId,
-      requestActiveAgents: async () => this.cacheAgentNames(await this.requestActiveAgents()),
-      requestAwaitingAgents: async () => this.cacheAgentNames(await this.requestAwaitingAgents()),
+      requestActiveAgents: async (officeId) => this.cacheAgentNames(await this.requestActiveAgents(officeId)),
+      requestAwaitingAgents: async (officeId) => this.cacheAgentNames(await this.requestAwaitingAgents(officeId)),
       requestAgentOutput: (agentId, officeId) => this.requestAgentOutput(agentId, officeId),
       requestAgentStatus: (agent, officeId) => this.requestAgentStatus(agent, officeId),
       requestAnswerAgent: (a) => this.requestActOn('answer_agent', a),
@@ -748,12 +753,12 @@ export class OrchestratorSessionManager {
 
   // ── spec 017: read-only situational-awareness round-trips ──────────────────
 
-  private requestActiveAgents(): Promise<ActiveAgentSnapshot[]> {
+  private requestActiveAgents(officeId?: string): Promise<ActiveAgentSnapshot[]> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<ActiveAgentSnapshot[]>((resolve) => {
       this.pendingActiveAgents.set(requestId, resolve);
-      this.emitter.emitActiveAgentsRequest?.({ sessionId, requestId });
+      this.emitter.emitActiveAgentsRequest?.({ sessionId, requestId, officeId });
     });
   }
 
@@ -765,12 +770,12 @@ export class OrchestratorSessionManager {
     return true;
   }
 
-  private requestAwaitingAgents(): Promise<AwaitingAgent[]> {
+  private requestAwaitingAgents(officeId?: string): Promise<AwaitingAgent[]> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<AwaitingAgent[]>((resolve) => {
       this.pendingAwaitingAgents.set(requestId, resolve);
-      this.emitter.emitAwaitingAgentsRequest?.({ sessionId, requestId });
+      this.emitter.emitAwaitingAgentsRequest?.({ sessionId, requestId, officeId });
     });
   }
 

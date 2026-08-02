@@ -29,8 +29,8 @@ export interface OrchestratorToolDeps {
   /** Reserved for future use; officeId is currently derived from candidates. */
   getOfficeId: () => string;
   // ── spec 017: situational awareness (read-only) ────────────────────────────
-  requestActiveAgents: () => Promise<ActiveAgentSnapshot[]>;
-  requestAwaitingAgents: () => Promise<AwaitingAgent[]>;
+  requestActiveAgents: (officeId?: string) => Promise<ActiveAgentSnapshot[]>;
+  requestAwaitingAgents: (officeId?: string) => Promise<AwaitingAgent[]>;
   requestAgentOutput: (agentId: string, officeId?: string) => Promise<AgentRecentOutput>;
   /** Cheap single-agent status + Teams presence lookup by fuzzy name or agentId. */
   requestAgentStatus: (agent: string, officeId?: string) => Promise<AgentStatusLookup>;
@@ -126,15 +126,26 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
 
   const getActiveAgentsTool = defineTool('get_active_agents', {
     description:
-      'List every agent that currently has a live session across ALL offices — ' +
-      'including agents that are done/awaiting-ack, waiting on input, and thinking — ' +
-      "with each agent's office, status, current activity, and how long it has been in " +
-      "that state. Use for any \"what's everyone working on / status roll-up / who is " +
-      'busy" request. Takes no arguments.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      'List agents that currently have a live session — including agents that are ' +
+      'done/awaiting-ack, waiting on input, and thinking — with each agent\'s office, ' +
+      'status, current activity, and how long it has been in that state. Use for any ' +
+      '"what\'s everyone working on / status roll-up / who is busy" request. By default ' +
+      'it spans ALL offices; pass `officeId` to scope the roll-up to a SINGLE office ' +
+      '(use this whenever the user asks about one named office, e.g. "who is in Dan\'s ' +
+      'office"). Get valid ids from `list_offices`.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Optional office id to scope the roll-up to a single office.',
+        },
+      },
+      additionalProperties: false,
+    },
     skipPermission: true,
-    handler: async () => {
-      const agents = await deps.requestActiveAgents();
+    handler: async (args: { officeId?: string }) => {
+      const agents = await deps.requestActiveAgents(args.officeId);
       return { agents };
     },
   });
@@ -143,11 +154,21 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     description:
       'List only the agents that are blocked waiting for user input, with each one\'s ' +
       'pending question and how long it has been waiting, longest first. Use for "who ' +
-      'needs me / is anyone stuck?" Takes no arguments.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      'needs me / is anyone stuck?" By default it spans ALL offices; pass `officeId` to ' +
+      'scope to a SINGLE office. Get valid ids from `list_offices`.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Optional office id to scope the list to a single office.',
+        },
+      },
+      additionalProperties: false,
+    },
     skipPermission: true,
-    handler: async () => {
-      const agents = await deps.requestAwaitingAgents();
+    handler: async (args: { officeId?: string }) => {
+      const agents = await deps.requestAwaitingAgents(args.officeId);
       return { agents };
     },
   });

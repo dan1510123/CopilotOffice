@@ -128,14 +128,20 @@ function buildSnapshot(
 }
 
 /**
- * Enumerate every session-bearing agent across ALL offices (FR-008/013). A
- * session-bearing agent is one whose status is `active` (i.e. starting/ready/
- * done/waiting/thinking/error) — `slacking` agents have no live session and are
- * excluded. `done`/idle-online agents are NOT omitted.
+ * Enumerate every session-bearing agent across ALL offices (FR-008/013), or —
+ * when `officeId` is provided — only that one office. A session-bearing agent is
+ * one whose status is `active` (i.e. starting/ready/done/waiting/thinking/error)
+ * — `slacking` agents have no live session and are excluded. `done`/idle-online
+ * agents are NOT omitted.
  */
-export function computeActiveAgents(now: number = Date.now()): ActiveAgentSnapshot[] {
+export function computeActiveAgents(
+  now: number = Date.now(),
+  officeId?: string,
+): ActiveAgentSnapshot[] {
+  const scope = officeId?.trim() || undefined;
   const snapshots: ActiveAgentSnapshot[] = [];
   for (const config of officeManager.getAllOffices()) {
+    if (scope && config.id !== scope) continue;
     const office = officeManager.getOffice(config.id);
     if (!office) continue;
     for (const [agentId, status] of office.agents) {
@@ -147,13 +153,19 @@ export function computeActiveAgents(now: number = Date.now()): ActiveAgentSnapsh
 }
 
 /**
- * The `waiting` subset (FR-010), longest-waiting first. Reuses the US2 snapshot
+ * The `waiting` subset (FR-010), longest-waiting first, across all offices or —
+ * when `officeId` is provided — scoped to that one office. Reuses the US2 snapshot
  * builder, filtered to `awaitingInput` and sorted by time-in-state descending
  * (i.e. oldest `activityStartTime` first).
  */
-export function computeAwaitingAgents(now: number = Date.now()): AwaitingAgent[] {
+export function computeAwaitingAgents(
+  now: number = Date.now(),
+  officeId?: string,
+): AwaitingAgent[] {
+  const scope = officeId?.trim() || undefined;
   const waiting: Array<{ snapshot: AwaitingAgent; startedAt: number }> = [];
   for (const config of officeManager.getAllOffices()) {
+    if (scope && config.id !== scope) continue;
     const office = officeManager.getOffice(config.id);
     if (!office) continue;
     for (const [agentId, status] of office.agents) {

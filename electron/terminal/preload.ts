@@ -389,13 +389,13 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return () => ipcRenderer.removeListener('orchestrator:switch:request', handler);
   },
   // ── spec 017: situational-awareness + act-on request listeners ─────────────
-  onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
-    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+  onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; officeId?: string }) => callback(payload);
     ipcRenderer.on('orchestrator:active-agents:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:active-agents:request', handler);
   },
-  onOrchestratorAwaitingAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
-    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+  onOrchestratorAwaitingAgentsRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; officeId?: string }) => callback(payload);
     ipcRenderer.on('orchestrator:awaiting-agents:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:awaiting-agents:request', handler);
   },
@@ -597,8 +597,8 @@ declare global {
       onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => () => void;
       onOrchestratorOfficesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
       onOrchestratorSwitchRequest: (callback: (payload: { sessionId: string; requestId: string; officeId: string }) => void) => () => void;
-      onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
-      onOrchestratorAwaitingAgentsRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
+      onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => () => void;
+      onOrchestratorAwaitingAgentsRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => () => void;
       onOrchestratorAgentOutputRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
       onOrchestratorAgentStatusRequest: (callback: (payload: { sessionId: string; requestId: string; agent: string; officeId?: string }) => void) => () => void;
       onOrchestratorAnswerAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; answer: string }) => void) => () => void;

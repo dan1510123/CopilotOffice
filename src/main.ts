@@ -1985,17 +1985,17 @@ function registerOrchestratorSpec017Resolvers(): void {
   // Session titles are the durable "what is this agent doing" signal (activity is
   // frequently empty after an app restart because live status fields reset). Overlay
   // each agent's session title onto `activity` so the roll-up stays meaningful.
-  bridge.onOrchestratorActiveAgentsRequest(({ requestId }) => {
+  bridge.onOrchestratorActiveAgentsRequest(({ requestId, officeId }) => {
     void (async () => {
-      const snapshots = computeActiveAgents();
+      const snapshots = computeActiveAgents(Date.now(), officeId);
       await overlaySessionTitlesOntoActivity(snapshots);
       await bridge.orchestratorRespondActiveAgents(requestId, snapshots);
     })();
   });
 
   // ── US3: list_agents_awaiting_input (read-only, longest-first) ─────────────
-  bridge.onOrchestratorAwaitingAgentsRequest(({ requestId }) => {
-    void bridge.orchestratorRespondAwaitingAgents(requestId, computeAwaitingAgents());
+  bridge.onOrchestratorAwaitingAgentsRequest(({ requestId, officeId }) => {
+    void bridge.orchestratorRespondAwaitingAgents(requestId, computeAwaitingAgents(Date.now(), officeId));
   });
 
   // ── US7: get_agent_transcript (read-only, bounded peek) ────────────────────
