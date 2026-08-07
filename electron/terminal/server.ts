@@ -9,7 +9,7 @@ import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay } from './events-watcher';
-import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry } from './protocol';
+import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
 import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession } from './terminal-backend';
 import {
@@ -1208,6 +1208,69 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       console.log(`[TermServer] Detaching viewer for ${ck}`);
       // Pairs with addAgentViewer on attach: dual-key removal for transferred sessions.
       removeAgentViewer(ck, viewerMaps);
+      break;
+    }
+
+    case 'activate': {
+      // Spec 021 Phase 2 — atomic activation. One round-trip that ensures the
+      // terminal exists, registers the viewer, awaits the foreground switch, and
+      // returns the authoritative session payload. Faithfully composed from the
+      // same primitives as the `start` + `attach` cases so behavior is identical.
+      const ck = compositeKey(msg.officeId, msg.agentId);
+      const existed = getTerminalKey(msg.officeId, msg.agentId) !== null;
+
+      if (!existed) {
+        // Cold path — mirror the `start` case bookkeeping (activeAgentViewers.add
+        // happens via addAgentViewer below; startTerminalForAgent owns the rest).
+        const startResult = await startTerminalForAgent(
+          msg.officeId,
+          msg.agentId,
+          msg.workingDir,
+          msg.cols,
+          msg.rows,
+          undefined,
+          msg.launchMode,
+        );
+        if (!startResult.success) {
+          const failure: ActivateResult = { success: false, error: startResult.error || 'terminal start failed' };
+          send({ type: 'response', requestId: msg.requestId, result: failure });
+          break;
+        }
+      }
+
+      // Register the viewer (dual-key aware). Idempotent for the cold path.
+      const { aliasKey } = addAgentViewer(ck, viewerMaps);
+      if (aliasKey) {
+        console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
+      }
+
+      // Foreground switch — mirror the `attach` case. Only claim the single host
+      // foreground for a genuine user-view activation, and AWAIT it so keystrokes
+      // never race to the previously foregrounded agent (input-target race guard).
+      const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
+      const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
+      const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
+      if (isSharedHost && msg.foreground === true) {
+        officeForegroundCk.set(msg.officeId, ck);
+        try {
+          await attachedProc!.process.setForeground?.();
+        } catch (err: unknown) {
+          console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
+        }
+      }
+
+      const officeData = getOfficeSession(msg.officeId);
+      const result: ActivateResult = {
+        success: true,
+        existed,
+        sessionId: officeData.sessionIds.get(msg.agentId) || null,
+        title: officeData.sessionMeta.get(msg.agentId)?.title ?? null,
+      };
+      if (msg.needScrollback) {
+        const chunks = agentScrollbackBuffers.get(ck) || [];
+        result.scrollback = chunks.join('');
+      }
+      send({ type: 'response', requestId: msg.requestId, result });
       break;
     }
 

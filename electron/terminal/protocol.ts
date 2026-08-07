@@ -99,6 +99,48 @@ export interface MsgDetach {
   agentId: string;
 }
 
+/**
+ * Atomic terminal activation (spec 021 Phase 2). Collapses the serial
+ * exists → start → attach → get-session-id → get-session-meta open sequence
+ * into a single request/response so a warm switch costs exactly one round-trip.
+ *
+ * The handler:
+ *  - ensures the terminal exists (cold-starts it, mirroring `start` bookkeeping),
+ *  - registers the viewer via the dual-key `addAgentViewer` helper,
+ *  - when `foreground === true`, serializes and AWAITS the ui-server foreground
+ *    switch (preserving the input-target race guard — never fire-and-forget),
+ *  - returns the authoritative session id + title, and
+ *  - returns scrollback ONLY when `needScrollback` is set (a cold cache entry);
+ *    a warm cached xterm has retained its rendered state, so replay is skipped.
+ */
+export interface MsgActivate {
+  type: 'activate';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  workingDir?: string;
+  cols?: number;
+  rows?: number;
+  launchMode?: 'copilot' | 'shell';
+  /** True only for a genuine user "I am now viewing this agent" activation. */
+  foreground?: boolean;
+  /** True for a cold cache entry that needs the initial scrollback replayed. */
+  needScrollback?: boolean;
+}
+
+/** Response payload of `activate` (carried in `SrvResponse.result`). */
+export type ActivateResult =
+  | {
+      success: true;
+      /** True when the terminal already existed (warm); false when cold-started. */
+      existed: boolean;
+      sessionId: string | null;
+      title: string | null;
+      /** Present only when `needScrollback` was requested. */
+      scrollback?: string;
+    }
+  | { success: false; error: string };
+
 export interface MsgExists {
   type: 'exists';
   requestId: string;
@@ -269,6 +311,7 @@ export type MainToServer =
   | MsgKill
   | MsgAttach
   | MsgDetach
+  | MsgActivate
   | MsgExists
   | MsgGetSessionId
   | MsgSetSessionId

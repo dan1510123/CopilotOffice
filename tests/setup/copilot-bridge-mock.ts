@@ -14,6 +14,7 @@ export function createMockCopilotBridge(
     terminalKill: vi.fn().mockResolvedValue({ success: true }),
     terminalExists: vi.fn().mockResolvedValue(false),
     terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: '' }),
+    terminalActivate: vi.fn().mockResolvedValue({ success: true, existed: false, sessionId: 'session-1', title: null, scrollback: '' }),
     terminalDetach: vi.fn().mockResolvedValue({ success: true }),
     terminalPopOut: vi.fn().mockResolvedValue({ success: true }),
     getSessionId: vi.fn().mockResolvedValue(null),

@@ -59,6 +59,23 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   terminalAttach: (officeId: string, agentId: string, foreground?: boolean): Promise<{ success: boolean; scrollback?: string }> => {
     return ipcRenderer.invoke('terminal-attach', officeId, agentId, foreground);
   },
+  terminalActivate: (
+    officeId: string,
+    agentId: string,
+    opts?: {
+      workingDir?: string;
+      cols?: number;
+      rows?: number;
+      launchMode?: 'copilot' | 'shell';
+      foreground?: boolean;
+      needScrollback?: boolean;
+    },
+  ): Promise<
+    | { success: true; existed: boolean; sessionId: string | null; title: string | null; scrollback?: string }
+    | { success: false; error: string }
+  > => {
+    return ipcRenderer.invoke('terminal-activate', officeId, agentId, opts);
+  },
   terminalDetach: (officeId: string, agentId: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('terminal-detach', officeId, agentId);
   },
@@ -489,6 +506,21 @@ declare global {
       setAdditionalParams: (params: string) => Promise<{ success: boolean }>;
       terminalExists: (officeId: string, agentId: string) => Promise<boolean>;
       terminalAttach: (officeId: string, agentId: string, foreground?: boolean) => Promise<{ success: boolean; scrollback?: string }>;
+      terminalActivate: (
+        officeId: string,
+        agentId: string,
+        opts?: {
+          workingDir?: string;
+          cols?: number;
+          rows?: number;
+          launchMode?: 'copilot' | 'shell';
+          foreground?: boolean;
+          needScrollback?: boolean;
+        },
+      ) => Promise<
+        | { success: true; existed: boolean; sessionId: string | null; title: string | null; scrollback?: string }
+        | { success: false; error: string }
+      >;
       terminalDetach: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       terminalPopOut: (officeId: string, agentId: string) => Promise<{ success: boolean }>;
       getSessionId: (officeId: string, agentId: string) => Promise<string | null>;

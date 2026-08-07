@@ -52,6 +52,7 @@ export class TerminalRelay {
   private static readonly SLOW_START_TYPES: ReadonlySet<MainToServer['type']> = new Set([
     'start',
     'attach',
+    'activate',
   ]);
 
   /** Resolve the request-timeout budget for a given message type. */
@@ -424,6 +425,35 @@ export class TerminalRelay {
 
     ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string, foreground?: boolean) =>
       this.request({ type: 'attach', requestId: this.id(), officeId, agentId, foreground })
+    );
+
+    ipcMain.handle(
+      'terminal-activate',
+      (
+        _event,
+        officeId: string,
+        agentId: string,
+        opts?: {
+          workingDir?: string;
+          cols?: number;
+          rows?: number;
+          launchMode?: 'copilot' | 'shell';
+          foreground?: boolean;
+          needScrollback?: boolean;
+        },
+      ) =>
+        this.request({
+          type: 'activate',
+          requestId: this.id(),
+          officeId,
+          agentId,
+          workingDir: opts?.workingDir,
+          cols: opts?.cols,
+          rows: opts?.rows,
+          launchMode: opts?.launchMode,
+          foreground: opts?.foreground,
+          needScrollback: opts?.needScrollback,
+        }),
     );
 
     ipcMain.handle('terminal-detach', (_event, officeId: string, agentId: string) => {
