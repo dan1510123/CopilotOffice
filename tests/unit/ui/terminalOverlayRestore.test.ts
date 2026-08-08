@@ -19,6 +19,7 @@ interface OverlayInternals {
   isReadOnly: boolean;
   restoreInFlight: boolean;
   show: (...args: unknown[]) => Promise<void>;
+  awaitNextRefitSettled: (...args: unknown[]) => Promise<void>;
   handleRestoreSession: (entry: { id: string; title?: string }) => Promise<void>;
 }
 
@@ -33,8 +34,9 @@ function makeOverlay(bridge: MockCopilotBridge): { overlay: TerminalOverlay; int
   internals.attachedOfficeId = 'office-1';
   internals.onCloseCallback = () => {};
   internals.isReadOnly = false;
-  // Stub the heavy re-render.
+  // Stub the heavy re-render + its post-render settle wait.
   internals.show = vi.fn().mockResolvedValue(undefined);
+  internals.awaitNextRefitSettled = vi.fn().mockResolvedValue(undefined);
   return { overlay, internals };
 }
 

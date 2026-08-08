@@ -90,6 +90,8 @@ export class TerminalOverlay {
   private refitTimers: ReturnType<typeof setTimeout>[] = [];
   private refitRaf: number | null = null;
   private refitGeneration: number = 0;
+  /** Spec 021: resolvers waiting for the current refit schedule's final stage to run. */
+  private refitSettledResolvers: Array<() => void> = [];
   private getOfficeId: () => string;
   private attachedOfficeId: string | null = null;
   private isReadOnly: boolean = false;
@@ -1445,15 +1447,22 @@ export class TerminalOverlay {
       this.terminalCache?.invalidate(officeId, agentId);
       this.closeHistoryPopover();
       const onClose = this.onCloseCallback ?? (() => {});
+      // Register the settle waiter BEFORE show() so show()'s internal
+      // debouncedRefit resolves it once the final refit stage runs.
+      const settled = this.awaitNextRefitSettled();
       await this.show(this.currentAgent, onClose, { readOnly: this.isReadOnly, launchMode: this.launchMode });
+      // Keep the loader up + input blocked until the freshly-rebuilt xterm has
+      // finished its async refit/repaint — otherwise the loader flashes off and
+      // the user still sees the hollow-cursor "settling" window (spec 021).
+      await settled;
     } catch (e) {
       showClipboardToast(`Restore failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
     } finally {
       this.restoreInFlight = false;
       this.hideRestoreLoading();
-      // The freshly-restored session is now ready — re-assert focus so the
-      // cursor lands solid immediately rather than after the refit settles.
-      // Best-effort: focus wiring may be absent in headless/unit contexts.
+      // The freshly-restored session is now settled — assert focus so the cursor
+      // lands solid immediately and InputManager routes ALL keys (incl. space)
+      // to the xterm. Best-effort: focus wiring may be absent in unit contexts.
       try { this.focusTerminal(); } catch { /* ignore */ }
     }
   }
@@ -2006,9 +2015,34 @@ export class TerminalOverlay {
       // Stage 2: after 150ms
       this.refitTimers.push(setTimeout(() => {
         doFit();
-        // Stage 3: after 350ms
-        this.refitTimers.push(setTimeout(doFit, 200));
+        // Stage 3: after 350ms — this is the final settle; notify any waiters.
+        this.refitTimers.push(setTimeout(() => {
+          doFit();
+          if (generation === this.refitGeneration) this.notifyRefitSettled();
+        }, 200));
       }, 150));
+    });
+  }
+
+  /** Resolve everyone awaiting the current refit schedule's completion. */
+  private notifyRefitSettled(): void {
+    const resolvers = this.refitSettledResolvers;
+    this.refitSettledResolvers = [];
+    for (const resolve of resolvers) resolve();
+  }
+
+  /**
+   * Spec 021: resolve after the NEXT debouncedRefit schedule finishes its final
+   * stage (or after a safety timeout). Used by the restore path to keep the
+   * loading overlay + input latch up until the terminal has actually settled and
+   * repainted, not merely until show() has returned (the refit stages are async).
+   */
+  private awaitNextRefitSettled(timeoutMs = 1500): Promise<void> {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      this.refitSettledResolvers.push(finish);
+      setTimeout(finish, timeoutMs);
     });
   }
 
