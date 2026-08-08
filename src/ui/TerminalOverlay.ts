@@ -103,6 +103,10 @@ export class TerminalOverlay {
   private isEditingSessionTitle: boolean = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
+  // Spec 021: indeterminate "Restoring session…" loader over the terminal
+  // viewport + its running Web Animation handle (cancelled on hide).
+  private restoreLoadingOverlay: HTMLDivElement | null = null;
+  private restoreLoadingAnimation: Animation | null = null;
   // Unsubscribe functions for the bridge IPC listeners this overlay owns
   // (terminal-data, terminal-exit, session-meta-updated). Disposed and
   // re-created on every setupTerminalListeners() call so an overlay can never
@@ -866,6 +870,7 @@ export class TerminalOverlay {
       min-height: 0;
       padding: 10px;
       box-sizing: border-box;
+      position: relative;
     `;
     this.terminalDiv = document.createElement('div');
     this.terminalDiv.style.cssText = `
@@ -893,6 +898,10 @@ export class TerminalOverlay {
         requestAnimationFrame(() => this.terminal?.focus());
       }
     });
+    // Spec 021: indeterminate "Restoring session…" loader, mounted over the
+    // terminal viewport and shown only while a restore is in flight.
+    this.restoreLoadingOverlay = this.createRestoreLoadingOverlay();
+    terminalOuter.appendChild(this.restoreLoadingOverlay);
     this.container.appendChild(terminalOuter);
 
     const terminalPanel = document.getElementById('terminal-panel') || document.body;
@@ -1415,6 +1424,7 @@ export class TerminalOverlay {
     if (!confirm(message)) return;                     // FR-004 no-op on cancel
 
     this.restoreInFlight = true;
+    this.showRestoreLoading();
     try {
       const res = await withTimeout(
         window.copilotBridge.restoreSession(officeId, agentId, entry.id),
@@ -1440,6 +1450,11 @@ export class TerminalOverlay {
       showClipboardToast(`Restore failed: ${(e as Error)?.message || 'bridge threw'}`, 'error');
     } finally {
       this.restoreInFlight = false;
+      this.hideRestoreLoading();
+      // The freshly-restored session is now ready — re-assert focus so the
+      // cursor lands solid immediately rather than after the refit settles.
+      // Best-effort: focus wiring may be absent in headless/unit contexts.
+      try { this.focusTerminal(); } catch { /* ignore */ }
     }
   }
 
@@ -1457,6 +1472,95 @@ export class TerminalOverlay {
 
   private injectStyles(): void {
     ensureXtermStyles();
+  }
+
+  /**
+   * Spec 021: build the indeterminate restore loader (hidden by default). It
+   * covers the terminal viewport and, when shown, swallows pointer + keyboard
+   * interaction so the user can't act on the not-yet-ready session. The bar is
+   * animated via the Web Animations API (no CSS keyframes needed) and is honest
+   * — indeterminate, never a fabricated percentage/ETA.
+   */
+  private createRestoreLoadingOverlay(): HTMLDivElement {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: rgba(10, 10, 20, 0.72);
+      backdrop-filter: blur(1.5px);
+      z-index: ${ZIndex.TERMINAL_RESTORE_LOADING};
+      pointer-events: auto;
+      font-family: 'Cascadia Code', Consolas, monospace;
+    `;
+
+    const label = document.createElement('div');
+    label.textContent = 'Restoring session…';
+    label.style.cssText = 'color: #9fe8c0; font-size: 15px; font-weight: 700; letter-spacing: 0.3px;';
+
+    const track = document.createElement('div');
+    track.style.cssText = `
+      position: relative;
+      width: min(260px, 60%);
+      height: 4px;
+      background: #1b2740;
+      border-radius: 999px;
+      overflow: hidden;
+    `;
+    const bar = document.createElement('div');
+    bar.className = 'restore-loading-bar';
+    bar.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 40%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #00ff88, #4a9eff);
+    `;
+    track.appendChild(bar);
+
+    overlay.appendChild(label);
+    overlay.appendChild(track);
+
+    // Swallow any interaction that reaches the overlay while it is visible.
+    for (const type of ['mousedown', 'mouseup', 'click', 'contextmenu', 'wheel'] as const) {
+      overlay.addEventListener(type, (e) => { e.stopPropagation(); e.preventDefault(); });
+    }
+    return overlay;
+  }
+
+  /** Spec 021: show the restore loader and start its indeterminate animation. */
+  private showRestoreLoading(): void {
+    if (!this.restoreLoadingOverlay) return;
+    this.restoreLoadingOverlay.style.display = 'flex';
+    // Keystrokes are additionally blocked at the source via the restoreInFlight
+    // guard in handleUserInput; blur so the xterm textarea doesn't hold focus.
+    this.terminal?.blur?.();
+    const bar = this.restoreLoadingOverlay.querySelector('.restore-loading-bar') as HTMLElement | null;
+    if (bar && typeof bar.animate === 'function') {
+      this.restoreLoadingAnimation?.cancel();
+      this.restoreLoadingAnimation = bar.animate(
+        [
+          { transform: 'translateX(-110%)' },
+          { transform: 'translateX(360%)' },
+        ],
+        { duration: 1100, iterations: Infinity, easing: 'ease-in-out' },
+      );
+    }
+  }
+
+  /** Spec 021: hide the restore loader and stop its animation. */
+  private hideRestoreLoading(): void {
+    this.restoreLoadingAnimation?.cancel();
+    this.restoreLoadingAnimation = null;
+    if (this.restoreLoadingOverlay) {
+      this.restoreLoadingOverlay.style.display = 'none';
+    }
   }
 
   /**
@@ -1685,6 +1789,7 @@ export class TerminalOverlay {
   private handleUserInput(data: string, boundOfficeId: string, boundAgentId: string): void {
     if (this.isReadOnly) return;
     if (this.isSwitchingAgent) return; // V5: drop input mid-switch
+    if (this.restoreInFlight) return; // spec 021: drop input while restoring
     if (!window.copilotBridge) return;
 
     let outbound = '';

@@ -109,4 +109,39 @@ describe('spec 020 — TerminalOverlay.handleRestoreSession', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(bridge.restoreSession).not.toHaveBeenCalled();
   });
+
+  it('spec 021: shows the "Restoring session…" loader while in flight and hides it after (blocking input meanwhile)', async () => {
+    confirmSpy.mockReturnValue(true);
+    const { overlay, internals } = makeOverlay(bridge);
+
+    // Give the overlay a real restore loader element (createContainer builds it).
+    const loader = (overlay as unknown as {
+      createRestoreLoadingOverlay: () => HTMLDivElement;
+    }).createRestoreLoadingOverlay();
+    (overlay as unknown as { restoreLoadingOverlay: HTMLDivElement }).restoreLoadingOverlay = loader;
+    document.body.appendChild(loader);
+
+    // Gate restoreSession so we can observe the in-flight state.
+    let release: (v: { success: boolean; sessionId: string }) => void = () => {};
+    (bridge.restoreSession as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise((res) => { release = res; }),
+    );
+
+    const p = internals.handleRestoreSession({ id: 'sess-A', title: 'Alpha' });
+    // In flight: loader visible, latch raised → input dropped.
+    expect(loader.style.display).toBe('flex');
+    expect(internals.restoreInFlight).toBe(true);
+    const handleUserInput = (overlay as unknown as {
+      handleUserInput: (d: string, o: string, a: string) => void;
+    }).handleUserInput.bind(overlay);
+    handleUserInput('x', 'office-1', 'agent-1');
+    expect(bridge.terminalWrite).not.toHaveBeenCalled();
+
+    release({ success: true, sessionId: 'sess-A' });
+    await p;
+
+    // Settled: loader hidden, latch cleared.
+    expect(loader.style.display).toBe('none');
+    expect(internals.restoreInFlight).toBe(false);
+  });
 });
