@@ -357,12 +357,29 @@ export interface SrvTerminalData {
   type: 'terminal-data';
   agentId: string;
   data: string;
+  /**
+   * Owning office (spec 021 Phase 3). Lets cache-aware renderer surfaces route
+   * output to the exact composite `officeId:agentId` xterm entry, so the same
+   * agent id cached across two offices never crosses streams.
+   */
+  officeId: string;
+  /**
+   * Authoritative current session id for this agent at emit time — the session
+   * "generation" token. Renderer surfaces drop data whose sessionId no longer
+   * matches their bound entry after a New/Close/Replace session (spec 021 Phase 3/6).
+   * Optional: absent when no session id has been minted yet.
+   */
+  sessionId?: string;
 }
 
 export interface SrvTerminalExit {
   type: 'terminal-exit';
   agentId: string;
   exitCode: number;
+  /** Owning office (spec 021 Phase 3) — see {@link SrvTerminalData.officeId}. */
+  officeId: string;
+  /** Session generation token (spec 021 Phase 3) — see {@link SrvTerminalData.sessionId}. */
+  sessionId?: string;
 }
 
 export interface SrvCopilotEvent {

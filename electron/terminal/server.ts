@@ -888,7 +888,13 @@ async function startTerminalForAgentImpl(
     const flushData = () => {
       flushTimer = null;
       if (pendingData && hasActiveViewer(ck)) {
-        send({ type: 'terminal-data', agentId, data: pendingData });
+        send({
+          type: 'terminal-data',
+          agentId,
+          data: pendingData,
+          officeId,
+          sessionId: getOfficeSession(officeId).sessionIds.get(agentId),
+        });
       }
       pendingData = '';
     };
@@ -945,7 +951,13 @@ async function startTerminalForAgentImpl(
       // this old process's async onExit fires; without this guard the stale exit would
       // delete the *new* session's tracking entries and orphan it.
       if (ptyProcesses.get(terminalKey)?.process === proc) {
-        send({ type: 'terminal-exit', agentId, exitCode });
+        send({
+          type: 'terminal-exit',
+          agentId,
+          exitCode,
+          officeId,
+          sessionId: getOfficeSession(officeId).sessionIds.get(agentId),
+        });
         ptyProcesses.delete(terminalKey);
         activeAgentViewers.delete(ck);
         clearForegroundIf(officeId, ck);

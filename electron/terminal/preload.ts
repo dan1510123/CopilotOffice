@@ -153,13 +153,13 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   // can dispose its own listener before re-registering. This prevents duplicate
   // registrations from writing the same PTY byte to xterm more than once (the
   // classic "double characters" bug). Callers may ignore the return value.
-  onTerminalData: (callback: (agentId: string, data: string) => void) => {
-    const handler = (_event: unknown, agentId: string, data: string) => callback(agentId, data);
+  onTerminalData: (callback: (agentId: string, data: string, officeId?: string, sessionId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, data: string, officeId?: string, sessionId?: string) => callback(agentId, data, officeId, sessionId);
     ipcRenderer.on('terminal-data', handler);
     return () => ipcRenderer.removeListener('terminal-data', handler);
   },
-  onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => {
-    const handler = (_event: unknown, agentId: string, exitCode: number) => callback(agentId, exitCode);
+  onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, exitCode: number, officeId?: string, sessionId?: string) => callback(agentId, exitCode, officeId, sessionId);
     ipcRenderer.on('terminal-exit', handler);
     return () => ipcRenderer.removeListener('terminal-exit', handler);
   },
@@ -538,8 +538,8 @@ declare global {
       createOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
-      onTerminalData: (callback: (agentId: string, data: string) => void) => () => void;
-      onTerminalExit: (callback: (agentId: string, exitCode: number) => void) => () => void;
+      onTerminalData: (callback: (agentId: string, data: string, officeId?: string, sessionId?: string) => void) => () => void;
+      onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string) => void) => () => void;
       onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => () => void;
       onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => () => void;
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;

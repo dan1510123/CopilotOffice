@@ -361,7 +361,7 @@ export class TerminalRelay {
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);
         break;
       case 'terminal-exit':
-        this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode);
+        this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
         break;
     }
 
@@ -370,10 +370,10 @@ export class TerminalRelay {
 
     switch (msg.type) {
       case 'terminal-data':
-        win.webContents.send('terminal-data', msg.agentId, msg.data);
+        win.webContents.send('terminal-data', msg.agentId, msg.data, msg.officeId, msg.sessionId);
         break;
       case 'terminal-exit':
-        win.webContents.send('terminal-exit', msg.agentId, msg.exitCode);
+        win.webContents.send('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
         break;
       case 'copilot-event':
         if (!msg.mainOnly) win.webContents.send('copilot-event', msg.agentId, msg.event);
