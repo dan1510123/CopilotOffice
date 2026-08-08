@@ -104,6 +104,57 @@ describe('integration/TerminalOverlay', () => {
     expect(sessionDisplay.textContent).toBe('sess-123');
   });
 
+  it('spec 021 Phase 5: routes background output to a hidden cached terminal and drops stale generations', async () => {
+    let terminalDataCb:
+      | ((agentId: string, data: string, officeId?: string, sessionId?: string) => void)
+      | undefined;
+    installMockCopilotBridge({
+      onTerminalData: vi.fn((cb) => { terminalDataCb = cb; }),
+      terminalExists: vi.fn().mockResolvedValue(false),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-A' }),
+      terminalActivate: vi.fn().mockResolvedValue({
+        success: true, existed: false, sessionId: 'sess-A', title: null, scrollback: '',
+      }),
+      getSessionMeta: vi.fn().mockResolvedValue(null),
+    });
+
+    const scene = createSceneStub();
+    const inputManager = {
+      activateTerminalF10: vi.fn(),
+      deactivateTerminalF10: vi.fn(),
+      switchToTerminal: vi.fn(),
+      switchToGame: vi.fn(),
+      focusTerminalXterm: vi.fn(),
+      blurTerminalXterm: vi.fn(),
+    };
+
+    overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
+
+    // Show Gene, then switch to Dan — Gene's terminal is now cached but hidden.
+    await overlay.show(createAgent({ id: 'generalist', name: 'Gene' }), vi.fn());
+    const cache = (overlay as any).terminalCache;
+    const geneTerminal = cache.peek('office-0', 'generalist').terminal as MockTerminal;
+    // Bind Gene's cache generation so the drop guard is exercised.
+    cache.setSessionId('office-0', 'generalist', 'sess-A');
+
+    await overlay.show(createAgent({ id: 'debugger', name: 'Dan', sprite: 'npc_debugger', position: { x: 13, y: 3 } }), vi.fn());
+    const danTerminal = (overlay as any).terminal as MockTerminal;
+    expect(danTerminal).not.toBe(geneTerminal);
+
+    geneTerminal.write.mockClear();
+    danTerminal.write.mockClear();
+
+    // Background output for the hidden Gene routes to Gene's cached terminal only.
+    terminalDataCb?.('generalist', 'bg-gene', 'office-0', 'sess-A');
+    expect(geneTerminal.write).toHaveBeenCalledWith('bg-gene');
+    expect(danTerminal.write).not.toHaveBeenCalledWith('bg-gene');
+
+    // Output for Gene tagged with a SUPERSEDED session generation is dropped.
+    geneTerminal.write.mockClear();
+    terminalDataCb?.('generalist', 'stale', 'office-0', 'sess-OLD');
+    expect(geneTerminal.write).not.toHaveBeenCalledWith('stale');
+  });
+
   it('reattachListeners is idempotent — never accumulates duplicate terminal-data listeners', () => {
     // Simulate the real preload contract: additive registration that returns a
     // disposer removing ONLY that registration. Duplicate live listeners are what
@@ -146,7 +197,7 @@ describe('integration/TerminalOverlay', () => {
     expect(liveDataCbs.length).toBe(0);
   });
 
-  it('hides terminal, detaches session, and restores game focus path', async () => {
+  it('hides without detaching (retain-while-cached), and detaches on destroy', async () => {
     const onClose = vi.fn();
     const bridge = installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
@@ -167,12 +218,19 @@ describe('integration/TerminalOverlay', () => {
     await overlay.show(createAgent(), onClose);
     overlay.hide();
 
-    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+    // Spec 021 Phase 5 (retain-while-cached): hiding keeps the cached entry's
+    // server viewer attached so background output keeps rendering — no detach.
+    expect(bridge.terminalDetach).not.toHaveBeenCalled();
     expect(inputManager.deactivateTerminalF10).toHaveBeenCalled();
     expect(inputManager.switchToGame).toHaveBeenCalled();
     expect(inputManager.blurTerminalXterm).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(overlay.getIsVisible()).toBe(false);
+
+    // Destroying the surface disposes every cached entry and detaches its viewer.
+    overlay.destroy();
+    overlay = null;
+    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
   });
 
   it('persists fullscreen preference and updates panel layout', async () => {
@@ -205,11 +263,12 @@ describe('integration/TerminalOverlay', () => {
     expect((document.getElementById('terminal-panel') as HTMLElement).style.width).toBe('100%');
   });
 
-  it('fits and resizes before attaching an existing session', async () => {
+  it('fits and resizes before activating an existing session', async () => {
     const bridge = installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(true),
-      terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: '' }),
-      getSessionId: vi.fn().mockResolvedValue('sess-existing'),
+      terminalActivate: vi.fn().mockResolvedValue({
+        success: true, existed: true, sessionId: 'sess-existing', title: null, scrollback: '',
+      }),
     });
 
     const scene = createSceneStub();
@@ -225,14 +284,20 @@ describe('integration/TerminalOverlay', () => {
     overlay = new TerminalOverlay(scene as any, inputManager as any, () => 'office-0');
     await overlay.show(createAgent(), vi.fn());
 
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist', true);
+    // Spec 021 Phase 5: an existing server session on a cold cache entry is
+    // brought up with a single atomic activation (foreground + one-time
+    // scrollback), not the legacy attach + getSessionId pair.
+    expect(bridge.terminalActivate).toHaveBeenCalledWith(
+      'office-0', 'generalist',
+      expect.objectContaining({ foreground: true, needScrollback: true }),
+    );
     expect(bridge.terminalResize).toHaveBeenCalled();
 
     const resizeOrder = (bridge.terminalResize as any).mock.invocationCallOrder[0] as number | undefined;
-    const attachOrder = (bridge.terminalAttach as any).mock.invocationCallOrder[0] as number | undefined;
+    const activateOrder = (bridge.terminalActivate as any).mock.invocationCallOrder[0] as number | undefined;
     expect(resizeOrder).toBeDefined();
-    expect(attachOrder).toBeDefined();
-    expect((resizeOrder as number) < (attachOrder as number)).toBe(true);
+    expect(activateOrder).toBeDefined();
+    expect((resizeOrder as number) < (activateOrder as number)).toBe(true);
   });
 
   it('Ctrl+V: spec 004 — reads clipboard via bridge and forwards text to PTY via terminalWrite', async () => {
@@ -527,29 +592,37 @@ describe('integration/TerminalOverlay', () => {
 
     await overlay.show(geneAgent, vi.fn());
 
-    const terminal = (overlay as any).terminal as MockTerminal;
-    const onDataGene = terminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
+    // Spec 021 Phase 5: each agent owns its own cached xterm with its own,
+    // permanently-bound onData handler. Capture Gene's terminal + handler.
+    const geneTerminal = (overlay as any).terminal as MockTerminal;
+    const onDataGene = geneTerminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
     expect(onDataGene).toBeTypeOf('function');
     onDataGene?.('g');
-
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', 'g');
 
     await overlay.show(danAgent, vi.fn());
 
-    // After switch the previous onData closure should be disposed AND a fresh
-    // closure registered with bound agentId=debugger.
-    const onDataDan = terminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
+    // The visible terminal is now Dan's — a DIFFERENT xterm instance with its own
+    // onData handler bound to agentId=debugger.
+    const danTerminal = (overlay as any).terminal as MockTerminal;
+    expect(danTerminal).not.toBe(geneTerminal);
+    const onDataDan = danTerminal.onData.mock.calls.at(-1)?.[0] as ((d: string) => void) | undefined;
     expect(onDataDan).toBeTypeOf('function');
     expect(onDataDan).not.toBe(onDataGene);
 
-    // Detach was awaited for the previous agent.
-    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+    // Spec 021 Phase 5 (retain-while-cached): switching does NOT detach the
+    // previous agent — its cached terminal stays live in the background.
+    expect(bridge.terminalDetach).not.toHaveBeenCalled();
 
     onDataDan?.('d');
-
     expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'debugger', 'd');
     // V6: input addressed to the new agent must NEVER be routed to the previous one.
     expect(bridge.terminalWrite).not.toHaveBeenCalledWith('office-0', 'generalist', 'd');
+
+    // And Gene's still-bound handler continues to address generalist (never dan).
+    onDataGene?.('x');
+    expect(bridge.terminalWrite).toHaveBeenCalledWith('office-0', 'generalist', 'x');
+    expect(bridge.terminalWrite).not.toHaveBeenCalledWith('office-0', 'debugger', 'x');
   });
 
   it('supports inline session title editing from the sprite card', async () => {

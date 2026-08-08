@@ -15,6 +15,11 @@ import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { injectUiKit, uiButtonClass } from './uiKit';
 import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
 import { perfMark } from './terminalPerf';
+import {
+  TerminalInstanceCache,
+  type TerminalCacheFactoryContext,
+  type CreatedTerminal,
+} from './TerminalInstanceCache';
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -55,6 +60,11 @@ export class TerminalOverlay {
   private container: HTMLDivElement | null = null;
   private terminal: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
+  // Spec 021 Phase 5: six-entry LRU cache of live xterm instances (one per
+  // recently-viewed office+agent). `this.terminal`/`this.fitAddon` above are
+  // POINTERS to the currently-visible entry so existing call sites are unchanged.
+  private terminalCache: TerminalInstanceCache | null = null;
+  private surfaceHandlersInstalled: boolean = false;
   private currentAgentId: string | null = null;
   private currentAgent: AgentConfig | null = null;
   private isVisible: boolean = false;
@@ -83,7 +93,6 @@ export class TerminalOverlay {
   private getOfficeId: () => string;
   private attachedOfficeId: string | null = null;
   private isReadOnly: boolean = false;
-  private isReplaying: boolean = false;
   /** Spec 020: single-flight latch so a rapid double-confirm can't launch overlapping switches (FR-010). */
   private restoreInFlight: boolean = false;
   private launchMode: TerminalLaunchMode = 'copilot';
@@ -94,9 +103,6 @@ export class TerminalOverlay {
   private isEditingSessionTitle: boolean = false;
   private terminalContextMenu: HTMLDivElement | null = null;
   private terminalContextMenuDismiss: ((e: Event) => void) | null = null;
-  // Disposable returned by xterm.terminal.onData(...). Re-registered per show()
-  // so the handler's closure captures the new agent id (feature 002, C3/V6).
-  private onDataDisposable: { dispose: () => void } | null = null;
   // Unsubscribe functions for the bridge IPC listeners this overlay owns
   // (terminal-data, terminal-exit, session-meta-updated). Disposed and
   // re-created on every setupTerminalListeners() call so an overlay can never
@@ -141,19 +147,30 @@ export class TerminalOverlay {
       this.bridgeListenerDisposers = [];
 
       this.bridgeListenerDisposers.push(
-        window.copilotBridge.onTerminalData((agentId: string, data: string) => {
-          if (this.isReplaying) return;
-          if (agentId === this.currentAgentId && this.terminal) {
-            this.terminal.write(data);
-          }
+        window.copilotBridge.onTerminalData((agentId: string, data: string, officeId?: string, sessionId?: string) => {
+          // Spec 021 Phase 5: route by composite office+agent so hidden cached
+          // terminals keep rendering their own background output. Fall back to
+          // the visible pointer for legacy emits that omit officeId.
+          const entry = officeId
+            ? this.terminalCache?.peek(officeId, agentId)
+            : this.terminalCache?.getVisible();
+          const target = entry?.terminal ?? (agentId === this.currentAgentId ? this.terminal : null);
+          if (!target) return;
+          // Drop output from a superseded session generation (New/Close/Replace).
+          if (entry && entry.sessionId && sessionId && entry.sessionId !== sessionId) return;
+          target.write(data);
         }),
       );
 
       this.bridgeListenerDisposers.push(
-        window.copilotBridge.onTerminalExit((agentId: string, exitCode: number) => {
-          if (agentId === this.currentAgentId && this.terminal) {
-            this.terminal.writeln(`\r\n[Process exited with code ${exitCode}]`);
-          }
+        window.copilotBridge.onTerminalExit((agentId: string, exitCode: number, officeId?: string, sessionId?: string) => {
+          const entry = officeId
+            ? this.terminalCache?.peek(officeId, agentId)
+            : this.terminalCache?.getVisible();
+          const target = entry?.terminal ?? (agentId === this.currentAgentId ? this.terminal : null);
+          if (!target) return;
+          if (entry && entry.sessionId && sessionId && entry.sessionId !== sessionId) return;
+          target.writeln(`\r\n[Process exited with code ${exitCode}]`);
         }),
       );
 
@@ -474,32 +491,16 @@ export class TerminalOverlay {
         ? window.copilotBridge.getSessionMeta(nextOfficeId, agent.id).catch(() => null)
         : Promise.resolve(null);
 
-    // Feature 002 (US1, C2/V5): detach the previous agent BEFORE mutating
-    // currentAgentId. Awaiting here prevents the in-flight onData/onTerminalData
-    // race that produced input-lock and shared-session symptoms on cold start.
-    if (isSwitchingAgent && previousAgentId && window.copilotBridge) {
+    // Spec 021 Phase 5 (retain-while-cached): do NOT detach the previous agent
+    // on switch — its cached xterm stays attached so background PTY output keeps
+    // rendering, making the return switch a warm no-replay hit. Only foreground
+    // ownership moves (handled by the terminalActivate below). We still raise the
+    // input guard so a keystroke mid-activation can't land on a half-switched
+    // agent (feature 002, V5); the previous entry's own onData binding remains
+    // bound to the previous office+agent, so it can never target the new agent.
+    if (isSwitchingAgent && previousAgentId) {
       this.isSwitchingAgent = true;
-      this.onDataDisposable?.dispose();
-      this.onDataDisposable = null;
-      try {
-        const detachStartedAt = Date.now();
-        perfMark('overlay', 'switch:detach-start', `${previousOfficeId}:${previousAgentId}`);
-        await withTimeout(
-          window.copilotBridge.terminalDetach(previousOfficeId, previousAgentId),
-          IPC_TIMEOUT,
-          'terminalDetach',
-        );
-        perfMark('overlay', 'switch:detach-done', `${previousOfficeId}:${previousAgentId}`);
-        if (DEBUG_COLD_START) {
-          console.log(
-            `[TerminalOverlay] switch from=${previousAgentId} to=${agent.id} detachMs=${
-              Date.now() - detachStartedAt
-            }`,
-          );
-        }
-      } catch (e) {
-        console.warn(`[TerminalOverlay] terminalDetach failed for ${previousAgentId}: ${String(e)}`);
-      }
+      perfMark('overlay', 'switch:detach-start', `${previousOfficeId}:${previousAgentId}`, 0);
     }
 
     this.currentAgentId = agent.id;
@@ -601,78 +602,104 @@ export class TerminalOverlay {
     this.clearRefitTimers();
     this.refitGeneration += 1;
 
-    // Create or reuse terminal
-    if (!this.terminal) {
-      this.createTerminal();
-    } else {
-      // Reusing existing terminal for a returning session — reset renderer state so
-      // row/cursor geometry from a previous session does not leak across switches.
-      this.isReplaying = true;
-      this.terminal.reset();
-      this.terminal.clear();
-    }
-
     // Reset session ID for this agent
     this.sessionId = null;
 
-    // Check if terminal session exists, if not start one
+    // Spec 021 Phase 5: acquire (or lazily create) the retained xterm for this
+    // office+agent from the LRU cache. A warm hit re-shows the already-rendered
+    // terminal with NO reset/clear/scrollback replay; a miss builds a fresh
+    // xterm via the injected factory. `this.terminal`/`this.fitAddon` are then
+    // pointed at this entry so all existing call sites operate on the visible one.
+    const cache = this.ensureTerminalCache();
+    const { entry, created } = cache.acquire(officeId, agent.id);
+    this.terminal = entry.terminal;
+    this.fitAddon = entry.fitAddon;
+    cache.activate(officeId, agent.id);
+    // Surface-global handlers (context menu / clipboard / resize) read the now-
+    // visible `this.terminal`; install them once, after the first entry exists.
+    this.installSurfaceHandlers();
+
     if (window.copilotBridge) {
       try {
-        const exists = await withTimeout(
-          window.copilotBridge.terminalExists(officeId, agent.id),
-          IPC_TIMEOUT, 'terminalExists'
-        );
-        if (!exists) {
-          this.isReplaying = false;
-          perfMark('overlay', 'switch:exists-done', perfTarget, 0);
-          perfMark('overlay', 'switch:activate-start', perfTarget);
-          await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory(), officeId);
-          perfMark('overlay', 'switch:activate-done', perfTarget);
-        } else {
-          perfMark('overlay', 'switch:exists-done', perfTarget, 1);
-          perfMark('overlay', 'switch:activate-start', perfTarget);
-          this.fitAndResizeTerminal({ officeId, agentId: agent.id });
-          // Session exists - reattach and replay scrollback to sync xterm with PTY state.
-          // Raw scrollback preserves ANSI escape sequences so xterm's cursor ends up
-          // at the same position as the live PTY. Perf (switch quick-win): the saved
-          // session-id read is independent of attach, so fire both concurrently to
-          // shave a round-trip off the switch critical path.
-          const [attachResult, savedId] = await Promise.all([
-            withTimeout(
-              window.copilotBridge.terminalAttach(officeId, agent.id, true),
-              IPC_TIMEOUT, 'terminalAttach'
-            ),
-            withTimeout(
-              window.copilotBridge.getSessionId(officeId, agent.id),
-              IPC_TIMEOUT, 'getSessionId'
-            ),
-          ]);
-          perfMark('overlay', 'switch:activate-done', perfTarget);
+        this.fitAndResizeTerminal({ officeId, agentId: agent.id });
+        const dims = this.resolveTerminalDimensions();
+        perfMark('overlay', 'switch:activate-start', perfTarget);
 
-          const scrollbackBytes = attachResult?.scrollback?.length ?? 0;
-          console.log(`[TerminalOverlay] Scrollback replay for ${agent.id}: ${scrollbackBytes} bytes`);
-          if (attachResult?.scrollback && this.terminal) {
-            this.terminal.write(attachResult.scrollback);
-            perfMark('overlay', 'switch:scrollback-write', perfTarget, scrollbackBytes);
+        if (created) {
+          // Cold cache entry — we need the server-side session. A truly-new
+          // session goes through startNewSession() so AutoStartCoordinator
+          // bookkeeping/event emits are preserved, then we explicitly claim
+          // foreground (a cold ui-server start may not auto-foreground during a
+          // switch). An already-running server session is activated atomically
+          // with a one-time scrollback replay into the fresh xterm.
+          const existsOnServer = await withTimeout(
+            window.copilotBridge.terminalExists(officeId, agent.id),
+            IPC_TIMEOUT, 'terminalExists',
+          );
+          perfMark('overlay', 'switch:exists-done', perfTarget, existsOnServer ? 1 : 0);
+
+          if (!existsOnServer) {
+            await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory(), officeId);
+            const act = await withTimeout(
+              window.copilotBridge.terminalActivate(officeId, agent.id, { foreground: true, needScrollback: false }),
+              IPC_TIMEOUT, 'terminalActivate',
+            );
+            if (act.success) {
+              cache.setAttached(officeId, agent.id, true);
+              // startNewSession already set the authoritative minted id; only
+              // fall back to activate's id if the start path did not provide one.
+              if (!this.sessionId && act.sessionId) {
+                this.sessionId = act.sessionId;
+                this.updateSessionDisplay();
+              }
+              cache.setSessionId(officeId, agent.id, this.sessionId ?? act.sessionId ?? null);
+            }
+          } else {
+            const act = await withTimeout(
+              window.copilotBridge.terminalActivate(officeId, agent.id, {
+                foreground: true, needScrollback: true, cols: dims?.cols, rows: dims?.rows,
+              }),
+              IPC_TIMEOUT, 'terminalActivate',
+            );
+            if (act.success) {
+              cache.setAttached(officeId, agent.id, true);
+              const scrollbackBytes = act.scrollback?.length ?? 0;
+              if (act.scrollback) {
+                entry.terminal.write(act.scrollback);
+                perfMark('overlay', 'switch:scrollback-write', perfTarget, scrollbackBytes);
+              }
+              cache.setSessionId(officeId, agent.id, act.sessionId ?? null);
+              if (act.sessionId) { this.sessionId = act.sessionId; this.updateSessionDisplay(); }
+              // Notify main.ts to refresh this agent's badge status
+              this.scene.game.events.emit('agent:reattached', agent.id);
+            }
           }
-          this.isReplaying = false;
-
-          // Notify main.ts to refresh this agent's badge status
-          this.scene.game.events.emit('agent:reattached', agent.id);
-
-          // Do NOT fit() here — the container may not be visible/laid out yet.
-          // All sizing is deferred to the post-layout rAF block below.
-
-          if (savedId) {
-            this.sessionId = savedId;
+        } else {
+          // Warm cache hit — the retained xterm already reflects live PTY state.
+          // ONE activation claims foreground; NO exists / getSessionId /
+          // scrollback replay (that is the whole point of the cache).
+          const act = await withTimeout(
+            window.copilotBridge.terminalActivate(officeId, agent.id, {
+              foreground: true, needScrollback: false, cols: dims?.cols, rows: dims?.rows,
+            }),
+            IPC_TIMEOUT, 'terminalActivate',
+          );
+          if (act.success) {
+            cache.setAttached(officeId, agent.id, true);
+            if (act.sessionId) {
+              this.sessionId = act.sessionId;
+              cache.setSessionId(officeId, agent.id, act.sessionId);
+            } else if (entry.sessionId) {
+              this.sessionId = entry.sessionId;
+            }
             this.updateSessionDisplay();
           }
         }
+        perfMark('overlay', 'switch:activate-done', perfTarget);
       } catch (e) {
-        this.isReplaying = false;
         this.terminal?.writeln(`\r\n\x1b[31m[${e}]\x1b[0m\r\n`);
       }
-      
+
       // Resize terminal — use debouncedRefit for multi-stage layout settling.
       // Defer focus until after refit so xterm state is fully synced before input.
       if (this.fitAddon && this.terminal) {
@@ -685,12 +712,14 @@ export class TerminalOverlay {
 
     this.isVisible = true;
 
-    // Feature 002 (US1, C3/V6/V7): register a fresh onData closure that binds
-    // the new agentId + officeId at registration time. Clear isSwitchingAgent
-    // first so the freshly registered handler accepts input immediately.
+    // Spec 021 Phase 5: the input binding lives on the cache entry (bound to
+    // this office+agent for the entry's whole lifetime), so no per-show onData
+    // re-registration is needed. Clear the switch guard so the freshly-visible
+    // entry's handler accepts input immediately, and drop any partial wheel
+    // accumulation so it can't bleed a stray page into the newly-visible session.
     const attachStartedAt = Date.now();
     this.isSwitchingAgent = false;
-    this.registerOnDataHandler(agent.id, officeId);
+    this.wheelPager.reset();
     if (DEBUG_COLD_START && isSwitchingAgent) {
       console.log(
         `[TerminalOverlay] switch attach complete to=${agent.id} attachMs=${Date.now() - attachStartedAt}`,
@@ -1174,6 +1203,10 @@ export class TerminalOverlay {
     this.sessionId = null;
     this.updateSessionDisplay();
     this.updateSessionTitleDisplay(null);
+    // Spec 021 Phase 5: null the cache entry's generation token during the reset
+    // window so incoming output (tagged with the NEW session id) is accepted
+    // rather than dropped by the generation guard; the new id is set below.
+    this.terminalCache?.setSessionId(officeId, agentId, null);
 
     // T503: delegate the close+restart chain to AutoStartCoordinator so the
     // tracker coalesces a rapid double-click into a single PTY (FR-014 /
@@ -1196,6 +1229,7 @@ export class TerminalOverlay {
       if (replacedSessionId) {
         this.sessionId = replacedSessionId;
         this.updateSessionDisplay();
+        this.terminalCache?.setSessionId(officeId, agentId, replacedSessionId);
       } else {
         try {
           if (window.copilotBridge?.getSessionId) {
@@ -1203,6 +1237,7 @@ export class TerminalOverlay {
             if (sid) {
               this.sessionId = sid;
               this.updateSessionDisplay();
+              this.terminalCache?.setSessionId(officeId, agentId, sid);
             }
           }
         } catch { /* ignore */ }
@@ -1243,6 +1278,7 @@ export class TerminalOverlay {
     } else if (result.sessionId) {
       this.sessionId = result.sessionId;
       this.updateSessionDisplay();
+      this.terminalCache?.setSessionId(officeId, agentId, result.sessionId);
     }
   }
 
@@ -1269,6 +1305,11 @@ export class TerminalOverlay {
 
     // Notify the app to set this agent to slacking
     this.scene.game.events.emit('agent:session:closed', this.currentAgentId);
+
+    // Spec 021 Phase 5: drop the cached xterm for this agent so a subsequent open
+    // rebuilds a fresh session view (and detaches the server viewer via onEvict)
+    // rather than re-showing the just-closed session's rendered content.
+    this.terminalCache?.invalidate(officeId, this.currentAgentId);
 
     this.hide();
   }
@@ -1388,6 +1429,10 @@ export class TerminalOverlay {
       }
       // Refresh the history popover + re-render the terminal to reflect the new current
       // session (FR-003). The server killed the old PTY, so show() re-attaches/relaunches.
+      // Spec 021 Phase 5: invalidate the cached xterm for this agent first so show()
+      // rebuilds a COLD entry and replays the restored session's scrollback — a warm
+      // hit would keep showing the archived session's rendered content.
+      this.terminalCache?.invalidate(officeId, agentId);
       this.closeHistoryPopover();
       const onClose = this.onCloseCallback ?? (() => {});
       await this.show(this.currentAgent, onClose, { readOnly: this.isReadOnly, launchMode: this.launchMode });
@@ -1414,10 +1459,38 @@ export class TerminalOverlay {
     ensureXtermStyles();
   }
 
-  private createTerminal(): void {
-    if (!this.terminalDiv) return;
+  /**
+   * Lazily construct the six-entry LRU xterm cache for this surface. The parent
+   * is the padded terminalDiv; the factory builds per-agent xterms; onEvict
+   * detaches the server viewer for the evicted composite key so an evicted
+   * background terminal stops receiving output (spec 021 Phase 4/5).
+   */
+  private ensureTerminalCache(): TerminalInstanceCache {
+    if (!this.terminalCache) {
+      this.terminalCache = new TerminalInstanceCache({
+        parent: this.terminalDiv ?? undefined,
+        createTerminal: (ctx) => this.createCachedTerminal(ctx),
+        onEvict: (e) => {
+          if (typeof window !== 'undefined' && window.copilotBridge) {
+            window.copilotBridge.terminalDetach(e.officeId, e.agentId).catch(() => {});
+          }
+        },
+      });
+    }
+    return this.terminalCache;
+  }
 
-    this.terminal = new Terminal({
+  /**
+   * Cache factory (spec 021 Phase 5). Builds ONE retained xterm per agent into
+   * the cache-owned hidden host `ctx.host`, wiring the per-entry handlers (mouse
+   * suppression, wheel paging, Ctrl+C/V, and the input binding). The input and
+   * wheel handlers are bound to THIS entry's office+agent so a cached background
+   * terminal can never send keystrokes/paging to the wrong agent. Surface-global
+   * handlers (context menu, document clipboard, resize) are installed once via
+   * {@link installSurfaceHandlers}. Returns the entry parts for the cache to own.
+   */
+  private createCachedTerminal(ctx: TerminalCacheFactoryContext): CreatedTerminal {
+    const terminal = new Terminal({
       theme: {
         background: '#0a0a14',
         foreground: '#e0e0e0',
@@ -1450,11 +1523,9 @@ export class TerminalOverlay {
       allowProposedApi: true,
     });
 
-    this.fitAddon = new FitAddon();
-    this.terminal.loadAddon(this.fitAddon);
-
-    this.terminal.open(this.terminalDiv);
-    this.fitAndResizeTerminal();
+    const fitAddon = new FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(ctx.host);
 
     // Suppress SGR/any-event mouse tracking sequences from the PTY.
     // Copilot CLI enables mouse tracking (CSI ? 1000/1002/1003/1006 h) which
@@ -1462,7 +1533,7 @@ export class TerminalOverlay {
     // By intercepting these DECSET sequences, we keep selection working normally
     // while the PTY program (Copilot CLI) remains unaware.
     const MOUSE_MODES = new Set([1000, 1002, 1003, 1006]);
-    this.terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+    terminal.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
       // If ANY param is a mouse mode, swallow the entire sequence
       for (const p of params) {
         if (typeof p === 'number' && MOUSE_MODES.has(p)) return true;
@@ -1475,27 +1546,23 @@ export class TerminalOverlay {
     // arrow keys the CLI ignores — so the wheel appears dead while PageUp/Down
     // work. Take over the wheel: in the alt buffer, forward PageUp/PageDown to
     // the PTY (the keys the CLI actually pages on); in the normal buffer, return
-    // true to let xterm scroll its scrollback natively.
-    this.terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
-      const term = this.terminal;
-      if (!term) return true;
-      if (term.buffer.active.type !== 'alternate') return true; // normal buffer → native scroll
+    // true to let xterm scroll its scrollback natively. Bound to this entry's
+    // office+agent so only the visible/hovered terminal pages its own session.
+    terminal.attachCustomWheelEventHandler((event: WheelEvent) => {
+      if (terminal.buffer.active.type !== 'alternate') return true; // normal buffer → native scroll
       const seq = this.wheelPager.feed(event);
       if (!seq) return false; // movement accumulated but not enough for a page yet
-      const officeId = this.attachedOfficeId ?? this.getOfficeId();
-      if (officeId && this.currentAgentId && window.copilotBridge) {
-        void window.copilotBridge.terminalWrite(officeId, this.currentAgentId, seq);
+      if (window.copilotBridge) {
+        void window.copilotBridge.terminalWrite(ctx.officeId, ctx.agentId, seq);
       }
       return false; // suppress xterm's default arrow-key translation
     });
 
-    // Spec 004: terminal right-click → context menu (Copy / Paste).
-    this.installTerminalContextMenu();
-
     // Spec 004: clipboard keybindings — Ctrl+C copies the xterm selection
     // (Copilot CLI does not use Ctrl+C as SIGINT, so intercepting is safe);
-    // Ctrl+V pastes via the OS clipboard → PTY.
-    this.terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+    // Ctrl+V pastes via the OS clipboard → PTY. Per-terminal: only the focused
+    // (visible) terminal receives keys, so reading `this.*` visible state is safe.
+    terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       const isModifierPressed = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       if (event.type !== 'keydown' || !isModifierPressed) return true;
@@ -1523,6 +1590,35 @@ export class TerminalOverlay {
       }
       return true;
     });
+
+    // Input binding: bound to THIS entry's office+agent for its whole lifetime,
+    // so keystrokes always reach the correct session (feature 002, C3/V6). Only
+    // the visible focused terminal receives input; the isSwitchingAgent guard in
+    // handleUserInput still drops input mid-activation.
+    const onDataResult = terminal.onData((data: string) =>
+      this.handleUserInput(data, ctx.officeId, ctx.agentId),
+    );
+    const inputBinding =
+      onDataResult && typeof (onDataResult as { dispose?: () => void }).dispose === 'function'
+        ? (onDataResult as { dispose: () => void })
+        : null;
+
+    return { terminal, fitAddon, inputBinding };
+  }
+
+  /**
+   * Install surface-global handlers exactly once: the right-click context menu
+   * (spec 004), the document-level capture-phase clipboard handler, and the
+   * window/ResizeObserver refit hooks. These read the currently-visible terminal
+   * via `this.terminal`, so they work uniformly across every cached entry.
+   */
+  private installSurfaceHandlers(): void {
+    if (this.surfaceHandlersInstalled || !this.terminalDiv) return;
+    this.surfaceHandlersInstalled = true;
+
+    // Spec 004: terminal right-click → context menu (Copy / Paste). Bound to the
+    // parent terminalDiv so it fires for whichever cached host is visible.
+    this.installTerminalContextMenu();
 
     // Document-level capture-phase clipboard handler — catches Ctrl+C/V even
     // when xterm's textarea doesn't have DOM focus (e.g. SGR mouse mode stole
@@ -1559,10 +1655,6 @@ export class TerminalOverlay {
     };
     document.addEventListener('keydown', this.clipboardHandler, true);
 
-    // Handle terminal input — registered fresh in registerOnDataHandler() per
-    // show() so the bound agentId/officeId stay correct across agent switches
-    // (feature 002, C3/V6). The first registration happens at the end of show().
-
     // Handle resize — store reference for cleanup in destroy()
     this.resizeHandler = () => {
       if (this.isVisible) {
@@ -1581,8 +1673,52 @@ export class TerminalOverlay {
         this.debouncedRefit();
       }
     });
-    if (this.terminalDiv) {
-      this.resizeObserver.observe(this.terminalDiv);
+    this.resizeObserver.observe(this.terminalDiv);
+  }
+
+  /**
+   * Handle a chunk of xterm input for the given bound office+agent. Extracted
+   * from the former per-show onData registration so the cache factory can bind
+   * one stable handler per entry. The isSwitchingAgent guard still drops input
+   * mid-activation so keystrokes never reach a half-activated agent.
+   */
+  private handleUserInput(data: string, boundOfficeId: string, boundAgentId: string): void {
+    if (this.isReadOnly) return;
+    if (this.isSwitchingAgent) return; // V5: drop input mid-switch
+    if (!window.copilotBridge) return;
+
+    let outbound = '';
+    let shouldStartSlashNewSession = false;
+
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        const command = this.pendingInputLine.trim();
+        this.pendingInputLine = '';
+        if (command === '/new') {
+          shouldStartSlashNewSession = true;
+        }
+        outbound += ch;
+        continue;
+      }
+
+      if (ch === '\x7f') {
+        this.pendingInputLine = this.pendingInputLine.slice(0, -1);
+        outbound += ch;
+        continue;
+      }
+
+      if (ch >= ' ') {
+        this.pendingInputLine += ch;
+      }
+      outbound += ch;
+    }
+
+    if (outbound.length > 0) {
+      window.copilotBridge.terminalWrite(boundOfficeId, boundAgentId, outbound);
+    }
+
+    if (shouldStartSlashNewSession) {
+      this.fetchSessionId(boundAgentId);
     }
   }
 
@@ -1592,62 +1728,6 @@ export class TerminalOverlay {
    * previous registration so stale closures cannot send user keystrokes to
    * the wrong agent during an agent switch (feature 002, C3/V6).
    */
-  private registerOnDataHandler(boundAgentId: string, boundOfficeId: string): void {
-    if (!this.terminal) return;
-    // New agent/office binding — drop any partial wheel accumulation so it can't
-    // bleed a stray PageUp/PageDown into the newly-bound session.
-    this.wheelPager.reset();
-    this.onDataDisposable?.dispose();
-    this.onDataDisposable = null;
-
-    const result = this.terminal.onData((data: string) => {
-      if (this.isReadOnly) return;
-      if (this.isSwitchingAgent) return; // V5: drop input mid-switch
-      if (!window.copilotBridge) return;
-
-      let outbound = '';
-      let shouldStartSlashNewSession = false;
-
-      for (const ch of data) {
-        if (ch === '\r' || ch === '\n') {
-          const command = this.pendingInputLine.trim();
-          this.pendingInputLine = '';
-          if (command === '/new') {
-            shouldStartSlashNewSession = true;
-          }
-          outbound += ch;
-          continue;
-        }
-
-        if (ch === '\x7f') {
-          this.pendingInputLine = this.pendingInputLine.slice(0, -1);
-          outbound += ch;
-          continue;
-        }
-
-        if (ch >= ' ') {
-          this.pendingInputLine += ch;
-        }
-        outbound += ch;
-      }
-
-      if (outbound.length > 0) {
-        window.copilotBridge.terminalWrite(boundOfficeId, boundAgentId, outbound);
-      }
-
-      if (shouldStartSlashNewSession) {
-        this.fetchSessionId(boundAgentId);
-      }
-    });
-
-    // xterm's onData returns an IDisposable. The mocked terminal returns
-    // undefined in tests; both shapes are tolerated.
-    this.onDataDisposable =
-      result && typeof (result as { dispose?: () => void }).dispose === 'function'
-        ? (result as { dispose: () => void })
-        : null;
-  }
-
   /**
    * Spec 004: terminal right-click context menu with Copy (enabled iff
    * non-empty selection) and Paste (always enabled). Built once, reused
@@ -1962,15 +2042,13 @@ export class TerminalOverlay {
       spriteCanvas.style.border = '';
     }
 
-    // Don't kill the terminal - keep session alive in background!
-    // Detach viewer so the server stops sending data to us while hidden.
-    // Use attachedOfficeId (captured in show()) so that if switchToOffice() changed
-    // currentOfficeId between show() and hide(), we still detach from the correct office.
-    if (this.currentAgentId && window.copilotBridge) {
-      const officeId = this.attachedOfficeId ?? this.getOfficeId();
-      window.copilotBridge.terminalDetach(officeId, this.currentAgentId).catch(() => {});
-      this.attachedOfficeId = null;
-    }
+    // Spec 021 Phase 5 (retain-while-cached): do NOT detach on hide. Each cached
+    // entry keeps its server viewer attached so background PTY output continues
+    // rendering into its hidden xterm, making re-open a warm no-replay hit.
+    // Viewers are detached only on eviction, office/session invalidation, or
+    // destroy(). Just release the visible slot so no entry is marked visible.
+    this.terminalCache?.hide();
+    this.attachedOfficeId = null;
 
     if (this.onCloseCallback) {
       this.onCloseCallback();
@@ -2012,8 +2090,6 @@ export class TerminalOverlay {
       try { this.terminalContextMenu.parentNode.removeChild(this.terminalContextMenu); } catch { /* ignore */ }
     }
     this.terminalContextMenu = null;
-    this.onDataDisposable?.dispose();
-    this.onDataDisposable = null;
     this.clearRefitTimers();
     // Remove window resize listener
     if (this.resizeHandler) {
@@ -2025,9 +2101,16 @@ export class TerminalOverlay {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
     }
-    if (this.terminal) {
-      this.terminal.dispose();
+    // Spec 021 Phase 5: dispose every cached xterm and detach every server
+    // viewer (via the cache's onEvict hook) in one shot. Clear the visible
+    // pointers so nothing dangles at the old (now-disposed) instances.
+    if (this.terminalCache) {
+      this.terminalCache.destroy();
+      this.terminalCache = null;
     }
+    this.terminal = null;
+    this.fitAddon = null;
+    this.surfaceHandlersInstalled = false;
     if (this.container && this.container.parentNode) {
       try { this.container.parentNode.removeChild(this.container); } catch { /* ignore */ }
     }
