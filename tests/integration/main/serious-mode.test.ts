@@ -187,21 +187,22 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     expect(gameModeSpriteCards.length, 'game-mode TerminalOverlay sprite-card should not leak into serious mode').toBe(0);
   }, 15000);
 
-  it('SM-C: switching agents in serious mode routes terminalAttach to the new agent', async () => {
+  it('SM-C: switching agents in serious mode routes activation to the new agent', async () => {
     const { bridge } = await bootstrapMain();
     clickAppModeToggle();
     await flushUi();
 
     clickAgentCard('generalist');
     await flushUi();
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist', true);
+    expect(bridge.terminalActivate).toHaveBeenCalledWith('office-0', 'generalist', expect.objectContaining({ foreground: true }));
 
     clickAgentCard('debugger');
     await flushUi();
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger', true);
+    expect(bridge.terminalActivate).toHaveBeenCalledWith('office-0', 'debugger', expect.objectContaining({ foreground: true }));
 
-    // Switching should detach the previous agent before re-attaching.
-    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+    // Spec 021 Phase 5b (retain-while-cached): switching must NOT detach the
+    // previous agent — its cached xterm keeps its viewer for a warm re-open.
+    expect(bridge.terminalDetach).not.toHaveBeenCalledWith('office-0', 'generalist');
   }, 15000);
 
   it('SM-D: toggling serious -> game -> serious does not stack sprite cards / leak DOM nodes', async () => {
@@ -255,9 +256,9 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     clickAgentCard('generalist');
     await flushUi();
     expect(
-      bridge.terminalAttach,
-      'V12 violated: render failure aborted the open flow before terminalAttach',
-    ).toHaveBeenCalledWith('office-0', 'generalist', true);
+      bridge.terminalActivate,
+      'V12 violated: render failure aborted the open flow before terminalActivate',
+    ).toHaveBeenCalledWith('office-0', 'generalist', expect.objectContaining({ foreground: true }));
   }, 15000);
 
   it('SM-001 single sprite-card across game-mode + serious-mode toggles (V8/V9/V10, C6/C7)', async () => {
@@ -297,11 +298,11 @@ describe('integration/serious-mode smoke (spec 003)', () => {
       startCalls.some((c) => c[0] === 'office-0' && c[1] === 'generalist'),
       'V12 violated: terminalStart never called for office-0/generalist after render throw',
     ).toBe(true);
-    // (4) terminalAttach was invoked with the requested ids
+    // (4) terminalActivate was invoked with the requested ids
     expect(
-      bridge.terminalAttach,
-      'V12 violated: terminalAttach never called after render throw',
-    ).toHaveBeenCalledWith('office-0', 'generalist', true);
+      bridge.terminalActivate,
+      'V12 violated: terminalActivate never called after render throw',
+    ).toHaveBeenCalledWith('office-0', 'generalist', expect.objectContaining({ foreground: true }));
   }, 15000);
 
   it('SM-002.a serious-mode open happy path unchanged by resilience handler (V12.a, C8.a)', async () => {
@@ -311,8 +312,8 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     clickAgentCard('generalist');
     await flushUi();
 
-    // Happy path attaches normally.
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'generalist', true);
+    // Happy path activates normally.
+    expect(bridge.terminalActivate).toHaveBeenCalledWith('office-0', 'generalist', expect.objectContaining({ foreground: true }));
     // No render-error status leaked into the terminal output.
     // (We can only inspect the rendered status element; if the resilience
     // handler fired, the status would contain "[render error" — it must not.)
@@ -341,20 +342,20 @@ describe('integration/serious-mode smoke (spec 003)', () => {
     clickAgentCard('debugger');
     await flushUi();
 
-    // After switching, terminalAttach for debugger fired and detach for the
-    // previous (generalist) happened.
-    expect(bridge.terminalAttach).toHaveBeenCalledWith('office-0', 'debugger', true);
-    expect(bridge.terminalDetach).toHaveBeenCalledWith('office-0', 'generalist');
+    // After switching, activation for debugger fired; retain-while-cached means
+    // the previous (generalist) is NOT detached on switch.
+    expect(bridge.terminalActivate).toHaveBeenCalledWith('office-0', 'debugger', expect.objectContaining({ foreground: true }));
+    expect(bridge.terminalDetach).not.toHaveBeenCalledWith('office-0', 'generalist');
 
-    // Sanity: the dashboard click-driven open path issued an attach for the
+    // Sanity: the dashboard click-driven open path issued an activation for the
     // *currently visible* agent, not the previously-active one. (Direct
     // onData routing is exercised by the unit-level controller test; here
-    // we verify the integrated handler chain at least attaches correctly.)
-    const lastAttachCall = (bridge.terminalAttach as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+    // we verify the integrated handler chain at least activates correctly.)
+    const lastActivateCall = (bridge.terminalActivate as ReturnType<typeof vi.fn>).mock.calls.at(-1);
     expect(
-      lastAttachCall,
-      'V13 violated: no terminalAttach calls recorded',
+      lastActivateCall,
+      'V13 violated: no terminalActivate calls recorded',
     ).toBeTruthy();
-    expect(lastAttachCall?.[1], 'V13 violated: last attach not bound to clicked agent').toBe('debugger');
+    expect(lastActivateCall?.[1], 'V13 violated: last activate not bound to clicked agent').toBe('debugger');
   }, 15000);
 });
