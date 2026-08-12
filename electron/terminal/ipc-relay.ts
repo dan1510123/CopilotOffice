@@ -52,6 +52,7 @@ export class TerminalRelay {
   private static readonly SLOW_START_TYPES: ReadonlySet<MainToServer['type']> = new Set([
     'start',
     'attach',
+    'activate',
   ]);
 
   /** Resolve the request-timeout budget for a given message type. */
@@ -360,7 +361,7 @@ export class TerminalRelay {
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);
         break;
       case 'terminal-exit':
-        this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode);
+        this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
         break;
     }
 
@@ -369,10 +370,10 @@ export class TerminalRelay {
 
     switch (msg.type) {
       case 'terminal-data':
-        win.webContents.send('terminal-data', msg.agentId, msg.data);
+        win.webContents.send('terminal-data', msg.agentId, msg.data, msg.officeId, msg.sessionId);
         break;
       case 'terminal-exit':
-        win.webContents.send('terminal-exit', msg.agentId, msg.exitCode);
+        win.webContents.send('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
         break;
       case 'copilot-event':
         if (!msg.mainOnly) win.webContents.send('copilot-event', msg.agentId, msg.event);
@@ -424,6 +425,35 @@ export class TerminalRelay {
 
     ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string, foreground?: boolean) =>
       this.request({ type: 'attach', requestId: this.id(), officeId, agentId, foreground })
+    );
+
+    ipcMain.handle(
+      'terminal-activate',
+      (
+        _event,
+        officeId: string,
+        agentId: string,
+        opts?: {
+          workingDir?: string;
+          cols?: number;
+          rows?: number;
+          launchMode?: 'copilot' | 'shell';
+          foreground?: boolean;
+          needScrollback?: boolean;
+        },
+      ) =>
+        this.request({
+          type: 'activate',
+          requestId: this.id(),
+          officeId,
+          agentId,
+          workingDir: opts?.workingDir,
+          cols: opts?.cols,
+          rows: opts?.rows,
+          launchMode: opts?.launchMode,
+          foreground: opts?.foreground,
+          needScrollback: opts?.needScrollback,
+        }),
     );
 
     ipcMain.handle('terminal-detach', (_event, officeId: string, agentId: string) => {

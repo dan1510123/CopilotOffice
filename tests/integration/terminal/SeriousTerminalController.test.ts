@@ -135,4 +135,65 @@ describe('integration/SeriousTerminalController', () => {
     expect(menu, 'context menu should be installed after openAgentTerminal').toBeTruthy();
     expect((controller as any).terminalContextMenu).toBe(menu);
   });
+
+  it('spec 021 Phase 1: cold-exists switch activates once (no attach/getSessionId) and records switch perf spans', async () => {
+    const { countTerminalPerfEntries, resetTerminalPerf, setTerminalPerfEnabled } = await import(
+      '../../../src/ui/terminalPerf'
+    );
+    resetTerminalPerf();
+    setTerminalPerfEnabled(true);
+
+    const existsFor = new Set<string>();
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn((_office: string, agentId: string) => Promise.resolve(existsFor.has(agentId))),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-A' }),
+      terminalActivate: vi.fn().mockResolvedValue({ success: true, existed: true, sessionId: 'sess-B', title: 'T', scrollback: 'abc' }),
+      terminalAttach: vi.fn().mockResolvedValue({ success: true, scrollback: 'abc' }),
+      getSessionId: vi.fn().mockResolvedValue('sess-B'),
+      getSessionMeta: vi.fn().mockResolvedValue({ title: 'T' }),
+    });
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    controller = new SeriousTerminalController(host);
+
+    // Cold-open agent A.
+    await controller.openAgentTerminal({
+      officeId: 'office-0', agentId: 'generalist', name: 'Gene',
+      description: 'General', workingDir: '.', launchMode: 'copilot',
+    });
+
+    existsFor.add('debugger');
+    (bridge.terminalActivate as any).mockClear();
+    (bridge.terminalAttach as any).mockClear();
+    (bridge.getSessionId as any).mockClear();
+
+    // Switch to agent B (cold cache entry, already running on server → one atomic activation).
+    await controller.openAgentTerminal({
+      officeId: 'office-0', agentId: 'debugger', name: 'Dan',
+      description: 'Debugger', workingDir: '.', launchMode: 'copilot',
+    });
+
+    const activateCalls = (bridge.terminalActivate as any).mock.calls.filter(
+      (c: unknown[]) => c[0] === 'office-0' && c[1] === 'debugger' && (c[2] as { foreground?: boolean })?.foreground === true,
+    ).length;
+    // Spec 021 Phase 5b: the atomic activation replaces the legacy attach+getSessionId pair.
+    const attachCalls = (bridge.terminalAttach as any).mock.calls.filter(
+      (c: unknown[]) => c[0] === 'office-0' && c[1] === 'debugger',
+    ).length;
+    const getIdCalls = (bridge.getSessionId as any).mock.calls.filter(
+      (c: unknown[]) => c[0] === 'office-0' && c[1] === 'debugger',
+    ).length;
+    expect(activateCalls).toBe(1);
+    expect(attachCalls).toBe(0);
+    expect(getIdCalls).toBe(0);
+
+    const target = 'office-0:debugger';
+    expect(countTerminalPerfEntries('switch:request', { surface: 'serious', target })).toBe(1);
+    expect(countTerminalPerfEntries('switch:activate-done', { surface: 'serious', target })).toBe(1);
+    expect(countTerminalPerfEntries('switch:first-ready', { surface: 'serious', target })).toBe(1);
+
+    setTerminalPerfEnabled(false);
+    resetTerminalPerf();
+  });
 });

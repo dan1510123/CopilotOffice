@@ -43,6 +43,11 @@ export const ZIndex = {
   /** Sprite/session card that floats above the terminal overlay. */
   TERMINAL_SPRITE_CARD: 10001,
 
+  /** Indeterminate "Restoring session…" loader shown over the terminal
+   *  viewport while a session restore is in flight (spec 021). Above the xterm
+   *  content but below the sprite card so the card chrome stays visible. */
+  TERMINAL_RESTORE_LOADING: 10002,
+
   /** Serious-mode terminal controller (full-pane mode). Sits above the
    *  terminal overlay so its chrome (mode toggle, footer) stays on top. */
   SERIOUS_TERMINAL: 10003,

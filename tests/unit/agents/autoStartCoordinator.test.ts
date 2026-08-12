@@ -13,7 +13,7 @@ interface HarnessOptions {
   meta?: Record<string, Record<string, { title: string }>>;
   sessionIds?: Record<string, Record<string, string | null>>;
   warmAgentSessionImpl?: (officeId: string, agentId: string) => Promise<void>;
-  resetSessionImpl?: (officeId: string, agentId: string) => Promise<void>;
+  resetSessionImpl?: (officeId: string, agentId: string) => Promise<string | null>;
   launchConfig?: { workingDir: string; launchMode: 'copilot' | 'shell' };}
 
 interface Harness {
@@ -43,6 +43,7 @@ function buildHarness(opts: HarnessOptions = {}): Harness {
     resetSession: async (oid, aid) => {
       resetCalls.push([oid, aid]);
       if (opts.resetSessionImpl) return opts.resetSessionImpl(oid, aid);
+      return null;
     },
     warmAgentSession: async (oid, aid) => {
       warmCalls.push([oid, aid]);
@@ -228,7 +229,7 @@ describe('agents/AutoStartCoordinator — tryWarmCurrentOffice', () => {
         oid === 'office-0' ? { a: { title: 'A' } } : { b: { title: 'B' } },
       getCurrentSessionId: async (oid, aid) => `${oid}:${aid}`,
       getAgentLaunchConfig: () => ({ workingDir: '/tmp', launchMode: 'shell' }),
-      resetSession: async () => {},
+      resetSession: async () => null,
       warmAgentSession: async (oid, aid) => {
         warmCalls.push([oid, aid]);
       },
@@ -249,10 +250,10 @@ describe('agents/AutoStartCoordinator — tryWarmCurrentOffice', () => {
 
 describe('agents/AutoStartCoordinator — replaceSession', () => {
   it('FR-014: when in-flight, returns the existing promise without re-invoking deps', async () => {
-    let resolveReset!: () => void;
+    let resolveReset!: (v: string | null) => void;
     const h = buildHarness({
       resetSessionImpl: () =>
-        new Promise<void>((resolve) => {
+        new Promise<string | null>((resolve) => {
           resolveReset = resolve;
         }),
     });
@@ -261,7 +262,7 @@ describe('agents/AutoStartCoordinator — replaceSession', () => {
     expect(p2).toBe(p1);
     expect(h.resetCalls).toHaveLength(1);
     expect(h.warmCalls).toHaveLength(0);
-    resolveReset();
+    resolveReset(null);
     await p1;
   });
 
@@ -270,6 +271,7 @@ describe('agents/AutoStartCoordinator — replaceSession', () => {
     const h = buildHarness({
       resetSessionImpl: async () => {
         order.push('reset');
+        return null;
       },
       warmAgentSessionImpl: async () => {
         order.push('warm');
@@ -286,6 +288,31 @@ describe('agents/AutoStartCoordinator — replaceSession', () => {
     await h.coordinator.replaceSession('office-0', 'a');
     expect(h.resetCalls).toEqual([['office-0', 'a']]);
     expect(h.warmCalls).toEqual([]);
+  });
+
+  it('spec 021: resolves with the freshly-minted session id from resetSession (setting ON)', async () => {
+    const h = buildHarness({
+      resetSessionImpl: async () => 'minted-uuid-123',
+    });
+    const result = await h.coordinator.replaceSession('office-0', 'a');
+    expect(result).toEqual({ sessionId: 'minted-uuid-123' });
+    expect(h.warmCalls).toEqual([['office-0', 'a']]);
+  });
+
+  it('spec 021: surfaces reset session id even when setting is OFF (no warm)', async () => {
+    const h = buildHarness({
+      settings: { autoStartKnownAgents: false },
+      resetSessionImpl: async () => 'off-uuid-9',
+    });
+    const result = await h.coordinator.replaceSession('office-0', 'a');
+    expect(result).toEqual({ sessionId: 'off-uuid-9' });
+    expect(h.warmCalls).toEqual([]);
+  });
+
+  it('spec 021: resolves { sessionId: null } when reset surfaces no id', async () => {
+    const h = buildHarness({ resetSessionImpl: async () => null });
+    const result = await h.coordinator.replaceSession('office-0', 'a');
+    expect(result).toEqual({ sessionId: null });
   });
 
   it('FR-015: tracker entry cleared in finally even when warmAgentSession rejects', async () => {
