@@ -174,7 +174,8 @@ path and confirm it contains a human-readable summary (state, decisions, next st
   as either source or target.
 - **FR-010**: The tool MUST return a typed `HandoffResult` capturing `sourceAgentId`,
   resolved `targetAgentId`, `officeId`, `handoffDocPath`, and an `outcome`. Outcomes:
-  `handed-off` | `denied` | `not-online` (source offline) | `invalid-target` (bad/absent
+  `handed-off` | `denied` (explicit user deny) | `not-approved` (gate lapsed/timed out,
+  no user decision) | `not-online` (source offline) | `invalid-target` (bad/absent
   target) | `failed`. Failure paths MUST NOT throw silently.
 - **FR-011**: Every handoff outcome (including denials) MUST be recorded in the
   orchestrator transcript with source, target, and doc path (spec 017 transcript pattern).
@@ -183,8 +184,11 @@ path and confirm it contains a human-readable summary (state, decisions, next st
 
 ### Key Entities
 
-- **HandoffRequest**: `{ sourceAgentId, officeId?, target: 'same' | { targetAgentId },
-  note? }` — `note` is optional extra guidance folded into the source's doc-writing prompt.
+- **HandoffArgs** (canonical tool args — flat, matches the SDK JSON schema): `{ sourceAgentId,
+  officeId?, targetAgentId?, note? }`. Omit `targetAgentId` (or set it equal to `sourceAgentId`)
+  for a fresh session of the *same* agent; a distinct `targetAgentId` hands off to a different
+  agent. `note` is optional extra guidance folded into the source's doc-writing prompt. (This
+  flat shape is the single source of truth — no discriminated `target` union.)
 - **HandoffResult**: `{ sourceAgentId, targetAgentId, officeId, handoffDocPath, outcome,
   message }`.
 - **Handoff document**: a Markdown file authored by the source agent at `handoffDocPath`

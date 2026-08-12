@@ -50,7 +50,7 @@ feature (Part A) and the deny/timeout bug fixes (Part B) depend on. Corresponds 
 
 **⚠️ CRITICAL**: No Part A story and no Part B deny/timeout work can begin until this phase is complete.
 
-- [ ] T004 [P] Add `HandoffArgs`, `HandoffTarget`, `HandoffResult`, and `HandoffOutcome` (`'handed-off' | 'denied' | 'not-online' | 'invalid-target' | 'failed'`) types in `electron/orchestrator/types.ts` per contracts/orchestrator-handoff-tool.md (no `any` across the IPC seam).
+- [ ] T004 [P] Add `HandoffArgs` (flat: `{ sourceAgentId, officeId?, targetAgentId?, note? }`), `HandoffResult`, and `HandoffOutcome` (`'handed-off' | 'denied' | 'not-approved' | 'not-online' | 'invalid-target' | 'failed'`) types in `electron/orchestrator/types.ts` per contracts/orchestrator-handoff-tool.md (no `any` across the IPC seam; no discriminated `target` union — the flat `targetAgentId?` is canonical).
 - [ ] T005 [P] Add the B1/B3 gate-disposition type in `electron/orchestrator/types.ts` — a typed distinction between `user-denied` (explicit deny) and `timeout-lapsed` (no reachable approver) carried on the gate/tool result (FR-B06).
 - [ ] T006 Add the `orchestrator:handoff:request` / `orchestrator:handoff:respond` IPC channel definitions (payload `{ requestId, args: HandoffArgs }` → `{ requestId, result: HandoffResult }`) in `electron/orchestrator/orchestratorIpc.ts`, mirroring the spec 017 act-on channels (depends on T004).
 - [ ] T007 Expose the handoff invoke/on bridge in `electron/terminal/preload.ts` for the `orchestrator:handoff:*` channel (depends on T006).
@@ -72,7 +72,7 @@ effects; an offline source returns `not-online`.
 
 ### Tests for User Story 1 ⚠️ (write first, ensure they FAIL before implementation)
 
-- [ ] T008 [P] [US1] Create `tests/unit/orchestrator/handoffSession.test.ts` covering the same-agent matrix rows from contracts/orchestrator-handoff-tool.md: same-agent restart ⇒ `handed-off` (restartSession called, pickup delivered to fresh source session); source offline ⇒ `not-online` (no deliverText/restart); denied ⇒ `denied` (manager never emits request, zero side effects); orchestrator identity as source ⇒ `invalid-target`; backing op returns false ⇒ `failed`. Reuse the `ActOnDeps` mocking pattern.
+- [ ] T008 [P] [US1] Create `tests/unit/orchestrator/handoffSession.test.ts` covering the same-agent matrix rows from contracts/orchestrator-handoff-tool.md: same-agent restart ⇒ `handed-off` (restartSession called, pickup delivered to fresh source session); source offline ⇒ `not-online` (no deliverText/restart); denied ⇒ `denied` (manager never emits request, zero side effects); gate lapsed/timeout ⇒ `not-approved` (manager never emits request, zero side effects, no retry); orchestrator identity as source ⇒ `invalid-target`; backing op returns false ⇒ `failed`. Also assert `restartSession` receives the same `officeId`/`agentId` (working-directory preservation, SC-003). Reuse the `ActOnDeps` mocking pattern.
 
 ### Implementation for User Story 1
 
@@ -220,11 +220,11 @@ status read cannot report agents absent from the office or mislabel their state.
 
 ### Tests for Bug Story B4 ⚠️ (write first, ensure they FAIL before implementation)
 
-- [ ] T033 [P] [B4] Extend `tests/unit/orchestrator/candidateSelection.test.ts` (or an adjacent status test) to assert `get_active_agents` / `get_agent_status` / `list_agents_awaiting_input` resolve roster from the effective custom-aware roster and `agentStatusPresentation`, and never report an agent absent from that office (FR-B07).
+- [ ] T033 [P] [B4] Extend `tests/unit/office/orchestratorStatusLookup.test.ts` (or an adjacent status test) to assert `get_active_agents` / `get_agent_status` / `list_agents_awaiting_input` resolve roster + display names from the effective custom-aware roster in `src/office/orchestratorStatus.ts` and `agentStatusPresentation`, and never report an agent absent from that office / never surface a stale status for a custom-office agent (FR-B07).
 
 ### Implementation for Bug Story B4
 
-- [ ] T034 [B4] Route the read-only status tools' roster resolution through the shared effective (custom-aware) roster in `src/office/orchestratorCandidates.ts` (shared with T026) and the single `agentStatusPresentation` source of truth (FR-B07).
+- [ ] T034 [B4] Route the read-only status tools' roster + display-name resolution through the effective (custom-aware) roster in `src/office/orchestratorStatus.ts` — where `get_active_agents` / `list_agents_awaiting_input` / `get_agent_status` are backed — reading labels/colors ONLY from `src/config/agentStatusPresentation.ts` (single source of truth). NOTE: `orchestratorStatus.ts` already consults `customAgents` / `customReserveAgents`; per FR-B08 first reproduce the stale/incorrect read, then close the specific gap (e.g. an office-scope or status-freshness path) rather than assuming the roster lookup is the defect (FR-B07).
 - [ ] T035 [B4] Run T033 against the implementation and make it green; if a "wrong read" repro remains unexplained by FR-B07, capture it and file a follow-up per FR-B08 (do not block on it).
 
 **Checkpoint**: Status reads reflect the effective office roster; residual repro (if any) is filed, not blocking.
@@ -238,7 +238,7 @@ status read cannot report agents absent from the office or mislabel their state.
 
 - [ ] T036 Run `npx tsc --noEmit` across the whole tree and confirm no `any` was introduced across the IPC seam (strictness preserved).
 - [ ] T037 Run `npm run test` and confirm all new tests pass and the full existing orchestrator + Teams suite (the 200+ baseline) stays green (SC-006, SC-B04).
-- [ ] T038 Run the e2e smoke and the worktree bundle-marker check: build `dist/electron/*.js` + `dist/game.bundle.js` and confirm the launched bundle contains the new `handoff_session` tool name (Principle VII).
+- [ ] T038 Run the e2e smoke and the worktree bundle-marker check: build `dist/electron/*.js` + `dist/game.bundle.js` and confirm the launched bundle contains the new `handoff_session` tool name (Principle VII). Also confirm no new in-canvas renderer or keyboard-capture path was added — the feature reuses only the orchestrator panel/IPC seams (FR-012).
 - [ ] T039 [P] Confirm every handoff outcome (including denials) and B1/B3 dispositions are recorded to the orchestrator transcript (FR-011) with source, target, and doc path.
 
 ---
