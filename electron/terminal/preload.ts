@@ -368,13 +368,13 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('orchestrator:permission:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:permission:request', handler);
   },
-  onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => {
-    const handler = (_event: unknown, payload: { sessionId: string; requestId: string }) => callback(payload);
+  onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; officeId?: string }) => callback(payload);
     ipcRenderer.on('orchestrator:candidates:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:candidates:request', handler);
   },
-  onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => {
-    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string }) => callback(payload);
+  onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => callback(payload);
     ipcRenderer.on('orchestrator:execute:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:execute:request', handler);
   },
@@ -593,8 +593,8 @@ declare global {
       orchestratorGetTranscript: (sessionId?: string) => Promise<{ transcript: OrchestratorTranscriptData | null }>;
       onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEventData }) => void) => () => void;
       onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; agentName?: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; title?: string; reason?: string } }) => void) => () => void;
-      onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
-      onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string }) => void) => () => void;
+      onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => () => void;
+      onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
       onOrchestratorOfficesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
       onOrchestratorSwitchRequest: (callback: (payload: { sessionId: string; requestId: string; officeId: string }) => void) => () => void;
       onOrchestratorActiveAgentsRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => () => void;

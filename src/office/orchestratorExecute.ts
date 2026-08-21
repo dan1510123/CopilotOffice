@@ -11,27 +11,83 @@
 
 import { computeBringOnlineCandidates } from './orchestratorCandidates';
 import { officeManager } from './officeManager';
-import type { BringOnlineOutcome, BringOnlineResult } from '../../electron/orchestrator/types';
+import type { BringOnlineCandidate, BringOnlineOutcome, BringOnlineResult } from '../../electron/orchestrator/types';
+
+/**
+ * Resolve the identifier the orchestrator passed to `bring_agent_online` to a
+ * concrete candidate. The model frequently passes a display NAME (e.g. "Rhys")
+ * instead of the agentId (e.g. "office-6-reserve-4"), which previously fell
+ * straight through to `invalid-target`. Match by exact id, then case-insensitive
+ * id, then exact name, then a unique fuzzy name. When the identifier is blank /
+ * omitted, default to the next dormant agent in the office's list (the first
+ * candidate) so "bring someone online" works without naming an agent.
+ */
+function resolveCandidate(
+  query: string | undefined | null,
+  candidates: BringOnlineCandidate[],
+): BringOnlineCandidate | null {
+  const q = (query ?? '').trim();
+  if (!q) return candidates[0] ?? null;
+  const lc = q.toLowerCase();
+  const byId = candidates.find((c) => c.agentId === q)
+    ?? candidates.find((c) => c.agentId.toLowerCase() === lc);
+  if (byId) return byId;
+  const byName = candidates.find((c) => c.name.toLowerCase() === lc);
+  if (byName) return byName;
+  const fuzzy = candidates.filter(
+    (c) => c.name.toLowerCase().includes(lc) || lc.includes(c.name.toLowerCase()),
+  );
+  return fuzzy.length === 1 ? fuzzy[0] : null;
+}
 
 export interface ExecuteBringOnlineDeps {
   /** Start an idle-seated agent (setAgentStarting + terminalStart w/ correct cwd). Resolves true on success. */
   startSeated: (officeId: string, agentId: string) => Promise<boolean>;
   /** Delegate reserve activation to OfficeScene; resolves the spawn outcome. */
   activateReserve: (deskId: string) => Promise<BringOnlineOutcome>;
+  /**
+   * Switch the desktop to `officeId` and resolve once the scene has settled.
+   * Required because reserve activation (`spawnReserveAgent`) is bound to the
+   * CURRENTLY rendered office — an agent in a non-current office can only be
+   * brought online after that office is in view. Optional so existing callers
+   * (which always target the current office) need no change.
+   */
+  switchOffice?: (officeId: string) => Promise<void>;
 }
 
+/**
+ * Bring a dormant agent online. `targetOfficeId` names the office the agent lives
+ * in; when it differs from the current office we auto-switch first (via the
+ * injected `switchOffice` delegate) so the roster + scene reflect the target,
+ * otherwise reserve spawn and candidate computation would run against the wrong
+ * office and return `invalid-target`. Defaults to the current office.
+ */
 export async function executeBringOnline(
   agentId: string,
   deps: ExecuteBringOnlineDeps,
+  targetOfficeId?: string,
 ): Promise<BringOnlineResult> {
-  const officeId = officeManager.currentOfficeId;
+  // Auto-switch to the target office before computing candidates / spawning.
+  if (targetOfficeId && targetOfficeId !== officeManager.currentOfficeId && deps.switchOffice) {
+    try {
+      await deps.switchOffice(targetOfficeId);
+    } catch (err) {
+      return {
+        agentId,
+        outcome: 'failed',
+        message: `Could not switch to the target office: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  const officeId = targetOfficeId ?? officeManager.currentOfficeId;
   if (!officeId) {
     return { agentId, outcome: 'failed', message: 'No office is currently active.' };
   }
 
-  const candidate = computeBringOnlineCandidates().find((c) => c.agentId === agentId);
+  const candidate = resolveCandidate(agentId, computeBringOnlineCandidates(officeId));
   if (!candidate) {
-    // Not dormant/valid: either unknown id, already active, or (reserve) no open seat.
+    // Not dormant/valid: either unknown id/name, already active, or (reserve) no open seat.
     const status = officeManager.getAgentStatus(officeId, agentId);
     if (status?.state === 'active') {
       return { agentId, outcome: 'already-active', message: `${agentId} is already online.` };
@@ -43,17 +99,20 @@ export async function executeBringOnline(
     };
   }
 
+  // Use the resolved canonical id from here on (the caller may have passed a name).
+  const resolvedId = candidate.agentId;
+
   try {
     if (candidate.source === 'idle-seated') {
-      const ok = await deps.startSeated(officeId, agentId);
+      const ok = await deps.startSeated(officeId, resolvedId);
       return ok
-        ? { agentId, outcome: 'started', message: `${candidate.name} is coming online.` }
-        : { agentId, outcome: 'failed', message: `Failed to start ${candidate.name}.` };
+        ? { agentId: resolvedId, outcome: 'started', message: `${candidate.name} is coming online.` }
+        : { agentId: resolvedId, outcome: 'failed', message: `Failed to start ${candidate.name}.` };
     }
 
     // Reserve: delegate to the scene.
     if (!candidate.deskId) {
-      return { agentId, outcome: 'invalid-target', message: `${agentId} has no reserve desk.` };
+      return { agentId: resolvedId, outcome: 'invalid-target', message: `${candidate.name} has no open reserve seat.` };
     }
     const outcome = await deps.activateReserve(candidate.deskId);
     const message =
@@ -62,12 +121,12 @@ export async function executeBringOnline(
         : outcome === 'already-active'
           ? `${candidate.name} is already online.`
           : `Could not activate ${candidate.name}.`;
-    return { agentId, outcome, message };
+    return { agentId: resolvedId, outcome, message };
   } catch (err) {
     return {
-      agentId,
+      agentId: resolvedId,
       outcome: 'failed',
-      message: `Error bringing ${agentId} online: ${err instanceof Error ? err.message : String(err)}`,
+      message: `Error bringing ${candidate.name} online: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 }

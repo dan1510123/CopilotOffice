@@ -22,8 +22,8 @@ import type {
 } from './types';
 
 export interface OrchestratorToolDeps {
-  requestCandidates: () => Promise<BringOnlineCandidate[]>;
-  requestExecute: (agentId: string) => Promise<BringOnlineResult>;
+  requestCandidates: (officeId?: string) => Promise<BringOnlineCandidate[]>;
+  requestExecute: (agentId: string, officeId?: string) => Promise<BringOnlineResult>;
   requestOffices: () => Promise<OfficeSummary[]>;
   requestSwitch: (officeId: string) => Promise<SwitchOfficeResult>;
   /** Reserved for future use; officeId is currently derived from candidates. */
@@ -46,41 +46,75 @@ export interface OrchestratorToolDeps {
 export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] {
   const listTool = defineTool('list_office_agents', {
     description:
-      'List the dormant agents that can be brought online in the currently viewed ' +
-      'office, so you can rank them against the user\'s request. Returns each ' +
-      'candidate\'s agentId, name, skill, and description. Takes no arguments.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      'List the dormant agents that can be brought online in an office, so you can ' +
+      'rank them against the user\'s request. Returns each candidate\'s agentId, name, ' +
+      'skill, and description. Defaults to the currently viewed office; pass `officeId` ' +
+      '(from list_offices) to list a DIFFERENT office\'s dormant agents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Optional office to list. Omit for the currently viewed office.',
+        },
+      },
+      additionalProperties: false,
+    },
     skipPermission: true,
-    handler: async () => {
-      const candidates = await deps.requestCandidates();
-      const officeId = candidates[0]?.officeId ?? deps.getOfficeId();
+    handler: async (args: { officeId?: string }) => {
+      const candidates = await deps.requestCandidates(args.officeId);
+      const officeId = args.officeId ?? candidates[0]?.officeId ?? deps.getOfficeId();
       return { officeId, candidates };
     },
   });
 
   const bringOnlineTool = defineTool('bring_agent_online', {
     description:
-      'Bring a specific dormant agent online in the current office. Only call this ' +
-      'with an agentId returned by list_office_agents. This action is gated: the ' +
-      'user must approve it before it takes effect.',
+      'Bring a dormant agent online. Defaults to the currently viewed office; pass ' +
+      '`officeId` (from list_offices / list_office_agents) to bring an agent online in a ' +
+      'DIFFERENT office — the desktop will switch to that office automatically. Prefer ' +
+      'passing an agentId returned by list_office_agents. If the user does NOT name a ' +
+      'specific agent (e.g. "bring someone online", "add another agent"), you may omit ' +
+      'agentId — the next dormant agent in that office\'s list is used by default. This ' +
+      'action is gated: the user must approve it before it takes effect.',
     parameters: {
       type: 'object',
       properties: {
         agentId: {
           type: 'string',
-          description: 'Candidate agentId from list_office_agents.',
+          description:
+            'Candidate agentId (or name) from list_office_agents. Omit to default to the ' +
+            'next dormant agent in the office\'s list.',
+        },
+        officeId: {
+          type: 'string',
+          description:
+            'Office the agent lives in (from list_offices). Omit for the currently viewed ' +
+            'office; when set to a different office the desktop switches to it first.',
         },
         reason: {
           type: 'string',
           description: 'Short rationale for why this agent fits the request.',
         },
       },
-      required: ['agentId'],
       additionalProperties: false,
     },
-    handler: async (args: { agentId: string; reason?: string }) => {
-      // Reached only AFTER the permission gate approves.
-      return deps.requestExecute(args.agentId);
+    handler: async (args: { agentId?: string; officeId?: string; reason?: string }) => {
+      // Reached only AFTER the permission gate approves. Default to the next dormant
+      // agent in the office's list when the caller did not specify one.
+      let agentId = (args.agentId ?? '').trim();
+      if (!agentId) {
+        const candidates = await deps.requestCandidates(args.officeId);
+        if (candidates.length === 0) {
+          return {
+            agentId: '',
+            outcome: 'invalid-target' as const,
+            message: 'There are no dormant agents available to bring online in this office.',
+          };
+        }
+        agentId = candidates[0].agentId;
+      }
+      return deps.requestExecute(agentId, args.officeId);
     },
   });
 

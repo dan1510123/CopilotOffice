@@ -103,6 +103,26 @@ function resolveTarget(agentId: string, officeId?: string): ResolvedTarget | nul
   const candidateOffices: string[] = [];
   if (officeId) candidateOffices.push(officeId);
   const current = officeManager.currentOfficeId;
+
+  // Honor an explicit officeId hint decisively FIRST. With ids duplicated across
+  // offices, scanning all offices for a status entry could resolve to the wrong
+  // office (e.g. a same-id agent that happens to be live elsewhere). If the hint
+  // office knows this agent — either it has a status entry there OR it is a roster
+  // member (dormant) — that office wins, using its actual online state.
+  if (officeId) {
+    const hintStatus = officeManager.getAgentStatus(officeId, target);
+    if (hintStatus) {
+      return {
+        officeId,
+        online: hintStatus.state === 'active',
+        waiting: resolveStatusKey(hintStatus) === 'waiting',
+      };
+    }
+    if (isKnownDormantAgent(target, officeId)) {
+      return { officeId, online: false, waiting: false };
+    }
+  }
+
   if (current && current !== officeId) candidateOffices.push(current);
   for (const config of officeManager.getAllOffices()) {
     if (!candidateOffices.includes(config.id)) candidateOffices.push(config.id);

@@ -75,6 +75,50 @@ export function serializeOffices(state: StoredOfficeState): string {
 }
 
 /**
+ * Legacy data repair: some offices were persisted carrying another office's
+ * baked-in agent ids (e.g. office-3 storing `office-6-reserve-*`). Because agent
+ * ids double as the office-scoped identity used by bring-online / Teams / status
+ * lookups, a duplicated id across two offices makes those flows ambiguous and
+ * causes `invalid-target` failures. Rewrite any embedded id of the form
+ * `office-<N>-(agent|reserve)-<K>` whose `<N>` differs from THIS office's numeric
+ * index to `office-<thisIndex>-<kind>-<K>` (kind + suffix preserved). Idempotent:
+ * ids that already match this office, or ids that don't fit the pattern, are left
+ * untouched. Only runs for offices whose own id is the modern `office-N` scheme.
+ */
+const OFFICE_AGENT_ID_RE = /^office-(\d+)-(agent|reserve)-(\d+)$/;
+
+function normalizeAgentIdsForOffice(office: OfficeConfig): void {
+  const idMatch = /^office-(\d+)$/.exec(office.id);
+  if (!idMatch) return; // only modern office-N ids own a canonical index
+  const officeIndex = idMatch[1];
+
+  const remapId = (agentId: string): string => {
+    const m = OFFICE_AGENT_ID_RE.exec(agentId);
+    if (!m) return agentId;
+    const [, embeddedIndex, kind, suffix] = m;
+    if (embeddedIndex === officeIndex) return agentId;
+    return `office-${officeIndex}-${kind}-${suffix}`;
+  };
+
+  if (Array.isArray(office.customAgents)) {
+    for (const a of office.customAgents) {
+      if (a && typeof a.id === 'string') a.id = remapId(a.id);
+    }
+  }
+  if (office.customReserveAgents && typeof office.customReserveAgents === 'object') {
+    for (const key of Object.keys(office.customReserveAgents)) {
+      const a = office.customReserveAgents[key];
+      if (a && typeof a.id === 'string') a.id = remapId(a.id);
+    }
+  }
+  if (Array.isArray(office.seatedAgents)) {
+    for (const s of office.seatedAgents) {
+      if (s && typeof s.agentId === 'string') s.agentId = remapId(s.agentId);
+    }
+  }
+}
+
+/**
  * Parse and normalize a stored payload. Returns an empty state for null /
  * malformed input rather than throwing — callers (manager init) tolerate
  * partial data and a warning is logged on parse failure.
@@ -162,6 +206,9 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
     if (cfg.teamsMentionValue !== undefined) {
       normalized.teamsMentionValue = cfg.teamsMentionValue as string;
     }
+    // Repair legacy id collisions (another office's baked-in agent ids) so every
+    // agent id is unique to its own office. Idempotent for already-correct data.
+    normalizeAgentIdsForOffice(normalized);
     offices.push(normalized);
   }
 

@@ -17,6 +17,7 @@ vi.mock('../../../src/office/officeManager', () => ({
   officeManager: {
     get currentOfficeId() { return currentOfficeId; },
     get currentOffice() { return currentOfficeId ? { config: { layout: layoutKey } } : null; },
+    getOffice: (officeId: string) => (officeId ? { config: { layout: layoutKey } } : undefined),
     getAgentStatus: (_officeId: string, agentId: string) => statusMap.get(agentId),
   },
 }));
