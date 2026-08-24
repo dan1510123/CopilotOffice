@@ -2996,6 +2996,24 @@ if (window.copilotBridge) {
     updateTerminalContent();
   });
 
+  // Keep renderer status in sync with the real PTY lifecycle across ALL offices.
+  // When a session exits, clear any stale 'active'/'Done' state so bring-online
+  // and Teams no longer mistake a dead session for a live one (the desync that
+  // stranded cross-office agents). The overlay/controller exit handlers only cover
+  // the visible terminal's current office; this catches every office (e.g. a
+  // Teams-bound agent in a non-current office whose session drops).
+  window.copilotBridge.onTerminalExit((agentId, _exitCode, officeId) => {
+    const oid = officeId ?? officeManager.currentOfficeId;
+    if (!oid) return;
+    const status = officeManager.getAgentStatus(oid, agentId);
+    if (status && status.state !== 'slacking') {
+      officeManager.setAgentSlacking(oid, agentId, 'session_exit');
+      phaserGameRef?.events.emit('agent:status:changed', agentId);
+      updateStatusBar();
+      updateTerminalContent();
+    }
+  });
+
   // Teams Remote Agents (011): surface service toasts (GC cleanup, auth/online).
   window.copilotBridge.onTeamsToast?.((toast: { level?: string; message?: string; durationMs?: number }) => {
     if (!toast?.message) return;
