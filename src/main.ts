@@ -1597,6 +1597,33 @@ async function warmAgentSession(
 }
 
 /**
+ * Resolve a launch fallback (workingDir + launchMode) for `agentId` in `officeId`
+ * that is valid even when `officeId` is NOT the currently rendered office.
+ *
+ * `getSeriousLaunchConfig` (and the global `AGENTS` roster it reads) reflect only
+ * the CURRENT office — `swapActiveAgents` rebinds that roster on every office
+ * switch — so warming a non-current office through it silently resolves the wrong
+ * working directory (or none). Read the target office's own persisted config
+ * instead: a per-agent `workingDir` override from its custom roster, else the
+ * office's `workingDirectory`. Returns undefined only when no dir can be found.
+ */
+function resolveLaunchFallback(
+  officeId: string,
+  agentId: string,
+): { workingDir: string; launchMode: 'copilot' | 'shell' } | undefined {
+  const office = officeManager.getOffice(officeId)?.config;
+  const fromRoster =
+    office?.customAgents?.find((a) => a.id === agentId)?.workingDir ??
+    (office?.customReserveAgents
+      ? Object.values(office.customReserveAgents).find((a) => a.id === agentId)?.workingDir
+      : undefined);
+  const workingDir = fromRoster || office?.workingDirectory;
+  if (!workingDir) return undefined;
+  const launchMode: 'copilot' | 'shell' = agentId === PC_TERMINAL_ID ? 'shell' : 'copilot';
+  return { workingDir, launchMode };
+}
+
+/**
  * Bring a dormant agent FULLY online for the Teams auto-online path: idle-seated
  * agents warm their PTY directly, reserve agents are spawned via the scene
  * delegate (NPC + seat + fire-and-forget terminalStart). Because reserve spawn
@@ -1610,7 +1637,7 @@ async function bringAgentFullyOnline(officeId: string, agentId: string): Promise
   const result = await executeBringOnline(
     agentId,
     {
-      startSeated: (oid, aid) => warmAgentSession(oid, aid),
+      startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
       activateReserve: activateReserveViaScene,
       switchOffice: switchOfficeAndSettle,
     },
@@ -1947,7 +1974,7 @@ if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
       const result = await executeBringOnline(
         agentId,
         {
-          startSeated: (oid, aid) => warmAgentSession(oid, aid),
+          startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
           activateReserve: activateReserveViaScene,
           switchOffice: switchOfficeAndSettle,
         },
@@ -2065,7 +2092,8 @@ function registerOrchestratorSpec017Resolvers(): void {
 
   // ── Shared act-on deps (reuse sanctioned per-agent session ops) ────────────
   const actOnDeps: ActOnDeps = {
-    ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
+    ensureOnline: (officeId, agentId) =>
+      warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId)),
     bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
@@ -2104,7 +2132,7 @@ function registerOrchestratorSpec017Resolvers(): void {
     },
     restartSession: async (officeId, agentId) => {
       await window.copilotBridge.terminalKill(officeId, agentId).catch(() => {});
-      return warmAgentSession(officeId, agentId);
+      return warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId));
     },
     teamsEnabled: async () => {
       try {
