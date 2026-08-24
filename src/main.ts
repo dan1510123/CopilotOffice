@@ -1629,10 +1629,24 @@ function resolveLaunchFallback(
  * delegate (NPC + seat + fire-and-forget terminalStart). Because reserve spawn
  * does not await the PTY, we then wait until the agent's session id is actually
  * available so a follow-up teamsRegister (which requires a live session) succeeds.
+ *
+ * "Online" is judged by the REAL PTY liveness (queryAgentStatuses().alive), NOT
+ * the renderer's agent status: the latter can read `active`/`Done` while the PTY
+ * is dead (a dropped or half-completed restart). When the renderer still marks a
+ * seated agent active but its session is gone, we re-warm it directly instead of
+ * short-circuiting on the stale status (which would just wait and time out) or
+ * refusing it via executeBringOnline as "already online".
  */
 async function bringAgentFullyOnline(officeId: string, agentId: string): Promise<boolean> {
-  if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
+  if (await isSessionAlive(officeId, agentId)) {
     return waitForSessionReady(officeId, agentId);
+  }
+  // No live PTY. If the renderer still marks it active, the NPC is already seated,
+  // so a plain re-warm (with a cross-office-safe workingDir) restores the session.
+  if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
+    const warmed = await warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId));
+    if (warmed && (await waitForSessionReady(officeId, agentId))) return true;
+    // Re-warm couldn't establish a session — fall through to a full bring-online.
   }
   const result = await executeBringOnline(
     agentId,
@@ -1640,11 +1654,27 @@ async function bringAgentFullyOnline(officeId: string, agentId: string): Promise
       startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
       activateReserve: activateReserveViaScene,
       switchOffice: switchOfficeAndSettle,
+      isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
     },
     officeId,
   );
   if (result.outcome !== 'started' && result.outcome !== 'already-active') return false;
   return waitForSessionReady(officeId, agentId);
+}
+
+/**
+ * True only when the agent's PTY is actually alive server-side (not merely marked
+ * `active` in the renderer's status map). This is the authoritative liveness signal
+ * teamsRegister depends on; failures are swallowed as "not alive" so a transiently
+ * unavailable terminal server never reports a dead session as live.
+ */
+async function isSessionAlive(officeId: string, agentId: string): Promise<boolean> {
+  try {
+    const statuses = await window.copilotBridge?.queryAgentStatuses(officeId);
+    return !!statuses?.[agentId]?.alive;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1977,6 +2007,7 @@ if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
           startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
           activateReserve: activateReserveViaScene,
           switchOffice: switchOfficeAndSettle,
+          isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
         },
         officeId,
       );

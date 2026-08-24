@@ -53,6 +53,13 @@ export interface ExecuteBringOnlineDeps {
    * (which always target the current office) need no change.
    */
   switchOffice?: (officeId: string) => Promise<void>;
+  /**
+   * True only when the agent has a LIVE PTY session server-side. Used to
+   * distinguish a genuinely-online agent from one the renderer merely marks
+   * `active` while its session is dead (a dropped or half-completed restart).
+   * Optional so existing callers/tests default to the prior status-only behavior.
+   */
+  isSessionAlive?: (officeId: string, agentId: string) => Promise<boolean>;
 }
 
 /**
@@ -90,7 +97,18 @@ export async function executeBringOnline(
     // Not dormant/valid: either unknown id/name, already active, or (reserve) no open seat.
     const status = officeManager.getAgentStatus(officeId, agentId);
     if (status?.state === 'active') {
-      return { agentId, outcome: 'already-active', message: `${agentId} is already online.` };
+      // The renderer marks it active — but that can be stale while the PTY is
+      // dead (a dropped or half-completed restart). Only report "already online"
+      // when a LIVE session actually exists; otherwise re-warm the seated agent
+      // so a desynced agent can be restored instead of being permanently stuck.
+      const alive = deps.isSessionAlive ? await deps.isSessionAlive(officeId, agentId) : true;
+      if (alive) {
+        return { agentId, outcome: 'already-active', message: `${agentId} is already online.` };
+      }
+      const ok = await deps.startSeated(officeId, agentId);
+      return ok
+        ? { agentId, outcome: 'started', message: `${agentId} is coming back online.` }
+        : { agentId, outcome: 'failed', message: `Failed to restore ${agentId}'s session.` };
     }
     return {
       agentId,

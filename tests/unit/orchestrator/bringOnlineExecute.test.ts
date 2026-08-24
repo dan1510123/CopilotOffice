@@ -66,6 +66,40 @@ describe('executeBringOnline', () => {
     expect(res.outcome).toBe('already-active');
   });
 
+  it('reports already-active when marked active AND the session is genuinely alive', async () => {
+    statusMap.set('debugger', { state: 'active' });
+    const startSeated = vi.fn();
+    const res = await executeBringOnline('debugger', {
+      startSeated,
+      activateReserve: vi.fn(),
+      isSessionAlive: vi.fn().mockResolvedValue(true),
+    });
+    expect(res.outcome).toBe('already-active');
+    expect(startSeated).not.toHaveBeenCalled();
+  });
+
+  it('re-warms a seated agent the renderer marks active but whose PTY is dead (desync)', async () => {
+    statusMap.set('debugger', { state: 'active' });
+    const startSeated = vi.fn().mockResolvedValue(true);
+    const res = await executeBringOnline('debugger', {
+      startSeated,
+      activateReserve: vi.fn(),
+      isSessionAlive: vi.fn().mockResolvedValue(false),
+    });
+    expect(res.outcome).toBe('started');
+    expect(startSeated).toHaveBeenCalledWith('office-1', 'debugger');
+  });
+
+  it('surfaces failed when re-warming a desynced active agent cannot restore its session', async () => {
+    statusMap.set('debugger', { state: 'active' });
+    const res = await executeBringOnline('debugger', {
+      startSeated: vi.fn().mockResolvedValue(false),
+      activateReserve: vi.fn(),
+      isSessionAlive: vi.fn().mockResolvedValue(false),
+    });
+    expect(res.outcome).toBe('failed');
+  });
+
   it('returns invalid-target for an unknown id with no candidate and no active status', async () => {
     const res = await executeBringOnline('nobody', { startSeated: vi.fn(), activateReserve: vi.fn() });
     expect(res.outcome).toBe('invalid-target');
