@@ -705,6 +705,9 @@ function buildUiServerEnv(env: { [key: string]: string }, repoRoot: string): { [
     ...env,
     PATH: sanitizedPath,
     Path: sanitizedPath,
+    // Pin the bundled runtime: never let the self-updating SEA drift off the
+    // npm-locked version (avoids the SDK↔runtime mismatch crash + session picker).
+    COPILOT_AUTO_UPDATE: 'false',
   };
 }
 
@@ -1168,9 +1171,9 @@ function createSdkCliLaunchConfig(cliPath: string): { cliPath: string; cliArgs: 
     const commandProcessor = process.env.ComSpec || path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'cmd.exe');
     return {
       cliPath: commandProcessor,
-      cliArgs: ['/c', cliPath],
+      cliArgs: ['/c', cliPath, '--no-auto-update'],
     };
   }
 
-  return { cliPath, cliArgs: [] };
+  return { cliPath, cliArgs: ['--no-auto-update'] };
 }

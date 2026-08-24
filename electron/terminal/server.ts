@@ -26,6 +26,13 @@ import {
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 
+// Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
+// Copilot runtime inheriting this process's env, so setting COPILOT_AUTO_UPDATE
+// here guarantees the drift guard even on the one launch path that does not
+// build its own env object. Belt-and-suspenders with the per-spawn --no-auto-update
+// flag and per-backend env; keeps the self-updating SEA on the npm-locked version.
+process.env.COPILOT_AUTO_UPDATE = 'false';
+
 // ── State ───────────────────────────────────────────────────────
 
 interface PtyProcess {
@@ -604,6 +611,9 @@ async function startTerminalForAgentImpl(
     PATH: sanitizeCopilotPath(process.env.PATH, process.cwd()),
     COPILOT_OFFICE_PROCESS: 'true',
     COPILOT_OFFICE_AGENT: agentId,
+    // Pin the bundled runtime: prevent the self-updating SEA from drifting off
+    // the npm-locked version across every backend (node-pty typed launch too).
+    COPILOT_AUTO_UPDATE: 'false',
   } as { [key: string]: string };
 
   try {
@@ -995,7 +1005,7 @@ async function startTerminalForAgentImpl(
         const yoloFlag = yoloEnabled ? ' --yolo' : '';
         const extraParams = additionalParams ? ` ${additionalParams}` : '';
         console.log(`[TermServer] Starting copilot --session-id for ${ck}: ${sessionId}${yoloEnabled ? ' (yolo)' : ''}${additionalParams ? ` (params: ${additionalParams})` : ''}`);
-        proc.write(`copilot --session-id=${sessionId}${yoloFlag}${extraParams}\r`);
+        proc.write(`copilot --session-id=${sessionId} --no-auto-update${yoloFlag}${extraParams}\r`);
       }, 500);
     }
 
@@ -1452,7 +1462,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         } catch { /* use default */ }
       }
       try {
-        const wtArgs = ['-d', cwd, 'copilot', '--session-id', sid];
+        const wtArgs = ['-d', cwd, 'copilot', '--session-id', sid, '--no-auto-update'];
         if (yoloEnabled) wtArgs.push('--yolo');
         if (additionalParams) wtArgs.push(...additionalParams.split(/\s+/).filter(Boolean));
         spawn('wt', wtArgs, { detached: true, stdio: 'ignore' }).unref();
