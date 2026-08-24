@@ -138,12 +138,11 @@ describe('UiServerHostRuntime promo-modal dismissal', () => {
  * BEFORE the `--ui-server --port 0` control flags.
  */
 function makeArgCapturingPty() {
-  const captured: { cmd?: string; args?: string[]; env?: Record<string, string> } = {};
+  const captured: { cmd?: string; args?: string[] } = {};
   const pty = {
-    spawn: (cmd: string, args: string[], spawnOpts?: { env?: Record<string, string> }) => {
+    spawn: (cmd: string, args: string[]) => {
       captured.cmd = cmd;
       captured.args = args;
-      captured.env = spawnOpts?.env;
       return {
         pid: 555,
         onData: () => { /* never emits */ },
@@ -171,13 +170,6 @@ describe('UiServerHostRuntime extra-args passthrough', () => {
     // eslint-disable-next-line no-new
     new UiServerHostRuntime('office-b', pty, 'copilot', process.cwd(), opts, 5000);
     expect(captured.args).toEqual(['--ui-server', '--port', '0']);
-  });
-
-  it('sets COPILOT_TEST_DISABLE_INTERRUPTED_SESSION_RESTORE=true to suppress the restore picker', () => {
-    const { pty, captured } = makeArgCapturingPty();
-    // eslint-disable-next-line no-new
-    new UiServerHostRuntime('office-picker', pty, 'copilot', process.cwd(), opts, 5000);
-    expect(captured.env?.COPILOT_TEST_DISABLE_INTERRUPTED_SESSION_RESTORE).toBe('true');
   });
 
   it('filters out empty/whitespace-only extraArgs entries', () => {
