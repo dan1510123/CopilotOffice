@@ -587,8 +587,17 @@ async function startTerminalForAgentImpl(
     try {
       await fs.promises.access(customPath, fs.constants.F_OK);
       cwd = customPath;
-    } catch { /* use default */ }
+    } catch {
+      // The requested override folder does not exist / is not accessible, so we
+      // silently fall back to process.cwd() (the main/default folder). Log it so
+      // a "new session opened in the wrong folder" report is diagnosable.
+      console.warn(
+        `[workingDir] ${ck}: requested workingDir="${workingDir}" (resolved="${customPath}") ` +
+        `is not accessible; falling back to process.cwd()="${process.cwd()}"`,
+      );
+    }
   }
+  console.log(`[workingDir] ${ck}: terminalStart requested="${workingDir ?? '(none)'}" finalCwd="${cwd}"`);
 
   const taggedEnv = {
     ...process.env,

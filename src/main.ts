@@ -6,6 +6,7 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout, OfficeData } from './office/officeManager';
+import { resolveOfficeAgentWorkingDir } from './office/launchWorkingDir';
 import { AGENTS, AgentConfig, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { ZIndex } from './config/zIndex';
@@ -1573,6 +1574,10 @@ async function warmAgentSession(
   const workingDir = launchConfig?.workingDir ?? fallback?.workingDir;
   const launchMode = launchConfig?.launchMode ?? fallback?.launchMode ?? 'copilot';
   if (!workingDir) return false;
+  console.log(
+    `[workingDir] warmAgentSession office=${officeId} agent=${agentId} isCurrentOffice=${isCurrentOffice} ` +
+    `resolved="${workingDir}" source=${launchConfig?.workingDir != null ? 'launchConfig' : (fallback?.workingDir != null ? 'fallback' : 'none')}`,
+  );
   // Surface the "starting" transition on the badge (FR-004). Same call the
   // manual openAgentTerminal path makes; safe to repeat — the office status
   // map tolerates idempotent transitions.
@@ -1612,15 +1617,7 @@ function resolveLaunchFallback(
   agentId: string,
 ): { workingDir: string; launchMode: 'copilot' | 'shell' } | undefined {
   const office = officeManager.getOffice(officeId)?.config;
-  const fromRoster =
-    office?.customAgents?.find((a) => a.id === agentId)?.workingDir ??
-    (office?.customReserveAgents
-      ? Object.values(office.customReserveAgents).find((a) => a.id === agentId)?.workingDir
-      : undefined);
-  const workingDir = fromRoster || office?.workingDirectory;
-  if (!workingDir) return undefined;
-  const launchMode: 'copilot' | 'shell' = agentId === PC_TERMINAL_ID ? 'shell' : 'copilot';
-  return { workingDir, launchMode };
+  return resolveOfficeAgentWorkingDir(office, agentId);
 }
 
 /**
@@ -1864,7 +1861,13 @@ const autoStartCoordinator = new AutoStartCoordinator({
     return r?.sessionId ?? null;
   },
   warmAgentSession: async (oid, aid) => {
-    await warmAgentSession(oid, aid);
+    // New Session (replaceSession) path. Pass an office-id-keyed fallback
+    // (office.customAgents[].workingDir ?? office.workingDirectory) so the fresh
+    // session lands in the office's override folder even when the snapshotted
+    // office is not the ambient current office. Without this the warm silently
+    // depended on getSeriousLaunchConfig (ambient currentOffice) and could
+    // collapse to the main/default folder.
+    await warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid));
   },
   getSettings: () => getAgentAutoStartSettings(),
 });
