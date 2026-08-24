@@ -705,6 +705,15 @@ function buildUiServerEnv(env: { [key: string]: string }, repoRoot: string): { [
     ...env,
     PATH: sanitizedPath,
     Path: sanitizedPath,
+    // TEMPORARY: suppress the CLI's "Restore interrupted sessions" home-screen
+    // picker in the ui-server host. CopilotOffice owns session identity via its
+    // own session-id mappings and kills agent PTYs on office-switch/close, so
+    // those sessions look "interrupted" and the picker hijacks the foreground
+    // TUI. This undocumented, internal COPILOT_TEST_* override short-circuits the
+    // runtime's interrupted-session gate (verified in CLI 1.0.81-9's bundle:
+    // `f = g && process.env.COPILOT_TEST_DISABLE_INTERRUPTED_SESSION_RESTORE !== 'true' && ...`).
+    // Revisit if a documented/stable flag ships, since GitHub may remove this key.
+    COPILOT_TEST_DISABLE_INTERRUPTED_SESSION_RESTORE: 'true',
   };
 }
 
