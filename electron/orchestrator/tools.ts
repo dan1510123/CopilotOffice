@@ -331,21 +331,47 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
 
   const teamsPresenceTool = defineTool('set_agent_teams_presence', {
     description:
-      'Bring a specific agent online in Teams (activate its Teams remote) or take it ' +
-      'offline. Gated: the user must approve. If Teams is disabled, the tool reports ' +
-      'unavailable — relay that to the user. Only use an agentId returned by a status tool.',
+      'Bring an agent online in Teams (activate its Teams remote) or take it offline — ' +
+      'this also starts the agent\'s session first if it is not up yet, so a single call ' +
+      'brings a dormant (incl. reserve) agent all the way online AND into Teams. When ' +
+      'bringing online, you may omit agentId (e.g. "bring the next agent online in Teams") ' +
+      'to default to the next dormant agent in the office\'s list. Taking an agent OFFLINE ' +
+      'requires a specific agentId from a status tool. Gated: the user must approve. If ' +
+      'Teams is disabled, the tool reports unavailable — relay that to the user.',
     parameters: {
       type: 'object',
       properties: {
-        agentId: { type: 'string', description: 'The agent whose Teams presence to change.' },
+        agentId: {
+          type: 'string',
+          description:
+            'The agent whose Teams presence to change (id or name from a status tool). ' +
+            'Omit when bringing online to default to the next dormant agent in the office.',
+        },
         officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
         online: { type: 'boolean', description: 'true to bring online in Teams, false to take offline.' },
       },
-      required: ['agentId', 'online'],
+      required: ['online'],
       additionalProperties: false,
     },
-    handler: async (args: { agentId: string; officeId?: string; online: boolean }) => {
-      return deps.requestTeamsPresence(args);
+    handler: async (args: { agentId?: string; officeId?: string; online: boolean }) => {
+      // Reached only AFTER the permission gate approves. Mirror bring_agent_online:
+      // when bringing an agent online without a named target, default to the next
+      // dormant candidate in the office. Taking an agent offline still needs an
+      // explicit target (there is no meaningful "next" agent to take offline).
+      let agentId = (args.agentId ?? '').trim();
+      if (!agentId && args.online) {
+        const candidates = await deps.requestCandidates(args.officeId);
+        if (candidates.length === 0) {
+          return {
+            agentId: '',
+            officeId: args.officeId ?? deps.getOfficeId(),
+            outcome: 'invalid-target' as const,
+            message: 'There are no dormant agents available to bring online in this office.',
+          };
+        }
+        agentId = candidates[0].agentId;
+      }
+      return deps.requestTeamsPresence({ agentId, officeId: args.officeId, online: args.online });
     },
   });
 
