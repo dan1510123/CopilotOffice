@@ -11,7 +11,7 @@ import { AGENTS, AgentConfig, swapActiveAgents, restoreSeatedReserveAgents, ARCH
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { ZIndex } from './config/zIndex';
 import { getLayout } from './layouts/index';
-import { SessionMetaSnapshot } from './layouts/types';
+import { SessionMetaSnapshot, DynamicCardRegion } from './layouts/types';
 import { ToastNotificationManager } from './ui/ToastNotification';
 import { showClipboardToast } from './ui/clipboardToast';
 import { NotificationService } from './ui/NotificationService';
@@ -2273,6 +2273,11 @@ function registerOrchestratorSpec017Resolvers(): void {
 let lastTerminalContentHtml = '';
 let lastStatusBarHtml = '';
 let cachedSessionMeta: Record<string, SessionMetaSnapshot> = {};
+// Agent id whose Session Info title is currently being edited inline (or null).
+// While set, dashboard refreshes must NOT rebuild the panel innerHTML — that
+// would destroy the live edit input and interrupt typing. Instead we patch only
+// the activity-driven regions via the layout's renderDynamicRegions().
+let activeSessionTitleEditAgentId: string | null = null;
 
 // ── Teams Remote (011) dashboard state ──────────────────────────
 // Cached so the synchronous dashboard renderer can gate the per-tile
@@ -2410,12 +2415,84 @@ function updateTerminalContentNow() {
   });
 
   if (html !== lastTerminalContentHtml) {
+    // While a session-title edit is active, avoid the destructive innerHTML swap
+    // (it would kill the focused input). Patch only the activity-driven regions
+    // in place, leaving the Session Info panel — and its live input — untouched.
+    // We intentionally do NOT update lastTerminalContentHtml here, so a clean
+    // full render happens once editing ends and the cached html differs.
+    if (
+      activeSessionTitleEditAgentId &&
+      overviewContent.querySelector('.session-title-display input') &&
+      typeof layout.dashboard.renderDynamicRegions === 'function' &&
+      canPatchOverviewInPlace(layout.agents)
+    ) {
+      const regions = layout.dashboard.renderDynamicRegions({
+        agents: sortAgentsByMode(layout.agents, office || null, cachedSessionMeta),
+        office: office || null,
+        selectedAgentId,
+        cachedSessionMeta,
+        agentTools,
+        formatElapsed,
+        formatRelativeTime,
+        teamsEnabled: teamsFeatureEnabled,
+        teamsOnlineAgentIds,
+      });
+      if (regions) {
+        patchOverviewDynamicRegions(regions);
+        drawOverviewSprites();
+        if (appMode === 'serious') {
+          seriousTerminalController?.refreshCardFromOverview();
+        }
+        return;
+      }
+    }
     lastTerminalContentHtml = html;
     overviewContent.innerHTML = html;
   }
   drawOverviewSprites();
   if (appMode === 'serious') {
     seriousTerminalController?.refreshCardFromOverview();
+  }
+}
+
+/**
+ * True when the overview DOM already contains a card for every agent in the
+ * current roster (and vice-versa). If the roster changed while editing (agent
+ * seated/dismissed), we fall back to a full render so no card is left stale.
+ */
+function canPatchOverviewInPlace(agents: { id: string }[]): boolean {
+  for (const agent of agents) {
+    if (!overviewContent.querySelector(`.agent-card[data-agent="${agent.id}"]`)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Applies surgical, in-place updates described by the layout's dynamic regions.
+ * Only sets innerHTML/style/attributes on the matched elements — never rebuilds
+ * whole cards — so a focused element elsewhere (the session-title input) is
+ * preserved.
+ */
+function patchOverviewDynamicRegions(regions: DynamicCardRegion[]): void {
+  for (const region of regions) {
+    const el = overviewContent.querySelector(region.selector) as HTMLElement | null;
+    if (!el) continue;
+    if (region.html !== undefined) el.innerHTML = region.html;
+    if (region.style) {
+      for (const [prop, value] of Object.entries(region.style)) {
+        el.style.setProperty(
+          prop.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()),
+          value,
+        );
+      }
+    }
+    if (region.attrs) {
+      for (const [name, value] of Object.entries(region.attrs)) {
+        el.setAttribute(name, value);
+      }
+    }
   }
 }
 
@@ -2716,12 +2793,21 @@ function startSessionMetaEdit(agentId: string) {
   const titleEl = panel.querySelector('.session-title-display') as HTMLElement | null;
 
   if (titleEl) {
+    activeSessionTitleEditAgentId = agentId;
     replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
       const officeId = officeManager.currentOfficeId || 'office-0';
       await window.copilotBridge.setSessionMeta(officeId, agentId, { title: value });
       cachedSessionMeta[agentId] = { title: value };
       setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
       updateTerminalContent();
+    }, () => {
+      // Fires on every edit-exit path (save, revert, escape). Clear the guard so
+      // dashboard refreshes resume rebuilding the panel normally, then reconcile
+      // to a clean full render.
+      if (activeSessionTitleEditAgentId === agentId) {
+        activeSessionTitleEditAgentId = null;
+        updateTerminalContent();
+      }
     });
   }
 }
@@ -2731,7 +2817,8 @@ function replaceWithInput(
   currentValue: string,
   placeholder: string,
   maxLength: number,
-  onSave: (value: string) => Promise<void>
+  onSave: (value: string) => Promise<void>,
+  onEditEnd?: () => void
 ) {
   // Don't double-activate
   if (el.querySelector('input')) return;
@@ -2764,6 +2851,7 @@ function replaceWithInput(
     } else {
       el.innerHTML = originalContent;
     }
+    onEditEnd?.();
   };
 
   input.addEventListener('blur', save);
@@ -2774,6 +2862,7 @@ function replaceWithInput(
     } else if (e.key === 'Escape') {
       saved = true;
       el.innerHTML = originalContent;
+      onEditEnd?.();
     }
   });
 }

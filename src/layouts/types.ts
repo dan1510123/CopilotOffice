@@ -26,9 +26,38 @@ export interface DashboardRenderContext {
   teamsOnlineAgentIds?: Set<string>;
 }
 
+/**
+ * Describes a surgical in-place update to a single dynamic sub-region of an
+ * already-rendered agent card. Emitted by `renderDynamicRegions` so the caller
+ * can patch only the parts that change — without rebuilding the whole card (and
+ * without destroying a live element such as the session-title edit input).
+ *
+ * Renderers stay pure string producers: they return descriptors, never touch
+ * the DOM. The caller (main.ts) resolves `selector` within the overview content
+ * container and applies `html`/`style`/`attrs`.
+ */
+export interface DynamicCardRegion {
+  /** CSS selector resolved within the overview content container. */
+  selector: string;
+  /** innerHTML to assign to the matched element (if provided). */
+  html?: string;
+  /** Inline style properties to set (camelCase keys, e.g. `borderColor`). */
+  style?: Record<string, string>;
+  /** Attributes to set on the matched element (e.g. `title`). */
+  attrs?: Record<string, string>;
+}
+
 /** Renders the right-pane agent overview cards for a specific layout. */
 export interface DashboardRenderer {
   renderCards(ctx: DashboardRenderContext): string;
+  /**
+   * Optional: describe surgical updates for the dynamic regions of each already
+   * rendered card, so callers can refresh activity/status without a full
+   * `innerHTML` swap. Must NOT include the Session Info panel or any other
+   * region that may host a live, user-focused element. Returns `null` when the
+   * layout doesn't support partial refresh.
+   */
+  renderDynamicRegions?(ctx: DashboardRenderContext): DynamicCardRegion[] | null;
 }
 
 /** Handles click events on agent cards. Returns true if the click was handled. */

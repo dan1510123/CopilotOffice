@@ -1,6 +1,162 @@
-import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
+import { DashboardRenderer, DashboardRenderContext, DynamicCardRegion, getDashboardTypography, DashboardTypography } from '../types';
 import { teamsLabel } from '../../ui/teamsIcon';
 import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
+import type { AgentConfig } from '../../config/agents';
+
+/**
+ * Dynamic (activity-driven) fragments of a single agent card. These are the only
+ * parts that change as an agent works; keeping them in one place lets both the
+ * full render (`renderCards`) and the surgical partial refresh
+ * (`renderDynamicRegions`) share identical markup so they can never drift.
+ *
+ * Deliberately excludes the Session Info panel — that region may host the live,
+ * user-focused session-title edit input and must never be rebuilt on activity.
+ */
+interface AgentCardDynamics {
+  colorHex: string;
+  cardBorderColor: string;
+  cardBg: string;
+  badgeInner: string;
+  statusBoxBorderColor: string;
+  statusBoxBackground: string;
+  statusPanelInner: string;
+  activityDetail: string;
+  activityDetailEsc: string;
+  dynamicBlockInner: string;
+}
+
+/** Builds the activity-driven fragments shared by full and partial rendering. */
+function buildAgentDynamics(
+  agent: AgentConfig,
+  ctx: DashboardRenderContext,
+  t: DashboardTypography,
+): AgentCardDynamics {
+  const { office, selectedAgentId, agentTools, formatElapsed, formatRelativeTime } = ctx;
+  const liveStatus = office?.agents.get(agent.id);
+  const tools = agentTools.get(agent.id) || [];
+
+  // Canonical status presentation (shared across badge, dashboards, notifications).
+  const statusPres = STATUS_PRESENTATION[resolveStatusKey(liveStatus)];
+  const statusDot = statusPres.colorHex;
+  const statusLabel = statusPres.label;
+  const statusIcon = statusPres.icon;
+  // FR-011/FR-015: the "what it's doing" detail is rendered on its own fixed
+  // slot (never concatenated into the label), so it cannot grow the card.
+  const activityDetail = describeActivity(liveStatus);
+  const activityDetailEsc = activityDetail.replace(/"/g, '&quot;');
+
+  const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
+  const isSelected = agent.id === selectedAgentId;
+  const cardBorderColor = isSelected ? '#6677ff' : '#252540';
+  const cardBg = isSelected ? '#1e1e3a' : '#13131f';
+  const unread = liveStatus?.unreadCount || 0;
+  const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
+  const toolCount = tools.length;
+  const recentActions = liveStatus?.recentActions || [];
+  const taskSummary = liveStatus?.taskSummary || '';
+  const isActive = liveStatus?.state === 'active' && liveStatus?.subState !== 'ready' && liveStatus?.subState !== 'error';
+
+  // Badge (unread count). The absolute positioning lives on the slot wrapper so
+  // the pill itself is position-agnostic and patchable via innerHTML.
+  const badgeInner = unread > 0 ? `
+        <div style="
+          background: #e55; color: #fff;
+          font-size: ${t.badge}; font-weight: bold;
+          min-width: 18px; height: 18px;
+          border-radius: 9px;
+          display: flex; align-items: center; justify-content: center;
+          padding: 0 4px;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+        ">${unread}</div>` : '';
+
+  // Elapsed and queued tools are shown inside the status panel under the sprite.
+  const elapsedHtml = elapsed ? `<div data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: ${t.elapsed}; margin-top: 4px;">⏱ ${elapsed}</div>` : '';
+  const queueHtml = toolCount > 1 ? `<div style="
+        background: #334; color: #aac; font-size: ${t.queue};
+        padding: 2px 8px; border-radius: 8px; margin-top: 4px;
+      ">${toolCount} tools queued</div>` : '';
+
+  const statusPanelInner = `
+              <div style="font-size: ${t.statusPanelIcon}; line-height: 1;">${statusIcon}</div>
+              <div style="
+                margin-top: 6px;
+                font-size: ${t.statusPanelText};
+                color: ${statusDot};
+                line-height: 1.15;
+                font-weight: 700;
+                white-space: normal;
+                word-break: break-word;
+              ">${statusLabel}</div>
+              ${elapsedHtml}
+              ${queueHtml}`;
+
+  // ── Tool Pipeline Section ──
+  let toolPipelineHtml = '';
+  if (tools.length > 0) {
+    const toolRows = tools.map((tool, i) => {
+      const isLast = i === tools.length - 1;
+      const icon = isLast ? '▸' : '◦';
+      const color = isLast ? '#8af' : '#556';
+      const statusText = isLast ? tool.status : '(queued)';
+      return `<div style="font-size: ${t.toolRow}; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">
+            ${icon} <span style="color: #9ab;">${tool.name}</span> <span style="color: #556;">— ${statusText}</span>
+          </div>`;
+    }).join('');
+    toolPipelineHtml = `
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+            ${toolRows}
+          </div>`;
+  }
+
+  // ── Recent Activity Log ──
+  let activityLogHtml = '';
+  const completedActions = recentActions.filter(a => a.type === 'completed').slice(-5).reverse();
+  if (completedActions.length > 0) {
+    const rows = completedActions.map(a => {
+      const relTime = formatRelativeTime(a.timestamp);
+      return `<div style="display: flex; gap: 8px; font-size: ${t.activityRow}; padding: 1px 0;" data-action-ts="${a.timestamp}">
+            <span style="color: #445; flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
+            <span style="color: #5a5a7a;">✓ ${a.action}</span>
+          </div>`;
+    }).join('');
+    activityLogHtml = `
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+            <div style="font-size: ${t.sectionLabel}; color: #3a3a5a; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
+            ${rows}
+          </div>`;
+  } else if (liveStatus?.state !== 'slacking') {
+    activityLogHtml = `
+          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
+            <div style="font-size: ${t.emptyState}; color: #333; font-style: italic;">No recent activity</div>
+          </div>`;
+  }
+
+  // ── Task Summary ──
+  const taskSummaryHtml = taskSummary && isActive ? `
+        <div style="font-size: ${t.taskSummary}; color: #667; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          📋 ${taskSummary}
+        </div>` : '';
+
+  const dynamicBlockInner = `
+            <div>
+              ${taskSummaryHtml}
+            </div>
+            ${toolPipelineHtml}
+            ${activityLogHtml}`;
+
+  return {
+    colorHex,
+    cardBorderColor,
+    cardBg,
+    badgeInner,
+    statusBoxBorderColor: `${statusDot}66`,
+    statusBoxBackground: `${statusDot}22`,
+    statusPanelInner,
+    activityDetail,
+    activityDetailEsc,
+    dynamicBlockInner,
+  };
+}
 
 /**
  * Dashboard renderer for the default (main) office layout.
@@ -8,7 +164,7 @@ import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../c
  */
 export const defaultDashboard: DashboardRenderer = {
   renderCards(ctx: DashboardRenderContext): string {
-    const { agents, office, selectedAgentId, cachedSessionMeta, agentTools, formatElapsed, formatRelativeTime } = ctx;
+    const { agents, office, selectedAgentId, cachedSessionMeta } = ctx;
     const teamsEnabled = ctx.teamsEnabled ?? false;
     const teamsOnline = ctx.teamsOnlineAgentIds ?? new Set<string>();
     const t = getDashboardTypography();
@@ -55,97 +211,7 @@ export const defaultDashboard: DashboardRenderer = {
 
     for (const agent of agents) {
       const liveStatus = office?.agents.get(agent.id);
-      const tools = agentTools.get(agent.id) || [];
-
-      // Canonical status presentation (shared across badge, dashboards, notifications).
-      // The primary label stays concise (e.g. "Thinking"); any activity detail is
-      // shown separately so it cannot change the card height.
-      const statusPres = STATUS_PRESENTATION[resolveStatusKey(liveStatus)];
-      const statusDot = statusPres.colorHex;
-      const statusLabel = statusPres.label;
-      const statusIcon = statusPres.icon;
-      // FR-011/FR-015: the "what it's doing" detail is rendered on its own fixed
-      // slot (never concatenated into the label), so it cannot grow the card.
-      const activityDetail = describeActivity(liveStatus);
-      const activityDetailEsc = activityDetail.replace(/"/g, '&quot;');
-
-      const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
-      const isSelected = agent.id === selectedAgentId;
-      const borderColor = isSelected ? '#6677ff' : '#252540';
-      const bgColor = isSelected ? '#1e1e3a' : '#13131f';
-      const unread = liveStatus?.unreadCount || 0;
-      const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
-      const toolCount = tools.length;
-      const recentActions = liveStatus?.recentActions || [];
-      const taskSummary = liveStatus?.taskSummary || '';
-      const isActive = liveStatus?.state === 'active' && liveStatus?.subState !== 'ready' && liveStatus?.subState !== 'error';
-
-      // Badge HTML (unread count)
-      const badgeHtml = unread > 0 ? `
-        <div style="
-          position: absolute; top: -4px; right: -4px;
-          background: #e55; color: #fff;
-          font-size: ${t.badge}; font-weight: bold;
-          min-width: 18px; height: 18px;
-          border-radius: 9px;
-          display: flex; align-items: center; justify-content: center;
-          padding: 0 4px;
-          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
-        ">${unread}</div>` : '';
-
-      // Elapsed and queued tools are shown inside the status panel under the sprite.
-      const elapsedHtml = elapsed ? `<div data-elapsed-agent="${agent.id}" style="color: #8a8; font-size: ${t.elapsed}; margin-top: 4px;">⏱ ${elapsed}</div>` : '';
-      const queueHtml = toolCount > 1 ? `<div style="
-        background: #334; color: #aac; font-size: ${t.queue};
-        padding: 2px 8px; border-radius: 8px; margin-top: 4px;
-      ">${toolCount} tools queued</div>` : '';
-
-      // ── Tool Pipeline Section ──
-      let toolPipelineHtml = '';
-      if (tools.length > 0) {
-        const toolRows = tools.map((tool, i) => {
-          const isLast = i === tools.length - 1;
-          const icon = isLast ? '▸' : '◦';
-          const color = isLast ? '#8af' : '#556';
-          const statusText = isLast ? tool.status : '(queued)';
-          return `<div style="font-size: ${t.toolRow}; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">
-            ${icon} <span style="color: #9ab;">${tool.name}</span> <span style="color: #556;">— ${statusText}</span>
-          </div>`;
-        }).join('');
-        toolPipelineHtml = `
-          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
-            ${toolRows}
-          </div>`;
-      }
-
-      // ── Recent Activity Log ──
-      let activityLogHtml = '';
-      const completedActions = recentActions.filter(a => a.type === 'completed').slice(-5).reverse();
-      if (completedActions.length > 0) {
-        const rows = completedActions.map(a => {
-          const relTime = formatRelativeTime(a.timestamp);
-          return `<div style="display: flex; gap: 8px; font-size: ${t.activityRow}; padding: 1px 0;" data-action-ts="${a.timestamp}">
-            <span style="color: #445; flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
-            <span style="color: #5a5a7a;">✓ ${a.action}</span>
-          </div>`;
-        }).join('');
-        activityLogHtml = `
-          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
-            <div style="font-size: ${t.sectionLabel}; color: #3a3a5a; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
-            ${rows}
-          </div>`;
-      } else if (liveStatus?.state !== 'slacking') {
-        activityLogHtml = `
-          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid #1a1a30;">
-            <div style="font-size: ${t.emptyState}; color: #333; font-style: italic;">No recent activity</div>
-          </div>`;
-      }
-
-      // ── Task Summary ──
-      const taskSummaryHtml = taskSummary && isActive ? `
-        <div style="font-size: ${t.taskSummary}; color: #667; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          📋 ${taskSummary}
-        </div>` : '';
+      const d = buildAgentDynamics(agent, ctx, t);
 
       // ── Session Metadata Panel (right side) ──
       const meta = cachedSessionMeta[agent.id];
@@ -211,8 +277,8 @@ export const defaultDashboard: DashboardRenderer = {
 
       html += `
         <div class="agent-card" data-agent="${agent.id}" style="
-          background: ${bgColor};
-          border: 1.5px solid ${borderColor};
+          background: ${d.cardBg};
+          border: 1.5px solid ${d.cardBorderColor};
           border-radius: 10px;
           padding: 20px 18px;
           margin-bottom: 10px;
@@ -224,12 +290,12 @@ export const defaultDashboard: DashboardRenderer = {
           position: relative;
           min-height: 236px;
         ">
-          ${badgeHtml}
+          <div data-badge-slot-agent="${agent.id}" style="position: absolute; top: -4px; right: -4px;">${d.badgeInner}</div>
           <div style="flex-shrink: 0; width: 96px; display: flex; flex-direction: column; align-items: stretch; gap: 10px;">
             <div style="
               width: 96px;
-              background: ${colorHex}22;
-              border: 1px solid ${colorHex}44;
+              background: ${d.colorHex}22;
+              border: 1px solid ${d.colorHex}44;
               border-radius: 10px;
               display: flex;
               align-items: center;
@@ -244,9 +310,9 @@ export const defaultDashboard: DashboardRenderer = {
                 style="image-rendering: pixelated; width: 72px; height: 76px; display: block;"
               ></canvas>
             </div>
-            <div style="
-              border: 1px solid ${statusDot}66;
-              background: ${statusDot}22;
+            <div data-status-panel-agent="${agent.id}" style="
+              border: 1px solid ${d.statusBoxBorderColor};
+              background: ${d.statusBoxBackground};
               border-radius: 10px;
               padding: 8px 6px;
               display: flex;
@@ -255,20 +321,7 @@ export const defaultDashboard: DashboardRenderer = {
               text-align: center;
               min-height: 96px;
               justify-content: center;
-            ">
-              <div style="font-size: ${t.statusPanelIcon}; line-height: 1;">${statusIcon}</div>
-              <div style="
-                margin-top: 6px;
-                font-size: ${t.statusPanelText};
-                color: ${statusDot};
-                line-height: 1.15;
-                font-weight: 700;
-                white-space: normal;
-                word-break: break-word;
-              ">${statusLabel}</div>
-              ${elapsedHtml}
-              ${queueHtml}
-            </div>
+            ">${d.statusPanelInner}</div>
           </div>
           <div style="flex: 3; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
             <div>
@@ -279,12 +332,8 @@ export const defaultDashboard: DashboardRenderer = {
               height: 18px; line-height: 18px;
               font-size: ${t.taskSummary}; color: #7f88b0;
               white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-            " title="${activityDetailEsc}">${activityDetail}</div>
-            <div>
-              ${taskSummaryHtml}
-            </div>
-            ${toolPipelineHtml}
-            ${activityLogHtml}
+            " title="${d.activityDetailEsc}">${d.activityDetail}</div>
+            <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column; gap: 4px;">${d.dynamicBlockInner}</div>
           </div>
           ${sessionPanelHtml}
         </div>
@@ -292,5 +341,41 @@ export const defaultDashboard: DashboardRenderer = {
     }
 
     return html;
+  },
+
+  /**
+   * Surgical partial refresh: describes updates for only the activity-driven
+   * regions of each already-rendered card. The Session Info panel is never
+   * included, so a live session-title edit input survives an activity refresh.
+   */
+  renderDynamicRegions(ctx: DashboardRenderContext): DynamicCardRegion[] {
+    const t = getDashboardTypography();
+    const regions: DynamicCardRegion[] = [];
+    for (const agent of ctx.agents) {
+      const d = buildAgentDynamics(agent, ctx, t);
+      regions.push({
+        selector: `.agent-card[data-agent="${agent.id}"]`,
+        style: { borderColor: d.cardBorderColor, background: d.cardBg },
+      });
+      regions.push({
+        selector: `[data-badge-slot-agent="${agent.id}"]`,
+        html: d.badgeInner,
+      });
+      regions.push({
+        selector: `[data-status-panel-agent="${agent.id}"]`,
+        html: d.statusPanelInner,
+        style: { borderColor: d.statusBoxBorderColor, background: d.statusBoxBackground },
+      });
+      regions.push({
+        selector: `[data-activity-detail-agent="${agent.id}"]`,
+        html: d.activityDetail,
+        attrs: { title: d.activityDetailEsc },
+      });
+      regions.push({
+        selector: `[data-dynamic-agent="${agent.id}"]`,
+        html: d.dynamicBlockInner,
+      });
+    }
+    return regions;
   },
 };

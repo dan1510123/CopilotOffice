@@ -41,6 +41,72 @@ function ctx(meta: Record<string, { title: string; sessionId?: string }>): Dashb
   };
 }
 
+describe('DefaultDashboard — partial refresh (renderDynamicRegions)', () => {
+  it('exposes stable data-* wrappers for each dynamic region and the session panel', () => {
+    const html = defaultDashboard.renderCards(ctx({ a1: { title: 'My session' } }));
+    expect(html).toContain('data-badge-slot-agent="a1"');
+    expect(html).toContain('data-status-panel-agent="a1"');
+    expect(html).toContain('data-activity-detail-agent="a1"');
+    expect(html).toContain('data-dynamic-agent="a1"');
+    // The Session Info panel remains a distinct region (never patched).
+    expect(html).toContain('class="session-meta-panel"');
+  });
+
+  it('describes dynamic regions without ever targeting the Session Info panel', () => {
+    const regions = defaultDashboard.renderDynamicRegions!(ctx({ a1: { title: 'My session' } }));
+    expect(regions).toBeTruthy();
+    const selectors = regions!.map((r) => r.selector);
+    expect(selectors).toContain('[data-status-panel-agent="a1"]');
+    expect(selectors).toContain('[data-activity-detail-agent="a1"]');
+    expect(selectors).toContain('[data-dynamic-agent="a1"]');
+    expect(selectors).toContain('[data-badge-slot-agent="a1"]');
+    // Critical: nothing touches the session-title editor or its panel.
+    for (const sel of selectors) {
+      expect(sel).not.toContain('session-meta-panel');
+      expect(sel).not.toContain('session-title-display');
+    }
+  });
+
+  it('patched regions match the full-render markup (parity, no drift)', () => {
+    const context = ctx({ a1: { title: 'My session' } });
+    const full = defaultDashboard.renderCards(context);
+    const regions = defaultDashboard.renderDynamicRegions!(context)!;
+    const statusRegion = regions.find((r) => r.selector === '[data-status-panel-agent="a1"]');
+    // The status-panel inner html emitted for patching must appear verbatim in
+    // the full render, so a partial refresh cannot diverge from a full one.
+    expect(statusRegion?.html).toBeTruthy();
+    expect(full).toContain(statusRegion!.html!.trim().slice(0, 40));
+  });
+
+  it('applying regions to a rendered card preserves a focused edit input', () => {
+    const context = ctx({ a1: { title: 'My session' } });
+    document.body.innerHTML = `<div id="content">${defaultDashboard.renderCards(context)}</div>`;
+    const content = document.getElementById('content')!;
+
+    // Simulate an active inline title edit: swap the display for a live input.
+    const titleEl = content.querySelector('.session-title-display') as HTMLElement;
+    titleEl.innerHTML = '';
+    const input = document.createElement('input');
+    input.value = 'typing in progress';
+    titleEl.appendChild(input);
+    const originalInput = titleEl.querySelector('input');
+
+    // Apply the same patch main.ts would apply.
+    const regions = defaultDashboard.renderDynamicRegions!(context)!;
+    for (const region of regions) {
+      const el = content.querySelector(region.selector) as HTMLElement | null;
+      if (!el) continue;
+      if (region.html !== undefined) el.innerHTML = region.html;
+      if (region.attrs) for (const [k, v] of Object.entries(region.attrs)) el.setAttribute(k, v);
+    }
+
+    // The edit input must survive the refresh untouched.
+    const afterInput = content.querySelector('.session-title-display input') as HTMLInputElement | null;
+    expect(afterInput).toBe(originalInput);
+    expect(afterInput?.value).toBe('typing in progress');
+  });
+});
+
 describe('DefaultDashboard — session info panel enhancements', () => {
   it('renders the Close Session button alongside New Session for an active agent', () => {
     const html = defaultDashboard.renderCards(ctx({ a1: { title: 'My session' } }));
