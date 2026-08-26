@@ -59,13 +59,13 @@ export class SpriteCustomizerPanel {
       position: fixed;
       z-index: ${ZIndex.SPRITE_CUSTOMIZER};
       width: 320px;
-      background: #1a1a2e;
-      border: 2px solid #333;
+      background: var(--co-bg-panel);
+      border: 2px solid var(--co-border);
       border-radius: 12px;
       padding: 20px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
       font-family: 'Cascadia Code', Consolas, monospace;
-      color: #dde;
+      color: var(--co-text);
     `;
 
     // Position below anchor
@@ -144,7 +144,7 @@ export class SpriteCustomizerPanel {
       let swatches = '';
       for (const color of presets) {
         const isSelected = color === selected;
-        const borderStyle = isSelected ? 'border: 2px solid #4488ff; box-shadow: 0 0 8px #4488ff88;' : 'border: 2px solid #444;';
+        const borderStyle = isSelected ? 'border: 2px solid var(--co-sel-border); box-shadow: 0 0 8px var(--co-accent-soft);' : 'border: 2px solid var(--co-border);';
         swatches += `<div
           data-region="${region}"
           data-color="${color}"
@@ -164,7 +164,7 @@ export class SpriteCustomizerPanel {
 
       sections += `
         <div style="margin-bottom: 14px;">
-          <div style="font-size: 12px; color: #889; text-transform: uppercase; margin-bottom: 6px;">${label}</div>
+          <div style="font-size: 12px; color: var(--co-text-secondary); text-transform: uppercase; margin-bottom: 6px;">${label}</div>
           <div style="display: flex; flex-wrap: wrap; gap: 6px;">
             ${swatches}
           </div>
@@ -174,22 +174,22 @@ export class SpriteCustomizerPanel {
 
     return `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-        <span style="font-size: 16px; color: #fff;">🎨 Customize Player</span>
+        <span style="font-size: 16px; color: var(--co-text-strong);">🎨 Customize Player</span>
         <button id="sprite-customizer-close" style="
-          background: none; border: none; color: #666; font-size: 18px; cursor: pointer; padding: 4px 8px;
+          background: none; border: none; color: var(--co-text-muted); font-size: 18px; cursor: pointer; padding: 4px 8px;
         ">✕</button>
       </div>
-      <div style="text-align: center; margin-bottom: 16px; border-top: 1px solid #2a2a3e; padding-top: 16px;">
+      <div style="text-align: center; margin-bottom: 16px; border-top: 1px solid var(--co-border-subtle); padding-top: 16px;">
         <img id="sprite-preview-img" style="
           image-rendering: pixelated;
           width: 128px;
           height: auto;
         " />
       </div>
-      <div style="border-top: 1px solid #2a2a3e; padding-top: 16px;">
+      <div style="border-top: 1px solid var(--co-border-subtle); padding-top: 16px;">
         ${sections}
       </div>
-      <div style="border-top: 1px solid #2a2a3e; padding-top: 16px;">
+      <div style="border-top: 1px solid var(--co-border-subtle); padding-top: 16px;">
         <button id="sprite-customizer-reset" class="ui-btn ui-btn--danger" style="width: 100%;">Reset to Default</button>
       </div>
     `;
@@ -244,15 +244,17 @@ export class SpriteCustomizerPanel {
     this.container.querySelectorAll<HTMLDivElement>('.swatch').forEach(swatch => {
       // Hover effects
       swatch.addEventListener('mouseenter', () => {
-        if (swatch.style.borderColor !== 'rgb(68, 136, 255)') {
-          swatch.style.borderColor = '#888';
+        const color = parseInt(swatch.dataset.color!, 10);
+        const region = swatch.dataset.region as keyof PlayerColors;
+        if (this.currentColors[region] !== color) {
+          swatch.style.borderColor = 'var(--co-border-strong)';
         }
       });
       swatch.addEventListener('mouseleave', () => {
         const color = parseInt(swatch.dataset.color!, 10);
         const region = swatch.dataset.region as keyof PlayerColors;
         if (this.currentColors[region] !== color) {
-          swatch.style.borderColor = '#444';
+          swatch.style.borderColor = 'var(--co-border)';
         }
       });
 
@@ -268,10 +270,10 @@ export class SpriteCustomizerPanel {
         this.container?.querySelectorAll<HTMLDivElement>(`.swatch[data-region="${region}"]`).forEach(s => {
           const c = parseInt(s.dataset.color!, 10);
           if (c === color) {
-            s.style.border = '2px solid #4488ff';
-            s.style.boxShadow = '0 0 8px #4488ff88';
+            s.style.border = '2px solid var(--co-sel-border)';
+            s.style.boxShadow = '0 0 8px var(--co-accent-soft)';
           } else {
-            s.style.border = '2px solid #444';
+            s.style.border = '2px solid var(--co-border)';
             s.style.boxShadow = 'none';
           }
         });

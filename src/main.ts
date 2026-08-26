@@ -49,6 +49,7 @@ import { getAgentAutoStartSettings, setAgentAutoStartSettings } from './config/a
 import { isYoloEnabled } from './config/yoloMode';
 import { getActiveAdditionalParams } from './config/additionalParams';
 import { injectUiKit } from './ui/uiKit';
+import { initTheme, toggleTheme, getTheme } from './ui/theme';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -315,8 +316,8 @@ tabsBar.style.cssText = `
   display: flex;
   align-items: center;
   gap: 6px;
-  background: #171724;
-  border-bottom: 1px solid #26263a;
+  background: var(--co-bg-app);
+  border-bottom: 1px solid var(--co-border-header);
   padding: 0 12px;
   height: 60px;
   flex-shrink: 0;
@@ -327,6 +328,7 @@ tabsBar.style.cssText = `
 container.appendChild(tabsBar);
 injectTopBarStyles();
 injectUiKit();
+initTheme();
 
 // Main content area (split view)
 const mainContent = document.createElement('div');
@@ -345,8 +347,8 @@ terminalPanel.id = 'terminal-panel';
 terminalPanel.style.cssText = `
   width: 50%;
   height: 100%;
-  background: #1e1e2e;
-  border-left: 2px solid #333;
+  background: var(--co-bg-panel);
+  border-left: 2px solid var(--co-border-strong);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -381,14 +383,14 @@ seriousPlaceholder.style.cssText = `
   padding: 24px;
   font-family: 'Cascadia Code', Consolas, monospace;
   text-align: center;
-  color: #95a7d7;
-  background: radial-gradient(circle at top, #222846 0%, #171c2f 50%, #13192a 100%);
+  color: var(--co-text-secondary);
+  background: var(--co-bg-panel);
 `;
 seriousPlaceholder.innerHTML = `
   <div style="max-width: 380px;">
     <div style="font-size: 34px; margin-bottom: 10px;">💻</div>
-    <div style="font-size: 18px; color: #c7d7ff; font-weight: 700; margin-bottom: 8px;">No terminal selected</div>
-    <div style="font-size: 12px; line-height: 1.45; color: #8fa3d6;">
+    <div style="font-size: 18px; color: var(--co-heading); font-weight: 700; margin-bottom: 8px;">No terminal selected</div>
+    <div style="font-size: 12px; line-height: 1.45; color: var(--co-text-secondary);">
       Select an agent or office PC from the overview on the left to open a command line session.
     </div>
   </div>
@@ -696,10 +698,10 @@ function injectTopBarStyles() {
       display: flex; align-items: center; gap: 6px; flex-shrink: 0;
     }
     #office-tabs .tb-divider {
-      width: 1px; height: 26px; background: #2c2c46; margin: 0 4px; flex-shrink: 0;
+      width: 1px; height: 26px; background: var(--co-border); margin: 0 4px; flex-shrink: 0;
     }
     #office-tabs .office-tab { transition: background .15s, border-color .15s, color .15s; }
-    #office-tabs .office-tab:hover { background: #20203180; color: #cfcfea; }
+    #office-tabs .office-tab:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
     #office-tabs .office-tab .edit-office-btn {
       opacity: .85;
       display: inline-flex;
@@ -711,7 +713,7 @@ function injectTopBarStyles() {
     }
     #office-tabs .office-tab:hover .edit-office-btn,
     #office-tabs .office-tab.active .edit-office-btn { opacity: 1; }
-    #office-tabs .office-tab .edit-office-btn:hover { background: #3a3a5e; color: #fff; }
+    #office-tabs .office-tab .edit-office-btn:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
     #office-tabs[data-app-mode="serious"] #zoom-bar { display: none !important; }
     #office-tabs .office-tab .status-dot { transition: background .2s, box-shadow .2s; }
     #office-tabs .office-tab .status-dot.working { animation: office-dot-pulse 1.15s ease-in-out infinite; }
@@ -720,8 +722,8 @@ function injectTopBarStyles() {
       50%      { box-shadow: 0 0 11px #46d17f, 0 0 3px #46d17f; opacity: 1; }
     }
     #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s, border-color .15s, color .15s; }
-    #office-tabs .tb-pill:hover { background: #26263e; color: #fff; }
-    #office-tabs #new-office-btn:hover { background: #1c2a22; }
+    #office-tabs .tb-pill:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
+    #office-tabs #new-office-btn:hover { background: var(--co-bg-raised-hover); }
   `;
   document.head.appendChild(style);
 }
@@ -734,7 +736,7 @@ function renderOfficeTabs() {
 
   for (const office of offices) {
     const isActive = office.id === currentId;
-    const bgColor = isActive ? '#232342' : 'transparent';
+    const bgColor = isActive ? 'var(--co-bg-tab-active)' : 'transparent';
     const ind = getOfficeIndicator(office.id);
     const iv = officeIndicatorStyles(ind, isActive);
 
@@ -745,7 +747,7 @@ function renderOfficeTabs() {
         border: 1px solid ${iv.border};
         border-radius: 8px;
         cursor: pointer;
-        color: ${isActive ? '#fff' : '#9a9ab8'};
+        color: ${isActive ? 'var(--co-text-strong)' : 'var(--co-text-secondary)'};
         font-size: 15.5px;
         font-weight: 500;
         white-space: nowrap;
@@ -758,7 +760,7 @@ function renderOfficeTabs() {
         <span class="status-dot${iv.working ? ' working' : ''}" style="width: 7px; height: 7px; border-radius: 50%; background: ${iv.dotColor}; ${iv.dotGlow} flex-shrink: 0;"></span>
         <span>${office.name}</span>
         <span class="edit-office-btn" data-office-id="${office.id}" style="
-          color: #b0b0d0;
+          color: var(--co-text-secondary);
           font-size: 14px;
         ">⚙</span>
       </div>
@@ -770,10 +772,10 @@ function renderOfficeTabs() {
       padding: 8px 12px;
       margin-left: 2px;
       background: transparent;
-      border: 1px dashed #2e4a3a;
+      border: 1px dashed var(--co-success);
       border-radius: 8px;
       cursor: pointer;
-      color: #7fd6a3;
+      color: var(--co-success);
       font-size: 13px;
       font-weight: 500;
       white-space: nowrap;
@@ -786,26 +788,38 @@ function renderOfficeTabs() {
       height: 36px;
       padding: 0 14px;
       gap: 6px;
-      background: ${appMode === 'serious' ? '#241d33' : '#1e1e30'};
-      border: 1px solid ${appMode === 'serious' ? '#5a3d8a' : '#2c2c46'};
+      background: ${appMode === 'serious' ? '#241d33' : 'var(--co-bg-raised)'};
+      border: 1px solid ${appMode === 'serious' ? '#5a3d8a' : 'var(--co-border)'};
       border-radius: 9px;
       cursor: pointer;
-      color: ${appMode === 'serious' ? '#c9a6ff' : '#8fb7ff'};
+      color: ${appMode === 'serious' ? '#c9a6ff' : 'var(--co-accent)'};
       font-size: 13px;
       font-weight: 500;
       user-select: none;
     " title="Toggle app mode (game/serious)">
       ${appMode === 'serious' ? '🧠 Serious' : '🎮 Game'}
     </div>
+    <div id="theme-toggle-btn" class="tb-pill" style="
+      height: 36px;
+      min-width: 36px;
+      justify-content: center;
+      background: var(--co-bg-raised);
+      border: 1px solid var(--co-border);
+      border-radius: 9px;
+      cursor: pointer;
+      color: var(--co-text-secondary);
+      font-size: 16px;
+      user-select: none;
+    " title="Toggle light / dark theme">${getTheme() === 'light' ? '☀️' : '🌙'}</div>
     <div id="sprite-customizer-btn" class="tb-pill" style="
       height: 36px;
       min-width: 36px;
       justify-content: center;
-      background: #1e1e30;
-      border: 1px solid #2c2c46;
+      background: var(--co-bg-raised);
+      border: 1px solid var(--co-border);
       border-radius: 9px;
       cursor: pointer;
-      color: #b8b8d4;
+      color: var(--co-text-secondary);
       font-size: 16px;
       user-select: none;
     " title="Customize Player">🎨</div>
@@ -813,8 +827,8 @@ function renderOfficeTabs() {
       height: 36px;
       gap: 8px;
       padding: 0 12px;
-      background: #1e1e30;
-      border: 1px solid #2c2c46;
+      background: var(--co-bg-raised);
+      border: 1px solid var(--co-border);
       border-radius: 9px;
       user-select: none;
     ">
@@ -824,31 +838,31 @@ function renderOfficeTabs() {
         cursor: pointer;
         font-size: 15px;
         padding: 0 2px;
-        color: #b8b8d4;
+        color: var(--co-text-secondary);
       ">\u2212</button>
       <input id="zoom-slider" type="range" min="50" max="200"
         value="${Math.round(currentZoom * 100)}"
         title="Zoom"
-        style="width: 74px; cursor: pointer; accent-color: #6d8bff;" />
+        style="width: 74px; cursor: pointer; accent-color: var(--co-accent-strong);" />
       <button id="zoom-plus-btn" style="
         background: none;
         border: none;
         cursor: pointer;
         font-size: 15px;
         padding: 0 2px;
-        color: #b8b8d4;
+        color: var(--co-text-secondary);
       ">+</button>
-      <span id="zoom-label" style="color: #8a8aa8; font-size: 12px; min-width: 32px; text-align: center;">${Math.round(currentZoom * 100)}%</span>
+      <span id="zoom-label" style="color: var(--co-text-muted); font-size: 12px; min-width: 32px; text-align: center;">${Math.round(currentZoom * 100)}%</span>
     </div>
     <div id="debug-toggle-btn" class="tb-pill" style="
       height: 36px;
       min-width: 36px;
       justify-content: center;
-      background: ${debugMode ? '#3a2a1a' : '#1e1e30'};
-      border: 1px solid ${debugMode ? '#ff8800' : '#2c2c46'};
+      background: ${debugMode ? '#3a2a1a' : 'var(--co-bg-raised)'};
+      border: 1px solid ${debugMode ? '#ff8800' : 'var(--co-border)'};
       border-radius: 9px;
       cursor: pointer;
-      color: ${debugMode ? '#ff8800' : '#b8b8d4'};
+      color: ${debugMode ? '#ff8800' : 'var(--co-text-secondary)'};
       font-size: 16px;
       user-select: none;
       ${debugMode ? 'box-shadow: 0 0 8px #ff880044;' : ''}
@@ -857,11 +871,11 @@ function renderOfficeTabs() {
       height: 36px;
       min-width: 36px;
       justify-content: center;
-      background: #1e1e30;
-      border: 1px solid #2c2c46;
+      background: var(--co-bg-raised);
+      border: 1px solid var(--co-border);
       border-radius: 9px;
       cursor: pointer;
-      color: #b8b8d4;
+      color: var(--co-text-secondary);
       font-size: 16px;
       user-select: none;
     " title="Settings">⚙</div>
@@ -869,11 +883,11 @@ function renderOfficeTabs() {
       height: 36px;
       min-width: 36px;
       justify-content: center;
-      background: #1e1e30;
-      border: 1px solid #2c2c46;
+      background: var(--co-bg-raised);
+      border: 1px solid var(--co-border);
       border-radius: 9px;
       cursor: pointer;
-      color: #b8b8d4;
+      color: var(--co-text-secondary);
       font-size: 16px;
       user-select: none;
     " title="Office Orchestrator">🎩</div>
@@ -947,6 +961,15 @@ function renderOfficeTabs() {
   });
   document.getElementById('zoom-minus-btn')?.addEventListener('click', () => { setZoom(currentZoom - 0.1); });
   document.getElementById('zoom-plus-btn')?.addEventListener('click', () => { setZoom(currentZoom + 0.1); });
+
+  document.getElementById('theme-toggle-btn')?.addEventListener('click', () => {
+    toggleTheme();
+    renderOfficeTabs();
+    // Return focus to the game so player movement isn't interrupted
+    if (!isMobileModeActive()) {
+      phaserGameRef?.events.emit('game:panel:clicked');
+    }
+  });
 
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     settingsPanel.toggle();
@@ -1055,30 +1078,30 @@ function showNewOfficeDialog() {
   const overlay = document.createElement('div');
   overlay.style.cssText = `
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.7); z-index: ${ZIndex.MODAL_DIALOG};
+    background: var(--co-bg-overlay-scrim); z-index: ${ZIndex.MODAL_DIALOG};
     display: flex; align-items: center; justify-content: center;
   `;
 
   const dialog = document.createElement('div');
   dialog.style.cssText = `
-    background: #1a1e2e; border: 1px solid #33355a; border-radius: 14px;
+    background: var(--co-bg-panel); border: 1px solid var(--co-border); border-radius: 14px;
     padding: 24px 32px; min-width: 360px;
-    font-family: 'Cascadia Code', Consolas, monospace; color: #d7defa;
+    font-family: 'Cascadia Code', Consolas, monospace; color: var(--co-text);
     box-shadow: 0 18px 50px rgba(0,0,0,0.55);
   `;
   dialog.innerHTML = `
-    <h3 style="margin: 0 0 16px; color: #8fb7ff;">+ New Office</h3>
-    <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Office Name</label>
+    <h3 style="margin: 0 0 16px; color: var(--co-accent);">+ New Office</h3>
+    <label style="display: block; margin-bottom: 4px; color: var(--co-text-secondary); font-size: 12px;">Office Name</label>
     <input id="nod-name" type="text" value="New Office" style="
-      width: 100%; padding: 8px; margin-bottom: 12px; background: #12141f; border: 1px solid #2c2c46;
-      border-radius: 8px; color: #fff; font-family: inherit; box-sizing: border-box;
+      width: 100%; padding: 8px; margin-bottom: 12px; background: var(--co-bg-inset); border: 1px solid var(--co-border);
+      border-radius: 8px; color: var(--co-text-strong); font-family: inherit; box-sizing: border-box;
     " />
-    <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Working Directory</label>
+    <label style="display: block; margin-bottom: 4px; color: var(--co-text-secondary); font-size: 12px;">Working Directory</label>
     <input id="nod-path" type="text" value="." style="
-      width: 100%; padding: 8px; margin-bottom: 12px; background: #12141f; border: 1px solid #2c2c46;
-      border-radius: 8px; color: #fff; font-family: inherit; box-sizing: border-box;
+      width: 100%; padding: 8px; margin-bottom: 12px; background: var(--co-bg-inset); border: 1px solid var(--co-border);
+      border-radius: 8px; color: var(--co-text-strong); font-family: inherit; box-sizing: border-box;
     " />
-    <label style="display: block; margin-bottom: 4px; color: #aaa; font-size: 12px;">Layout</label>
+    <label style="display: block; margin-bottom: 4px; color: var(--co-text-secondary); font-size: 12px;">Layout</label>
     <div style="display: flex; gap: 8px; margin-bottom: 20px;">
       <button id="nod-layout-default" class="ui-btn ui-btn--primary" style="flex: 1; padding: 11px;">🏢 Default</button>
       <button id="nod-layout-fleet" class="ui-btn ui-btn--ghost" style="flex: 1; padding: 11px;">🚀 Fleet V-Team</button>
@@ -1165,13 +1188,13 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
   popover.className = 'office-settings-popover';
   popover.style.cssText = `
     position: absolute;
-    background: #1a1e2e;
-    border: 1px solid #33355a;
+    background: var(--co-bg-panel);
+    border: 1px solid var(--co-border);
     border-radius: 12px;
     padding: 16px 20px;
     min-width: 280px;
     font-family: 'Cascadia Code', Consolas, monospace;
-    color: #d7defa;
+    color: var(--co-text);
     z-index: ${ZIndex.TOP_MODAL};
     box-shadow: 0 12px 32px rgba(0,0,0,0.55);
   `;
@@ -1180,37 +1203,37 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
 
   popover.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-      <span style="font-size: 13px; font-weight: bold; color: #8fb7ff;">⚙ Office Settings</span>
-      <button class="osp-close" style="background: none; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 2px 6px;">✕</button>
+      <span style="font-size: 13px; font-weight: bold; color: var(--co-accent);">⚙ Office Settings</span>
+      <button class="osp-close" style="background: none; border: none; color: var(--co-text-muted); font-size: 16px; cursor: pointer; padding: 2px 6px;">✕</button>
     </div>
-    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Name</label>
+    <label style="display: block; margin-bottom: 3px; color: var(--co-text-secondary); font-size: 11px;">Name</label>
     <input class="osp-name" type="text" value="${escapeHtml(office.config.name)}" style="
-      width: 100%; padding: 6px 8px; margin-bottom: 10px; background: #12141f; border: 1px solid #2c2c46;
-      border-radius: 6px; color: #dde; font-family: inherit; font-size: 12px; box-sizing: border-box;
+      width: 100%; padding: 6px 8px; margin-bottom: 10px; background: var(--co-bg-inset); border: 1px solid var(--co-border);
+      border-radius: 6px; color: var(--co-text-strong); font-family: inherit; font-size: 12px; box-sizing: border-box;
     " />
-    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Working Directory</label>
+    <label style="display: block; margin-bottom: 3px; color: var(--co-text-secondary); font-size: 11px;">Working Directory</label>
     <input class="osp-path" type="text" value="${escapeHtml(office.config.workingDirectory)}" style="
-      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12141f; border: 1px solid #2c2c46;
-      border-radius: 6px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: var(--co-bg-inset); border: 1px solid var(--co-border);
+      border-radius: 6px; color: var(--co-text-secondary); font-family: inherit; font-size: 11px; box-sizing: border-box;
     " />
-    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Teams Channel Override <span style="color:#667;">(optional)</span></label>
+    <label style="display: block; margin-bottom: 3px; color: var(--co-text-secondary); font-size: 11px;">Teams Channel Override <span style="color:var(--co-text-muted);">(optional)</span></label>
     <input class="osp-teams" type="text" value="${escapeHtml(office.config.teamsChannelUrl ?? '')}" placeholder="Leave empty to use the default channel" style="
-      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: #12141f; border: 1px solid #2c2c46;
-      border-radius: 6px; color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+      width: 100%; padding: 6px 8px; margin-bottom: 14px; background: var(--co-bg-inset); border: 1px solid var(--co-border);
+      border-radius: 6px; color: var(--co-text-secondary); font-family: inherit; font-size: 11px; box-sizing: border-box;
     " />
-    <label style="display: block; margin-bottom: 3px; color: #889; font-size: 11px;">Teams Mention Override <span style="color:#667;">(optional)</span></label>
+    <label style="display: block; margin-bottom: 3px; color: var(--co-text-secondary); font-size: 11px;">Teams Mention Override <span style="color:var(--co-text-muted);">(optional)</span></label>
     <div style="display: flex; gap: 6px; margin-bottom: 14px;">
       <select class="osp-teams-mention-type" style="
-        padding: 6px 8px; background: #12141f; border: 1px solid #2c2c46; border-radius: 6px;
-        color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+        padding: 6px 8px; background: var(--co-bg-inset); border: 1px solid var(--co-border); border-radius: 6px;
+        color: var(--co-text-secondary); font-family: inherit; font-size: 11px; box-sizing: border-box;
       ">
         <option value="none"${(office.config.teamsMentionType ?? 'none') === 'none' ? ' selected' : ''}>Default</option>
         <option value="tag"${office.config.teamsMentionType === 'tag' ? ' selected' : ''}>Tag</option>
         <option value="user"${office.config.teamsMentionType === 'user' ? ' selected' : ''}>User</option>
       </select>
       <input class="osp-teams-mention-value" type="text" value="${escapeHtml(office.config.teamsMentionValue ?? '')}" placeholder="Tag name / user (empty = use default)" style="
-        flex: 1; padding: 6px 8px; background: #12141f; border: 1px solid #2c2c46; border-radius: 6px;
-        color: #899; font-family: inherit; font-size: 11px; box-sizing: border-box;
+        flex: 1; padding: 6px 8px; background: var(--co-bg-inset); border: 1px solid var(--co-border); border-radius: 6px;
+        color: var(--co-text-secondary); font-family: inherit; font-size: 11px; box-sizing: border-box;
       " />
     </div>
     <div style="display: flex; gap: 8px; justify-content: flex-end;">
@@ -1291,8 +1314,8 @@ renderOfficeTabs();
 const overviewHeader = document.createElement('div');
 overviewHeader.style.cssText = `
   padding: 14px 20px;
-  background: #141424;
-  border-bottom: 2px solid #2a2a4a;
+  background: var(--co-bg-header);
+  border-bottom: 2px solid var(--co-border-header);
   font-family: 'Cascadia Code', Consolas, monospace;
   flex-shrink: 0;
   display: flex;
@@ -1301,8 +1324,8 @@ overviewHeader.style.cssText = `
 `;
 overviewHeader.innerHTML = `
   <div>
-    <div id="terminal-title" style="font-size: 18px; font-weight: bold; color: #8af; margin-bottom: 4px;">🏢 Office Overview</div>
-    <div id="terminal-subtitle" style="font-size: 12px; color: #555;"></div>
+    <div id="terminal-title" style="font-size: 18px; font-weight: bold; color: var(--co-heading); margin-bottom: 4px;">🏢 Office Overview</div>
+    <div id="terminal-subtitle" style="font-size: 12px; color: var(--co-text-faint);"></div>
   </div>
   <div style="display: flex; align-items: center; gap: 8px;">
     <button id="agent-sort-btn" class="ui-btn ${agentSortMode === 'recent' ? 'ui-btn--primary' : 'ui-btn--ghost'}"
@@ -1345,7 +1368,7 @@ overviewContent.style.cssText = `
   overflow-y: auto;
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 13px;
-  color: #ccc;
+  color: var(--co-text);
   position: relative;
 `;
 overviewHost.appendChild(overviewContent);
@@ -1359,15 +1382,15 @@ statusBar.style.cssText = `
   left: 0;
   right: 0;
   height: 58px;
-  background: #14172480;
+  background: var(--co-bg-statusbar);
   backdrop-filter: blur(6px);
-  border-top: 1px solid #2c2c46;
+  border-top: 1px solid var(--co-border);
   display: flex;
   align-items: center;
   padding: 0 22px;
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 13px;
-  color: #9a9ab8;
+  color: var(--co-text-secondary);
   z-index: ${ZIndex.STATUS_BAR};
 `;
 document.body.appendChild(statusBar);
@@ -2829,8 +2852,8 @@ function replaceWithInput(
   input.placeholder = placeholder;
   input.maxLength = maxLength;
   input.style.cssText = `
-    width: 100%; background: #1a1a30; border: 1px solid #4a4a7a;
-    color: #dde; font-size: ${el.style.fontSize || '12px'};
+    width: 100%; background: var(--co-bg-badge-inset); border: 1px solid var(--co-sel-border);
+    color: var(--co-text-strong); font-size: ${el.style.fontSize || '12px'};
     font-family: inherit; padding: 2px 4px; border-radius: 3px;
     outline: none; box-sizing: border-box;
   `;

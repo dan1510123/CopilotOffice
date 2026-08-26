@@ -84,7 +84,7 @@ export class SettingsPanel {
     this.overlay.style.cssText = `
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.6);
+      background: var(--co-bg-overlay-scrim);
       z-index: ${ZIndex.SETTINGS};
       display: flex;
       align-items: center;
@@ -94,14 +94,14 @@ export class SettingsPanel {
 
     const panel = document.createElement('div');
     panel.style.cssText = `
-      background: #1a1a2e;
-      border: 2px solid #333;
+      background: var(--co-bg-panel);
+      border: 2px solid var(--co-border);
       border-radius: 12px;
       padding: 24px;
       width: 650px;
       max-height: 80vh;
       overflow-y: auto;
-      color: #dde;
+      color: var(--co-text);
     `;
 
     panel.innerHTML = this.renderContent();
@@ -139,9 +139,9 @@ export class SettingsPanel {
   private renderContent(): string {
     return `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h2 style="margin: 0; font-size: 18px; color: #fff;">⚙ Settings</h2>
+        <h2 style="margin: 0; font-size: 18px; color: var(--co-text-strong);">⚙ Settings</h2>
         <button id="settings-close-btn" style="
-          background: none; border: none; color: #666; font-size: 20px; cursor: pointer; padding: 4px 8px;
+          background: none; border: none; color: var(--co-text-muted); font-size: 20px; cursor: pointer; padding: 4px 8px;
         ">✕</button>
       </div>
 
@@ -156,10 +156,10 @@ export class SettingsPanel {
   private renderTeamsSection(): string {
     return `
       <div class="settings-section" style="margin-bottom: 20px;">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--co-text-secondary); border-bottom: 1px solid var(--co-border-subtle); padding-bottom: 8px;">
           ${teamsLabel('Teams Remote')}
         </h3>
-        <p style="margin: 0 0 12px; font-size: 11px; color: #778;">
+        <p style="margin: 0 0 12px; font-size: 11px; color: var(--co-text-secondary);">
           Bring agents online in a Microsoft Teams channel so you can drive them from a thread.
           Configure the feature flag and default channel here.
         </p>
@@ -174,7 +174,7 @@ export class SettingsPanel {
     const extra = getAdditionalParamsSettings();
     return `
       <div class="settings-section" style="margin-bottom: 20px;">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--co-text-secondary); border-bottom: 1px solid var(--co-border-subtle); padding-bottom: 8px;">
           🤖 Agents
         </h3>
         <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0; cursor: pointer;">
@@ -184,9 +184,9 @@ export class SettingsPanel {
             ${settings.autoStartKnownAgents ? 'checked' : ''}
             style="cursor: pointer; width: 15px; height: 15px;"
           />
-          <span style="color: #aab; font-size: 13px;">Auto-start known agents</span>
+          <span style="color: var(--co-text); font-size: 13px;">Auto-start known agents</span>
         </label>
-        <p style="margin: 4px 0 0 25px; font-size: 10px; color: #556;">
+        <p style="margin: 4px 0 0 25px; font-size: 10px; color: var(--co-text-faint);">
           When ON, agents with a saved session resume automatically on launch, office switch, and New Session.
         </p>
         <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0; cursor: pointer;">
@@ -196,10 +196,10 @@ export class SettingsPanel {
             ${yolo.yoloEnabled ? 'checked' : ''}
             style="cursor: pointer; width: 15px; height: 15px;"
           />
-          <span style="color: #aab; font-size: 13px;">⚡ YOLO mode</span>
+          <span style="color: var(--co-text); font-size: 13px;">⚡ YOLO mode</span>
         </label>
-        <p style="margin: 4px 0 0 25px; font-size: 10px; color: #b86;">
-          When ON, every terminal launches with <code style="color: #db8;">--yolo</code> — auto-approves all tool, file, and URL permissions without prompting. Applies to the next terminal you open.
+        <p style="margin: 4px 0 0 25px; font-size: 10px; color: var(--co-amber);">
+          When ON, every terminal launches with <code style="color: var(--co-amber);">--yolo</code> — auto-approves all tool, file, and URL permissions without prompting. Applies to the next terminal you open.
         </p>
         <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0; cursor: pointer;">
           <input
@@ -208,7 +208,7 @@ export class SettingsPanel {
             ${extra.enabled ? 'checked' : ''}
             style="cursor: pointer; width: 15px; height: 15px;"
           />
-          <span style="color: #aab; font-size: 13px;">Additional parameters</span>
+          <span style="color: var(--co-text); font-size: 13px;">Additional parameters</span>
           <input
             type="text"
             id="settings-additional-params-text"
@@ -217,19 +217,19 @@ export class SettingsPanel {
             ${extra.enabled ? '' : 'disabled'}
             style="
               flex: 1;
-              background: #12121f;
-              border: 1px solid #333;
+              background: var(--co-bg-inset);
+              border: 1px solid var(--co-border);
               border-radius: 4px;
               padding: 4px 8px;
-              color: #dde;
+              color: var(--co-text);
               font-family: inherit;
               font-size: 12px;
               ${extra.enabled ? '' : 'opacity: 0.5;'}
             "
           />
         </label>
-        <p style="margin: 4px 0 0 25px; font-size: 10px; color: #556;">
-          When ON, these parameters are appended to every <code style="color: #889;">copilot</code> launch. Applies to the next terminal you open.
+        <p style="margin: 4px 0 0 25px; font-size: 10px; color: var(--co-text-faint);">
+          When ON, these parameters are appended to every <code style="color: var(--co-text-secondary);">copilot</code> launch. Applies to the next terminal you open.
         </p>
       </div>
     `;
@@ -241,20 +241,20 @@ export class SettingsPanel {
 
     return `
       <div class="settings-section" style="margin-bottom: 20px;">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--co-text-secondary); border-bottom: 1px solid var(--co-border-subtle); padding-bottom: 8px;">
           🔊 Audio
         </h3>
         <div style="display: flex; align-items: center; gap: 16px; padding: 8px 0;">
-          <span style="color: #aab; font-size: 13px; min-width: 100px;">Background Music</span>
+          <span style="color: var(--co-text); font-size: 13px; min-width: 100px;">Background Music</span>
           <button id="settings-bgm-mute-btn" class="ui-btn ui-btn--ghost" style="
             min-width: 60px;
-            color: ${bgmMuted ? '#ff6666' : '#00ff88'};
+            color: ${bgmMuted ? 'var(--co-danger)' : 'var(--co-success)'};
           ">${bgmMuted ? 'MUTED' : 'ON'}</button>
           <input id="settings-bgm-slider" type="range" min="0" max="100"
             value="${bgmVolume}"
             title="Volume"
-            style="width: 120px; cursor: pointer; accent-color: #00ff88;" />
-          <span id="settings-bgm-volume-label" style="color: #888; font-size: 11px; min-width: 32px;">${bgmVolume}%</span>
+            style="width: 120px; cursor: pointer; accent-color: var(--co-success);" />
+          <span id="settings-bgm-volume-label" style="color: var(--co-text-secondary); font-size: 11px; min-width: 32px;">${bgmVolume}%</span>
         </div>
       </div>
     `;
@@ -267,7 +267,7 @@ export class SettingsPanel {
       const cfg = settings.events[eventType];
       const label = NOTIFICATION_EVENT_LABELS[eventType];
       rows += `
-        <tr style="border-bottom: 1px solid #2a2a3e;">
+        <tr style="border-bottom: 1px solid var(--co-border-subtle);">
           <td style="padding: 8px 6px; font-size: 12px;">${label}</td>
           <td style="padding: 8px 6px; text-align: center;">
             <input type="checkbox" data-event="${eventType}" data-field="enabled" ${cfg.enabled ? 'checked' : ''} style="cursor: pointer; width: 15px; height: 15px;" />
@@ -282,11 +282,11 @@ export class SettingsPanel {
             <input type="text" data-event="${eventType}" data-field="message" value="${this.escapeHtml(cfg.message)}" ${!cfg.enabled ? 'disabled' : ''}
               style="
                 width: 100%;
-                background: #12121f;
-                border: 1px solid #333;
+                background: var(--co-bg-inset);
+                border: 1px solid var(--co-border);
                 border-radius: 4px;
                 padding: 3px 6px;
-                color: #dde;
+                color: var(--co-text);
                 font-family: inherit;
                 font-size: 10px;
               "
@@ -298,28 +298,28 @@ export class SettingsPanel {
 
     return `
       <div class="settings-section" style="margin-bottom: 20px;">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--co-text-secondary); border-bottom: 1px solid var(--co-border-subtle); padding-bottom: 8px;">
           🔔 Notifications
         </h3>
 
         <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px;">
-          <label style="font-size: 11px; color: #889;">Dedup window (ms):</label>
+          <label style="font-size: 11px; color: var(--co-text-secondary);">Dedup window (ms):</label>
           <input type="number" id="settings-dedupe-ms" value="${settings.dedupeWindowMs}" min="0" max="30000" step="500"
             style="
-              width: 80px; background: #12121f; border: 1px solid #333; border-radius: 4px;
-              padding: 4px 8px; color: #dde; font-family: inherit; font-size: 12px;
+              width: 80px; background: var(--co-bg-inset); border: 1px solid var(--co-border); border-radius: 4px;
+              padding: 4px 8px; color: var(--co-text); font-family: inherit; font-size: 12px;
             "
           />
         </div>
 
         <table style="width: 100%; border-collapse: collapse;">
           <thead>
-            <tr style="border-bottom: 2px solid #333;">
-              <th style="padding: 6px; text-align: left; font-size: 11px; color: #889;">Event</th>
-              <th style="padding: 6px; text-align: center; font-size: 11px; color: #889;">On</th>
-              <th style="padding: 6px; text-align: center; font-size: 11px; color: #889;">Toast</th>
-              <th style="padding: 6px; text-align: center; font-size: 11px; color: #889;">OS</th>
-              <th style="padding: 6px; text-align: left; font-size: 11px; color: #889;">Message template</th>
+            <tr style="border-bottom: 2px solid var(--co-border);">
+              <th style="padding: 6px; text-align: left; font-size: 11px; color: var(--co-text-secondary);">Event</th>
+              <th style="padding: 6px; text-align: center; font-size: 11px; color: var(--co-text-secondary);">On</th>
+              <th style="padding: 6px; text-align: center; font-size: 11px; color: var(--co-text-secondary);">Toast</th>
+              <th style="padding: 6px; text-align: center; font-size: 11px; color: var(--co-text-secondary);">OS</th>
+              <th style="padding: 6px; text-align: left; font-size: 11px; color: var(--co-text-secondary);">Message template</th>
             </tr>
           </thead>
           <tbody>
@@ -335,8 +335,8 @@ export class SettingsPanel {
           </div>
         </div>
 
-        <p style="margin-top: 8px; font-size: 9px; color: #556;">
-          Use <code style="color: #889;">{agent}</code> and <code style="color: #889;">{tool}</code> in templates.
+        <p style="margin-top: 8px; font-size: 9px; color: var(--co-text-faint);">
+          Use <code style="color: var(--co-text-secondary);">{agent}</code> and <code style="color: var(--co-text-secondary);">{tool}</code> in templates.
         </p>
       </div>
     `;
@@ -345,21 +345,21 @@ export class SettingsPanel {
   private renderAboutSection(): string {
     return `
       <div class="settings-section">
-        <h3 style="margin: 0 0 12px; font-size: 14px; color: #889; border-bottom: 1px solid #2a2a3e; padding-bottom: 8px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--co-text-secondary); border-bottom: 1px solid var(--co-border-subtle); padding-bottom: 8px;">
           ℹ️ About
         </h3>
-        <div style="font-size: 12px; color: #889; line-height: 1.8;">
-          <div><strong style="color: #dde;">Copilot Office</strong> — AI-powered virtual office</div>
-          <div style="margin-top: 10px; font-size: 11px; color: #667;">
-            <strong style="color: #889;">Keyboard Shortcuts</strong>
+        <div style="font-size: 12px; color: var(--co-text-secondary); line-height: 1.8;">
+          <div><strong style="color: var(--co-text);">Copilot Office</strong> — AI-powered virtual office</div>
+          <div style="margin-top: 10px; font-size: 11px; color: var(--co-text-muted);">
+            <strong style="color: var(--co-text-secondary);">Keyboard Shortcuts</strong>
           </div>
           <table style="width: 100%; font-size: 11px; margin-top: 4px;">
-            <tr><td style="color: #667; padding: 2px 8px 2px 0;">WASD / Arrows</td><td style="color: #889;">Move</td></tr>
-            <tr><td style="color: #667; padding: 2px 8px 2px 0;">Shift</td><td style="color: #889;">Sprint</td></tr>
-            <tr><td style="color: #667; padding: 2px 8px 2px 0;">E</td><td style="color: #889;">Interact</td></tr>
-            <tr><td style="color: #667; padding: 2px 8px 2px 0;">F10</td><td style="color: #889;">Close terminal</td></tr>
-            <tr><td style="color: #667; padding: 2px 8px 2px 0;">Escape</td><td style="color: #889;">Close overlay</td></tr>
-            <tr><td style="color: #667; padding: 2px 8px 2px 0;">Ctrl+Shift+N</td><td style="color: #889;">New session</td></tr>
+            <tr><td style="color: var(--co-text-muted); padding: 2px 8px 2px 0;">WASD / Arrows</td><td style="color: var(--co-text-secondary);">Move</td></tr>
+            <tr><td style="color: var(--co-text-muted); padding: 2px 8px 2px 0;">Shift</td><td style="color: var(--co-text-secondary);">Sprint</td></tr>
+            <tr><td style="color: var(--co-text-muted); padding: 2px 8px 2px 0;">E</td><td style="color: var(--co-text-secondary);">Interact</td></tr>
+            <tr><td style="color: var(--co-text-muted); padding: 2px 8px 2px 0;">F10</td><td style="color: var(--co-text-secondary);">Close terminal</td></tr>
+            <tr><td style="color: var(--co-text-muted); padding: 2px 8px 2px 0;">Escape</td><td style="color: var(--co-text-secondary);">Close overlay</td></tr>
+            <tr><td style="color: var(--co-text-muted); padding: 2px 8px 2px 0;">Ctrl+Shift+N</td><td style="color: var(--co-text-secondary);">New session</td></tr>
           </table>
         </div>
       </div>
@@ -436,10 +436,10 @@ export class SettingsPanel {
 
       if (newMuted) {
         muteBtn.textContent = 'MUTED';
-        muteBtn.style.color = '#ff6666';
+        muteBtn.style.color = 'var(--co-danger)';
       } else {
         muteBtn.textContent = 'ON';
-        muteBtn.style.color = '#00ff88';
+        muteBtn.style.color = 'var(--co-success)';
       }
     });
 

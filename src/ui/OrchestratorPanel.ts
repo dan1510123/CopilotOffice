@@ -191,33 +191,33 @@ export class OrchestratorPanel {
     const scrim = document.createElement('div');
     scrim.style.cssText = `
       position: absolute; inset: 0; z-index: 5;
-      background: rgba(4, 5, 12, 0.55);
+      background: var(--co-bg-overlay-scrim);
       display: flex; align-items: center; justify-content: center;
     `;
     const teamsWarning = this.teamsOnline
-      ? '<br><span style="color:#ffb27d">It is online in Teams — a closing notice will be posted and the thread will go offline.</span>'
+      ? '<br><span style="color:var(--co-amber)">It is online in Teams — a closing notice will be posted and the thread will go offline.</span>'
       : '';
     const dialog = document.createElement('div');
     dialog.setAttribute('role', 'alertdialog');
     dialog.setAttribute('aria-label', 'Confirm closing the orchestrator session');
     dialog.style.cssText = `
-      width: min(420px, 84vw); background: #12121f;
-      border: 1px solid #6a2a2a; border-radius: 10px;
+      width: min(420px, 84vw); background: var(--co-bg-panel);
+      border: 1px solid var(--co-danger); border-radius: 10px;
       box-shadow: 0 12px 48px rgba(0,0,0,0.7);
-      padding: 18px 20px; color: #e0e0e0; font-size: 13px; line-height: 1.5;
+      padding: 18px 20px; color: var(--co-text); font-size: 13px; line-height: 1.5;
     `;
     dialog.innerHTML = `
       <div style="font-size:15px;font-weight:bold;margin-bottom:8px">⚠️ Close orchestrator session?</div>
-      <div style="color:#c4c4d4">This ends the orchestrator session and clears its conversation. Any in-progress requests are cancelled.${teamsWarning}<br><br><span style="color:#8a8aa6">Tip: use minimize (−) to keep it running in the background instead.</span></div>
+      <div style="color:var(--co-text)">This ends the orchestrator session and clears its conversation. Any in-progress requests are cancelled.${teamsWarning}<br><br><span style="color:var(--co-text-secondary)">Tip: use minimize (−) to keep it running in the background instead.</span></div>
     `;
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;justify-content:flex-end;gap:10px;margin-top:16px;';
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'Keep running';
-    cancelBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#cde;font-size:13px;cursor:pointer;';
+    cancelBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid var(--co-sel-border);background:var(--co-bg-raised);color:var(--co-text);font-size:13px;cursor:pointer;';
     const confirmBtn = document.createElement('button');
     confirmBtn.textContent = 'Close session';
-    confirmBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid #6a2a2a;background:#3a1414;color:#ff9d9d;font-size:13px;cursor:pointer;';
+    confirmBtn.style.cssText = 'padding:7px 12px;border-radius:6px;border:1px solid var(--co-danger);background:var(--co-bg-raised);color:var(--co-danger);font-size:13px;cursor:pointer;';
 
     const dismiss = (): void => {
       scrim.remove();
@@ -254,7 +254,7 @@ export class OrchestratorPanel {
     overlay.style.cssText = `
       position: fixed; inset: 0;
       z-index: ${ZIndex.ORCHESTRATOR_PANEL};
-      background: rgba(6, 8, 16, 0.72);
+      background: var(--co-bg-overlay-scrim);
       display: flex; align-items: center; justify-content: center;
       font-family: 'Cascadia Code', Consolas, Monaco, monospace;
     `;
@@ -265,7 +265,7 @@ export class OrchestratorPanel {
     const panel = document.createElement('div');
     panel.style.cssText = `
       width: min(1320px, 96vw); height: min(1020px, 94vh);
-      background: #0a0a14; border: 1px solid #2a2a44; border-radius: 10px;
+      background: var(--co-bg-app); border: 1px solid var(--co-border); border-radius: 10px;
       box-shadow: 0 12px 48px rgba(0,0,0,0.6);
       display: flex; flex-direction: column; overflow: hidden;
     `;
@@ -274,30 +274,30 @@ export class OrchestratorPanel {
     const header = document.createElement('div');
     header.style.cssText = `
       display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px; background: #12121f; border-bottom: 1px solid #2a2a44;
+      padding: 10px 14px; background: var(--co-bg-header); border-bottom: 1px solid var(--co-border-header);
     `;
     const title = document.createElement('div');
-    title.innerHTML = '🎩 <b>Office Orchestrator</b> <span style="color:#6a6a8a;font-size:12px">— always asks before bringing anyone online</span>';
-    title.style.color = '#e0e0e0';
+    title.innerHTML = '🎩 <b>Office Orchestrator</b> <span style="color:var(--co-text-muted);font-size:12px">— always asks before bringing anyone online</span>';
+    title.style.color = 'var(--co-text)';
     const headerRight = document.createElement('div');
     headerRight.style.cssText = 'display:flex;align-items:center;gap:10px;';
     const teamsBtn = document.createElement('button');
     teamsBtn.innerHTML = teamsLabel('Bring online in Teams');
     teamsBtn.title = 'Bring the orchestrator online in a Microsoft Teams channel thread so you can drive it remotely.';
-    teamsBtn.style.cssText = 'padding:5px 10px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#cde;font-size:12px;cursor:pointer;';
+    teamsBtn.style.cssText = 'padding:5px 10px;border-radius:6px;border:1px solid var(--co-sel-border);background:var(--co-bg-raised);color:var(--co-text);font-size:12px;cursor:pointer;';
     teamsBtn.onclick = () => this.toggleTeams();
     this.teamsBtn = teamsBtn;
     const minimizeBtn = document.createElement('button');
     minimizeBtn.textContent = '−';
     minimizeBtn.title = 'Minimize — keep the session running (Teams stays online) and hide this overlay.';
     minimizeBtn.setAttribute('aria-label', 'Minimize orchestrator');
-    minimizeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid #33557a;background:#16233a;color:#7db4ff;font-size:18px;line-height:1;cursor:pointer;';
+    minimizeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid var(--co-sel-border);background:var(--co-bg-raised);color:var(--co-accent);font-size:18px;line-height:1;cursor:pointer;';
     minimizeBtn.onclick = () => this.minimize();
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
     closeBtn.title = 'Close — end the orchestrator session. If online in Teams, posts a closing notice and goes offline.';
     closeBtn.setAttribute('aria-label', 'Close orchestrator session');
-    closeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid #6a2a2a;background:#2a1414;color:#ff7d7d;font-size:15px;line-height:1;cursor:pointer;';
+    closeBtn.style.cssText = 'width:26px;height:26px;border-radius:6px;border:1px solid var(--co-danger);background:var(--co-bg-raised);color:var(--co-danger);font-size:15px;line-height:1;cursor:pointer;';
     closeBtn.onclick = () => this.confirmClose();
     headerRight.appendChild(teamsBtn);
     headerRight.appendChild(minimizeBtn);
@@ -307,12 +307,12 @@ export class OrchestratorPanel {
 
     // Status banner (hidden until an exit/error).
     const banner = document.createElement('div');
-    banner.style.cssText = 'display:none;padding:8px 14px;font-size:13px;color:#fff;';
+    banner.style.cssText = 'display:none;padding:8px 14px;font-size:13px;color:var(--co-text-strong);';
     this.statusBanner = banner;
 
     // Terminal host
     const terminalOuter = document.createElement('div');
-    terminalOuter.style.cssText = 'flex:1;min-height:0;position:relative;background:#0a0a14;';
+    terminalOuter.style.cssText = 'flex:1;min-height:0;position:relative;background:var(--co-bg-app);';
     const terminalDiv = document.createElement('div');
     terminalDiv.style.cssText = 'position:absolute;inset:8px;';
     terminalOuter.appendChild(terminalDiv);
@@ -322,14 +322,14 @@ export class OrchestratorPanel {
     const inputRow = document.createElement('div');
     inputRow.style.cssText = `
       display: flex; gap: 8px; padding: 10px 12px;
-      background: #12121f; border-top: 1px solid #2a2a44;
+      background: var(--co-bg-header); border-top: 1px solid var(--co-border-header);
     `;
     const input = document.createElement('input');
     input.type = 'text';
     input.placeholder = 'Describe what you need (e.g. "someone to review my code")…';
     input.style.cssText = `
-      flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid #333355;
-      background: #0a0a14; color: #e0e0e0; font-family: inherit; font-size: 14px;
+      flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border);
+      background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 14px;
     `;
     input.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -337,7 +337,7 @@ export class OrchestratorPanel {
     });
     const sendBtn = document.createElement('button');
     sendBtn.textContent = 'Send';
-    sendBtn.style.cssText = 'padding:8px 16px;border-radius:6px;border:none;background:#3a5a8a;color:#fff;cursor:pointer;';
+    sendBtn.style.cssText = 'padding:8px 16px;border-radius:6px;border:none;background:var(--co-accent-strong);color:var(--co-text-strong);cursor:pointer;';
     sendBtn.onclick = () => this.submitInput();
     inputRow.appendChild(input);
     inputRow.appendChild(sendBtn);
@@ -563,23 +563,23 @@ export class OrchestratorPanel {
     const card = document.createElement('div');
     card.style.cssText = `
       position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
-      width: min(560px, 88%); background: #14142a; border: 1px solid #3a5a8a;
+      width: min(560px, 88%); background: var(--co-bg-panel); border: 1px solid var(--co-sel-border);
       border-radius: 10px; padding: 14px 16px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
       z-index: 1;
     `;
     const q = document.createElement('div');
-    q.style.cssText = 'color:#e8e8f0;font-size:14px;margin-bottom:10px;';
-    q.innerHTML = `<b>${summary}</b>?` + (payload.args.reason ? `<div style="color:#9aa;font-size:12px;margin-top:4px;">${payload.args.reason}</div>` : '');
+    q.style.cssText = 'color:var(--co-text-strong);font-size:14px;margin-bottom:10px;';
+    q.innerHTML = `<b>${summary}</b>?` + (payload.args.reason ? `<div style="color:var(--co-text-secondary);font-size:12px;margin-top:4px;">${payload.args.reason}</div>` : '');
 
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;';
     const deny = document.createElement('button');
     deny.textContent = 'Deny';
-    deny.style.cssText = 'padding:7px 16px;border-radius:6px;border:1px solid #663333;background:#2a1a1a;color:#f0c0c0;cursor:pointer;';
+    deny.style.cssText = 'padding:7px 16px;border-radius:6px;border:1px solid var(--co-danger);background:var(--co-bg-raised);color:var(--co-danger);cursor:pointer;';
     deny.onclick = () => this.respondPermission('deny');
     const approve = document.createElement('button');
     approve.textContent = `Approve`;
-    approve.style.cssText = 'padding:7px 16px;border-radius:6px;border:none;background:#2f7d4a;color:#fff;cursor:pointer;';
+    approve.style.cssText = 'padding:7px 16px;border-radius:6px;border:none;background:var(--co-success);color:var(--co-text-strong);cursor:pointer;';
     approve.onclick = () => this.respondPermission('approve');
     row.appendChild(deny);
     row.appendChild(approve);
@@ -647,15 +647,15 @@ export class OrchestratorPanel {
   private updateTeamsButton(): void {
     if (!this.teamsBtn) return;
     this.teamsBtn.innerHTML = teamsLabel(this.teamsOnline ? 'Teams: online — take offline' : 'Bring online in Teams');
-    this.teamsBtn.style.background = this.teamsOnline ? '#1d3a24' : '#16233a';
-    this.teamsBtn.style.borderColor = this.teamsOnline ? '#2f7d4a' : '#33557a';
+    this.teamsBtn.style.background = this.teamsOnline ? 'var(--co-bg-card-sel)' : 'var(--co-bg-raised)';
+    this.teamsBtn.style.borderColor = this.teamsOnline ? 'var(--co-success)' : 'var(--co-sel-border)';
   }
 
   // ── Banner ───────────────────────────────────────────────────────
   private showBanner(message: string, kind: 'error' | 'info'): void {
     if (!this.statusBanner) return;
     this.statusBanner.textContent = message;
-    this.statusBanner.style.background = kind === 'error' ? '#5a2230' : '#27355a';
+    this.statusBanner.style.background = kind === 'error' ? 'var(--co-danger)' : 'var(--co-accent-strong)';
     this.statusBanner.style.display = 'block';
   }
 }

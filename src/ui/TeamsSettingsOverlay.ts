@@ -43,7 +43,7 @@ export class TeamsSettingsOverlay {
     this.overlay = document.createElement('div');
     this.overlay.id = 'teams-settings-overlay';
     this.overlay.style.cssText = `
-      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      position: fixed; inset: 0; background: var(--co-bg-overlay-scrim);
       z-index: ${ZIndex.TEAMS_SETTINGS};
       display: flex; align-items: center; justify-content: center;
       font-family: 'Cascadia Code', Consolas, monospace;
@@ -54,8 +54,8 @@ export class TeamsSettingsOverlay {
 
     const panel = document.createElement('div');
     panel.style.cssText = `
-      background: #1a1a2e; border: 2px solid #333; border-radius: 12px;
-      padding: 24px; width: 560px; max-height: 82vh; overflow-y: auto; color: #dde;
+      background: var(--co-bg-panel); border: 2px solid var(--co-border); border-radius: 12px;
+      padding: 24px; width: 560px; max-height: 82vh; overflow-y: auto; color: var(--co-text);
     `;
     panel.addEventListener('mousedown', (e) => e.stopPropagation());
     panel.appendChild(this.buildContent(settings, prompt));
@@ -89,20 +89,20 @@ export class TeamsSettingsOverlay {
 
     const title = document.createElement('h2');
     title.textContent = 'Teams Remote Agents';
-    title.style.cssText = 'margin: 0 0 6px; font-size: 18px; color: #88ccff;';
+    title.style.cssText = 'margin: 0 0 6px; font-size: 18px; color: var(--co-heading);';
     wrap.appendChild(title);
 
     const subtitle = document.createElement('p');
     subtitle.textContent =
       'Bring agents online in a Microsoft Teams channel. Requires the Azure CLI (`az`) signed in.';
-    subtitle.style.cssText = 'margin: 0 0 16px; font-size: 12px; color: #99a;';
+    subtitle.style.cssText = 'margin: 0 0 16px; font-size: 12px; color: var(--co-text-secondary);';
     wrap.appendChild(subtitle);
 
     if (prompt) {
       const banner = document.createElement('div');
       banner.textContent = prompt;
       banner.style.cssText =
-        'margin: 0 0 16px; padding: 10px 12px; border-radius: 6px; background: #3a2a1a; border: 1px solid #7a5a2a; color: #ffcc88; font-size: 12px;';
+        'margin: 0 0 16px; padding: 10px 12px; border-radius: 6px; background: var(--co-bg-raised); border: 1px solid var(--co-amber); color: var(--co-amber); font-size: 12px;';
       wrap.appendChild(banner);
     }
 
@@ -111,7 +111,7 @@ export class TeamsSettingsOverlay {
 
     const channelLabel = document.createElement('label');
     channelLabel.textContent = 'Default channel deep-link';
-    channelLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    channelLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: var(--co-text);';
     wrap.appendChild(channelLabel);
 
     const channelInput = document.createElement('input');
@@ -119,18 +119,18 @@ export class TeamsSettingsOverlay {
     channelInput.value = settings.defaultChannelUrl;
     channelInput.placeholder = 'https://teams.microsoft.com/l/channel/19%3A...';
     channelInput.style.cssText =
-      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     wrap.appendChild(channelInput);
 
     const channelHint = document.createElement('p');
     channelHint.textContent =
       'In Teams, right-click the channel → "Get link to channel". Offices can override this in their settings.';
-    channelHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    channelHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: var(--co-text-secondary);';
     wrap.appendChild(channelHint);
 
     const relayLabel = document.createElement('label');
     relayLabel.textContent = 'Relay Dump channel link (optional)';
-    relayLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    relayLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: var(--co-text);';
     wrap.appendChild(relayLabel);
 
     const relayInput = document.createElement('input');
@@ -138,19 +138,19 @@ export class TeamsSettingsOverlay {
     relayInput.value = settings.relayChannelUrl;
     relayInput.placeholder = 'https://teams.microsoft.com/l/channel/19%3A...';
     relayInput.style.cssText =
-      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     wrap.appendChild(relayInput);
 
     const relayHint = document.createElement('p');
     relayHint.textContent =
       'Set a dedicated Dump channel watched by a Power Automate "When a new channel message is added" flow that re-posts each message to its real destination with an @mention, so you get notified under a distinct bot identity. Leave blank to post as your signed-in user. Note: relay posts are send-only (no threaded replies).';
-    relayHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    relayHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: var(--co-text-secondary);';
     wrap.appendChild(relayHint);
 
     // Mention target for the relay flow: a person or a Teams tag (resolved by the app).
     const mentionLabel = document.createElement('label');
     mentionLabel.textContent = 'Relay @mention target (optional)';
-    mentionLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    mentionLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: var(--co-text);';
     wrap.appendChild(mentionLabel);
 
     const mentionRow = document.createElement('div');
@@ -158,7 +158,7 @@ export class TeamsSettingsOverlay {
 
     const mentionType = document.createElement('select');
     mentionType.style.cssText =
-      'flex: 0 0 110px; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'flex: 0 0 110px; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     for (const [val, label] of [
       ['none', 'None'],
       ['user', 'User'],
@@ -177,14 +177,14 @@ export class TeamsSettingsOverlay {
     mentionValue.value = settings.relayMentionValue;
     mentionValue.placeholder = 'Name or ID (user UPN / display name, or tag name)';
     mentionValue.style.cssText =
-      'flex: 1; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'flex: 1; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     mentionRow.appendChild(mentionValue);
     wrap.appendChild(mentionRow);
 
     const mentionHint = document.createElement('p');
     mentionHint.textContent =
       'Who the Flow bot @mentions in the destination channel. User: a UPN, object id, or display name. Tag: a Teams tag name (resolved per destination team). None: no mention.';
-    mentionHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    mentionHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: var(--co-text-secondary);';
     wrap.appendChild(mentionHint);
 
     const syncMentionEnabled = () => {
@@ -197,7 +197,7 @@ export class TeamsSettingsOverlay {
     // ── Office Orchestrator channel + @mention override (mirrors per-office overrides) ──
     const orchLabel = document.createElement('label');
     orchLabel.textContent = 'Orchestrator channel override (optional)';
-    orchLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: #cdd;';
+    orchLabel.style.cssText = 'display: block; margin: 16px 0 6px; font-size: 13px; color: var(--co-text);';
     wrap.appendChild(orchLabel);
 
     const orchChannelInput = document.createElement('input');
@@ -205,13 +205,13 @@ export class TeamsSettingsOverlay {
     orchChannelInput.value = settings.orchestratorChannelUrl;
     orchChannelInput.placeholder = 'Leave empty to use the default channel';
     orchChannelInput.style.cssText =
-      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     wrap.appendChild(orchChannelInput);
 
     const orchHint = document.createElement('p');
     orchHint.textContent =
       'The 🎩 Office Orchestrator posts its own Teams thread here instead of the default channel. Empty ⇒ uses the default channel.';
-    orchHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: #778;';
+    orchHint.style.cssText = 'margin: 6px 0 0; font-size: 11px; color: var(--co-text-secondary);';
     wrap.appendChild(orchHint);
 
     const orchMentionRow = document.createElement('div');
@@ -219,7 +219,7 @@ export class TeamsSettingsOverlay {
 
     const orchMentionType = document.createElement('select');
     orchMentionType.style.cssText =
-      'flex: 0 0 110px; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'flex: 0 0 110px; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     for (const [val, label] of [
       ['none', 'None'],
       ['user', 'User'],
@@ -238,7 +238,7 @@ export class TeamsSettingsOverlay {
     orchMentionValue.value = settings.orchestratorMentionValue;
     orchMentionValue.placeholder = 'Orchestrator @mention (user UPN / display name, or tag name)';
     orchMentionValue.style.cssText =
-      'flex: 1; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid #445; background: #12121e; color: #dde; font-family: inherit; font-size: 12px;';
+      'flex: 1; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--co-border); background: var(--co-bg-inset); color: var(--co-text); font-family: inherit; font-size: 12px;';
     orchMentionRow.appendChild(orchMentionValue);
     wrap.appendChild(orchMentionRow);
 
@@ -273,7 +273,7 @@ export class TeamsSettingsOverlay {
     wrap.appendChild(autoRender.row);
 
     const error = document.createElement('div');
-    error.style.cssText = 'margin-top: 12px; font-size: 12px; color: #ff8888; min-height: 16px;';
+    error.style.cssText = 'margin-top: 12px; font-size: 12px; color: var(--co-danger); min-height: 16px;';
     wrap.appendChild(error);
 
     const footer = document.createElement('div');
@@ -326,7 +326,7 @@ export class TeamsSettingsOverlay {
   ): { row: HTMLElement; input: HTMLInputElement } {
     const row = document.createElement('label');
     row.style.cssText =
-      'display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; font-size: 13px; color: #cdd;';
+      'display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; font-size: 13px; color: var(--co-text);';
     const left = document.createElement('span');
     left.style.cssText = 'display: inline-flex; align-items: center; gap: 6px;';
     const span = document.createElement('span');
@@ -338,7 +338,7 @@ export class TeamsSettingsOverlay {
       info.title = hint;
       info.setAttribute('aria-label', hint);
       // Native hover tooltip via title; help cursor signals the info affordance.
-      info.style.cssText = 'cursor: help; color: #7aa7d9; font-size: 12px;';
+      info.style.cssText = 'cursor: help; color: var(--co-accent); font-size: 12px;';
       left.appendChild(info);
     }
     const input = document.createElement('input');

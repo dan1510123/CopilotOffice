@@ -19,8 +19,8 @@ const STYLES = `
   display: none;
   flex-direction: column;
   height: 100%;
-  background: #1e1e2e;
-  color: #e6e6e6;
+  background: var(--co-bg-panel);
+  color: var(--co-text);
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 13px;
   overflow: hidden;
@@ -30,27 +30,27 @@ const STYLES = `
   justify-content: space-between;
   align-items: center;
   padding: 14px 20px;
-  background: #141424;
-  border-bottom: 2px solid #2a2a4a;
+  background: var(--co-bg-header);
+  border-bottom: 2px solid var(--co-border-header);
   flex-shrink: 0;
 }
 .fleet-title {
   font-size: 16px;
   font-weight: bold;
-  color: #8af;
+  color: var(--co-heading);
 }
 .fleet-progress-text {
   font-size: 12px;
-  color: #888;
+  color: var(--co-text-muted);
 }
 .fleet-progress-bar {
   height: 4px;
-  background: #2a2a4a;
+  background: var(--co-border-header);
   flex-shrink: 0;
 }
 .fleet-progress-fill {
   height: 100%;
-  background: #4488cc;
+  background: var(--co-accent-strong);
   transition: width 0.3s ease, background-color 0.3s ease;
   width: 0%;
 }
@@ -63,15 +63,15 @@ const STYLES = `
   display: flex;
   align-items: center;
   padding: 8px 20px;
-  border-bottom: 1px solid #1a1a2e;
+  border-bottom: 1px solid var(--co-bg-divider);
   border-left: 3px solid transparent;
   gap: 10px;
 }
 .fleet-agent-row[data-state="running"] {
-  border-left-color: #44cc44;
+  border-left-color: var(--co-success);
 }
 .fleet-agent-row[data-state="failed"] {
-  border-left-color: #cc4444;
+  border-left-color: var(--co-danger);
 }
 .fleet-agent-row[data-state="completed"] {
   opacity: 0.6;
@@ -86,14 +86,14 @@ const STYLES = `
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #ccc;
+  color: var(--co-text);
 }
 .fleet-agent-type {
   flex-shrink: 0;
   font-size: 11px;
-  color: #666;
+  color: var(--co-text-muted);
   padding: 2px 6px;
-  background: #252540;
+  background: var(--co-bg-inset);
   border-radius: 3px;
 }
 .fleet-agent-time {
@@ -101,14 +101,14 @@ const STYLES = `
   width: 48px;
   text-align: right;
   font-size: 11px;
-  color: #888;
+  color: var(--co-text-muted);
 }
 .fleet-aggregate {
   padding: 10px 20px;
   font-size: 11px;
-  color: #666;
-  border-top: 1px solid #2a2a4a;
-  background: #141424;
+  color: var(--co-text-muted);
+  border-top: 1px solid var(--co-border-header);
+  background: var(--co-bg-header);
   flex-shrink: 0;
   text-align: center;
 }
@@ -231,7 +231,7 @@ export class FleetDashboard {
     const pct = total > 0 ? (done / total) * 100 : 0;
     this.progressFillEl.style.width = `${pct}%`;
     this.progressFillEl.style.backgroundColor =
-      pct >= 100 ? '#44cc44' : '#4488cc';
+      pct >= 100 ? 'var(--co-success)' : 'var(--co-accent-strong)';
 
     // Aggregate footer
     this.aggregateEl.textContent =
