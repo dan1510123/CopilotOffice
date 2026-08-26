@@ -17,8 +17,8 @@ import { officeManager } from './officeManager';
 import { getLayout } from '../layouts';
 import type { BringOnlineCandidate } from '../../electron/orchestrator/types';
 
-export function computeBringOnlineCandidates(): BringOnlineCandidate[] {
-  const officeId = officeManager.currentOfficeId;
+export function computeBringOnlineCandidates(targetOfficeId?: string): BringOnlineCandidate[] {
+  const officeId = targetOfficeId ?? officeManager.currentOfficeId;
   if (!officeId) return [];
 
   const candidates: BringOnlineCandidate[] = [];
@@ -40,7 +40,7 @@ export function computeBringOnlineCandidates(): BringOnlineCandidate[] {
   }
 
   // Reserve: only when the current layout supports reserve agents.
-  const layout = officeManager.currentOffice?.config.layout ?? 'default';
+  const layout = officeManager.getOffice(officeId)?.config.layout ?? 'default';
   const supportsReserve = getLayout(layout).behaviors.supportsReserveAgents;
   if (supportsReserve) {
     const seated = new Set(AGENTS.map((a) => a.id));

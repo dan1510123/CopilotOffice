@@ -103,6 +103,26 @@ function resolveTarget(agentId: string, officeId?: string): ResolvedTarget | nul
   const candidateOffices: string[] = [];
   if (officeId) candidateOffices.push(officeId);
   const current = officeManager.currentOfficeId;
+
+  // Honor an explicit officeId hint decisively FIRST. With ids duplicated across
+  // offices, scanning all offices for a status entry could resolve to the wrong
+  // office (e.g. a same-id agent that happens to be live elsewhere). If the hint
+  // office knows this agent — either it has a status entry there OR it is a roster
+  // member (dormant) — that office wins, using its actual online state.
+  if (officeId) {
+    const hintStatus = officeManager.getAgentStatus(officeId, target);
+    if (hintStatus) {
+      return {
+        officeId,
+        online: hintStatus.state === 'active',
+        waiting: resolveStatusKey(hintStatus) === 'waiting',
+      };
+    }
+    if (isKnownDormantAgent(target, officeId)) {
+      return { officeId, online: false, waiting: false };
+    }
+  }
+
   if (current && current !== officeId) candidateOffices.push(current);
   for (const config of officeManager.getAllOffices()) {
     if (!candidateOffices.includes(config.id)) candidateOffices.push(config.id);
@@ -259,21 +279,21 @@ export async function setAgentTeamsPresence(
       };
     }
     if (args.online) {
-      // Auto-bring-online: TeamsService.registerAgent requires a live session (it
-      // fails with "Open its terminal first" otherwise). If the target has no live
-      // session, bring it fully online first — via bringOnline, which handles both
-      // idle-seated and reserve (scene spawn) agents AND waits for the session to be
-      // ready — so a single approval covers "bring up + go online in Teams".
-      if (!resolved.online) {
-        const up = await deps.bringOnline(officeId, args.agentId);
-        if (!up) {
-          return {
-            agentId: args.agentId,
-            officeId,
-            outcome: 'failed',
-            message: `Could not bring ${args.agentId} up before Teams registration.`,
-          };
-        }
+      // Auto-bring-online: TeamsService.registerAgent requires a LIVE session (it
+      // fails with "Open its terminal first" otherwise). `resolved.online` is
+      // derived from the renderer's agent status, which can read `active`/`Done`
+      // while the PTY is actually dead (a dropped or half-completed restart), so
+      // gating the bring-up on it would skip the warm and leave teamsRegister with
+      // no session. `bringOnline` is liveness-aware — it re-warms a dead session
+      // and no-ops a genuinely live one — so call it unconditionally.
+      const up = await deps.bringOnline(officeId, args.agentId);
+      if (!up) {
+        return {
+          agentId: args.agentId,
+          officeId,
+          outcome: 'failed',
+          message: `Could not bring ${args.agentId} up before Teams registration.`,
+        };
       }
       const res = await deps.teamsRegister(officeId, args.agentId);
       if (res.success) {

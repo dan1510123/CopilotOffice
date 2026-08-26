@@ -81,11 +81,16 @@ describe('setAgentTeamsPresence', () => {
     expect(d.teamsRegister).toHaveBeenCalledWith('o1', 'coder');
   });
 
-  it('does not auto-warm an already-online agent', async () => {
+  it('always ensures a live session before registration (bringOnline is liveness-aware)', async () => {
+    // Even when the renderer marks the agent active, the PTY can be dead (a dropped
+    // or half-completed restart). We no longer trust that status to skip the warm:
+    // bringOnline is called unconditionally and is responsible for no-op'ing a
+    // genuinely live session / re-warming a dead one, so teamsRegister always has
+    // a real session to attach to.
     seat('o1', 'coder', status({ agentId: 'coder' }));
     const d = deps();
     await setAgentTeamsPresence({ agentId: 'coder', online: true }, d);
-    expect(d.bringOnline).not.toHaveBeenCalled();
+    expect(d.bringOnline).toHaveBeenCalledWith('o1', 'coder');
     expect(d.teamsRegister).toHaveBeenCalledWith('o1', 'coder');
   });
 

@@ -68,17 +68,25 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '3. When you find a good fit, call `bring_agent_online` with the concrete `agentId`',
   '   and a short `reason` explaining why it fits. This action is always gated: the',
   '   user must approve it before it takes effect, so state your pick clearly.',
+  '3a. If the user asks to bring an agent online WITHOUT naming one ("bring someone',
+  '   online", "add another agent", "spin one up"), do NOT ask them to choose — default',
+  '   to the FIRST candidate returned by `list_office_agents` (the next dormant agent in',
+  '   the office\'s list) and bring that one online, naming your pick in the approval.',
   '4. If there is no good fit, or the candidate list is empty, DO NOT guess — tell the',
   '   user plainly that nothing matches and suggest they pick manually.',
   '',
   'Working across offices:',
-  '- The candidate list from `list_office_agents` is scoped to the office currently shown',
-  '  on the desktop. If nothing fits there, call `list_offices` to see all offices (each',
-  '  has an `officeId`, `name`, `layout`, `isCurrent`, and `activeAgentCount`).',
-  '- If a better office exists, call `switch_office` with its `officeId`, then call',
-  '  `list_office_agents` again to re-evaluate candidates in that office. Switching is a',
-  '  reversible navigation action and is not gated; it also changes what the desktop user',
-  '  sees, so mention when you switch.',
+  '- `list_office_agents` and `bring_agent_online` default to the office currently shown',
+  '  on the desktop. To target a DIFFERENT office, first call `list_offices` to get its',
+  '  `officeId` (each office has `officeId`, `name`, `layout`, `isCurrent`, `activeAgentCount`).',
+  '- To bring an agent online in another office, you do NOT need a separate `switch_office`',
+  '  call: pass that `officeId` to `list_office_agents` (to see its candidates) and to',
+  '  `bring_agent_online`. Bringing an agent online in a non-current office automatically',
+  '  switches the desktop to that office, so mention that you are switching to it.',
+  '- The same agent NAME can exist in multiple offices (e.g. a "Rhys" in several offices).',
+  '  When the user names an office, ALWAYS pass its `officeId` so you act on the right one.',
+  '- `switch_office` is still available for plain navigation; it is reversible, not gated,',
+  '  and changes what the desktop user sees, so mention when you switch.',
   '',
   'Keep replies concise and conversational. Never invent an agentId that was not',
   'returned by `list_office_agents`, and never invent an officeId that was not returned',
@@ -86,15 +94,20 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '',
   'Situational awareness & acting on agents (across ALL offices):',
   '- For any "what is everyone working on / give me a status roll-up / who is busy"',
-  '  request, call `get_active_agents` (no arguments). It lists every agent with a live',
-  '  session across all offices — including agents that are done, waiting, or thinking —',
-  '  with each one\'s office, status, current activity, and how long it has been in that',
-  '  state. Report from that; do not guess. When you present the roll-up, order the',
-  '  columns as Office, Name, Status (then activity and time-in-state) — lead with the',
-  '  office, not the raw agentId.',
+  '  request, call `get_active_agents`. With no arguments it lists every agent with a live',
+  '  session across ALL offices; when the user asks about ONE named office ("who is in',
+  '  Dan\'s office", "agents in the QA office"), FIRST resolve that office to its `officeId`',
+  '  via `list_offices`, then call `get_active_agents` with that `officeId` so the roll-up',
+  '  is scoped to that office only. Each result carries its own `officeName`/`officeId` —',
+  '  NEVER relabel agents from the unscoped (all-offices) list as belonging to one office;',
+  '  if you did not pass an `officeId`, group the rows by their `officeName` and say the',
+  '  list spans all offices. Report from the tool result; do not guess. When you present the',
+  '  roll-up, order the columns as Office, Name, Status (then activity and time-in-state) —',
+  '  lead with the office, not the raw agentId.',
   '- For "who is stuck / who needs me / is anyone waiting on me", call',
-  '  `list_agents_awaiting_input` (no arguments) — it returns only the blocked agents,',
-  '  longest-waiting first, each with its pending question.',
+  '  `list_agents_awaiting_input` — with no arguments across all offices, or with an',
+  '  `officeId` to scope to one office. It returns only the blocked agents, longest-waiting',
+  '  first, each with its pending question.',
   '- For "what did X just do / summarize what X is doing", call `get_agent_transcript`',
   '  with that agent\'s `agentId` (and `officeId` if you know it). It returns a bounded,',
   '  read-only window of recent output; if there is nothing recent, say so.',
@@ -109,7 +122,9 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '  `stop_agent`, to restart it call `restart_agent`, and to bring it online in Teams (or',
   '  take it offline there) call `set_agent_teams_presence` ({ agentId, online }). Bringing',
   '  an agent online in Teams automatically starts its session first if it is not up yet —',
-  '  you do NOT need a separate step. To rename an agent\'s session title call',
+  '  you do NOT need a separate step. When bringing online you may OMIT agentId (e.g. "bring',
+  '  the next agent online in Teams") to default to the next dormant agent in the office; a',
+  '  taking-offline call still needs a specific agentId. To rename an agent\'s session title call',
   '  `set_agent_title` ({ agentId, title }). If Teams is disabled the presence tool will',
   '  say so — relay that to the user.',
   '- Every act-on tool (answer/send/stop/restart/teams-presence/title) is ALWAYS gated: the',
@@ -145,13 +160,13 @@ export interface OrchestratorEmitter {
       reason?: string;
     };
   }): void;
-  emitCandidatesRequest(payload: { sessionId: string; requestId: string }): void;
-  emitExecuteRequest(payload: { sessionId: string; requestId: string; agentId: string }): void;
+  emitCandidatesRequest(payload: { sessionId: string; requestId: string; officeId?: string }): void;
+  emitExecuteRequest(payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }): void;
   emitOfficesRequest(payload: { sessionId: string; requestId: string }): void;
   emitSwitchRequest(payload: { sessionId: string; requestId: string; officeId: string }): void;
   // ── spec 017 (new request channels) ────────────────────────────────────────
-  emitActiveAgentsRequest?(payload: { sessionId: string; requestId: string }): void;
-  emitAwaitingAgentsRequest?(payload: { sessionId: string; requestId: string }): void;
+  emitActiveAgentsRequest?(payload: { sessionId: string; requestId: string; officeId?: string }): void;
+  emitAwaitingAgentsRequest?(payload: { sessionId: string; requestId: string; officeId?: string }): void;
   emitAgentOutputRequest?(payload: {
     sessionId: string;
     requestId: string;
@@ -397,13 +412,13 @@ export class OrchestratorSessionManager {
     }
 
     const tools = buildOrchestratorTools({
-      requestCandidates: async () => this.cacheAgentNames(await this.requestCandidates()),
-      requestExecute: (agentId) => this.requestExecute(agentId),
+      requestCandidates: async (officeId?: string) => this.cacheAgentNames(await this.requestCandidates(officeId)),
+      requestExecute: (agentId, officeId) => this.requestExecute(agentId, officeId),
       requestOffices: () => this.requestOffices(),
       requestSwitch: (officeId) => this.requestSwitch(officeId),
       getOfficeId: () => this.lastOfficeId,
-      requestActiveAgents: async () => this.cacheAgentNames(await this.requestActiveAgents()),
-      requestAwaitingAgents: async () => this.cacheAgentNames(await this.requestAwaitingAgents()),
+      requestActiveAgents: async (officeId) => this.cacheAgentNames(await this.requestActiveAgents(officeId)),
+      requestAwaitingAgents: async (officeId) => this.cacheAgentNames(await this.requestAwaitingAgents(officeId)),
       requestAgentOutput: (agentId, officeId) => this.requestAgentOutput(agentId, officeId),
       requestAgentStatus: (agent, officeId) => this.requestAgentStatus(agent, officeId),
       requestAnswerAgent: (a) => this.requestActOn('answer_agent', a),
@@ -677,12 +692,12 @@ export class OrchestratorSessionManager {
   // ── Renderer round-trips (candidate compute + execution live in the renderer) ─
   private lastOfficeId = '';
 
-  private requestCandidates(): Promise<BringOnlineCandidate[]> {
+  private requestCandidates(officeId?: string): Promise<BringOnlineCandidate[]> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<BringOnlineCandidate[]>((resolve) => {
       this.pendingCandidates.set(requestId, resolve);
-      this.emitter.emitCandidatesRequest({ sessionId, requestId });
+      this.emitter.emitCandidatesRequest({ sessionId, requestId, officeId });
     });
   }
 
@@ -695,12 +710,12 @@ export class OrchestratorSessionManager {
     return true;
   }
 
-  private requestExecute(agentId: string): Promise<BringOnlineResult> {
+  private requestExecute(agentId: string, officeId?: string): Promise<BringOnlineResult> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<BringOnlineResult>((resolve) => {
       this.pendingExecute.set(requestId, resolve);
-      this.emitter.emitExecuteRequest({ sessionId, requestId, agentId });
+      this.emitter.emitExecuteRequest({ sessionId, requestId, agentId, officeId });
     });
   }
 
@@ -748,12 +763,12 @@ export class OrchestratorSessionManager {
 
   // ── spec 017: read-only situational-awareness round-trips ──────────────────
 
-  private requestActiveAgents(): Promise<ActiveAgentSnapshot[]> {
+  private requestActiveAgents(officeId?: string): Promise<ActiveAgentSnapshot[]> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<ActiveAgentSnapshot[]>((resolve) => {
       this.pendingActiveAgents.set(requestId, resolve);
-      this.emitter.emitActiveAgentsRequest?.({ sessionId, requestId });
+      this.emitter.emitActiveAgentsRequest?.({ sessionId, requestId, officeId });
     });
   }
 
@@ -765,12 +780,12 @@ export class OrchestratorSessionManager {
     return true;
   }
 
-  private requestAwaitingAgents(): Promise<AwaitingAgent[]> {
+  private requestAwaitingAgents(officeId?: string): Promise<AwaitingAgent[]> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<AwaitingAgent[]>((resolve) => {
       this.pendingAwaitingAgents.set(requestId, resolve);
-      this.emitter.emitAwaitingAgentsRequest?.({ sessionId, requestId });
+      this.emitter.emitAwaitingAgentsRequest?.({ sessionId, requestId, officeId });
     });
   }
 

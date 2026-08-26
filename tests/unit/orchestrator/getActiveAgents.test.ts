@@ -91,6 +91,22 @@ describe('computeActiveAgents', () => {
     expect(ids).not.toContain('gamma');
   });
 
+  it('scopes to a single office when officeId is provided', () => {
+    const ids = computeActiveAgents(NOW, 'o1').map((a) => a.agentId).sort();
+    expect(ids).toEqual(['alpha', 'beta', 'delta']);
+    expect(ids).not.toContain('epsilon');
+    expect(computeActiveAgents(NOW, 'o2').map((a) => a.agentId)).toEqual(['epsilon']);
+  });
+
+  it('returns nothing for an unknown officeId', () => {
+    expect(computeActiveAgents(NOW, 'nope')).toEqual([]);
+  });
+
+  it('ignores a blank officeId (spans all offices)', () => {
+    const ids = computeActiveAgents(NOW, '  ').map((a) => a.agentId).sort();
+    expect(ids).toEqual(['alpha', 'beta', 'delta', 'epsilon']);
+  });
+
   it('does NOT omit done (ready + completionPendingAck) agents', () => {
     const delta = computeActiveAgents(NOW).find((a) => a.agentId === 'delta');
     expect(delta).toBeDefined();

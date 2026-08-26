@@ -22,15 +22,15 @@ import type {
 } from './types';
 
 export interface OrchestratorToolDeps {
-  requestCandidates: () => Promise<BringOnlineCandidate[]>;
-  requestExecute: (agentId: string) => Promise<BringOnlineResult>;
+  requestCandidates: (officeId?: string) => Promise<BringOnlineCandidate[]>;
+  requestExecute: (agentId: string, officeId?: string) => Promise<BringOnlineResult>;
   requestOffices: () => Promise<OfficeSummary[]>;
   requestSwitch: (officeId: string) => Promise<SwitchOfficeResult>;
   /** Reserved for future use; officeId is currently derived from candidates. */
   getOfficeId: () => string;
   // ── spec 017: situational awareness (read-only) ────────────────────────────
-  requestActiveAgents: () => Promise<ActiveAgentSnapshot[]>;
-  requestAwaitingAgents: () => Promise<AwaitingAgent[]>;
+  requestActiveAgents: (officeId?: string) => Promise<ActiveAgentSnapshot[]>;
+  requestAwaitingAgents: (officeId?: string) => Promise<AwaitingAgent[]>;
   requestAgentOutput: (agentId: string, officeId?: string) => Promise<AgentRecentOutput>;
   /** Cheap single-agent status + Teams presence lookup by fuzzy name or agentId. */
   requestAgentStatus: (agent: string, officeId?: string) => Promise<AgentStatusLookup>;
@@ -46,41 +46,75 @@ export interface OrchestratorToolDeps {
 export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] {
   const listTool = defineTool('list_office_agents', {
     description:
-      'List the dormant agents that can be brought online in the currently viewed ' +
-      'office, so you can rank them against the user\'s request. Returns each ' +
-      'candidate\'s agentId, name, skill, and description. Takes no arguments.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      'List the dormant agents that can be brought online in an office, so you can ' +
+      'rank them against the user\'s request. Returns each candidate\'s agentId, name, ' +
+      'skill, and description. Defaults to the currently viewed office; pass `officeId` ' +
+      '(from list_offices) to list a DIFFERENT office\'s dormant agents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Optional office to list. Omit for the currently viewed office.',
+        },
+      },
+      additionalProperties: false,
+    },
     skipPermission: true,
-    handler: async () => {
-      const candidates = await deps.requestCandidates();
-      const officeId = candidates[0]?.officeId ?? deps.getOfficeId();
+    handler: async (args: { officeId?: string }) => {
+      const candidates = await deps.requestCandidates(args.officeId);
+      const officeId = args.officeId ?? candidates[0]?.officeId ?? deps.getOfficeId();
       return { officeId, candidates };
     },
   });
 
   const bringOnlineTool = defineTool('bring_agent_online', {
     description:
-      'Bring a specific dormant agent online in the current office. Only call this ' +
-      'with an agentId returned by list_office_agents. This action is gated: the ' +
-      'user must approve it before it takes effect.',
+      'Bring a dormant agent online. Defaults to the currently viewed office; pass ' +
+      '`officeId` (from list_offices / list_office_agents) to bring an agent online in a ' +
+      'DIFFERENT office — the desktop will switch to that office automatically. Prefer ' +
+      'passing an agentId returned by list_office_agents. If the user does NOT name a ' +
+      'specific agent (e.g. "bring someone online", "add another agent"), you may omit ' +
+      'agentId — the next dormant agent in that office\'s list is used by default. This ' +
+      'action is gated: the user must approve it before it takes effect.',
     parameters: {
       type: 'object',
       properties: {
         agentId: {
           type: 'string',
-          description: 'Candidate agentId from list_office_agents.',
+          description:
+            'Candidate agentId (or name) from list_office_agents. Omit to default to the ' +
+            'next dormant agent in the office\'s list.',
+        },
+        officeId: {
+          type: 'string',
+          description:
+            'Office the agent lives in (from list_offices). Omit for the currently viewed ' +
+            'office; when set to a different office the desktop switches to it first.',
         },
         reason: {
           type: 'string',
           description: 'Short rationale for why this agent fits the request.',
         },
       },
-      required: ['agentId'],
       additionalProperties: false,
     },
-    handler: async (args: { agentId: string; reason?: string }) => {
-      // Reached only AFTER the permission gate approves.
-      return deps.requestExecute(args.agentId);
+    handler: async (args: { agentId?: string; officeId?: string; reason?: string }) => {
+      // Reached only AFTER the permission gate approves. Default to the next dormant
+      // agent in the office's list when the caller did not specify one.
+      let agentId = (args.agentId ?? '').trim();
+      if (!agentId) {
+        const candidates = await deps.requestCandidates(args.officeId);
+        if (candidates.length === 0) {
+          return {
+            agentId: '',
+            outcome: 'invalid-target' as const,
+            message: 'There are no dormant agents available to bring online in this office.',
+          };
+        }
+        agentId = candidates[0].agentId;
+      }
+      return deps.requestExecute(agentId, args.officeId);
     },
   });
 
@@ -126,15 +160,26 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
 
   const getActiveAgentsTool = defineTool('get_active_agents', {
     description:
-      'List every agent that currently has a live session across ALL offices — ' +
-      'including agents that are done/awaiting-ack, waiting on input, and thinking — ' +
-      "with each agent's office, status, current activity, and how long it has been in " +
-      "that state. Use for any \"what's everyone working on / status roll-up / who is " +
-      'busy" request. Takes no arguments.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      'List agents that currently have a live session — including agents that are ' +
+      'done/awaiting-ack, waiting on input, and thinking — with each agent\'s office, ' +
+      'status, current activity, and how long it has been in that state. Use for any ' +
+      '"what\'s everyone working on / status roll-up / who is busy" request. By default ' +
+      'it spans ALL offices; pass `officeId` to scope the roll-up to a SINGLE office ' +
+      '(use this whenever the user asks about one named office, e.g. "who is in Dan\'s ' +
+      'office"). Get valid ids from `list_offices`.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Optional office id to scope the roll-up to a single office.',
+        },
+      },
+      additionalProperties: false,
+    },
     skipPermission: true,
-    handler: async () => {
-      const agents = await deps.requestActiveAgents();
+    handler: async (args: { officeId?: string }) => {
+      const agents = await deps.requestActiveAgents(args.officeId);
       return { agents };
     },
   });
@@ -143,11 +188,21 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     description:
       'List only the agents that are blocked waiting for user input, with each one\'s ' +
       'pending question and how long it has been waiting, longest first. Use for "who ' +
-      'needs me / is anyone stuck?" Takes no arguments.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      'needs me / is anyone stuck?" By default it spans ALL offices; pass `officeId` to ' +
+      'scope to a SINGLE office. Get valid ids from `list_offices`.',
+    parameters: {
+      type: 'object',
+      properties: {
+        officeId: {
+          type: 'string',
+          description: 'Optional office id to scope the list to a single office.',
+        },
+      },
+      additionalProperties: false,
+    },
     skipPermission: true,
-    handler: async () => {
-      const agents = await deps.requestAwaitingAgents();
+    handler: async (args: { officeId?: string }) => {
+      const agents = await deps.requestAwaitingAgents(args.officeId);
       return { agents };
     },
   });
@@ -276,21 +331,47 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
 
   const teamsPresenceTool = defineTool('set_agent_teams_presence', {
     description:
-      'Bring a specific agent online in Teams (activate its Teams remote) or take it ' +
-      'offline. Gated: the user must approve. If Teams is disabled, the tool reports ' +
-      'unavailable — relay that to the user. Only use an agentId returned by a status tool.',
+      'Bring an agent online in Teams (activate its Teams remote) or take it offline — ' +
+      'this also starts the agent\'s session first if it is not up yet, so a single call ' +
+      'brings a dormant (incl. reserve) agent all the way online AND into Teams. When ' +
+      'bringing online, you may omit agentId (e.g. "bring the next agent online in Teams") ' +
+      'to default to the next dormant agent in the office\'s list. Taking an agent OFFLINE ' +
+      'requires a specific agentId from a status tool. Gated: the user must approve. If ' +
+      'Teams is disabled, the tool reports unavailable — relay that to the user.',
     parameters: {
       type: 'object',
       properties: {
-        agentId: { type: 'string', description: 'The agent whose Teams presence to change.' },
+        agentId: {
+          type: 'string',
+          description:
+            'The agent whose Teams presence to change (id or name from a status tool). ' +
+            'Omit when bringing online to default to the next dormant agent in the office.',
+        },
         officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
         online: { type: 'boolean', description: 'true to bring online in Teams, false to take offline.' },
       },
-      required: ['agentId', 'online'],
+      required: ['online'],
       additionalProperties: false,
     },
-    handler: async (args: { agentId: string; officeId?: string; online: boolean }) => {
-      return deps.requestTeamsPresence(args);
+    handler: async (args: { agentId?: string; officeId?: string; online: boolean }) => {
+      // Reached only AFTER the permission gate approves. Mirror bring_agent_online:
+      // when bringing an agent online without a named target, default to the next
+      // dormant candidate in the office. Taking an agent offline still needs an
+      // explicit target (there is no meaningful "next" agent to take offline).
+      let agentId = (args.agentId ?? '').trim();
+      if (!agentId && args.online) {
+        const candidates = await deps.requestCandidates(args.officeId);
+        if (candidates.length === 0) {
+          return {
+            agentId: '',
+            officeId: args.officeId ?? deps.getOfficeId(),
+            outcome: 'invalid-target' as const,
+            message: 'There are no dormant agents available to bring online in this office.',
+          };
+        }
+        agentId = candidates[0].agentId;
+      }
+      return deps.requestTeamsPresence({ agentId, officeId: args.officeId, online: args.online });
     },
   });
 

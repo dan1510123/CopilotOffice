@@ -6,6 +6,7 @@ import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
 import { officeManager, OfficeLayout, OfficeData } from './office/officeManager';
+import { resolveOfficeAgentWorkingDir } from './office/launchWorkingDir';
 import { AGENTS, AgentConfig, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
 import { ResponsiveLayoutKey, computeResponsiveLayout } from './config/responsiveLayout';
 import { ZIndex } from './config/zIndex';
@@ -21,7 +22,7 @@ import { OrchestratorPanel } from './ui/OrchestratorPanel';
 import { computeBringOnlineCandidates } from './office/orchestratorCandidates';
 import { executeBringOnline } from './office/orchestratorExecute';
 import { computeOfficeSummaries, resolveSwitchOffice } from './office/orchestratorOffices';
-import { computeActiveAgents, computeAwaitingAgents, computeAgentStatusLookup } from './office/orchestratorStatus';
+import { computeActiveAgents, computeAwaitingAgents, computeAgentStatusLookup, resolveAgentIdByNameOrId } from './office/orchestratorStatus';
 import { computeAgentRecentOutput } from './office/orchestratorPeek';
 import {
   setPendingAskUser,
@@ -1027,6 +1028,26 @@ function switchToOffice(officeId: string) {
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
 }
 
+/**
+ * Switch the desktop to `officeId` and resolve once the scene has finished any
+ * rebuild/walk-in animation. Reserve activation (`spawnReserveAgent`) is bound to
+ * the currently rendered office AND is skipped while the scene is animating, so
+ * the orchestrator's cross-office bring-online must await a settled scene before
+ * delegating the spawn. Bounded so a stuck animation can't hang the tool.
+ */
+async function switchOfficeAndSettle(officeId: string, timeoutMs = 6000): Promise<void> {
+  if (officeManager.currentOfficeId === officeId) return;
+  switchToOffice(officeId);
+  const deadline = Date.now() + timeoutMs;
+  // Allow the office:switch → rebuildLayout to run, then wait out any walk-in.
+  while (Date.now() < deadline) {
+    const animating = phaserGameRef?.registry.get('animating') === true;
+    const arrived = officeManager.currentOfficeId === officeId;
+    if (arrived && !animating) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 function showNewOfficeDialog() {
   // DOM-based dialog — prompt() is blocked in Electron
   phaserGameRef?.events.emit('settings:open');
@@ -1553,6 +1574,10 @@ async function warmAgentSession(
   const workingDir = launchConfig?.workingDir ?? fallback?.workingDir;
   const launchMode = launchConfig?.launchMode ?? fallback?.launchMode ?? 'copilot';
   if (!workingDir) return false;
+  console.log(
+    `[workingDir] warmAgentSession office=${officeId} agent=${agentId} isCurrentOffice=${isCurrentOffice} ` +
+    `resolved="${workingDir}" source=${launchConfig?.workingDir != null ? 'launchConfig' : (fallback?.workingDir != null ? 'fallback' : 'none')}`,
+  );
   // Surface the "starting" transition on the badge (FR-004). Same call the
   // manual openAgentTerminal path makes; safe to repeat — the office status
   // map tolerates idempotent transitions.
@@ -1577,22 +1602,76 @@ async function warmAgentSession(
 }
 
 /**
+ * Resolve a launch fallback (workingDir + launchMode) for `agentId` in `officeId`
+ * that is valid even when `officeId` is NOT the currently rendered office.
+ *
+ * `getSeriousLaunchConfig` (and the global `AGENTS` roster it reads) reflect only
+ * the CURRENT office — `swapActiveAgents` rebinds that roster on every office
+ * switch — so warming a non-current office through it silently resolves the wrong
+ * working directory (or none). Read the target office's own persisted config
+ * instead: a per-agent `workingDir` override from its custom roster, else the
+ * office's `workingDirectory`. Returns undefined only when no dir can be found.
+ */
+function resolveLaunchFallback(
+  officeId: string,
+  agentId: string,
+): { workingDir: string; launchMode: 'copilot' | 'shell' } | undefined {
+  const office = officeManager.getOffice(officeId)?.config;
+  return resolveOfficeAgentWorkingDir(office, agentId);
+}
+
+/**
  * Bring a dormant agent FULLY online for the Teams auto-online path: idle-seated
  * agents warm their PTY directly, reserve agents are spawned via the scene
  * delegate (NPC + seat + fire-and-forget terminalStart). Because reserve spawn
  * does not await the PTY, we then wait until the agent's session id is actually
  * available so a follow-up teamsRegister (which requires a live session) succeeds.
+ *
+ * "Online" is judged by the REAL PTY liveness (queryAgentStatuses().alive), NOT
+ * the renderer's agent status: the latter can read `active`/`Done` while the PTY
+ * is dead (a dropped or half-completed restart). When the renderer still marks a
+ * seated agent active but its session is gone, we re-warm it directly instead of
+ * short-circuiting on the stale status (which would just wait and time out) or
+ * refusing it via executeBringOnline as "already online".
  */
 async function bringAgentFullyOnline(officeId: string, agentId: string): Promise<boolean> {
-  if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
+  if (await isSessionAlive(officeId, agentId)) {
     return waitForSessionReady(officeId, agentId);
   }
-  const result = await executeBringOnline(agentId, {
-    startSeated: (oid, aid) => warmAgentSession(oid, aid),
-    activateReserve: activateReserveViaScene,
-  });
+  // No live PTY. If the renderer still marks it active, the NPC is already seated,
+  // so a plain re-warm (with a cross-office-safe workingDir) restores the session.
+  if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
+    const warmed = await warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId));
+    if (warmed && (await waitForSessionReady(officeId, agentId))) return true;
+    // Re-warm couldn't establish a session — fall through to a full bring-online.
+  }
+  const result = await executeBringOnline(
+    agentId,
+    {
+      startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
+      activateReserve: activateReserveViaScene,
+      switchOffice: switchOfficeAndSettle,
+      isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
+    },
+    officeId,
+  );
   if (result.outcome !== 'started' && result.outcome !== 'already-active') return false;
   return waitForSessionReady(officeId, agentId);
+}
+
+/**
+ * True only when the agent's PTY is actually alive server-side (not merely marked
+ * `active` in the renderer's status map). This is the authoritative liveness signal
+ * teamsRegister depends on; failures are swallowed as "not alive" so a transiently
+ * unavailable terminal server never reports a dead session as live.
+ */
+async function isSessionAlive(officeId: string, agentId: string): Promise<boolean> {
+  try {
+    const statuses = await window.copilotBridge?.queryAgentStatuses(officeId);
+    return !!statuses?.[agentId]?.alive;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1782,7 +1861,13 @@ const autoStartCoordinator = new AutoStartCoordinator({
     return r?.sessionId ?? null;
   },
   warmAgentSession: async (oid, aid) => {
-    await warmAgentSession(oid, aid);
+    // New Session (replaceSession) path. Pass an office-id-keyed fallback
+    // (office.customAgents[].workingDir ?? office.workingDirectory) so the fresh
+    // session lands in the office's override folder even when the snapshotted
+    // office is not the ambient current office. Without this the warm silently
+    // depended on getSeriousLaunchConfig (ambient currentOffice) and could
+    // collapse to the main/default folder.
+    await warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid));
   },
   getSettings: () => getAgentAutoStartSettings(),
 });
@@ -1913,16 +1998,22 @@ function activateReserveViaScene(deskId: string): Promise<BringOnlineOutcome> {
 }
 
 if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
-  window.copilotBridge.onOrchestratorCandidatesRequest(({ requestId }) => {
-    const candidates = computeBringOnlineCandidates();
+  window.copilotBridge.onOrchestratorCandidatesRequest(({ requestId, officeId }) => {
+    const candidates = computeBringOnlineCandidates(officeId);
     void window.copilotBridge.orchestratorRespondCandidates(requestId, candidates);
   });
-  window.copilotBridge.onOrchestratorExecuteRequest(({ requestId, agentId }) => {
+  window.copilotBridge.onOrchestratorExecuteRequest(({ requestId, agentId, officeId }) => {
     void (async () => {
-      const result = await executeBringOnline(agentId, {
-        startSeated: (officeId, aid) => warmAgentSession(officeId, aid),
-        activateReserve: activateReserveViaScene,
-      });
+      const result = await executeBringOnline(
+        agentId,
+        {
+          startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
+          activateReserve: activateReserveViaScene,
+          switchOffice: switchOfficeAndSettle,
+          isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
+        },
+        officeId,
+      );
       void window.copilotBridge.orchestratorRespondExecute(requestId, result);
     })();
   });
@@ -1985,17 +2076,17 @@ function registerOrchestratorSpec017Resolvers(): void {
   // Session titles are the durable "what is this agent doing" signal (activity is
   // frequently empty after an app restart because live status fields reset). Overlay
   // each agent's session title onto `activity` so the roll-up stays meaningful.
-  bridge.onOrchestratorActiveAgentsRequest(({ requestId }) => {
+  bridge.onOrchestratorActiveAgentsRequest(({ requestId, officeId }) => {
     void (async () => {
-      const snapshots = computeActiveAgents();
+      const snapshots = computeActiveAgents(Date.now(), officeId);
       await overlaySessionTitlesOntoActivity(snapshots);
       await bridge.orchestratorRespondActiveAgents(requestId, snapshots);
     })();
   });
 
   // ── US3: list_agents_awaiting_input (read-only, longest-first) ─────────────
-  bridge.onOrchestratorAwaitingAgentsRequest(({ requestId }) => {
-    void bridge.orchestratorRespondAwaitingAgents(requestId, computeAwaitingAgents());
+  bridge.onOrchestratorAwaitingAgentsRequest(({ requestId, officeId }) => {
+    void bridge.orchestratorRespondAwaitingAgents(requestId, computeAwaitingAgents(Date.now(), officeId));
   });
 
   // ── US7: get_agent_transcript (read-only, bounded peek) ────────────────────
@@ -2035,7 +2126,8 @@ function registerOrchestratorSpec017Resolvers(): void {
 
   // ── Shared act-on deps (reuse sanctioned per-agent session ops) ────────────
   const actOnDeps: ActOnDeps = {
-    ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
+    ensureOnline: (officeId, agentId) =>
+      warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId)),
     bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
@@ -2074,7 +2166,7 @@ function registerOrchestratorSpec017Resolvers(): void {
     },
     restartSession: async (officeId, agentId) => {
       await window.copilotBridge.terminalKill(officeId, agentId).catch(() => {});
-      return warmAgentSession(officeId, agentId);
+      return warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId));
     },
     teamsEnabled: async () => {
       try {
@@ -2111,9 +2203,23 @@ function registerOrchestratorSpec017Resolvers(): void {
   };
 
   // ── US4: answer_agent (gated — emitted only after approval) ────────────────
+  // The orchestrator LLM often passes an agent's display NAME (e.g. "Rhys") rather
+  // than its agentId (e.g. "office-6-reserve-4"). The act-on functions match by
+  // exact id, so normalize name→canonical id here (scoped to the office hint / the
+  // current office) before dispatch; on no match we pass the raw value through so
+  // the function still returns its typed invalid-target.
+  const normalizeTarget = (
+    agentId: string,
+    officeId?: string,
+  ): { agentId: string; officeId?: string } => {
+    const resolved = resolveAgentIdByNameOrId(agentId, officeId);
+    return { agentId: resolved?.agentId ?? agentId, officeId: officeId ?? resolved?.officeId };
+  };
+
   bridge.onOrchestratorAnswerAgentRequest(({ requestId, agentId, officeId, answer }) => {
     void (async () => {
-      const result = await answerAgent({ agentId, officeId, answer }, actOnDeps);
+      const t = normalizeTarget(agentId, officeId);
+      const result = await answerAgent({ agentId: t.agentId, officeId: t.officeId, answer }, actOnDeps);
       void bridge.orchestratorRespondAnswerAgent(requestId, result);
     })();
   });
@@ -2121,7 +2227,8 @@ function registerOrchestratorSpec017Resolvers(): void {
   // ── US5: send_prompt_to_agent (gated) ──────────────────────────────────────
   bridge.onOrchestratorSendPromptRequest(({ requestId, agentId, officeId, prompt }) => {
     void (async () => {
-      const result = await sendPromptToAgent({ agentId, officeId, prompt }, actOnDeps);
+      const t = normalizeTarget(agentId, officeId);
+      const result = await sendPromptToAgent({ agentId: t.agentId, officeId: t.officeId, prompt }, actOnDeps);
       void bridge.orchestratorRespondSendPrompt(requestId, result);
     })();
   });
@@ -2129,13 +2236,15 @@ function registerOrchestratorSpec017Resolvers(): void {
   // ── US6: stop_agent / restart_agent (gated) ────────────────────────────────
   bridge.onOrchestratorStopAgentRequest(({ requestId, agentId, officeId }) => {
     void (async () => {
-      const result = await stopAgent({ agentId, officeId }, actOnDeps);
+      const t = normalizeTarget(agentId, officeId);
+      const result = await stopAgent({ agentId: t.agentId, officeId: t.officeId }, actOnDeps);
       void bridge.orchestratorRespondStopAgent(requestId, result);
     })();
   });
   bridge.onOrchestratorRestartAgentRequest(({ requestId, agentId, officeId }) => {
     void (async () => {
-      const result = await restartAgent({ agentId, officeId }, actOnDeps);
+      const t = normalizeTarget(agentId, officeId);
+      const result = await restartAgent({ agentId: t.agentId, officeId: t.officeId }, actOnDeps);
       void bridge.orchestratorRespondRestartAgent(requestId, result);
     })();
   });
@@ -2143,7 +2252,8 @@ function registerOrchestratorSpec017Resolvers(): void {
   // ── US8: set_agent_teams_presence (gated) ──────────────────────────────────
   bridge.onOrchestratorTeamsPresenceRequest(({ requestId, agentId, officeId, online }) => {
     void (async () => {
-      const result = await setAgentTeamsPresence({ agentId, officeId, online }, actOnDeps);
+      const t = normalizeTarget(agentId, officeId);
+      const result = await setAgentTeamsPresence({ agentId: t.agentId, officeId: t.officeId, online }, actOnDeps);
       void bridge.orchestratorRespondTeamsPresence(requestId, result);
     })();
   });
@@ -2151,7 +2261,8 @@ function registerOrchestratorSpec017Resolvers(): void {
   // ── set_agent_title (gated) ────────────────────────────────────────────────
   bridge.onOrchestratorSetTitleRequest(({ requestId, agentId, officeId, title }) => {
     void (async () => {
-      const result = await setAgentTitle({ agentId, officeId, title }, actOnDeps);
+      const t = normalizeTarget(agentId, officeId);
+      const result = await setAgentTitle({ agentId: t.agentId, officeId: t.officeId, title }, actOnDeps);
       void bridge.orchestratorRespondSetTitle(requestId, result);
     })();
   });
@@ -2551,6 +2662,15 @@ async function startSessionFromOverview(agentId: string): Promise<void> {
   phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateStatusBar();
   updateTerminalContent();
+
+  // Focus the freshly started session. Without this, starting a new session for
+  // a non-focused agent leaves the terminal panel on the previously-clicked
+  // agent (startNewSession only re-attaches when the agent is already the active
+  // view), forcing the user to click the card a second time. Route through
+  // openAgentTerminal so the agent is selected and foregrounded consistently.
+  if (appMode === 'serious') {
+    await openAgentTerminal(agentId);
+  }
 }
 
 /** Dashboard "Close Session" button: deliberate close, no auto-restart
@@ -2574,6 +2694,18 @@ async function closeSessionFromOverview(agentId: string): Promise<void> {
   phaserGameRef?.events.emit('agent:status:changed', agentId);
   updateStatusBar();
   updateTerminalContent();
+
+  // If the just-closed agent is the currently visible serious terminal, hide the
+  // stale terminal so the panel returns to the overview/placeholder instead of
+  // continuing to show the closed session until another agent is clicked.
+  // closeView() fires onClose, which clears selectedAgentId and refreshes the panel.
+  if (
+    appMode === 'serious' &&
+    seriousTerminalController?.isVisible() &&
+    seriousTerminalController.getActiveAgentId() === agentId
+  ) {
+    await seriousTerminalController.closeView();
+  }
 }
 
 function startSessionMetaEdit(agentId: string) {
@@ -2865,6 +2997,24 @@ if (window.copilotBridge) {
     cachedSessionMeta[agentId] = meta;
     setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
     updateTerminalContent();
+  });
+
+  // Keep renderer status in sync with the real PTY lifecycle across ALL offices.
+  // When a session exits, clear any stale 'active'/'Done' state so bring-online
+  // and Teams no longer mistake a dead session for a live one (the desync that
+  // stranded cross-office agents). The overlay/controller exit handlers only cover
+  // the visible terminal's current office; this catches every office (e.g. a
+  // Teams-bound agent in a non-current office whose session drops).
+  window.copilotBridge.onTerminalExit((agentId, _exitCode, officeId) => {
+    const oid = officeId ?? officeManager.currentOfficeId;
+    if (!oid) return;
+    const status = officeManager.getAgentStatus(oid, agentId);
+    if (status && status.state !== 'slacking') {
+      officeManager.setAgentSlacking(oid, agentId, 'session_exit');
+      phaserGameRef?.events.emit('agent:status:changed', agentId);
+      updateStatusBar();
+      updateTerminalContent();
+    }
   });
 
   // Teams Remote Agents (011): surface service toasts (GC cleanup, auth/online).

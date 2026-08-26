@@ -138,11 +138,12 @@ describe('UiServerHostRuntime promo-modal dismissal', () => {
  * BEFORE the `--ui-server --port 0` control flags.
  */
 function makeArgCapturingPty() {
-  const captured: { cmd?: string; args?: string[] } = {};
+  const captured: { cmd?: string; args?: string[]; env?: Record<string, string> } = {};
   const pty = {
-    spawn: (cmd: string, args: string[]) => {
+    spawn: (cmd: string, args: string[], spawnOpts?: { env?: Record<string, string> }) => {
       captured.cmd = cmd;
       captured.args = args;
+      captured.env = spawnOpts?.env;
       return {
         pid: 555,
         onData: () => { /* never emits */ },
@@ -162,14 +163,14 @@ describe('UiServerHostRuntime extra-args passthrough', () => {
       ...opts,
       extraArgs: ['--model', 'gpt-5.4'],
     }, 5000);
-    expect(captured.args).toEqual(['--model', 'gpt-5.4', '--ui-server', '--port', '0']);
+    expect(captured.args).toEqual(['--no-auto-update', '--model', 'gpt-5.4', '--ui-server', '--port', '0']);
   });
 
   it('spawns bare --ui-server flags when no extraArgs are provided', () => {
     const { pty, captured } = makeArgCapturingPty();
     // eslint-disable-next-line no-new
     new UiServerHostRuntime('office-b', pty, 'copilot', process.cwd(), opts, 5000);
-    expect(captured.args).toEqual(['--ui-server', '--port', '0']);
+    expect(captured.args).toEqual(['--no-auto-update', '--ui-server', '--port', '0']);
   });
 
   it('filters out empty/whitespace-only extraArgs entries', () => {
@@ -179,7 +180,26 @@ describe('UiServerHostRuntime extra-args passthrough', () => {
       ...opts,
       extraArgs: ['--allow-all-tools', '', '   '],
     }, 5000);
-    expect(captured.args).toEqual(['--allow-all-tools', '--ui-server', '--port', '0']);
+    expect(captured.args).toEqual(['--no-auto-update', '--allow-all-tools', '--ui-server', '--port', '0']);
+  });
+});
+
+/**
+ * Version pin (drift guard): the self-updating SEA must never silently upgrade
+ * off the npm-locked runtime. The host launch always carries `--no-auto-update`
+ * as its first arg and sets COPILOT_AUTO_UPDATE=false in the spawn env.
+ */
+describe('UiServerHostRuntime auto-update pin', () => {
+  it('always leads with --no-auto-update and disables COPILOT_AUTO_UPDATE', () => {
+    const { pty, captured } = makeArgCapturingPty();
+    // eslint-disable-next-line no-new
+    new UiServerHostRuntime('office-pin', pty, 'copilot', process.cwd(), {
+      ...opts,
+      extraArgs: ['--model', 'gpt-5.4'],
+      yolo: true,
+    }, 5000);
+    expect(captured.args?.[0]).toBe('--no-auto-update');
+    expect(captured.env?.COPILOT_AUTO_UPDATE).toBe('false');
   });
 });
 
@@ -197,7 +217,7 @@ describe('UiServerHostRuntime YOLO passthrough', () => {
       ...opts,
       yolo: true,
     }, 5000);
-    expect(captured.args).toEqual(['--yolo', '--ui-server', '--port', '0']);
+    expect(captured.args).toEqual(['--no-auto-update', '--yolo', '--ui-server', '--port', '0']);
   });
 
   it('omits --yolo when yolo is disabled', () => {
@@ -207,7 +227,7 @@ describe('UiServerHostRuntime YOLO passthrough', () => {
       ...opts,
       yolo: false,
     }, 5000);
-    expect(captured.args).toEqual(['--ui-server', '--port', '0']);
+    expect(captured.args).toEqual(['--no-auto-update', '--ui-server', '--port', '0']);
   });
 
   it('places --yolo after extraArgs and before the control flags', () => {
@@ -218,6 +238,6 @@ describe('UiServerHostRuntime YOLO passthrough', () => {
       extraArgs: ['--model', 'gpt-5.4'],
       yolo: true,
     }, 5000);
-    expect(captured.args).toEqual(['--model', 'gpt-5.4', '--yolo', '--ui-server', '--port', '0']);
+    expect(captured.args).toEqual(['--no-auto-update', '--model', 'gpt-5.4', '--yolo', '--ui-server', '--port', '0']);
   });
 });

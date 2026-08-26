@@ -128,14 +128,20 @@ function buildSnapshot(
 }
 
 /**
- * Enumerate every session-bearing agent across ALL offices (FR-008/013). A
- * session-bearing agent is one whose status is `active` (i.e. starting/ready/
- * done/waiting/thinking/error) — `slacking` agents have no live session and are
- * excluded. `done`/idle-online agents are NOT omitted.
+ * Enumerate every session-bearing agent across ALL offices (FR-008/013), or —
+ * when `officeId` is provided — only that one office. A session-bearing agent is
+ * one whose status is `active` (i.e. starting/ready/done/waiting/thinking/error)
+ * — `slacking` agents have no live session and are excluded. `done`/idle-online
+ * agents are NOT omitted.
  */
-export function computeActiveAgents(now: number = Date.now()): ActiveAgentSnapshot[] {
+export function computeActiveAgents(
+  now: number = Date.now(),
+  officeId?: string,
+): ActiveAgentSnapshot[] {
+  const scope = officeId?.trim() || undefined;
   const snapshots: ActiveAgentSnapshot[] = [];
   for (const config of officeManager.getAllOffices()) {
+    if (scope && config.id !== scope) continue;
     const office = officeManager.getOffice(config.id);
     if (!office) continue;
     for (const [agentId, status] of office.agents) {
@@ -147,13 +153,19 @@ export function computeActiveAgents(now: number = Date.now()): ActiveAgentSnapsh
 }
 
 /**
- * The `waiting` subset (FR-010), longest-waiting first. Reuses the US2 snapshot
+ * The `waiting` subset (FR-010), longest-waiting first, across all offices or —
+ * when `officeId` is provided — scoped to that one office. Reuses the US2 snapshot
  * builder, filtered to `awaitingInput` and sorted by time-in-state descending
  * (i.e. oldest `activityStartTime` first).
  */
-export function computeAwaitingAgents(now: number = Date.now()): AwaitingAgent[] {
+export function computeAwaitingAgents(
+  now: number = Date.now(),
+  officeId?: string,
+): AwaitingAgent[] {
+  const scope = officeId?.trim() || undefined;
   const waiting: Array<{ snapshot: AwaitingAgent; startedAt: number }> = [];
   for (const config of officeManager.getAllOffices()) {
+    if (scope && config.id !== scope) continue;
     const office = officeManager.getOffice(config.id);
     if (!office) continue;
     for (const [agentId, status] of office.agents) {
@@ -289,6 +301,43 @@ function buildLookupSnapshot(
 }
 
 /**
+ * Resolve a fuzzy name OR agentId to a single canonical `{ agentId, officeId }`.
+ * Backs the gated act-on tools (answer/send/stop/restart/teams-presence/title):
+ * the orchestrator LLM frequently passes a display NAME (e.g. "Rhys") rather than
+ * the agentId (e.g. "office-6-reserve-4"), which the exact-id-only mutation paths
+ * previously rejected as `invalid-target`. Prefers exact (id/name) matches, then
+ * the hint office, then the current office. Returns null when unknown or genuinely
+ * ambiguous (distinct agentIds) so the caller can fall back / report ambiguity.
+ */
+export function resolveAgentIdByNameOrId(
+  query: string,
+  officeHint?: string,
+): { agentId: string; officeId: string } | null {
+  const matches = collectAgentMatches(query, officeHint);
+  if (matches.length === 0) return null;
+
+  const exact = matches.filter((m) => m.exact);
+  let pool = exact.length > 0 ? exact : matches;
+
+  // Prefer the hint office, then the current office, when it narrows the pool.
+  if (officeHint) {
+    const scoped = pool.filter((m) => m.officeId === officeHint);
+    if (scoped.length > 0) pool = scoped;
+  }
+  const current = officeManager.currentOfficeId;
+  if (pool.length > 1 && current) {
+    const scoped = pool.filter((m) => m.officeId === current);
+    if (scoped.length > 0) pool = scoped;
+  }
+
+  if (pool.length === 1) return { agentId: pool[0].agentId, officeId: pool[0].officeId };
+  // Still multiple, but all resolve to the same agentId → unambiguous target.
+  const uniqueIds = new Set(pool.map((m) => m.agentId));
+  if (uniqueIds.size === 1) return { agentId: pool[0].agentId, officeId: pool[0].officeId };
+  return null;
+}
+
+/**
  * Resolve ONE agent by fuzzy name or agentId and report its session status. The
  * caller (renderer resolver) fills in `teams` presence via the Teams bridge; this
  * compute is pure over OfficeManager. Returns `not-found` / `ambiguous` / `found`.
@@ -314,6 +363,14 @@ export function computeAgentStatusLookup(
   // single online instance wins over dormant seats of the same agent elsewhere.
   const exacts = matches.filter((m) => m.exact);
   let pool = exacts.length > 0 ? exacts : matches;
+  // Honor a valid officeId hint decisively: with ids duplicated across offices,
+  // the same name/id resolves to one match per office. Scoping to the named
+  // office collapses that false ambiguity so "Rhys in DRI" isn't reported as
+  // three Rhys. Only narrows when the hint actually matches ≥1 pooled office.
+  if (officeHint && pool.length > 1) {
+    const scoped = pool.filter((m) => m.officeId === officeHint);
+    if (scoped.length >= 1) pool = scoped;
+  }
   if (pool.length > 1) {
     const live = pool.filter((m) => m.hasSession);
     if (live.length >= 1) pool = live;

@@ -149,6 +149,84 @@ describe('office/officePersistence.deserializeOffices', () => {
     });
   });
 
+  it('repairs legacy agent id collisions to the office\'s own index', () => {
+    // office-3 (DRI) was persisted carrying office-6's baked-in ids.
+    const collided = JSON.stringify({
+      currentOfficeId: 'office-3',
+      offices: [
+        {
+          id: 'office-3',
+          name: 'DRI',
+          workingDirectory: '.',
+          createdAt: 1,
+          layout: 'default',
+          seatedAgents: [{ deskId: 'unassigned-above-4', agentId: 'office-6-reserve-2' }],
+          customAgents: [{ id: 'office-6-agent-0' }, { id: 'office-6-agent-1' }],
+          customReserveAgents: {
+            'desk-a': { id: 'office-6-reserve-0' },
+            'desk-b': { id: 'office-6-reserve-4' },
+          },
+        },
+      ],
+    });
+    const restored = deserializeOffices(collided);
+    const office = restored.offices[0] as Record<string, unknown>;
+    expect(office.customAgents).toEqual([{ id: 'office-3-agent-0' }, { id: 'office-3-agent-1' }]);
+    expect(office.customReserveAgents).toEqual({
+      'desk-a': { id: 'office-3-reserve-0' },
+      'desk-b': { id: 'office-3-reserve-4' },
+    });
+    expect(restored.offices[0].seatedAgents).toEqual([
+      { deskId: 'unassigned-above-4', agentId: 'office-3-reserve-2' },
+    ]);
+  });
+
+  it('leaves already-correct agent ids untouched (idempotent)', () => {
+    const correct = JSON.stringify({
+      currentOfficeId: 'office-2',
+      offices: [
+        {
+          id: 'office-2',
+          name: 'OK',
+          workingDirectory: '.',
+          createdAt: 1,
+          layout: 'default',
+          seatedAgents: [{ deskId: 'd', agentId: 'office-2-reserve-1' }],
+          customAgents: [{ id: 'office-2-agent-0' }],
+          customReserveAgents: { d: { id: 'office-2-reserve-1' } },
+        },
+      ],
+    });
+    const restored = deserializeOffices(correct);
+    const office = restored.offices[0] as Record<string, unknown>;
+    expect(office.customAgents).toEqual([{ id: 'office-2-agent-0' }]);
+    expect(office.customReserveAgents).toEqual({ d: { id: 'office-2-reserve-1' } });
+    expect(restored.offices[0].seatedAgents).toEqual([{ deskId: 'd', agentId: 'office-2-reserve-1' }]);
+  });
+
+  it('does not remap ids that do not match the office-N-kind-K pattern', () => {
+    const custom = JSON.stringify({
+      currentOfficeId: 'office-1',
+      offices: [
+        {
+          id: 'office-1',
+          name: 'Named',
+          workingDirectory: '.',
+          createdAt: 1,
+          layout: 'default',
+          seatedAgents: [{ deskId: 'd', agentId: 'generalist' }],
+          customAgents: [{ id: 'custom-a' }],
+          customReserveAgents: { d: { id: 'validator' } },
+        },
+      ],
+    });
+    const restored = deserializeOffices(custom);
+    const office = restored.offices[0] as Record<string, unknown>;
+    expect(office.customAgents).toEqual([{ id: 'custom-a' }]);
+    expect(office.customReserveAgents).toEqual({ d: { id: 'validator' } });
+    expect(restored.offices[0].seatedAgents).toEqual([{ deskId: 'd', agentId: 'generalist' }]);
+  });
+
   it('coerces invalid layout strings to "default"', () => {
     const bad = JSON.stringify({
       currentOfficeId: 'office-0',

@@ -66,6 +66,40 @@ describe('executeBringOnline', () => {
     expect(res.outcome).toBe('already-active');
   });
 
+  it('reports already-active when marked active AND the session is genuinely alive', async () => {
+    statusMap.set('debugger', { state: 'active' });
+    const startSeated = vi.fn();
+    const res = await executeBringOnline('debugger', {
+      startSeated,
+      activateReserve: vi.fn(),
+      isSessionAlive: vi.fn().mockResolvedValue(true),
+    });
+    expect(res.outcome).toBe('already-active');
+    expect(startSeated).not.toHaveBeenCalled();
+  });
+
+  it('re-warms a seated agent the renderer marks active but whose PTY is dead (desync)', async () => {
+    statusMap.set('debugger', { state: 'active' });
+    const startSeated = vi.fn().mockResolvedValue(true);
+    const res = await executeBringOnline('debugger', {
+      startSeated,
+      activateReserve: vi.fn(),
+      isSessionAlive: vi.fn().mockResolvedValue(false),
+    });
+    expect(res.outcome).toBe('started');
+    expect(startSeated).toHaveBeenCalledWith('office-1', 'debugger');
+  });
+
+  it('surfaces failed when re-warming a desynced active agent cannot restore its session', async () => {
+    statusMap.set('debugger', { state: 'active' });
+    const res = await executeBringOnline('debugger', {
+      startSeated: vi.fn().mockResolvedValue(false),
+      activateReserve: vi.fn(),
+      isSessionAlive: vi.fn().mockResolvedValue(false),
+    });
+    expect(res.outcome).toBe('failed');
+  });
+
   it('returns invalid-target for an unknown id with no candidate and no active status', async () => {
     const res = await executeBringOnline('nobody', { startSeated: vi.fn(), activateReserve: vi.fn() });
     expect(res.outcome).toBe('invalid-target');
@@ -95,5 +129,41 @@ describe('executeBringOnline', () => {
     currentOfficeId = null;
     const res = await executeBringOnline('generalist', { startSeated: vi.fn(), activateReserve: vi.fn() });
     expect(res.outcome).toBe('failed');
+  });
+
+  it('auto-switches to the target office before bringing online when it differs from current', async () => {
+    candidates = [candidate({ agentId: 'scout', name: 'Scout', source: 'reserve', deskId: 'unassigned-1', officeId: 'office-3' })];
+    const startSeated = vi.fn();
+    const activateReserve = vi.fn().mockResolvedValue('started');
+    const switchOffice = vi.fn().mockImplementation(async (oid: string) => { currentOfficeId = oid; });
+
+    const res = await executeBringOnline('scout', { startSeated, activateReserve, switchOffice }, 'office-3');
+    expect(switchOffice).toHaveBeenCalledWith('office-3');
+    expect(res.outcome).toBe('started');
+    expect(activateReserve).toHaveBeenCalledWith('unassigned-1');
+  });
+
+  it('does NOT switch when the target office is already current', async () => {
+    candidates = [candidate({ agentId: 'generalist', source: 'idle-seated' })];
+    const switchOffice = vi.fn().mockResolvedValue(undefined);
+
+    const res = await executeBringOnline('generalist', {
+      startSeated: vi.fn().mockResolvedValue(true),
+      activateReserve: vi.fn(),
+      switchOffice,
+    }, 'office-1');
+    expect(switchOffice).not.toHaveBeenCalled();
+    expect(res.outcome).toBe('started');
+  });
+
+  it('returns failed when the office switch throws', async () => {
+    const switchOffice = vi.fn().mockRejectedValue(new Error('switch boom'));
+    const res = await executeBringOnline('scout', {
+      startSeated: vi.fn(),
+      activateReserve: vi.fn(),
+      switchOffice,
+    }, 'office-9');
+    expect(res.outcome).toBe('failed');
+    expect(res.message).toMatch(/switch boom/);
   });
 });
