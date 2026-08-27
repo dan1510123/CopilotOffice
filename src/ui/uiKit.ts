@@ -103,8 +103,9 @@ export function injectUiKit(): void {
        the pure string-producing renderers in src/layouts can reference them. */
     @keyframes copilot-ring-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
     @keyframes copilot-attn-bar { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
+    @keyframes copilot-pill-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
     @media (prefers-reduced-motion: reduce) {
-      [data-ring-agent], [data-attn-banner-agent] > * { animation: none !important; }
+      [data-ring-agent], [data-attn-banner-agent] > *, [data-status-panel-agent] span { animation: none !important; }
     }
   `;
   document.head.appendChild(style);

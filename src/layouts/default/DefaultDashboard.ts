@@ -111,14 +111,25 @@ function buildAgentDynamics(
   const queueSpan = toolCount > 1
     ? ` <span style="opacity: 0.5;">·</span> ${toolCount} tools`
     : '';
+  // ── Status pill (header right). Bigger + pulsing for the states where the
+  // user should act (waiting/done) or is actively watching (thinking/starting),
+  // so "action needed" reads at a glance. The live elapsed timer keeps its own
+  // `data-elapsed-agent` element so the per-second ticker can patch it. ──
+  const pillFont = isAttention ? `calc(${t.statusText} + 2px)` : `calc(${t.statusText} + 1px)`;
+  const pillPad = isAttention ? '8px 16px' : '6px 13px';
+  const pillIconSize = isAttention ? '17px' : '15px';
+  const pillAnim = isAttention
+    ? `animation: copilot-pill-pulse 1.25s ease-in-out infinite; box-shadow: 0 0 14px -2px ${statusDot};`
+    : (isPulse ? 'animation: copilot-pill-pulse 1.9s ease-in-out infinite;' : '');
   const statusPillInner = `
         <span style="
-          display: inline-flex; align-items: center; gap: 7px;
-          font-size: ${t.statusText}; font-weight: 700; line-height: 1;
-          padding: 5px 12px; border-radius: 999px; white-space: nowrap;
-          background: ${statusDot}1f; color: ${statusDot}; border: 1px solid ${statusDot}55;
+          display: inline-flex; align-items: center; gap: 7px; transform-origin: center;
+          font-size: ${pillFont}; font-weight: 800; line-height: 1;
+          padding: ${pillPad}; border-radius: 999px; white-space: nowrap;
+          background: ${statusDot}1f; color: ${statusDot}; border: 1.5px solid ${statusDot}77;
+          ${pillAnim}
         ">
-          <span style="font-size: 13px; line-height: 1;">${statusPres.icon}</span>
+          <span style="font-size: ${pillIconSize}; line-height: 1;">${statusPres.icon}</span>
           ${statusLabel}${elapsedSpan}${queueSpan}
         </span>`;
 
@@ -332,7 +343,8 @@ export const defaultDashboard: DashboardRenderer = {
           <div data-attn-banner-agent="${agent.id}" style="flex: 0 0 auto;">${d.bannerInner}</div>
           <div data-badge-slot-agent="${agent.id}" style="position: absolute; top: 8px; right: 8px; z-index: 3;">${d.badgeInner}</div>
           <div style="padding: 15px 17px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;">
-            <div style="display: flex; align-items: center; gap: 14px; flex: 0 0 auto;">
+            <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: safe center; overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 14px; flex: 0 0 auto;">
               <div style="position: relative; width: 56px; height: 56px; flex-shrink: 0;">
                 <div data-ring-agent="${agent.id}" style="
                   position: absolute; inset: 0; border-radius: 50%;
@@ -361,7 +373,8 @@ export const defaultDashboard: DashboardRenderer = {
               </div>
               <div data-status-panel-agent="${agent.id}" style="flex-shrink: 0;">${d.statusPillInner}</div>
             </div>
-            <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden;">${d.dynamicBlockInner}</div>
+              <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; overflow: hidden;">${d.dynamicBlockInner}</div>
+            </div>
             <div style="flex: 0 0 auto;">${sessionPanelHtml}</div>
           </div>
         </div>
