@@ -147,19 +147,20 @@ function buildAgentDynamics(
           </div>`;
   }
 
-  // ── Recent Activity Log ──
+  // ── Recent Activity Log ── (top 2 only, in a height-bounded box so a burst
+  // of actions can never grow the card)
   let activityLogHtml = '';
-  const completedActions = recentActions.filter(a => a.type === 'completed').slice(-4).reverse();
+  const completedActions = recentActions.filter(a => a.type === 'completed').slice(-2).reverse();
   if (completedActions.length > 0) {
     const rows = completedActions.map(a => {
       const relTime = formatRelativeTime(a.timestamp);
-      return `<div style="display: flex; gap: 8px; font-size: ${t.activityRow}; padding: 1px 0;" data-action-ts="${a.timestamp}">
+      return `<div style="display: flex; gap: 8px; font-size: ${t.activityRow}; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" data-action-ts="${a.timestamp}">
             <span style="color: var(--co-text-faint); flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
-            <span style="color: var(--co-text-muted);">✓ ${a.action}</span>
+            <span style="color: var(--co-text-muted); overflow: hidden; text-overflow: ellipsis;">✓ ${a.action}</span>
           </div>`;
     }).join('');
     activityLogHtml = `
-          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--co-bg-divider);">
+          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--co-bg-divider); max-height: 56px; overflow: hidden;">
             <div style="font-size: ${t.sectionLabel}; color: var(--co-text-faint); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
             ${rows}
           </div>`;
