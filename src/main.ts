@@ -2825,6 +2825,16 @@ function startSessionMetaEdit(agentId: string) {
   const titleEl = overviewHost.querySelector(`.session-title-display[data-agent="${agentId}"]`) as HTMLElement | null;
   if (!titleEl) return;
 
+  // The title chip is normally content-sized (inline-flex, flex: 0 1 auto) so it
+  // hugs the text. During editing we want the input to span the full width of the
+  // tile, so widen the chip container itself — the input inside is width: 100%.
+  // A full rebuild on edit-end restores the content-sized chip, so no explicit
+  // revert is required, but we clear these on edit-end anyway to avoid a flash.
+  titleEl.style.display = 'flex';
+  titleEl.style.width = '100%';
+  titleEl.style.maxWidth = '100%';
+  titleEl.style.flex = '1 1 auto';
+
   {
     activeSessionTitleEditAgentId = agentId;
     replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
@@ -2837,6 +2847,10 @@ function startSessionMetaEdit(agentId: string) {
       // Fires on every edit-exit path (save, revert, escape). Clear the guard so
       // dashboard refreshes resume rebuilding the panel normally, then reconcile
       // to a clean full render.
+      titleEl.style.display = '';
+      titleEl.style.width = '';
+      titleEl.style.maxWidth = '';
+      titleEl.style.flex = '';
       if (activeSessionTitleEditAgentId === agentId) {
         activeSessionTitleEditAgentId = null;
         updateTerminalContent();
