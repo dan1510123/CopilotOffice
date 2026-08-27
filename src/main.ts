@@ -3348,9 +3348,19 @@ async function syncAgentStatuses(force = false): Promise<void> {
           } else if (!current || current.state === 'slacking' || current.subState === 'error') {
             changed = true;
             officeManager.setAgentReady(officeId, agent.id);
-          } else if (current.subState === 'starting' || current.subState === 'waiting') {
+          } else if (current.subState === 'starting') {
             officeManager.setAgentReady(officeId, agent.id);
             changed = true;
+          } else if (current.subState === 'waiting') {
+            // A "Waiting on you" review persists STRICTLY until the user focuses
+            // the terminal (acknowledges) — even if the session resurfaces as
+            // alive+idle after a restart. Only clear it here when there's no
+            // persisted review to honor. Real new activity still supersedes it
+            // via setAgentThinking; focus still clears it via acknowledgement.
+            if (!officeManager.getAgentReview(officeId, agent.id)) {
+              officeManager.setAgentReady(officeId, agent.id);
+              changed = true;
+            }
           } else if (current.subState === 'thinking' && !serverStatus.inTurn) {
             // Avoid brief ready↔thinking flapping while turn/inTurn state propagates.
             if (thinkingAgeMs !== null && thinkingAgeMs < THINKING_TO_READY_GRACE_MS) {
@@ -3374,8 +3384,11 @@ async function syncAgentStatuses(force = false): Promise<void> {
           }
         }
       } else {
-        // Agent has no running PTY — should be slacking
-        if (current && current.state === 'active') {
+        // Agent has no running PTY — should be slacking, UNLESS it carries an
+        // unacknowledged persisted review (Done/Waiting restored from a prior
+        // session). Keep the review visible until the user focuses the terminal;
+        // live in-session exits still slack via the onTerminalExit handler.
+        if (current && current.state === 'active' && !officeManager.getAgentReview(officeId, agent.id)) {
           officeManager.setAgentSlacking(officeId, agent.id);
           changed = true;
         }

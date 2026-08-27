@@ -140,5 +140,117 @@ describe('office/officeManager', () => {
     expect(flushed.offices, 'flushed save must include all 3 offices from durable load')
       .toHaveLength(3);
   });
+
+  // Persisted Done/Waiting review markers (survive app restart; clear on focus).
+  describe('persisted agent reviews', () => {
+    it('records a Done marker on setAgentDonePendingAck and persists it', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      manager.setLastCompletedAction('office-0', 'generalist', 'edit on src/main.ts');
+      manager.setAgentDonePendingAck('office-0', 'generalist', 'turn_end');
+
+      const review = manager.getAgentReview('office-0', 'generalist');
+      expect(review?.kind).toBe('done');
+      expect(review?.detail).toBe('edit on src/main.ts');
+
+      const persisted = JSON.parse(localStorage.getItem('copilot-offices')!);
+      expect(persisted.offices[0].pendingReviews.generalist.kind).toBe('done');
+    });
+
+    it('records a Waiting marker on setAgentWaiting', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      manager.setAgentReady('office-0', 'generalist');
+      manager.setAgentWaiting('office-0', 'generalist', 'ask_user');
+
+      expect(manager.getAgentReview('office-0', 'generalist')).toMatchObject({
+        kind: 'waiting',
+        detail: 'ask_user',
+      });
+    });
+
+    it('clears the marker on acknowledgement (terminal focus)', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      manager.setAgentDonePendingAck('office-0', 'generalist');
+      expect(manager.getAgentReview('office-0', 'generalist')).toBeDefined();
+
+      expect(manager.acknowledgeAgentCompletion('office-0', 'generalist')).toBe(true);
+      expect(manager.getAgentReview('office-0', 'generalist')).toBeUndefined();
+    });
+
+    it('clears a restored Waiting marker on acknowledgement even without pendingAck', () => {
+      localStorage.setItem(
+        'copilot-offices',
+        createStoredOfficePayload([
+          {
+            id: 'office-0', name: 'Main', workingDirectory: '.', createdAt: 1,
+            pendingReviews: { generalist: { agentId: 'generalist', kind: 'waiting', detail: 'ask_user', at: 5 } },
+          },
+        ])
+      );
+      const manager = new OfficeManager();
+
+      expect(manager.acknowledgeAgentCompletion('office-0', 'generalist')).toBe(true);
+      expect(manager.getAgentReview('office-0', 'generalist')).toBeUndefined();
+    });
+
+    it('supersedes the marker on new activity (thinking) but survives session death (slacking)', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      // New activity supersedes a prior review.
+      manager.setAgentDonePendingAck('office-0', 'generalist');
+      manager.setAgentThinking('office-0', 'generalist', 'Processing...');
+      expect(manager.getAgentReview('office-0', 'generalist')).toBeUndefined();
+
+      // A review that is followed by session death (slacking) is preserved so it
+      // can be restored on the next boot.
+      manager.setAgentWaiting('office-0', 'generalist', 'ask_user');
+      manager.setAgentSlacking('office-0', 'generalist', 'session_exit');
+      expect(manager.getAgentReview('office-0', 'generalist')?.kind).toBe('waiting');
+    });
+
+    it('restores a persisted review into the runtime status on boot', () => {
+      localStorage.setItem(
+        'copilot-offices',
+        createStoredOfficePayload([
+          {
+            id: 'office-0', name: 'Main', workingDirectory: '.', createdAt: 1,
+            pendingReviews: {
+              generalist: { agentId: 'generalist', kind: 'done', detail: 'edit on x', at: 5 },
+              debugger: { agentId: 'debugger', kind: 'waiting', detail: 'ask_user', at: 9 },
+            },
+          },
+        ])
+      );
+      const manager = new OfficeManager();
+
+      const done = manager.getAgentStatus('office-0', 'generalist');
+      expect(done).toMatchObject({ state: 'active', subState: 'ready', completionPendingAck: true });
+      expect(done?.lastCompletedAction).toBe('edit on x');
+
+      const waiting = manager.getAgentStatus('office-0', 'debugger');
+      expect(waiting).toMatchObject({ state: 'active', subState: 'waiting', activityStartTime: 9 });
+    });
+
+    it('drops malformed review entries during deserialize', () => {
+      localStorage.setItem(
+        'copilot-offices',
+        createStoredOfficePayload([
+          {
+            id: 'office-0', name: 'Main', workingDirectory: '.', createdAt: 1,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            pendingReviews: { bad: { agentId: 'bad', kind: 'bogus', at: 1 } } as any,
+          },
+        ])
+      );
+      const manager = new OfficeManager();
+      expect(manager.getAgentReview('office-0', 'bad')).toBeUndefined();
+    });
+  });
 });
 
