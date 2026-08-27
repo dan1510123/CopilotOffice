@@ -61,8 +61,8 @@ describe('dashboard card height stability (spec 014 FR-015 / SC-009)', () => {
     const heights = new Set<string>();
     for (const st of CARD_STATES) {
       const html = defaultDashboard.renderCards(ctx(st));
-      const m = html.match(/min-height:\s*150px/g);
-      expect(m, `expected fixed 150px card in state ${st.subState}`).toBeTruthy();
+      const m = html.match(/height:\s*236px/g);
+      expect(m, `expected fixed 236px card in state ${st.subState}`).toBeTruthy();
       // The activity-detail slot is always a fixed 18px line — never grows.
       expect(html).toContain('data-activity-detail-agent="a1"');
       expect(html).toContain('height: 18px');

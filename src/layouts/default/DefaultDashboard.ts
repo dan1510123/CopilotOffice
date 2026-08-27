@@ -97,18 +97,11 @@ function buildAgentDynamics(
         "><span style="font-size: 13px;">${statusPres.icon}</span>${bannerText}</div>`;
   }
 
-  // Badge (unread count). The absolute positioning lives on the slot wrapper so
-  // the pill itself is position-agnostic and patchable via innerHTML.
-  const badgeInner = unread > 0 ? `
-        <div style="
-          background: #e55; color: #fff;
-          font-size: ${t.badge}; font-weight: bold;
-          min-width: 18px; height: 18px;
-          border-radius: 9px;
-          display: flex; align-items: center; justify-content: center;
-          padding: 0 4px;
-          box-shadow: 0 1px 4px rgba(0,0,0,0.4);
-        ">${unread}</div>` : '';
+  // Badge (unread count) — DISABLED for now: the Done/Waiting status pill and the
+  // attention banner already signal "needs you", so the red badge was redundant.
+  // The empty slot wrapper is still emitted (see renderCards) so it can be
+  // re-enabled later without markup churn.
+  const badgeInner = '';
 
   // ── Compact status pill (header right). The live elapsed timer keeps its own
   // `data-elapsed-agent` element so the per-second ticker can patch it. ──
@@ -129,11 +122,18 @@ function buildAgentDynamics(
           ${statusLabel}${elapsedSpan}${queueSpan}
         </span>`;
 
-  // ── Tool Pipeline Section ──
+  // ── Tool Pipeline Section ── (capped to a fixed max rows so tool churn can
+  // never grow the card; the active tool is the last one, always kept)
   let toolPipelineHtml = '';
   if (tools.length > 0) {
-    const toolRows = tools.map((tool, i) => {
-      const isLast = i === tools.length - 1;
+    const MAX_TOOL_ROWS = 2;
+    const shownTools = tools.slice(-MAX_TOOL_ROWS);
+    const hiddenCount = tools.length - shownTools.length;
+    const moreRow = hiddenCount > 0
+      ? `<div style="font-size: ${t.toolRow}; color: var(--co-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">◦ +${hiddenCount} more queued</div>`
+      : '';
+    const toolRows = shownTools.map((tool, i) => {
+      const isLast = i === shownTools.length - 1;
       const icon = isLast ? '▸' : '◦';
       const color = isLast ? 'var(--co-accent)' : 'var(--co-text-faint)';
       const statusText = isLast ? tool.status : '(queued)';
@@ -143,7 +143,7 @@ function buildAgentDynamics(
     }).join('');
     toolPipelineHtml = `
           <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--co-bg-divider);">
-            ${toolRows}
+            ${moreRow}${toolRows}
           </div>`;
   }
 
@@ -325,12 +325,14 @@ export const defaultDashboard: DashboardRenderer = {
           transition: border-color 0.15s;
           position: relative;
           overflow: hidden;
-          min-height: 150px;
+          height: 236px;
+          display: flex;
+          flex-direction: column;
         ">
-          <div data-attn-banner-agent="${agent.id}">${d.bannerInner}</div>
+          <div data-attn-banner-agent="${agent.id}" style="flex: 0 0 auto;">${d.bannerInner}</div>
           <div data-badge-slot-agent="${agent.id}" style="position: absolute; top: 8px; right: 8px; z-index: 3;">${d.badgeInner}</div>
-          <div style="padding: 15px 17px;">
-            <div style="display: flex; align-items: center; gap: 14px;">
+          <div style="padding: 15px 17px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 14px; flex: 0 0 auto;">
               <div style="position: relative; width: 56px; height: 56px; flex-shrink: 0;">
                 <div data-ring-agent="${agent.id}" style="
                   position: absolute; inset: 0; border-radius: 50%;
@@ -359,8 +361,8 @@ export const defaultDashboard: DashboardRenderer = {
               </div>
               <div data-status-panel-agent="${agent.id}" style="flex-shrink: 0;">${d.statusPillInner}</div>
             </div>
-            <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column;">${d.dynamicBlockInner}</div>
-            ${sessionPanelHtml}
+            <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: hidden;">${d.dynamicBlockInner}</div>
+            <div style="flex: 0 0 auto;">${sessionPanelHtml}</div>
           </div>
         </div>
       `;
