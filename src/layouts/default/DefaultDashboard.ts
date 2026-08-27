@@ -51,6 +51,10 @@ function buildAgentDynamics(
   // Done + Waiting are the two "your turn" states — they share one loud visual
   // language (banner + solid border + wash) distinct from working/idle.
   const isAttention = statusKey === 'done' || statusKey === 'waiting';
+  // User-applied "Flagged / Needs attention" marker (orthogonal to status). When
+  // set it paints its own amber-gold chrome that takes precedence over the
+  // status attention chrome, and adds a flag pill beside the status pill.
+  const isFlagged = ctx.flaggedAgentIds?.has(agent.id) ?? false;
   // FR-011/FR-015: the "what it's doing" detail is rendered on its own fixed
   // slot (never concatenated into the label), so it cannot grow the card.
   // The bottom "Now doing" line shows the single most recent activity: the live
@@ -66,13 +70,19 @@ function buildAgentDynamics(
 
   const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
   const isSelected = agent.id === selectedAgentId;
-  // Selection wins the border; otherwise attention paints it solid in the status color.
-  const cardBorderColor = isSelected
-    ? 'var(--co-sel-border)'
-    : (isAttention ? statusDot : 'var(--co-border-subtle)');
-  const cardBg = isAttention
-    ? `linear-gradient(115deg, ${statusDot}18 0%, var(--co-bg-card) 45%), var(--co-bg-card)`
-    : (isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)');
+  // Flag chrome (amber-gold) wins the border/bg over selection + attention so a
+  // flagged card always reads as "come back to me". Otherwise selection wins the
+  // border; failing that, attention paints it solid in the status color.
+  const cardBorderColor = isFlagged
+    ? 'var(--co-flag)'
+    : (isSelected
+        ? 'var(--co-sel-border)'
+        : (isAttention ? statusDot : 'var(--co-border-subtle)'));
+  const cardBg = isFlagged
+    ? `linear-gradient(115deg, color-mix(in srgb, var(--co-flag) 13%, transparent) 0%, ${isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'} 48%), ${isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'}`
+    : (isAttention
+        ? `linear-gradient(115deg, ${statusDot}18 0%, var(--co-bg-card) 45%), var(--co-bg-card)`
+        : (isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'));
   const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
   const toolCount = tools.length;
 
@@ -86,9 +96,18 @@ function buildAgentDynamics(
   const ringOpacity = (isPulse || isAttention) ? '1' : '0.5';
 
   // ── Attention banner (signal only — the whole card remains the click target,
-  // which already opens the session to review output / reply). ──
+  // which already opens the session to review output / reply). A user flag takes
+  // precedence over the status attention banner (confirmed precedence). ──
   let bannerInner = '';
-  if (isAttention) {
+  if (isFlagged) {
+    bannerInner = `
+        <div style="
+          background: linear-gradient(90deg, var(--co-flag), color-mix(in srgb, var(--co-flag) 30%, transparent));
+          color: #0c0c16; font-size: 11px; font-weight: 800; letter-spacing: 0.4px;
+          padding: 6px 16px; display: flex; align-items: center; gap: 8px;
+          animation: copilot-attn-bar 2s ease-in-out infinite;
+        "><span style="font-size: 13px;">🚩</span>FLAGGED · NEEDS ATTENTION</div>`;
+  } else if (isAttention) {
     const bannerText = statusKey === 'done'
       ? 'DONE — open to review the output'
       : 'NEEDS YOU — reply to unblock this agent';
@@ -125,7 +144,21 @@ function buildAgentDynamics(
   const pillAnim = isAttention
     ? `animation: copilot-pill-pulse 1.25s ease-in-out infinite; box-shadow: 0 0 14px -2px ${statusDot};`
     : (isPulse ? 'animation: copilot-pill-pulse 1.9s ease-in-out infinite;' : '');
+  // The flag pill (amber-gold) sits to the LEFT of the status pill and pulses to
+  // draw the eye, mirroring the "needs action" language without replacing status.
+  const flagPillInner = isFlagged ? `
+        <span style="
+          display: inline-flex; align-items: center; gap: 6px; transform-origin: center;
+          font-size: calc(${t.statusText} + 1px); font-weight: 800; line-height: 1;
+          padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+          background: color-mix(in srgb, var(--co-flag) 16%, transparent);
+          color: var(--co-flag); border: 1.5px solid color-mix(in srgb, var(--co-flag) 60%, transparent);
+          box-shadow: 0 0 12px -3px var(--co-flag);
+          animation: copilot-pill-pulse 1.6s ease-in-out infinite;
+        "><span style="font-size: 15px; line-height: 1;">🚩</span>Flagged</span>` : '';
   const statusPillInner = `
+        <span style="display: inline-flex; align-items: center; gap: 8px;">
+        ${flagPillInner}
         <span style="
           display: inline-flex; align-items: center; gap: 7px; transform-origin: center;
           font-size: ${pillFont}; font-weight: 800; line-height: 1;
@@ -135,6 +168,7 @@ function buildAgentDynamics(
         ">
           <span style="font-size: ${pillIconSize}; line-height: 1;">${statusPres.icon}</span>
           ${statusLabel}${elapsedSpan}${queueSpan}
+        </span>
         </span>`;
 
   // ── Dynamic block ── (intentionally empty: the single most recent activity now
@@ -219,6 +253,11 @@ export const defaultDashboard: DashboardRenderer = {
       // ── Session Metadata Panel (right side) ──
       const meta = cachedSessionMeta[agent.id];
       const hasSession = liveStatus?.state === 'active';
+      const isFlagged = ctx.flaggedAgentIds?.has(agent.id) ?? false;
+      // Flag toggle: available whether or not the agent has a live session, so the
+      // user can mark a slacking agent to revisit too. Filled gold when flagged.
+      const flagBtnHtml = `<button class="session-flag-btn ui-btn ${isFlagged ? 'ui-btn--flagged' : 'ui-btn--flag'}" data-agent="${agent.id}"
+              title="${isFlagged ? 'Clear the Needs Attention flag' : 'Flag this agent — Needs attention (come back to it)'}">${isFlagged ? '🚩 Flagged' : '🚩 Flag'}</button>`;
       const metaTitle = meta?.title || '';
       const metaSessionId = meta?.sessionId || '';
       // The title chip persists on cached session meta, decoupled from the live
@@ -264,6 +303,7 @@ export const defaultDashboard: DashboardRenderer = {
             " title="${d.activityDetailEsc}">${d.activityDetail}</div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            ${flagBtnHtml}
             <button class="session-new-btn ui-btn ui-btn--primary" data-agent="${agent.id}"
               title="Start a new session for this agent">🔄 New Session</button>
             <button class="session-close-btn ui-btn ui-btn--danger" data-agent="${agent.id}"
@@ -279,13 +319,19 @@ export const defaultDashboard: DashboardRenderer = {
         <div style="
           margin-top: 13px; padding-top: 13px;
           border-top: 1px solid var(--co-bg-divider);
+          display: flex; align-items: center; gap: 14px;
         ">
-          <div style="font-size: ${t.sessionLabel}; color: var(--co-text-faint); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Status</div>
-          <div data-activity-detail-agent="${agent.id}" style="
-            height: 18px; line-height: 18px;
-            font-size: ${t.taskSummary}; color: var(--co-text-faint); font-style: italic;
-            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-          " title="${d.activityDetailEsc}">${d.activityDetail || 'No active session'}</div>
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-size: ${t.sessionLabel}; color: var(--co-text-faint); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Status</div>
+            <div data-activity-detail-agent="${agent.id}" style="
+              height: 18px; line-height: 18px;
+              font-size: ${t.taskSummary}; color: var(--co-text-faint); font-style: italic;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            " title="${d.activityDetailEsc}">${d.activityDetail || 'No active session'}</div>
+          </div>
+          <div style="display: flex; align-items: center; flex-shrink: 0;">
+            ${flagBtnHtml}
+          </div>
         </div>
       `;
 

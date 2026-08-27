@@ -46,6 +46,14 @@ export interface OfficeConfig {
    * renders it without any per-surface changes.
    */
   pendingReviews?: Record<string, PersistedAgentReview>;
+  /**
+   * User-applied "Flagged / Needs attention" markers, keyed set of agentIds.
+   * Unlike pendingReviews (system-set on Done/Waiting), a flag is toggled
+   * manually by the user to remember to come back to an agent, and persists
+   * until the user clears it — independent of the agent's live status. Stored
+   * as a string[] (agent ids) for a compact durable representation.
+   */
+  flaggedAgents?: string[];
 }
 
 /** Kinds of agent state that require the user to review / acknowledge. */
@@ -587,6 +595,43 @@ export class OfficeManager {
   /** The persisted review marker for an agent, if any. */
   getAgentReview(officeId: string, agentId: string): PersistedAgentReview | undefined {
     return this.offices.get(officeId)?.config.pendingReviews?.[agentId];
+  }
+
+  /**
+   * User-driven "Flagged / Needs attention" marker. Orthogonal to status: a
+   * flagged agent keeps its live status but also renders the flag chrome
+   * (banner + pill + border) until the user clears it. Persisted to
+   * OfficeConfig.flaggedAgents so it survives an app restart.
+   */
+  isAgentFlagged(officeId: string, agentId: string): boolean {
+    const flags = this.offices.get(officeId)?.config.flaggedAgents;
+    return !!flags && flags.includes(agentId);
+  }
+
+  /** All flagged agent ids for an office, as a Set (empty when none). */
+  getFlaggedAgentIds(officeId: string): Set<string> {
+    return new Set(this.offices.get(officeId)?.config.flaggedAgents ?? []);
+  }
+
+  /**
+   * Toggle an agent's flag. Returns the new flagged state (true = now flagged).
+   * Persists on every change. No-op returns current state when the office is
+   * missing.
+   */
+  toggleAgentFlag(officeId: string, agentId: string): boolean {
+    const office = this.offices.get(officeId);
+    if (!office) return false;
+    const current = office.config.flaggedAgents ?? [];
+    const isFlagged = current.includes(agentId);
+    if (isFlagged) {
+      const next = current.filter((id) => id !== agentId);
+      if (next.length === 0) delete office.config.flaggedAgents;
+      else office.config.flaggedAgents = next;
+    } else {
+      office.config.flaggedAgents = [...current, agentId];
+    }
+    this.saveToStorage();
+    return !isFlagged;
   }
 
   setAgentWaiting(officeId: string, agentId: string, reason?: string): void {

@@ -99,6 +99,12 @@ export function injectUiKit(): void {
     .ui-btn--ghost { background: transparent; border-color: color-mix(in srgb, var(--co-border) 70%, transparent); color: var(--co-text-secondary); }
     .ui-btn--ghost:hover { background: var(--co-bg-raised-hover); border-color: var(--co-border); color: var(--co-text-strong); }
 
+    /* Flag / Needs-attention toggle. --flag (outlined) = off; --flagged (filled gold) = on. */
+    .ui-btn--flag { background: color-mix(in srgb, var(--co-flag) 12%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-flag) 45%, var(--co-border)); color: var(--co-flag); }
+    .ui-btn--flag:hover { background: color-mix(in srgb, var(--co-flag) 24%, var(--co-bg-raised)); border-color: var(--co-flag); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-flag) 22%, transparent); }
+    .ui-btn--flagged { background: var(--co-flag); border-color: var(--co-flag); color: #221a05; font-weight: 700; box-shadow: 0 0 10px color-mix(in srgb, var(--co-flag) 35%, transparent); }
+    .ui-btn--flagged:hover { background: color-mix(in srgb, var(--co-flag) 85%, #fff); border-color: var(--co-flag); color: #221a05; }
+
     /* Dashboard agent-card motion (default layout). Kept here in the UI layer so
        the pure string-producing renderers in src/layouts can reference them. */
     @keyframes copilot-ring-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }

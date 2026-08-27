@@ -2425,6 +2425,9 @@ function updateTerminalContentNow() {
 
   // Delegate card rendering to the layout-specific dashboard renderer
   const layout = getLayout(getCurrentLayout());
+  const flaggedAgentIds = office
+    ? officeManager.getFlaggedAgentIds(office.config.id)
+    : new Set<string>();
   const html = layout.dashboard.renderCards({
     agents: sortAgentsByMode(layout.agents, office || null, cachedSessionMeta),
     office: office || null,
@@ -2435,6 +2438,7 @@ function updateTerminalContentNow() {
     formatRelativeTime,
     teamsEnabled: teamsFeatureEnabled,
     teamsOnlineAgentIds,
+    flaggedAgentIds,
   });
 
   if (html !== lastTerminalContentHtml) {
@@ -2459,6 +2463,7 @@ function updateTerminalContentNow() {
         formatRelativeTime,
         teamsEnabled: teamsFeatureEnabled,
         teamsOnlineAgentIds,
+        flaggedAgentIds,
       });
       if (regions) {
         patchOverviewDynamicRegions(regions);
@@ -2678,6 +2683,18 @@ function setupTerminalClickHandler() {
     const target = e.target as HTMLElement;
     const layout = getLayout(getCurrentLayout());
 
+    // Flag toggle lives in both the active-session action row and the no-session
+    // footer (which is NOT a .session-meta-panel), so route it first — before the
+    // meta-panel / card-open handlers — with stopPropagation so it never opens the
+    // terminal.
+    const flagBtn = target.closest('.session-flag-btn');
+    if (flagBtn) {
+      e.stopPropagation();
+      const agentId = (flagBtn as HTMLElement).dataset.agent;
+      if (agentId) toggleAgentFlagFromOverview(agentId);
+      return;
+    }
+
     // Session title now lives in the card header (outside .session-meta-panel),
     // so route its clicks to inline edit before the card-open handler.
     const titleDisplay = target.closest('.session-title-display');
@@ -2816,6 +2833,14 @@ async function closeSessionFromOverview(agentId: string): Promise<void> {
   ) {
     await seriousTerminalController.closeView();
   }
+}
+
+/** Toggle the user "Flagged / Needs attention" marker for an agent and refresh
+ * the dashboard. Persisted per-office via officeManager (survives restart). */
+function toggleAgentFlagFromOverview(agentId: string): void {
+  const officeId = officeManager.currentOfficeId || 'office-0';
+  officeManager.toggleAgentFlag(officeId, agentId);
+  updateTerminalContent();
 }
 
 function startSessionMetaEdit(agentId: string) {

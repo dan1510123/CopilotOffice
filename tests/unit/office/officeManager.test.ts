@@ -252,5 +252,79 @@ describe('office/officeManager', () => {
       expect(manager.getAgentReview('office-0', 'bad')).toBeUndefined();
     });
   });
+
+  describe('user flag markers (Flagged / Needs attention)', () => {
+    it('toggles a flag on and off, returning the new state', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      expect(manager.isAgentFlagged('office-0', 'generalist')).toBe(false);
+      expect(manager.toggleAgentFlag('office-0', 'generalist')).toBe(true);
+      expect(manager.isAgentFlagged('office-0', 'generalist')).toBe(true);
+      expect(manager.toggleAgentFlag('office-0', 'generalist')).toBe(false);
+      expect(manager.isAgentFlagged('office-0', 'generalist')).toBe(false);
+    });
+
+    it('persists flagged agents and exposes them as a Set', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      manager.toggleAgentFlag('office-0', 'generalist');
+      manager.toggleAgentFlag('office-0', 'debugger');
+
+      const flagged = manager.getFlaggedAgentIds('office-0');
+      expect(flagged.has('generalist')).toBe(true);
+      expect(flagged.has('debugger')).toBe(true);
+      expect(flagged.size).toBe(2);
+
+      const persisted = JSON.parse(localStorage.getItem('copilot-offices')!);
+      expect(persisted.offices[0].flaggedAgents).toContain('generalist');
+      expect(persisted.offices[0].flaggedAgents).toContain('debugger');
+    });
+
+    it('drops the flaggedAgents key entirely once the last flag is cleared', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+
+      manager.toggleAgentFlag('office-0', 'generalist');
+      manager.toggleAgentFlag('office-0', 'generalist');
+
+      const persisted = JSON.parse(localStorage.getItem('copilot-offices')!);
+      expect(persisted.offices[0].flaggedAgents).toBeUndefined();
+    });
+
+    it('restores persisted flags on boot (survives restart)', () => {
+      localStorage.setItem(
+        'copilot-offices',
+        createStoredOfficePayload([
+          {
+            id: 'office-0', name: 'Main', workingDirectory: '.', createdAt: 1,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            flaggedAgents: ['generalist', 'debugger'] as any,
+          },
+        ])
+      );
+      const manager = new OfficeManager();
+      expect(manager.isAgentFlagged('office-0', 'generalist')).toBe(true);
+      expect(manager.isAgentFlagged('office-0', 'debugger')).toBe(true);
+    });
+
+    it('drops non-string flagged entries during deserialize', () => {
+      localStorage.setItem(
+        'copilot-offices',
+        createStoredOfficePayload([
+          {
+            id: 'office-0', name: 'Main', workingDirectory: '.', createdAt: 1,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            flaggedAgents: ['generalist', 42, null] as any,
+          },
+        ])
+      );
+      const manager = new OfficeManager();
+      const flagged = manager.getFlaggedAgentIds('office-0');
+      expect(flagged.has('generalist')).toBe(true);
+      expect(flagged.size).toBe(1);
+    });
+  });
 });
 

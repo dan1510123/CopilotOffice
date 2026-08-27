@@ -166,6 +166,7 @@ describe('office/officePersistence.deserializeOffices', () => {
             'desk-a': { id: 'office-6-reserve-0' },
             'desk-b': { id: 'office-6-reserve-4' },
           },
+          flaggedAgents: ['office-6-agent-0', 'generalist'],
         },
       ],
     });
@@ -179,6 +180,8 @@ describe('office/officePersistence.deserializeOffices', () => {
     expect(restored.offices[0].seatedAgents).toEqual([
       { deskId: 'unassigned-above-4', agentId: 'office-3-reserve-2' },
     ]);
+    // Flagged agent ids follow the same office-N remap; non-matching ids are left as-is.
+    expect(office.flaggedAgents).toEqual(['office-3-agent-0', 'generalist']);
   });
 
   it('leaves already-correct agent ids untouched (idempotent)', () => {

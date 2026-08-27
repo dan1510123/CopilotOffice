@@ -63,6 +63,9 @@ const DARK: Record<string, string> = {
   success: '#46d17f',
   danger: '#e0607a',
   amber: '#ffb86c',
+  // User "Flagged / Needs attention" marker. Deliberately distinct from every
+  // status color (esp. waiting=#ffb86c) so a manual flag never reads as a status.
+  flag: '#f5b93d',
 
   // Accent-tinted surfaces (fixed alpha; can't append alpha to a var())
   'pc-sprite-bg': 'rgba(93,169,255,0.13)',
@@ -109,6 +112,7 @@ const LIGHT: Record<string, string> = {
   success: '#3f9a5f',
   danger: '#cf4f68',
   amber: '#d98a2a',
+  flag: '#c9871a',
 
   // Accent-tinted surfaces
   'pc-sprite-bg': 'rgba(224,149,74,0.15)',

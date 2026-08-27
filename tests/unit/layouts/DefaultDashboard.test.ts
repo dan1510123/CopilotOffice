@@ -237,3 +237,72 @@ describe('DefaultClickHandler — Close Session routing', () => {
     expect(startNewSession).not.toHaveBeenCalled();
   });
 });
+
+describe('DefaultDashboard — user flag (Needs attention) marker', () => {
+  function slackingOffice(): OfficeData {
+    const agents = new Map<string, any>();
+    agents.set('a1', { state: 'slacking', subState: null });
+    return {
+      config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
+      agents,
+      agentTools: new Map(),
+    } as unknown as OfficeData;
+  }
+  function flagCtx(flagged: boolean, useSlacking = false): DashboardRenderContext {
+    return {
+      agents: [agent('a1', 'Alice')],
+      office: useSlacking ? slackingOffice() : office(),
+      selectedAgentId: 'a1',
+      cachedSessionMeta: { a1: { title: 'My session' } },
+      agentTools: new Map(),
+      formatElapsed: () => '0s',
+      formatRelativeTime: () => 'now',
+      flaggedAgentIds: flagged ? new Set(['a1']) : new Set<string>(),
+    };
+  }
+
+  it('renders a "🚩 Flag" toggle button (off state) for an active agent', () => {
+    const html = defaultDashboard.renderCards(flagCtx(false));
+    expect(html).toContain('class="session-flag-btn ');
+    expect(html).toMatch(/class="session-flag-btn [^"]*ui-btn--flag"/);
+    expect(html).toContain('🚩 Flag');
+    expect(html).toMatch(/class="session-flag-btn [^"]*"[^>]*data-agent="a1"/);
+  });
+
+  it('shows the filled "🚩 Flagged" button, flag pill, and banner when flagged', () => {
+    const html = defaultDashboard.renderCards(flagCtx(true));
+    // Button flips to the filled ui-btn--flagged variant + label.
+    expect(html).toMatch(/class="session-flag-btn [^"]*ui-btn--flagged"/);
+    expect(html).toContain('🚩 Flagged');
+    // Flag pill beside the status pill.
+    expect(html).toContain('>Flagged</span>');
+    // Amber-gold attention banner takes over.
+    expect(html).toContain('FLAGGED · NEEDS ATTENTION');
+    // Flag chrome paints the border/bg from the dedicated flag var.
+    expect(html).toContain('var(--co-flag)');
+  });
+
+  it('does not render flag chrome (banner/pill) when not flagged', () => {
+    const html = defaultDashboard.renderCards(flagCtx(false));
+    expect(html).not.toContain('FLAGGED · NEEDS ATTENTION');
+    expect(html).not.toContain('>Flagged</span>');
+  });
+
+  it('offers the flag button even for a slacking (no-session) agent', () => {
+    const html = defaultDashboard.renderCards(flagCtx(false, true));
+    // No active session, but the flag toggle is still present so the user can
+    // mark it to come back to.
+    expect(html).not.toContain('class="session-meta-panel"');
+    expect(html).toContain('class="session-flag-btn ');
+    expect(html).toContain('🚩 Flag');
+  });
+
+  it('keeps flag chrome in the partial-refresh dynamic regions (banner + status panel)', () => {
+    const regions = defaultDashboard.renderDynamicRegions!(flagCtx(true))!;
+    const banner = regions.find((r) => r.selector === '[data-attn-banner-agent="a1"]');
+    const statusPanel = regions.find((r) => r.selector === '[data-status-panel-agent="a1"]');
+    expect(banner?.html).toContain('FLAGGED · NEEDS ATTENTION');
+    expect(statusPanel?.html).toContain('>Flagged</span>');
+  });
+});
+

@@ -116,6 +116,9 @@ function normalizeAgentIdsForOffice(office: OfficeConfig): void {
       if (s && typeof s.agentId === 'string') s.agentId = remapId(s.agentId);
     }
   }
+  if (Array.isArray(office.flaggedAgents)) {
+    office.flaggedAgents = Array.from(new Set(office.flaggedAgents.map(remapId)));
+  }
 }
 
 /**
@@ -225,6 +228,15 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
       }
       if (Object.keys(cleanReviews).length > 0) {
         normalized.pendingReviews = cleanReviews;
+      }
+    }
+    // Carry + validate user "Flagged / Needs attention" markers (survive restart).
+    if (Array.isArray(cfg.flaggedAgents)) {
+      const cleanFlags = Array.from(
+        new Set((cfg.flaggedAgents as unknown[]).filter((v): v is string => typeof v === 'string')),
+      );
+      if (cleanFlags.length > 0) {
+        normalized.flaggedAgents = cleanFlags;
       }
     }
     // Repair legacy id collisions (another office's baked-in agent ids) so every
