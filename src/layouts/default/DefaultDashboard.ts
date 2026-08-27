@@ -343,7 +343,7 @@ export const defaultDashboard: DashboardRenderer = {
           <div data-attn-banner-agent="${agent.id}" style="flex: 0 0 auto;">${d.bannerInner}</div>
           <div data-badge-slot-agent="${agent.id}" style="position: absolute; top: 8px; right: 8px; z-index: 3;">${d.badgeInner}</div>
           <div style="padding: 15px 17px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;">
-            <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: safe center; overflow: hidden;">
+            <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; overflow: hidden;">
               <div style="display: flex; align-items: center; gap: 14px; flex: 0 0 auto;">
               <div style="position: relative; width: 56px; height: 56px; flex-shrink: 0;">
                 <div data-ring-agent="${agent.id}" style="
