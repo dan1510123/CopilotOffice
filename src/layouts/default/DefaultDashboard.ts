@@ -263,6 +263,12 @@ export const defaultDashboard: DashboardRenderer = {
       const hasSession = liveStatus?.state === 'active';
       const metaTitle = meta?.title || '';
       const metaSessionId = meta?.sessionId || '';
+      // The title chip persists on cached session meta, decoupled from the live
+      // `hasSession` gate: when a task completes and the PTY exits the agent flips
+      // to 'slacking', but the user should still see the session title (and be able
+      // to click it) until they open the terminal or start a new session. Gating on
+      // live state made the chip flash out and vanish on completion.
+      const showTitleChip = hasSession || !!metaTitle || !!metaSessionId;
       const sessionIdBadgeHtml = metaSessionId
         ? `<div class="session-id-badge" data-agent="${agent.id}" data-session-id="${metaSessionId}" title="Click to copy: ${metaSessionId}" style="
             display: inline-flex; align-items: center; align-self: flex-start;
@@ -274,7 +280,7 @@ export const defaultDashboard: DashboardRenderer = {
             max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           ">${metaSessionId}</div>`
         : '';
-      const titleChipHtml = hasSession ? `
+      const titleChipHtml = showTitleChip ? `
         <span class="session-title-display" data-agent="${agent.id}" title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set a session title'}" style="
           display: inline-flex; align-items: flex-start; gap: 6px;
           flex: 0 1 auto; min-width: 0; max-width: 100%;
@@ -336,7 +342,7 @@ export const defaultDashboard: DashboardRenderer = {
           transition: border-color 0.15s;
           position: relative;
           overflow: hidden;
-          height: 236px;
+          height: 208px;
           display: flex;
           flex-direction: column;
         ">
@@ -344,37 +350,41 @@ export const defaultDashboard: DashboardRenderer = {
           <div data-badge-slot-agent="${agent.id}" style="position: absolute; top: 8px; right: 8px; z-index: 3;">${d.badgeInner}</div>
           <div style="padding: 15px 17px; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;">
             <div style="flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; overflow: hidden;">
-              <div style="display: flex; align-items: center; gap: 14px; flex: 0 0 auto;">
-              <div style="position: relative; width: 56px; height: 56px; flex-shrink: 0;">
-                <div data-ring-agent="${agent.id}" style="
-                  position: absolute; inset: 0; border-radius: 50%;
-                  border: 2px solid ${d.ringBorderColor};
-                  box-shadow: ${d.ringBoxShadow};
-                  animation: ${d.ringAnimation};
-                  opacity: ${d.ringOpacity};
-                "></div>
-                <div style="
-                  position: absolute; inset: 5px; border-radius: 12px;
-                  background: ${d.colorHex}22;
-                  display: flex; align-items: center; justify-content: center; overflow: hidden;
-                ">
-                  <canvas
-                    id="overview-sprite-${agent.id}"
-                    width="32" height="34"
-                    style="image-rendering: pixelated; width: 40px; height: 42px; display: block;"
-                  ></canvas>
+              <div style="display: flex; align-items: center; gap: 16px; flex: 0 0 auto;">
+              <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; flex-shrink: 0; width: 72px;">
+                <div style="position: relative; width: 56px; height: 56px;">
+                  <div data-ring-agent="${agent.id}" style="
+                    position: absolute; inset: 0; border-radius: 50%;
+                    border: 2px solid ${d.ringBorderColor};
+                    box-shadow: ${d.ringBoxShadow};
+                    animation: ${d.ringAnimation};
+                    opacity: ${d.ringOpacity};
+                  "></div>
+                  <div style="
+                    position: absolute; inset: 5px; border-radius: 12px;
+                    background: ${d.colorHex}22;
+                    display: flex; align-items: center; justify-content: center; overflow: hidden;
+                  ">
+                    <canvas
+                      id="overview-sprite-${agent.id}"
+                      width="32" height="34"
+                      style="image-rendering: pixelated; width: 40px; height: 42px; display: block;"
+                    ></canvas>
+                  </div>
                 </div>
+                <span style="
+                  font-weight: 800; color: var(--co-text-strong); font-size: ${t.cardTitle};
+                  letter-spacing: 0.2px; max-width: 100%; text-align: center;
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                ">${agent.name}</span>
               </div>
               <div style="flex: 1; min-width: 0;">
-                <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
-                  <span style="font-weight: 800; color: var(--co-text-strong); font-size: ${t.cardTitleLg}; letter-spacing: 0.2px; flex-shrink: 0;">${agent.name}</span>
-                  ${titleChipHtml}
-                </div>
+                ${titleChipHtml}
               </div>
               <div data-status-panel-agent="${agent.id}" style="flex-shrink: 0;">${d.statusPillInner}</div>
+              </div>
             </div>
-              <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column; flex: 0 1 auto; min-height: 0; overflow: hidden;">${d.dynamicBlockInner}</div>
-            </div>
+            <div data-dynamic-agent="${agent.id}" style="display: flex; flex-direction: column; flex: 0 0 auto; max-height: 52px; overflow: hidden;">${d.dynamicBlockInner}</div>
             <div style="flex: 0 0 auto;">${sessionPanelHtml}</div>
           </div>
         </div>

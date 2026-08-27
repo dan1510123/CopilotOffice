@@ -149,6 +149,33 @@ describe('DefaultDashboard — session info panel enhancements', () => {
     expect(html).toContain('class="session-id-badge"');
     expect(html).toContain(`>${fullId}</div>`);
   });
+
+  it('keeps the session-title chip after completion (slacking) when meta is cached', () => {
+    // Regression: the chip used to be gated on live state === 'active', so when a
+    // task completed and the PTY exited (agent -> slacking) the title flashed out
+    // and vanished. It must now persist on cached meta until the user reopens the
+    // terminal / starts a new session.
+    const slackingOffice = () => {
+      const agents = new Map<string, any>();
+      agents.set('a1', { state: 'slacking', subState: null });
+      return {
+        config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
+        agents,
+        agentTools: new Map(),
+      } as unknown as OfficeData;
+    };
+    const html = defaultDashboard.renderCards({
+      agents: [agent('a1', 'Alice')],
+      office: slackingOffice(),
+      selectedAgentId: 'a1',
+      cachedSessionMeta: { a1: { title: 'My completed task', sessionId: 'abcdef12-3456-7890-abcd-ef1234567890' } },
+      agentTools: new Map(),
+      formatElapsed: () => '0s',
+      formatRelativeTime: () => 'now',
+    });
+    expect(html).toContain('class="session-title-display"');
+    expect(html).toContain('My completed task');
+  });
 });
 
 describe('DefaultClickHandler — Close Session routing', () => {
