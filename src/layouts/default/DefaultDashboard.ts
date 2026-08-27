@@ -144,21 +144,20 @@ function buildAgentDynamics(
   const pillAnim = isAttention
     ? `animation: copilot-pill-pulse 1.25s ease-in-out infinite; box-shadow: 0 0 14px -2px ${statusDot};`
     : (isPulse ? 'animation: copilot-pill-pulse 1.9s ease-in-out infinite;' : '');
-  // The flag pill (amber-gold) sits to the LEFT of the status pill and pulses to
-  // draw the eye, mirroring the "needs action" language without replacing status.
+  // Flag pill: a compact, secondary "🚩 Flagged" marker that trails the status
+  // pill. The status pill stays the primary/upleveled chip (esp. Done/Waiting),
+  // so when an agent is both flagged and done the blue Done chip leads and the
+  // flag rides alongside without competing for prominence.
   const flagPillInner = isFlagged ? `
         <span style="
-          display: inline-flex; align-items: center; gap: 6px; transform-origin: center;
-          font-size: calc(${t.statusText} + 1px); font-weight: 800; line-height: 1;
-          padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+          display: inline-flex; align-items: center; gap: 5px; transform-origin: center;
+          font-size: ${t.statusText}; font-weight: 800; line-height: 1;
+          padding: 5px 10px; border-radius: 999px; white-space: nowrap;
           background: color-mix(in srgb, var(--co-flag) 16%, transparent);
-          color: var(--co-flag); border: 1.5px solid color-mix(in srgb, var(--co-flag) 60%, transparent);
-          box-shadow: 0 0 12px -3px var(--co-flag);
-          animation: copilot-pill-pulse 1.6s ease-in-out infinite;
-        "><span style="font-size: 15px; line-height: 1;">🚩</span>Flagged</span>` : '';
+          color: var(--co-flag); border: 1.5px solid color-mix(in srgb, var(--co-flag) 55%, transparent);
+        "><span style="font-size: 13px; line-height: 1;">🚩</span>Flagged</span>` : '';
   const statusPillInner = `
         <span style="display: inline-flex; align-items: center; gap: 8px;">
-        ${flagPillInner}
         <span style="
           display: inline-flex; align-items: center; gap: 7px; transform-origin: center;
           font-size: ${pillFont}; font-weight: 800; line-height: 1;
@@ -169,6 +168,7 @@ function buildAgentDynamics(
           <span style="font-size: ${pillIconSize}; line-height: 1;">${statusPres.icon}</span>
           ${statusLabel}${elapsedSpan}${queueSpan}
         </span>
+        ${flagPillInner}
         </span>`;
 
   // ── Dynamic block ── (intentionally empty: the single most recent activity now
