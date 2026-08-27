@@ -255,9 +255,11 @@ export const defaultDashboard: DashboardRenderer = {
       const hasSession = liveStatus?.state === 'active';
       const isFlagged = ctx.flaggedAgentIds?.has(agent.id) ?? false;
       // Flag toggle: available whether or not the agent has a live session, so the
-      // user can mark a slacking agent to revisit too. Filled gold when flagged.
+      // user can mark a slacking agent to revisit too. The label describes the
+      // action (not the state — the pill/banner already say "Flagged"), so it
+      // reads "🚩 Flag" when off and "✓ Resolve" (filled gold) when on.
       const flagBtnHtml = `<button class="session-flag-btn ui-btn ${isFlagged ? 'ui-btn--flagged' : 'ui-btn--flag'}" data-agent="${agent.id}"
-              title="${isFlagged ? 'Clear the Needs Attention flag' : 'Flag this agent — Needs attention (come back to it)'}">${isFlagged ? '🚩 Flagged' : '🚩 Flag'}</button>`;
+              title="${isFlagged ? 'Resolve — clear the Needs Attention flag' : 'Flag this agent — Needs attention (come back to it)'}">${isFlagged ? '✓ Resolve' : '🚩 Flag'}</button>`;
       const metaTitle = meta?.title || '';
       const metaSessionId = meta?.sessionId || '';
       // The title chip persists on cached session meta, decoupled from the live
@@ -379,13 +381,13 @@ export const defaultDashboard: DashboardRenderer = {
                 letter-spacing: 0.2px; max-width: 100%; text-align: center;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
               ">${agent.name}</span>
-              ${sessionIdBadgeHtml}
             </div>
 
             <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden;">
               <div style="flex: 1 1 auto; min-height: 0; display: flex; align-items: center; gap: 12px; overflow: hidden;">
-                <div style="flex: 1; min-width: 0;">
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 5px;">
                   ${titleChipHtml}
+                  ${sessionIdBadgeHtml}
                 </div>
                 <div data-status-panel-agent="${agent.id}" style="flex-shrink: 0;">${d.statusPillInner}</div>
               </div>

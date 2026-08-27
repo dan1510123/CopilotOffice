@@ -269,11 +269,12 @@ describe('DefaultDashboard — user flag (Needs attention) marker', () => {
     expect(html).toMatch(/class="session-flag-btn [^"]*"[^>]*data-agent="a1"/);
   });
 
-  it('shows the filled "🚩 Flagged" button, flag pill, and banner when flagged', () => {
+  it('shows the filled "✓ Resolve" button, flag pill, and banner when flagged', () => {
     const html = defaultDashboard.renderCards(flagCtx(true));
-    // Button flips to the filled ui-btn--flagged variant + label.
+    // Button flips to the filled ui-btn--flagged variant and an action-oriented
+    // "Resolve" label (the pill/banner already announce the "Flagged" state).
     expect(html).toMatch(/class="session-flag-btn [^"]*ui-btn--flagged"/);
-    expect(html).toContain('🚩 Flagged');
+    expect(html).toContain('✓ Resolve');
     // Flag pill beside the status pill.
     expect(html).toContain('>Flagged</span>');
     // Amber-gold attention banner takes over.
