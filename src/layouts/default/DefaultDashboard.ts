@@ -262,6 +262,17 @@ export const defaultDashboard: DashboardRenderer = {
             max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           ">${metaSessionId}</div>`
         : '';
+      const titleChipHtml = hasSession ? `
+        <span class="session-title-display" data-agent="${agent.id}" title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set a session title'}" style="
+          display: inline-flex; align-items: flex-start; gap: 6px;
+          flex: 0 1 auto; min-width: 0; max-width: 100%;
+          font-weight: 700; font-size: ${t.sessionTitleLg}; line-height: 1.3;
+          color: ${metaTitle ? 'var(--co-text)' : 'var(--co-text-faint)'};
+          background: var(--co-bg-badge-inset); border: 1px solid var(--co-border-subtle);
+          padding: 4px 11px; border-radius: 8px; cursor: text; overflow: hidden;
+          ${metaTitle ? '' : 'font-style: italic;'}
+        ">📝 <span style="min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere;">${metaTitle || 'Untitled session'}</span></span>` : '';
+
       const sessionPanelHtml = hasSession ? `
         <div class="session-meta-panel" data-agent="${agent.id}" style="
           margin-top: 13px; padding-top: 13px;
@@ -269,12 +280,12 @@ export const defaultDashboard: DashboardRenderer = {
           display: flex; align-items: center; gap: 14px;
         ">
           <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px;">
-            <div style="font-size: ${t.sessionLabel}; color: var(--co-text-faint); text-transform: uppercase; letter-spacing: 0.5px;">Session Info</div>
-            <div class="session-title-display" data-agent="${agent.id}" style="
-              font-weight: bold; color: ${metaTitle ? 'var(--co-text)' : 'var(--co-text-faint)'}; font-size: ${t.sessionTitle};
-              cursor: text; min-height: 18px; line-height: 1.35;
+            <div style="font-size: ${t.sessionLabel}; color: var(--co-text-faint); text-transform: uppercase; letter-spacing: 0.5px;">Now doing</div>
+            <div data-activity-detail-agent="${agent.id}" style="
+              height: 18px; line-height: 18px;
+              font-size: ${t.taskSummary}; color: var(--co-text-secondary);
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-            " title="${metaTitle ? metaTitle.replace(/"/g, '&quot;') : 'Click to set title'}">${metaTitle || 'Untitled session'}</div>
+            " title="${d.activityDetailEsc}">${d.activityDetail}</div>
             ${sessionIdBadgeHtml}
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
@@ -293,9 +304,13 @@ export const defaultDashboard: DashboardRenderer = {
         <div style="
           margin-top: 13px; padding-top: 13px;
           border-top: 1px solid var(--co-bg-divider);
-          opacity: 0.4;
         ">
-          <div style="font-size: ${t.emptyState}; color: var(--co-text-faint); font-style: italic;">No active session</div>
+          <div style="font-size: ${t.sessionLabel}; color: var(--co-text-faint); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 5px;">Status</div>
+          <div data-activity-detail-agent="${agent.id}" style="
+            height: 18px; line-height: 18px;
+            font-size: ${t.taskSummary}; color: var(--co-text-faint); font-style: italic;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          " title="${d.activityDetailEsc}">${d.activityDetail || 'No active session'}</div>
         </div>
       `;
 
@@ -336,15 +351,10 @@ export const defaultDashboard: DashboardRenderer = {
                 </div>
               </div>
               <div style="flex: 1; min-width: 0;">
-                <div style="display: flex; align-items: baseline; gap: 9px;">
-                  <span style="font-weight: 800; color: var(--co-text-strong); font-size: ${t.cardTitleLg}; letter-spacing: 0.2px;">${agent.name}</span>
-                  <span style="color: var(--co-text-muted); font-size: ${t.cardDescription}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${agent.description}</span>
+                <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                  <span style="font-weight: 800; color: var(--co-text-strong); font-size: ${t.cardTitleLg}; letter-spacing: 0.2px; flex-shrink: 0;">${agent.name}</span>
+                  ${titleChipHtml}
                 </div>
-                <div data-activity-detail-agent="${agent.id}" style="
-                  height: 18px; line-height: 18px; margin-top: 3px;
-                  font-size: ${t.taskSummary}; color: var(--co-text-secondary);
-                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-                " title="${d.activityDetailEsc}">${d.activityDetail}</div>
               </div>
               <div data-status-panel-agent="${agent.id}" style="flex-shrink: 0;">${d.statusPillInner}</div>
             </div>

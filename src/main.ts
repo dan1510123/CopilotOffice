@@ -2678,6 +2678,16 @@ function setupTerminalClickHandler() {
     const target = e.target as HTMLElement;
     const layout = getLayout(getCurrentLayout());
 
+    // Session title now lives in the card header (outside .session-meta-panel),
+    // so route its clicks to inline edit before the card-open handler.
+    const titleDisplay = target.closest('.session-title-display');
+    if (titleDisplay) {
+      e.stopPropagation();
+      const agentId = (titleDisplay as HTMLElement).dataset.agent;
+      if (agentId) startSessionMetaEdit(agentId);
+      return;
+    }
+
     // Handle session meta panel interactions (prevent card open)
     const metaPanel = target.closest('.session-meta-panel');
     if (metaPanel) {
@@ -2809,13 +2819,13 @@ async function closeSessionFromOverview(agentId: string): Promise<void> {
 }
 
 function startSessionMetaEdit(agentId: string) {
-  const panel = overviewHost.querySelector(`.session-meta-panel[data-agent="${agentId}"]`);
-  if (!panel) return;
-
+  // The editable title lives in the card header now (outside .session-meta-panel),
+  // so locate it directly by agent id rather than through the panel.
   const meta = cachedSessionMeta[agentId] || { title: '' };
-  const titleEl = panel.querySelector('.session-title-display') as HTMLElement | null;
+  const titleEl = overviewHost.querySelector(`.session-title-display[data-agent="${agentId}"]`) as HTMLElement | null;
+  if (!titleEl) return;
 
-  if (titleEl) {
+  {
     activeSessionTitleEditAgentId = agentId;
     replaceWithInput(titleEl, meta.title, 'Session title...', 80, async (value) => {
       const officeId = officeManager.currentOfficeId || 'office-0';

@@ -136,7 +136,7 @@ describe('DefaultDashboard — session info panel enhancements', () => {
     const html = defaultDashboard.renderCards(ctx({ a1: { title: 'titled' } }));
     expect(html).not.toContain('class="session-id-badge"');
     // Other session-info chrome must still render.
-    expect(html).toContain('Session Info');
+    expect(html).toContain('Now doing');
     expect(html).toContain('class="session-title-display"');
   });
 
