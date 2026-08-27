@@ -53,7 +53,15 @@ function buildAgentDynamics(
   const isAttention = statusKey === 'done' || statusKey === 'waiting';
   // FR-011/FR-015: the "what it's doing" detail is rendered on its own fixed
   // slot (never concatenated into the label), so it cannot grow the card.
-  const activityDetail = describeActivity(liveStatus);
+  // The bottom "Now doing" line shows the single most recent activity: the live
+  // detail (waiting/starting) when present, otherwise the latest completed action
+  // (e.g. "✓ powershell"). thinking exposes no live detail, so this keeps the
+  // line meaningful without the separate middle activity block.
+  const liveDetail = describeActivity(liveStatus);
+  const lastCompleted = (liveStatus?.recentActions || [])
+    .filter(a => a.type === 'completed')
+    .slice(-1)[0];
+  const activityDetail = liveDetail || (lastCompleted ? `✓ ${lastCompleted.action}` : '');
   const activityDetailEsc = activityDetail.replace(/"/g, '&quot;');
 
   const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
@@ -65,12 +73,8 @@ function buildAgentDynamics(
   const cardBg = isAttention
     ? `linear-gradient(115deg, ${statusDot}18 0%, var(--co-bg-card) 45%), var(--co-bg-card)`
     : (isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)');
-  const unread = liveStatus?.unreadCount || 0;
   const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
   const toolCount = tools.length;
-  const recentActions = liveStatus?.recentActions || [];
-  const taskSummary = liveStatus?.taskSummary || '';
-  const isActive = liveStatus?.state === 'active' && liveStatus?.subState !== 'ready' && liveStatus?.subState !== 'error';
 
   // ── Glow-ring (avatar surround). Pulses while working; a slower pulse signals
   // attention; otherwise dimmed and still. ──
@@ -133,57 +137,11 @@ function buildAgentDynamics(
           ${statusLabel}${elapsedSpan}${queueSpan}
         </span>`;
 
-  // ── Tool Pipeline Section ── (capped to a fixed max rows so tool churn can
-  // never grow the card; the active tool is the last one, always kept)
-  let toolPipelineHtml = '';
-  if (tools.length > 0) {
-    const MAX_TOOL_ROWS = 2;
-    const shownTools = tools.slice(-MAX_TOOL_ROWS);
-    const hiddenCount = tools.length - shownTools.length;
-    const moreRow = hiddenCount > 0
-      ? `<div style="font-size: ${t.toolRow}; color: var(--co-text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">◦ +${hiddenCount} more queued</div>`
-      : '';
-    const toolRows = shownTools.map((tool, i) => {
-      const isLast = i === shownTools.length - 1;
-      const icon = isLast ? '▸' : '◦';
-      const color = isLast ? 'var(--co-accent)' : 'var(--co-text-faint)';
-      const statusText = isLast ? tool.status : '(queued)';
-      return `<div style="font-size: ${t.toolRow}; color: ${color}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 0;">
-            ${icon} <span style="color: var(--co-text-secondary);">${tool.name}</span> <span style="color: var(--co-text-faint);">— ${statusText}</span>
-          </div>`;
-    }).join('');
-    toolPipelineHtml = `
-          <div style="margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--co-bg-divider);">
-            ${moreRow}${toolRows}
-          </div>`;
-  }
-
-  // ── Recent Activity Log ── (top 2 only, in a height-bounded box so a burst
-  // of actions can never grow the card)
-  let activityLogHtml = '';
-  const completedActions = recentActions.filter(a => a.type === 'completed').slice(-2).reverse();
-  if (completedActions.length > 0) {
-    const rows = completedActions.map(a => {
-      const relTime = formatRelativeTime(a.timestamp);
-      return `<div style="display: flex; gap: 8px; font-size: ${t.activityRow}; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" data-action-ts="${a.timestamp}">
-            <span style="color: var(--co-text-faint); flex-shrink: 0; min-width: 48px; text-align: right;">${relTime}</span>
-            <span style="color: var(--co-text-muted); overflow: hidden; text-overflow: ellipsis;">✓ ${a.action}</span>
-          </div>`;
-    }).join('');
-    activityLogHtml = `
-          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--co-bg-divider); max-height: 56px; overflow: hidden;">
-            <div style="font-size: ${t.sectionLabel}; color: var(--co-text-faint); margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Activity</div>
-            ${rows}
-          </div>`;
-  }
-
-  // ── Task Summary ──
-  const taskSummaryHtml = taskSummary && isActive ? `
-        <div style="font-size: ${t.taskSummary}; color: var(--co-text-muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          📋 ${taskSummary}
-        </div>` : '';
-
-  const dynamicBlockInner = `${taskSummaryHtml}${toolPipelineHtml}${activityLogHtml}`;
+  // ── Dynamic block ── (intentionally empty: the single most recent activity now
+  // lives in the footer "Now doing" line, so there is no separate middle block of
+  // task summary / tool pipeline / recent-activity that could crowd the card).
+  // The wrapper + dynamic region are kept so surfaces can re-enable content later.
+  const dynamicBlockInner = '';
 
   return {
     colorHex,
