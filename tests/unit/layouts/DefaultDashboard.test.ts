@@ -289,6 +289,58 @@ describe('DefaultDashboard — user flag (Needs attention) marker', () => {
     expect(html).not.toContain('>Flagged</span>');
   });
 
+  // Adaptive chip emphasis: exactly one pill leads. When the status is itself an
+  // attention state (Done/Waiting) the status pill leads; when the status is quiet
+  // (e.g. Ready after acknowledging Done) the flag pill leads instead.
+  function statusFlagCtx(st: any): DashboardRenderContext {
+    const agents = new Map<string, any>();
+    agents.set('a1', st);
+    const off = {
+      config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
+      agents,
+      agentTools: new Map(),
+    } as unknown as OfficeData;
+    return {
+      agents: [agent('a1', 'Alice')],
+      office: off,
+      selectedAgentId: 'a1',
+      cachedSessionMeta: { a1: { title: 'My session' } },
+      agentTools: new Map(),
+      formatElapsed: () => '0s',
+      formatRelativeTime: () => 'now',
+      flaggedAgentIds: new Set(['a1']),
+    };
+  }
+
+  it('leads with the status chip (Done) when flagged AND done — Done before Flagged', () => {
+    // Done = ready + completionPendingAck (resolveStatusKey folds to "done").
+    const html = defaultDashboard.renderCards(
+      statusFlagCtx({ state: 'active', subState: 'ready', completionPendingAck: true }),
+    );
+    const donePillIdx = html.indexOf('Done');
+    const flagPillIdx = html.indexOf('>Flagged</span>');
+    expect(donePillIdx).toBeGreaterThan(-1);
+    expect(flagPillIdx).toBeGreaterThan(-1);
+    // Status pill appears before the flag pill (it leads).
+    expect(donePillIdx).toBeLessThan(flagPillIdx);
+    // The lead flag pill's big pulse/glow is NOT applied to the trailing flag here.
+  });
+
+  it('leads with the flag chip when flagged AND the status is quiet (Ready)', () => {
+    // Ready (acknowledged) is a quiet status — the flag should take the lead.
+    const html = defaultDashboard.renderCards(
+      statusFlagCtx({ state: 'active', subState: 'ready', completionPendingAck: false }),
+    );
+    const flagPillIdx = html.indexOf('>Flagged</span>');
+    const statusPillIdx = html.indexOf('Ready');
+    expect(flagPillIdx).toBeGreaterThan(-1);
+    expect(statusPillIdx).toBeGreaterThan(-1);
+    // Flag pill appears before the status pill (it leads).
+    expect(flagPillIdx).toBeLessThan(statusPillIdx);
+    // The leading flag pill carries the emphasis glow (box-shadow on the flag var).
+    expect(html).toContain('box-shadow: 0 0 14px -2px var(--co-flag)');
+  });
+
   it('offers the flag button even for a slacking (no-session) agent', () => {
     const html = defaultDashboard.renderCards(flagCtx(false, true));
     // No active session, but the flag toggle is still present so the user can

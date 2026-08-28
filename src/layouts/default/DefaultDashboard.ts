@@ -134,41 +134,61 @@ function buildAgentDynamics(
   const queueSpan = toolCount > 1
     ? ` <span style="opacity: 0.5;">·</span> ${toolCount} tools`
     : '';
-  // ── Status pill (header right). Bigger + pulsing for the states where the
-  // user should act (waiting/done) or is actively watching (thinking/starting),
-  // so "action needed" reads at a glance. The live elapsed timer keeps its own
-  // `data-elapsed-agent` element so the per-second ticker can patch it. ──
-  const pillFont = isAttention ? `calc(${t.statusText} + 2px)` : `calc(${t.statusText} + 1px)`;
-  const pillPad = isAttention ? '8px 16px' : '6px 13px';
-  const pillIconSize = isAttention ? '17px' : '15px';
-  const pillAnim = isAttention
+  // ── Status + flag pills (header right). Emphasis is adaptive so exactly one
+  // chip leads:
+  //   • When the status itself is an attention state (Done/Waiting), the status
+  //     pill leads — bigger + pulsing + glowing — and the flag rides as a compact
+  //     secondary marker (so the blue Done chip stays the star).
+  //   • When the status is quiet (thinking/ready/slacking/etc.), a present flag
+  //     becomes the lead chip — bigger + pulsing + glowing — and the status pill
+  //     shrinks to the secondary slot (so after you open a Done agent and it folds
+  //     to Ready, the amber Flagged marker is what pops).
+  // `flagLeads` is only true when flagged AND the status isn't itself attention.
+  const flagLeads = isFlagged && !isAttention;
+  // Status pill sizing/emphasis: full when it leads (isAttention), reduced when a
+  // flag has taken the lead, default otherwise.
+  const statusPillFont = isAttention
+    ? `calc(${t.statusText} + 2px)`
+    : (flagLeads ? t.statusText : `calc(${t.statusText} + 1px)`);
+  const statusPillPad = isAttention ? '8px 16px' : (flagLeads ? '5px 10px' : '6px 13px');
+  const statusPillIconSize = isAttention ? '17px' : (flagLeads ? '13px' : '15px');
+  const statusPillAnim = isAttention
     ? `animation: copilot-pill-pulse 1.25s ease-in-out infinite; box-shadow: 0 0 14px -2px ${statusDot};`
-    : (isPulse ? 'animation: copilot-pill-pulse 1.9s ease-in-out infinite;' : '');
-  // Flag pill: a compact, secondary "🚩 Flagged" marker that trails the status
-  // pill. The status pill stays the primary/upleveled chip (esp. Done/Waiting),
-  // so when an agent is both flagged and done the blue Done chip leads and the
-  // flag rides alongside without competing for prominence.
-  const flagPillInner = isFlagged ? `
+    : (flagLeads ? '' : (isPulse ? 'animation: copilot-pill-pulse 1.9s ease-in-out infinite;' : ''));
+  const statusPill = `
+        <span style="
+          display: inline-flex; align-items: center; gap: 7px; transform-origin: center;
+          font-size: ${statusPillFont}; font-weight: 800; line-height: 1;
+          padding: ${statusPillPad}; border-radius: 999px; white-space: nowrap;
+          background: ${statusDot}1f; color: ${statusDot}; border: 1.5px solid ${statusDot}77;
+          ${statusPillAnim}
+        ">
+          <span style="font-size: ${statusPillIconSize}; line-height: 1;">${statusPres.icon}</span>
+          ${statusLabel}${elapsedSpan}${queueSpan}
+        </span>`;
+  // Flag pill: full emphasis (bigger + pulsing + glowing) when it leads; compact +
+  // quiet when the status pill leads.
+  const flagPill = !isFlagged ? '' : (flagLeads ? `
+        <span style="
+          display: inline-flex; align-items: center; gap: 7px; transform-origin: center;
+          font-size: calc(${t.statusText} + 2px); font-weight: 800; line-height: 1;
+          padding: 8px 16px; border-radius: 999px; white-space: nowrap;
+          background: color-mix(in srgb, var(--co-flag) 18%, transparent);
+          color: var(--co-flag); border: 1.5px solid color-mix(in srgb, var(--co-flag) 60%, transparent);
+          box-shadow: 0 0 14px -2px var(--co-flag);
+          animation: copilot-pill-pulse 1.25s ease-in-out infinite;
+        "><span style="font-size: 17px; line-height: 1;">🚩</span>Flagged</span>` : `
         <span style="
           display: inline-flex; align-items: center; gap: 5px; transform-origin: center;
           font-size: ${t.statusText}; font-weight: 800; line-height: 1;
           padding: 5px 10px; border-radius: 999px; white-space: nowrap;
           background: color-mix(in srgb, var(--co-flag) 16%, transparent);
           color: var(--co-flag); border: 1.5px solid color-mix(in srgb, var(--co-flag) 55%, transparent);
-        "><span style="font-size: 13px; line-height: 1;">🚩</span>Flagged</span>` : '';
+        "><span style="font-size: 13px; line-height: 1;">🚩</span>Flagged</span>`);
+  // Lead chip first, secondary chip trailing.
   const statusPillInner = `
         <span style="display: inline-flex; align-items: center; gap: 8px;">
-        <span style="
-          display: inline-flex; align-items: center; gap: 7px; transform-origin: center;
-          font-size: ${pillFont}; font-weight: 800; line-height: 1;
-          padding: ${pillPad}; border-radius: 999px; white-space: nowrap;
-          background: ${statusDot}1f; color: ${statusDot}; border: 1.5px solid ${statusDot}77;
-          ${pillAnim}
-        ">
-          <span style="font-size: ${pillIconSize}; line-height: 1;">${statusPres.icon}</span>
-          ${statusLabel}${elapsedSpan}${queueSpan}
-        </span>
-        ${flagPillInner}
+        ${flagLeads ? flagPill + statusPill : statusPill + flagPill}
         </span>`;
 
   // ── Dynamic block ── (intentionally empty: the single most recent activity now
