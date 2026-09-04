@@ -335,3 +335,55 @@ export function buildAskUserRelay(
   }
   return null;
 }
+
+/** Normalized plan-mode payload relayed as `copilot-plan`. */
+export interface PlanRelay {
+  toolId: string;
+  /** SDK single-resolution key (`exit_plan_mode.requested`); '' on the node-pty path. */
+  requestId: string;
+  summary: string;
+  planContent: string;
+  actions: string[];
+  recommendedAction: string;
+}
+
+/**
+ * Pure relay translator for Copilot plan mode. Given a copilot event and the active
+ * backend name, return the normalized plan payload to relay as `copilot-plan`, or `null`
+ * when the event is not a plan surface for this backend. Mirrors {@link buildAskUserRelay}.
+ *
+ * - SDK/ui-server backend: the ephemeral `exit_plan_mode.requested` event carries the
+ *   payload natively (incl. the `requestId` used to resolve via the SDK handler).
+ * - node-pty backend: `tool.execution_start` with `toolName === 'exit_plan_mode'`,
+ *   from arguments (`requestId` unavailable → ''); render-only (no SDK responder).
+ */
+export function buildPlanRelay(
+  event: { type: string; data: Record<string, unknown> },
+  backendName: string,
+): PlanRelay | null {
+  const d = event.data ?? {};
+  const toArr = (v: unknown): string[] =>
+    Array.isArray(v) ? v.map((x) => String(x ?? '')).filter((s) => s.length > 0) : [];
+  if (event.type === 'exit_plan_mode.requested') {
+    return {
+      toolId: String(d.toolCallId ?? ''),
+      requestId: String(d.requestId ?? ''),
+      summary: String(d.summary ?? ''),
+      planContent: String(d.planContent ?? ''),
+      actions: toArr(d.actions),
+      recommendedAction: String(d.recommendedAction ?? ''),
+    };
+  }
+  if (event.type === 'tool.execution_start' && d.toolName === 'exit_plan_mode' && backendName === 'node-pty') {
+    const a = (d.arguments ?? {}) as Record<string, unknown>;
+    return {
+      toolId: String(d.toolCallId ?? ''),
+      requestId: '',
+      summary: String(a.summary ?? ''),
+      planContent: String(a.planContent ?? ''),
+      actions: toArr(a.actions),
+      recommendedAction: String(a.recommendedAction ?? ''),
+    };
+  }
+  return null;
+}

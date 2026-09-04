@@ -144,6 +144,49 @@ export interface PendingQuestion {
   createdAt: number;
 }
 
+/**
+ * A single selectable approval action within a {@link PendingPlan}. `label` is the
+ * system-generated Teams selector (matching key); `action` is the raw exit-action id
+ * (e.g. `interactive`, `autopilot`) submitted to the runtime when chosen; `text` is the
+ * human-readable description shown in the thread.
+ */
+export interface PlanOption {
+  /** Generated selector shown in Teams (e.g. `A`, `B`, `C`). Case-insensitive match key. */
+  label: string;
+  /** Raw exit-action id (e.g. `interactive`, `autopilot`, `exit_only`). */
+  action: string;
+  /** Human-readable description shown in the thread. */
+  text: string;
+}
+
+/**
+ * The record that an online agent currently awaits an `exit_plan_mode` approval. At most
+ * one per online agent; transient, in-memory, main-process only (never persisted). Only
+ * tracked on the SDK/ui-server backend (non-empty `requestId`); the node-pty backend is
+ * render-only (approval resolved in the local TUI).
+ */
+export interface PendingPlan {
+  agentId: string;
+  officeId: string;
+  binding: OnlineAgentBinding;
+  /** The exit_plan_mode tool-call id; informational / diagnostics. */
+  toolId: string;
+  /** SDK `exit_plan_mode.requested` request id — the single-resolution key. */
+  requestId: string;
+  /** Concise bullet-point plan summary (markdown), preserved from the payload. */
+  summary: string;
+  /** Full plan content (markdown), when available. */
+  planContent: string;
+  /** Ordered approval actions; order = presentation and label-assignment order. */
+  options: PlanOption[];
+  /** Single-resolution latch. Set true by the first resolver (Teams or local). */
+  resolved: boolean;
+  /** Message id of the posted decision message (self-loop bookkeeping / reference). */
+  postedMessageId?: string;
+  /** Unix ms; diagnostics / stale-guard. */
+  createdAt: number;
+}
+
 /** Per-agent online status surfaced to the renderer. */
 export interface OnlineAgentStatus {
   agentId: string;

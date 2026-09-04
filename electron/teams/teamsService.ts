@@ -29,6 +29,8 @@ import { pickAckQuip, pickOrchestratorAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import { isAzLoginError } from './auth';
 import { isOrchestratorKey } from '../orchestrator/orchestratorIdentity';
+import { resolveSlashCommand, type SlashCommand } from './slashCommands';
+import { formatControlData, formatHelp } from './slashCommandFormat';
 import type {
   TeamsSettings,
   OnlineAgentBinding,
@@ -37,6 +39,8 @@ import type {
   OnlineAgentStatus,
   PendingQuestion,
   AskUserOption,
+  PendingPlan,
+  PlanOption,
 } from './types';
 
 export interface TeamsToast {
@@ -233,6 +237,13 @@ export class TeamsService {
    * {@link pending} (in-flight Teams dispatches) and {@link ambient}.
    */
   private readonly pendingQuestions = new Map<string, PendingQuestion>(); // key = agentId
+  /**
+   * Pending `exit_plan_mode` approvals awaiting an in-thread decision, keyed by agentId.
+   * At most one per online agent; transient, in-memory. Resolved via `gateway.respondPlan`.
+   * Only populated on the SDK/ui-server backend (non-empty requestId) — the node-pty
+   * backend is render-only (plan approved in the local TUI).
+   */
+  private readonly pendingPlans = new Map<string, PendingPlan>(); // key = agentId
   /**
    * Pending orchestrator tool-approval gates awaiting an in-thread Approve/Deny reply
    * (spec 016 Workstream B), keyed by agentId. At most one per online agent; transient,
@@ -499,6 +510,21 @@ export class TeamsService {
           .catch((err) => twarn('respondPermission (offline) failed:', (err as Error).message));
       }
     }
+    // Plan mode: auto-reject any outstanding exit_plan_mode approval so the blocked
+    // handler resolves (approved:false) and the turn doesn't hang, then clear the record.
+    const abandonedPlan = this.pendingPlans.get(agentId);
+    if (abandonedPlan) {
+      this.pendingPlans.delete(agentId);
+      if (!abandonedPlan.resolved) {
+        abandonedPlan.resolved = true;
+        void this.deps.gateway
+          .respondPlan(officeId, agentId, { requestId: abandonedPlan.requestId || undefined, approved: false, feedback: 'Agent taken offline before the plan was reviewed.' })
+          .catch((err) => twarn('respondPlan (offline) failed:', (err as Error).message));
+      }
+      if (postNotice && b.online && b.threadRootId) {
+        await this.safeReply(b, `${this.agentLabel(b)} ⚠️ This plan is no longer approvable (agent offline).`);
+      }
+    }
     if (postNotice && b.online && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
@@ -554,9 +580,12 @@ export class TeamsService {
     if (!binding) return;
 
     const content = msg.content.trim();
-    if (content === '/stop') {
-      tlog(`/stop received in @${binding.handle}'s thread — taking offline.`);
-      await this.goOffline(binding.officeId, binding.agentId, true);
+    // Teams slash-command interception: an allow-listed command is executed via the
+    // control plane, NOT enqueued as a model prompt. Unknown slashes fall through so
+    // skill invocations and arbitrary slashes still reach the model.
+    const cmd = resolveSlashCommand(content);
+    if (cmd) {
+      await this.handleSlashCommand(cmd, binding);
       return;
     }
 
@@ -567,6 +596,18 @@ export class TeamsService {
     if (pendingApp) {
       if (!pendingApp.resolved) {
         await this.resolveApproval(pendingApp, msg.content);
+      }
+      return;
+    }
+
+    // Plan mode: if this agent has a pending exit_plan_mode plan, a thread reply is an
+    // approval decision (a selector letter) or free-form change request — not a new
+    // prompt. Route it to the plan resolver (→ gateway.respondPlan). A resolved record
+    // (near-simultaneous second reply) drops the reply as a no-op (single-resolution).
+    const pendingPlanRec = this.pendingPlans.get(binding.agentId);
+    if (pendingPlanRec) {
+      if (!pendingPlanRec.resolved) {
+        await this.resolvePlanDecision(pendingPlanRec, msg.content);
       }
       return;
     }
@@ -601,6 +642,81 @@ export class TeamsService {
         ? pickOrchestratorAckQuip()
         : pickAckQuip();
       void this.safeReply(binding, `${this.agentLabel(binding)} ⌛ ${escapeHtml(quip)} <i>(message received)</i>`);
+    }
+  }
+
+  /**
+   * Execute an allow-listed Teams slash command (see {@link resolveSlashCommand}).
+   * Runs via the control plane and posts the result to the thread — never enqueues it
+   * as a model prompt.
+   */
+  private async handleSlashCommand(cmd: SlashCommand, binding: OnlineAgentBinding): Promise<void> {
+    const { officeId, agentId } = binding;
+    const label = this.agentLabel(binding);
+
+    switch (cmd.kind) {
+      case 'offline':
+        tlog(`/stop received in @${binding.handle}'s thread — taking offline.`);
+        await this.goOffline(officeId, agentId, true);
+        return;
+
+      case 'help':
+        await this.safeReply(binding, `${label}<br>${formatHelp()}`);
+        return;
+
+      case 'reset': {
+        if (!this.deps.gateway.resetSession) {
+          await this.safeReply(binding, `${label} ⚠️ This agent can't be reset from Teams.`);
+          return;
+        }
+        try {
+          const newId = await this.deps.gateway.resetSession(officeId, agentId);
+          if (!newId) {
+            await this.safeReply(binding, `${label} ⚠️ Couldn't ${cmd.resetMode === 'clear' ? 'clear' : 'start a new'} session.`);
+            return;
+          }
+          // Keep the binding's sessionId in sync so subsequent replies target the fresh session.
+          binding.sessionId = newId;
+          await this.persist();
+          const msg = cmd.resetMode === 'clear' ? '🧹 <b>Cleared history</b> — started a fresh session.' : '🔄 <b>Started a fresh session.</b>';
+          await this.safeReply(binding, `${label}<br>${msg}`);
+        } catch (e) {
+          twarn('slash reset failed:', (e as Error).message);
+          await this.safeReply(binding, `${label} ⚠️ Reset failed: ${escapeHtml((e as Error).message)}`);
+        }
+        return;
+      }
+
+      case 'control': {
+        if (!cmd.control) return;
+        if (!this.deps.gateway.runControl) {
+          await this.safeReply(binding, `${label} ⚠️ <code>/${escapeHtml(cmd.name)}</code> isn't supported for this agent.`);
+          return;
+        }
+        try {
+          const res = await this.deps.gateway.runControl(officeId, agentId, cmd.control, cmd.args);
+          if (!res.executed) {
+            await this.safeReply(binding, `${label} ⚠️ <code>/${escapeHtml(cmd.name)}</code> couldn't run: ${escapeHtml(res.error)}`);
+            return;
+          }
+          if (res.via === 'sdk') {
+            await this.safeReply(binding, `${label}<br>${formatControlData(res.data)}`);
+          } else {
+            // node-pty keystroke path: no structured result — the TUI renders its own
+            // output, which streams back via forwarding. Post a lightweight ack.
+            await this.safeReply(binding, `${label} ▶️ Ran <code>/${escapeHtml(cmd.name)}</code>.`);
+          }
+        } catch (e) {
+          twarn('slash control failed:', (e as Error).message);
+          await this.safeReply(binding, `${label} ⚠️ <code>/${escapeHtml(cmd.name)}</code> failed: ${escapeHtml((e as Error).message)}`);
+        }
+        return;
+      }
+
+      default: {
+        const never: never = cmd.kind;
+        twarn('unhandled slash command kind:', String(never));
+      }
     }
   }
 
@@ -686,6 +802,23 @@ export class TeamsService {
     // answer already resolved+deleted it, there's no record → no false notice.
     if (e.kind === 'ask-user-complete') {
       this.maybeLocalResolveByRequestId(e.agentId, e.requestId ?? '');
+      return;
+    }
+    // Plan mode: an exit_plan_mode plan is intercepted before the dispatch/ambient split
+    // (like ask-user) so the plan renders + presents its approval instead of streaming as
+    // ordinary output. The blocked turn keeps any in-flight dispatch open until resolved.
+    if (e.kind === 'plan') {
+      const recForPlan = this.pending.get(e.agentId);
+      if (recForPlan) this.cancelSettle(recForPlan);
+      const ambForPlan = this.ambient.get(e.agentId);
+      if (ambForPlan) this.cancelAmbientSettle(ambForPlan);
+      void this.onPlanEvent(e);
+      return;
+    }
+    // Plan mode: the runtime resolved an exit_plan_mode interaction (e.g. approved in the
+    // local TUI). Precisely clear the matching pending plan by requestId (first-resolver-wins).
+    if (e.kind === 'plan-complete') {
+      this.maybeLocalResolvePlanByRequestId(e.agentId, e.planComplete?.requestId ?? '');
       return;
     }
     // spec 015 §C: on the node-pty degraded path there is no user_input.completed event,
@@ -1072,6 +1205,198 @@ export class TeamsService {
     if (this.pendingQuestions.get(e.agentId) === record) {
       record.postedMessageId = firstId;
     }
+  }
+
+  // ── plan mode (exit_plan_mode) approval flow ─────────────────
+
+  /** Human-readable description for a raw exit-action id. */
+  private planActionText(action: string): string {
+    switch (action) {
+      case 'interactive':
+        return 'Accept & continue interactively';
+      case 'autopilot':
+        return 'Accept & run autonomously (autopilot)';
+      case 'autopilot_fleet':
+        return 'Accept & run as parallel workers (fleet)';
+      case 'exit_only':
+        return 'Accept the plan (exit plan mode)';
+      default:
+        return `Accept (${action})`;
+    }
+  }
+
+  /**
+   * Handle a `plan` AgentEvent: an agent presented a plan via `exit_plan_mode`. Post the
+   * plan summary (auto-rendered as an image when long, per spec 018) then, on the
+   * SDK/ui-server backend (non-empty requestId), present the approval actions as A/B/C
+   * selectors and track a {@link PendingPlan}. On the node-pty backend (empty requestId)
+   * the plan is render-only — approval is resolved in the local TUI. Ignored when offline.
+   */
+  private async onPlanEvent(e: AgentEvent): Promise<void> {
+    if (!e.plan) return;
+    const binding = this.bindings.find((b) => b.agentId === e.agentId && b.online);
+    if (!binding) return;
+
+    // Ensure the (possibly locally-driven) plan turn's events keep reaching this consumer.
+    this.deps.gateway.setForwarding(binding.officeId, binding.agentId, true);
+
+    // 1. Post the plan body (summary preferred; fall back to full plan content). Route it
+    //    through the auto-render-replacing path so a long markdown plan becomes an image.
+    const body = (e.plan.summary || e.plan.planContent || '').trim();
+    const heading = `${this.agentLabel(binding)} 📋 <b>shared a plan</b>`;
+    if (body) {
+      if (!(await this.tryRenderReplacingText(binding, body))) {
+        await this.postReply(binding, body);
+      }
+    } else {
+      await this.safeReply(binding, `${heading}<br><br>(no plan details provided)`);
+    }
+
+    // 2. SDK/ui-server: present the approval actions and track the pending plan.
+    const requestId = e.plan.requestId ?? '';
+    if (requestId) {
+      const actions = e.plan.actions.length ? e.plan.actions : ['exit_only'];
+      // Recommended action first (rendered as option A), remaining actions in order.
+      const ordered = [
+        ...actions.filter((a) => a === e.plan!.recommendedAction),
+        ...actions.filter((a) => a !== e.plan!.recommendedAction),
+      ];
+      const options: PlanOption[] = ordered.map((action, i) => ({
+        label: selectorLabel(i),
+        action,
+        text:
+          action === e.plan!.recommendedAction
+            ? `${this.planActionText(action)} (recommended)`
+            : this.planActionText(action),
+      }));
+      const record: PendingPlan = {
+        agentId: e.agentId,
+        officeId: binding.officeId,
+        binding,
+        toolId: e.plan.toolId,
+        requestId,
+        summary: e.plan.summary,
+        planContent: e.plan.planContent,
+        options,
+        resolved: false,
+        createdAt: this.now(),
+      };
+      // Supersede any prior pending plan for this agent (one pending per agent).
+      this.pendingPlans.set(e.agentId, record);
+      tlog(`plan → @${binding.handle}: ${options.length} action(s), requestId=${requestId}`);
+
+      const html = this.composePlanDecision(record);
+      let firstId: string | undefined;
+      for (const chunk of chunkReply(html, 3500)) {
+        const id = await this.safeReply(binding, chunk);
+        if (!firstId) firstId = id;
+      }
+      if (this.pendingPlans.get(e.agentId) === record) {
+        record.postedMessageId = firstId;
+      }
+    } else {
+      // node-pty render-only: the plan cannot be approved from Teams.
+      tlog(`plan → @${binding.handle}: render-only (node-pty, no requestId).`);
+      await this.safeReply(binding, `${heading}<br><br><i>Review and approve this plan in the app — it can't be approved from Teams for this agent.</i>`);
+    }
+  }
+
+  /** Compose the plan approval message: selector list + a request-changes hint. */
+  private composePlanDecision(record: PendingPlan): string {
+    const lines: string[] = [
+      `${this.agentLabel(record.binding)} 📋 <b>needs your approval to proceed</b>`,
+    ];
+    for (const opt of record.options) {
+      lines.push(`<br><b>${escapeHtml(opt.label)}</b> — ${escapeHtml(opt.text)}`);
+    }
+    lines.push(`<br><br><i>Reply with a letter (${record.options.map((o) => escapeHtml(o.label)).join(', ')}) to approve, or reply with feedback to request changes.</i>`);
+    return lines.join('');
+  }
+
+  /**
+   * Resolve a thread reply against a pending plan. A leading selector letter approves with
+   * the chosen exit action; anything else is treated as change-request feedback (rejects
+   * the plan with `approved:false`, feedback = the reply). Single-resolution latch.
+   */
+  private async resolvePlanDecision(record: PendingPlan, rawText: string): Promise<void> {
+    const token = (rawText.trim().split(/\s+/)[0] ?? '').replace(/[).:]$/, '');
+    const matched = token
+      ? record.options.find((o) => o.label.toLowerCase() === token.toLowerCase())
+      : undefined;
+
+    if (matched) {
+      if (record.resolved) return; // latch: already claimed
+      record.resolved = true;
+      tlog(`plan decision → @${record.binding.handle}: approve "${matched.label}" (${matched.action})`);
+      const ok = await this.submitPlanDecisionSafe(record, { approved: true, selectedAction: matched.action });
+      this.settlePlanResolution(record, ok);
+      if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Plan approved — ${escapeHtml(this.planActionText(matched.action))}.`);
+      return;
+    }
+
+    // Any non-selector reply is a change request (always allowed, like ask_user freeform).
+    if (record.resolved) return;
+    record.resolved = true;
+    tlog(`plan decision → @${record.binding.handle}: request changes "${truncate(rawText, 60)}"`);
+    const ok = await this.submitPlanDecisionSafe(record, { approved: false, feedback: rawText.trim() });
+    this.settlePlanResolution(record, ok);
+    if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✏️ Sent your feedback — the agent will revise the plan.`);
+  }
+
+  /**
+   * Finalize a plan resolution attempt. On success, delete the record. On transport
+   * FAILURE, release the single-resolution latch and keep the record so the human can
+   * reply again, and post a thread notice — never silently drop the decision.
+   */
+  private settlePlanResolution(record: PendingPlan, ok: boolean): void {
+    if (ok) {
+      this.pendingPlans.delete(record.agentId);
+      return;
+    }
+    if (this.pendingPlans.get(record.agentId) === record) {
+      record.resolved = false;
+      void this.safeReply(
+        record.binding,
+        `${this.agentLabel(record.binding)} ⚠️ I couldn't deliver that decision — please reply again.`,
+      );
+    }
+  }
+
+  /** Submit a plan decision through the gateway. Returns true iff the transport reported
+   *  success; a failure (thrown by the gateway, e.g. node-pty render-only or no pending
+   *  interaction) returns false so the caller keeps the plan open. */
+  private async submitPlanDecisionSafe(
+    record: PendingPlan,
+    decision: { approved: boolean; selectedAction?: string; feedback?: string },
+  ): Promise<boolean> {
+    try {
+      await this.deps.gateway.respondPlan(record.officeId, record.agentId, {
+        requestId: record.requestId || undefined,
+        approved: decision.approved,
+        selectedAction: decision.selectedAction,
+        feedback: decision.feedback,
+      });
+      return true;
+    } catch (e) {
+      twarn('respondPlan failed:', (e as Error).message);
+      return false;
+    }
+  }
+
+  /**
+   * Precise local-resolution for a plan (fired on `exit_plan_mode.completed`): clear the
+   * pending plan ONLY when its requestId matches the resolved interaction. A Teams decision
+   * clears the record synchronously before this fires, so a matching record here means the
+   * plan was approved/rejected in the app → post the one-time notice.
+   */
+  private maybeLocalResolvePlanByRequestId(agentId: string, requestId: string): void {
+    const record = this.pendingPlans.get(agentId);
+    if (!record || record.resolved) return;
+    if (!requestId || record.requestId !== requestId) return;
+    record.resolved = true;
+    this.pendingPlans.delete(agentId);
+    tlog(`plan resolved locally (requestId=${requestId}) for @${record.binding.handle} — posting in-app notice.`);
+    void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Plan handled in the app.`);
   }
 
   /**

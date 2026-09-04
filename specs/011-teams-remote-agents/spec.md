@@ -169,6 +169,45 @@ As a user who kicked off a long task remotely, I want the agent to post periodic
 - **FR-027**: When a message is received in the configured channel within a thread the system created but which is no longer bound to any online agent (orphaned agent thread), the system MUST NOT dispatch it and MUST post a one-time notice `This thread is no longer active and will not receive responses.` to that thread. The notice MUST be posted at most once per orphaned thread (tracked to avoid repeats/loops).
 - **FR-028**: Messages received in the configured channel in threads the system did NOT create (e.g. unrelated human conversations, or the channel root) MUST be ignored silently — no dispatch and no notice — to avoid spamming the channel.
 
+### Addendum — In-thread slash commands (supersedes FR-015a)
+
+Copilot CLI **TUI slash commands** are interpreted by the local Ink input line, which is
+**not in the Teams path** — so a slash command posted to a thread would otherwise be enqueued
+as a literal model prompt (e.g. `/compact` produced a narrated "Session Summary" instead of
+actually compacting). To fix this, TeamsService intercepts a small **allow-list** of slash
+commands *before* dispatch, executes them via the SDK **control plane**, and posts the
+structured result back to the thread. This refines FR-015a: within a bound thread, a message
+is treated as a prompt **unless** it is exactly one of the allow-listed commands below.
+
+| Command | Effect (ui-server / SDK backend) | Posted to thread | node-pty fallback |
+|---------|-----------------------------------|------------------|-------------------|
+| `/compact [instructions]` | `session.rpc.history.compact()` | compaction summary + tokens freed / messages removed | keystroke-inject, best-effort |
+| `/usage` | `session.rpc.usage.getMetrics()` + `metadata.contextInfo()` | cost, request count, context-token breakdown | keystroke-inject |
+| `/model [id]` | `session.rpc.model.getCurrent()` (+ `switchTo` when an id is given) | current model (or switch confirmation) | keystroke-inject |
+| `/new` | reset session (server `reset-session`, mints a new GUID) | fresh-session confirmation | same reset |
+| `/clear` | reset session (alias of `/new`) | cleared-history confirmation | same reset |
+| `/stop` | take the agent offline (unchanged; see FR-015) | offline notice | same |
+| `/help` | — (static list) | the supported-commands list | same |
+
+Rules:
+- Matching is **case-insensitive** on the first whitespace-delimited token; trailing text is
+  captured as an argument (`/model <id>`, `/compact <instructions>`).
+- **Unknown slashes are NOT intercepted** — they fall through to normal prompt dispatch, so
+  skill invocations and arbitrary `/xyz` still reach the model untouched.
+- Control commands require an SDK-backed session (`ui-server`/`sdk`). The node-pty fallback
+  keystroke-injects the raw command into the real TUI (best-effort ack, no structured payload).
+- Any capability-gated RPC failure yields a concise graceful notice in the thread rather than
+  a thrown error, per the "best-effort with graceful notice" fallback policy.
+
+Implementation: `electron/teams/slashCommands.ts` (allow-list registry),
+`electron/teams/slashCommandFormat.ts` (result → Teams-safe HTML),
+`electron/terminal/protocol.ts` (`run-control-command` message + `Control*` types),
+`electron/terminal/terminal-backend.ts` (`runControl` on both SDK process classes),
+`electron/terminal/server.ts` (`run-control-command` op), and the gateway/relay plumbing
+(`sessionGateway.ts`, `ipc-relay.ts`). Tests: `tests/unit/teams/slashCommands.test.ts`,
+`tests/unit/teams/slashCommandFormat.test.ts`,
+`tests/integration/teams/teams-slash-commands.test.ts`.
+
 ### Key Entities *(include if feature involves data)*
 
 - **Agent Teams Registration (Online Agent)**: an entry in the JSON online-agents store binding a CopilotOffice agent to its Teams presence. Attributes: agent id, agent display name, working folder/directory, current terminal session id, session title, normalized handle (+ assigned suffix), configured channel id, **bound thread id**, online state, last-connected timestamp.
