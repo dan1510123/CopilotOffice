@@ -10,6 +10,7 @@
 
 import { isOrchestratorKey } from '../orchestrator/orchestratorIdentity';
 import type { AgentEvent, SessionGateway } from './sessionGateway';
+import type { ControlCommandName, ControlCommandResult } from '../terminal/protocol';
 
 export class CompositeSessionGateway implements SessionGateway {
   constructor(
@@ -37,6 +38,23 @@ export class CompositeSessionGateway implements SessionGateway {
     return this.pick(officeId, agentId).submitPrompt(officeId, agentId, prompt, label);
   }
 
+  resetSession(officeId: string, agentId: string): Promise<string | null> {
+    const g = this.pick(officeId, agentId);
+    return g.resetSession ? g.resetSession(officeId, agentId) : Promise.resolve(null);
+  }
+
+  runControl(
+    officeId: string,
+    agentId: string,
+    command: ControlCommandName,
+    arg?: string,
+  ): Promise<ControlCommandResult> {
+    const g = this.pick(officeId, agentId);
+    return g.runControl
+      ? g.runControl(officeId, agentId, command, arg)
+      : Promise.resolve({ executed: false, error: 'control commands are not supported for this agent' });
+  }
+
   submitAnswer(
     officeId: string,
     agentId: string,
@@ -56,6 +74,14 @@ export class CompositeSessionGateway implements SessionGateway {
     decision: 'approve' | 'deny',
   ): Promise<void> {
     return this.pick(officeId, agentId).respondPermission(officeId, agentId, toolCallId, decision);
+  }
+
+  respondPlan(
+    officeId: string,
+    agentId: string,
+    d: { requestId?: string; approved: boolean; selectedAction?: string; feedback?: string },
+  ): Promise<void> {
+    return this.pick(officeId, agentId).respondPlan(officeId, agentId, d);
   }
 
   onAgentEvent(cb: (e: AgentEvent) => void): () => void {

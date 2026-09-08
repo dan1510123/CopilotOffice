@@ -66,38 +66,53 @@ export function injectUiKit(): void {
       line-height: 1;
       padding: 7px 13px;
       border-radius: 8px;
-      border: 1px solid ${UI.border};
-      background: ${UI.surfaceRaised};
-      color: #cfd6f5;
+      border: 1px solid var(--co-border);
+      background: var(--co-bg-raised);
+      color: var(--co-text);
       cursor: pointer;
       white-space: nowrap;
       user-select: none;
       transition: background .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease, transform .06s ease;
     }
-    .ui-btn:hover { background: #262c40; border-color: #3a4166; color: #fff; }
+    .ui-btn:hover { background: var(--co-bg-raised-hover); border-color: color-mix(in srgb, var(--co-border) 40%, var(--co-text-secondary)); color: var(--co-text-strong); }
     .ui-btn:active { transform: translateY(1px); }
     .ui-btn:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; }
 
-    .ui-btn--primary { background: #20264a; border-color: #3c4d94; color: #bcccff; }
-    .ui-btn--primary:hover { background: #283163; border-color: ${UI.accentBlue}; color: #eaf0ff; box-shadow: 0 0 10px rgba(109,139,255,.22); }
+    .ui-btn--primary { background: color-mix(in srgb, var(--co-accent-strong) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-accent-strong) 45%, var(--co-border)); color: var(--co-accent); }
+    .ui-btn--primary:hover { background: color-mix(in srgb, var(--co-accent-strong) 26%, var(--co-bg-raised)); border-color: var(--co-accent-strong); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-accent-strong) 22%, transparent); }
 
-    .ui-btn--success { background: #16301f; border-color: #2f7a52; color: #9fe8bd; }
-    .ui-btn--success:hover { background: #1c3e29; border-color: ${UI.accentGreen}; color: #e6fff0; box-shadow: 0 0 10px rgba(70,209,127,.22); }
+    .ui-btn--success { background: color-mix(in srgb, var(--co-success) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-success) 45%, var(--co-border)); color: var(--co-success); }
+    .ui-btn--success:hover { background: color-mix(in srgb, var(--co-success) 26%, var(--co-bg-raised)); border-color: var(--co-success); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-success) 22%, transparent); }
 
-    .ui-btn--danger { background: #341a24; border-color: #7a3550; color: #f0a9c4; }
-    .ui-btn--danger:hover { background: #45222f; border-color: ${UI.accentRed}; color: #ffe6ef; box-shadow: 0 0 10px rgba(224,96,122,.22); }
+    .ui-btn--danger { background: color-mix(in srgb, var(--co-danger) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-danger) 45%, var(--co-border)); color: var(--co-danger); }
+    .ui-btn--danger:hover { background: color-mix(in srgb, var(--co-danger) 26%, var(--co-bg-raised)); border-color: var(--co-danger); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-danger) 22%, transparent); }
 
-    .ui-btn--amber { background: #33260f; border-color: #8a5a1f; color: #ffcf8f; }
-    .ui-btn--amber:hover { background: #43310f; border-color: ${UI.accentAmber}; color: #fff2df; box-shadow: 0 0 10px rgba(255,184,108,.22); }
+    .ui-btn--amber { background: color-mix(in srgb, var(--co-amber) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-amber) 45%, var(--co-border)); color: var(--co-amber); }
+    .ui-btn--amber:hover { background: color-mix(in srgb, var(--co-amber) 26%, var(--co-bg-raised)); border-color: var(--co-amber); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-amber) 22%, transparent); }
 
-    .ui-btn--teams { background: #1e2a4a; border-color: #35529a; color: #a9c6ff; }
-    .ui-btn--teams:hover { background: #263566; border-color: ${UI.accentBlue}; color: #eaf0ff; box-shadow: 0 0 10px rgba(109,139,255,.22); }
+    .ui-btn--teams { background: color-mix(in srgb, var(--co-accent-strong) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-accent-strong) 45%, var(--co-border)); color: var(--co-accent); }
+    .ui-btn--teams:hover { background: color-mix(in srgb, var(--co-accent-strong) 26%, var(--co-bg-raised)); border-color: var(--co-accent-strong); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-accent-strong) 22%, transparent); }
 
-    .ui-btn--teams-online { background: #16301f; border-color: #3f9a6a; color: #8fffaa; }
-    .ui-btn--teams-online:hover { background: #1c3e29; border-color: ${UI.accentGreen}; color: #e6fff0; box-shadow: 0 0 10px rgba(70,209,127,.28); }
+    .ui-btn--teams-online { background: color-mix(in srgb, var(--co-success) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-success) 50%, var(--co-border)); color: var(--co-success); }
+    .ui-btn--teams-online:hover { background: color-mix(in srgb, var(--co-success) 26%, var(--co-bg-raised)); border-color: var(--co-success); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-success) 28%, transparent); }
 
-    .ui-btn--ghost { background: transparent; border-color: #33334f; color: ${UI.textDim}; }
-    .ui-btn--ghost:hover { background: #21213590; border-color: #45456a; color: #cfd6f5; }
+    .ui-btn--ghost { background: transparent; border-color: color-mix(in srgb, var(--co-border) 70%, transparent); color: var(--co-text-secondary); }
+    .ui-btn--ghost:hover { background: var(--co-bg-raised-hover); border-color: var(--co-border); color: var(--co-text-strong); }
+
+    /* Flag / Needs-attention toggle. --flag (outlined) = off; --flagged (filled gold) = on. */
+    .ui-btn--flag { background: color-mix(in srgb, var(--co-flag) 12%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-flag) 45%, var(--co-border)); color: var(--co-flag); }
+    .ui-btn--flag:hover { background: color-mix(in srgb, var(--co-flag) 24%, var(--co-bg-raised)); border-color: var(--co-flag); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-flag) 22%, transparent); }
+    .ui-btn--flagged { background: var(--co-flag); border-color: var(--co-flag); color: #221a05; font-weight: 700; box-shadow: 0 0 10px color-mix(in srgb, var(--co-flag) 35%, transparent); }
+    .ui-btn--flagged:hover { background: color-mix(in srgb, var(--co-flag) 85%, #fff); border-color: var(--co-flag); color: #221a05; }
+
+    /* Dashboard agent-card motion (default layout). Kept here in the UI layer so
+       the pure string-producing renderers in src/layouts can reference them. */
+    @keyframes copilot-ring-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+    @keyframes copilot-attn-bar { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
+    @keyframes copilot-pill-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+    @media (prefers-reduced-motion: reduce) {
+      [data-ring-agent], [data-attn-banner-agent] > *, [data-status-panel-agent] span { animation: none !important; }
+    }
   `;
   document.head.appendChild(style);
 }

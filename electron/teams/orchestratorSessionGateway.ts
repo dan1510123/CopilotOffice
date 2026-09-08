@@ -72,6 +72,13 @@ export class OrchestratorSessionGateway implements SessionGateway {
     throw new Error('Orchestrator session does not support ask_user answers');
   }
 
+  async respondPlan(): Promise<void> {
+    // The orchestrator session never enters plan mode (it plans conversationally and
+    // gates actions via onPermissionRequest), so there is no exit_plan_mode interaction
+    // to resolve here. A plan, if ever surfaced, would ride an office agent's gateway.
+    throw new Error('Orchestrator session does not support plan approvals');
+  }
+
   setForwarding(): void {
     // No-op: the manager streams its whole session to any tap listener already;
     // there is no per-viewer forwarding toggle for the orchestrator.

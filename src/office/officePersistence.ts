@@ -20,7 +20,7 @@
 // after a deletion would remap later offices onto the wrong session file.
 
 import type { AgentConfig } from '../config/agents';
-import type { OfficeConfig, OfficeLayout, SeatedAgent } from './officeManager';
+import type { OfficeConfig, OfficeLayout, PersistedAgentReview, SeatedAgent } from './officeManager';
 
 /**
  * Normalize a working-directory string captured from user input.
@@ -116,6 +116,9 @@ function normalizeAgentIdsForOffice(office: OfficeConfig): void {
       if (s && typeof s.agentId === 'string') s.agentId = remapId(s.agentId);
     }
   }
+  if (Array.isArray(office.flaggedAgents)) {
+    office.flaggedAgents = Array.from(new Set(office.flaggedAgents.map(remapId)));
+  }
 }
 
 /**
@@ -205,6 +208,36 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
     }
     if (cfg.teamsMentionValue !== undefined) {
       normalized.teamsMentionValue = cfg.teamsMentionValue as string;
+    }
+    // Carry + validate persisted Done/Waiting review markers (survive restart).
+    if (cfg.pendingReviews !== null && typeof cfg.pendingReviews === 'object') {
+      const rawReviews = cfg.pendingReviews as Record<string, unknown>;
+      const cleanReviews: Record<string, PersistedAgentReview> = {};
+      for (const key of Object.keys(rawReviews)) {
+        const entry = rawReviews[key];
+        if (!entry || typeof entry !== 'object') continue;
+        const r = entry as Record<string, unknown>;
+        const kind = r.kind === 'waiting' ? 'waiting' : r.kind === 'done' ? 'done' : null;
+        if (!kind) continue;
+        cleanReviews[key] = {
+          agentId: typeof r.agentId === 'string' ? r.agentId : key,
+          kind,
+          detail: typeof r.detail === 'string' ? r.detail : null,
+          at: typeof r.at === 'number' ? r.at : Date.now(),
+        };
+      }
+      if (Object.keys(cleanReviews).length > 0) {
+        normalized.pendingReviews = cleanReviews;
+      }
+    }
+    // Carry + validate user "Flagged / Needs attention" markers (survive restart).
+    if (Array.isArray(cfg.flaggedAgents)) {
+      const cleanFlags = Array.from(
+        new Set((cfg.flaggedAgents as unknown[]).filter((v): v is string => typeof v === 'string')),
+      );
+      if (cleanFlags.length > 0) {
+        normalized.flaggedAgents = cleanFlags;
+      }
     }
     // Repair legacy id collisions (another office's baked-in agent ids) so every
     // agent id is unique to its own office. Idempotent for already-correct data.

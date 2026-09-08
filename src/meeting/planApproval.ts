@@ -8,9 +8,9 @@ export interface PlanApprovalCallbacks {
 }
 
 const AGENT_DISPLAY: Record<string, { name: string; color: string }> = {
-  generalist: { name: 'Gene', color: '#4488cc' },
-  debugger: { name: 'Dan', color: '#22cc44' },
-  admin: { name: 'Alice', color: '#ff69b4' },
+  generalist: { name: 'Gene', color: 'var(--co-accent)' },
+  debugger: { name: 'Dan', color: 'var(--co-success)' },
+  admin: { name: 'Alice', color: 'var(--co-accent-strong)' },
 };
 
 export class PlanApprovalOverlay {
@@ -26,7 +26,7 @@ export class PlanApprovalOverlay {
       left: '0',
       width: '100%',
       height: '100%',
-      background: 'rgba(0,0,0,0.7)',
+      background: 'var(--co-bg-overlay-scrim)',
       display: 'none',
       alignItems: 'center',
       justifyContent: 'center',
@@ -46,26 +46,26 @@ export class PlanApprovalOverlay {
     Object.assign(content.style, {
       maxWidth: '600px',
       width: '90%',
-      background: '#1e1e2e',
+      background: 'var(--co-bg-panel)',
       borderRadius: '12px',
       padding: '24px',
       maxHeight: '80vh',
       overflowY: 'auto',
-      color: '#ccc',
+      color: 'var(--co-text)',
       fontFamily: 'monospace',
     });
 
     // Header
     const header = document.createElement('h2');
     header.textContent = '📋 Meeting Plan';
-    Object.assign(header.style, { color: '#fff', margin: '0 0 16px 0', fontSize: '18px' });
+    Object.assign(header.style, { color: 'var(--co-text-strong)', margin: '0 0 16px 0', fontSize: '18px' });
     content.appendChild(header);
 
     // Plan summary
     const summary = document.createElement('p');
     summary.textContent = plan.plan;
     Object.assign(summary.style, {
-      color: '#aaa',
+      color: 'var(--co-text-secondary)',
       fontStyle: 'italic',
       margin: '0 0 20px 0',
       lineHeight: '1.5',
@@ -75,11 +75,11 @@ export class PlanApprovalOverlay {
     // Task list
     const taskList = document.createElement('div');
     for (const task of plan.tasks) {
-      const agent = AGENT_DISPLAY[task.agentId] ?? { name: task.agentId, color: '#888' };
+      const agent = AGENT_DISPLAY[task.agentId] ?? { name: task.agentId, color: 'var(--co-text-secondary)' };
 
       const card = document.createElement('div');
       Object.assign(card.style, {
-        background: '#2a2a3e',
+        background: 'var(--co-bg-card)',
         margin: '8px 0',
         padding: '12px',
         borderRadius: '8px',
@@ -95,7 +95,7 @@ export class PlanApprovalOverlay {
 
       const title = document.createElement('span');
       title.textContent = task.title;
-      Object.assign(title.style, { color: '#fff', fontSize: '13px' });
+      Object.assign(title.style, { color: 'var(--co-text-strong)', fontSize: '13px' });
 
       taskHeader.appendChild(badge);
       taskHeader.appendChild(title);
@@ -103,7 +103,7 @@ export class PlanApprovalOverlay {
 
       const desc = document.createElement('p');
       desc.textContent = task.description;
-      Object.assign(desc.style, { color: '#999', margin: '0', fontSize: '12px', lineHeight: '1.4' });
+      Object.assign(desc.style, { color: 'var(--co-text-secondary)', margin: '0', fontSize: '12px', lineHeight: '1.4' });
       card.appendChild(desc);
 
       taskList.appendChild(card);
@@ -169,9 +169,9 @@ export class PlanApprovalOverlay {
     Object.assign(textarea.style, {
       width: '100%',
       minHeight: '80px',
-      background: '#2a2a3e',
-      color: '#ccc',
-      border: '1px solid #555',
+      background: 'var(--co-bg-inset)',
+      color: 'var(--co-text)',
+      border: '1px solid var(--co-border)',
       borderRadius: '6px',
       padding: '10px',
       fontFamily: 'monospace',

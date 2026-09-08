@@ -2,7 +2,8 @@ import { execSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
-import type { PermissionHandler } from '@github/copilot-sdk';
+import type { PermissionHandler, ExitPlanModeHandler, ExitPlanModeResult } from '@github/copilot-sdk';
+import type { ControlCommand, ControlData } from './protocol';
 import { loadCustomAgents } from './custom-agents';
 import { resolveSkillDirectories } from './custom-skills';
 
@@ -117,6 +118,84 @@ export function answerTransport(proc: Pick<TerminalProcess, 'submitPrompt'>): 's
   return typeof proc.submitPrompt === 'function' ? 'sdk' : 'keystroke';
 }
 
+// ── plan mode (SDK exit_plan_mode interaction) approval channel ─────────────────
+//
+// Mirrors the ask_user (spec 015) machinery above. When a managed SDK/ui-server session
+// enters plan mode and the agent calls `exit_plan_mode`, the SDK invokes the registered
+// `onExitPlanModeRequest` handler and BLOCKS the turn on the promise it returns. Like
+// `onUserInputRequest`, the callback carries no requestId — the parallel event stream
+// (`exit_plan_mode.requested` / `.completed`) carries the `requestId` that Teams relays
+// and echoes back — so the pending resolver is keyed by `sessionId` alone (at most one
+// blocking plan approval per session at a time). The resolver is fired out-of-band by
+// {@link handlePendingPlanApproval} when a Teams reply arrives; a local TUI approval
+// resolves the runtime directly and surfaces as `exit_plan_mode.completed`, which the
+// Teams consumer uses to clear its pending record (first-resolver-wins). node-pty has no
+// SDK client and therefore never registers this handler — plan approval there stays a
+// native TUI selector (render-only in Teams).
+
+interface PendingPlanApprovalEntry {
+  resolve: (r: ExitPlanModeResult) => void;
+  sessionId: string;
+}
+
+/** Pending plan approvals keyed by `sessionId` (one blocking plan interaction per session). */
+const pendingPlanApproval = new Map<string, PendingPlanApprovalEntry>();
+
+/**
+ * Build the SDK `onExitPlanModeRequest` handler. Registered on every managed
+ * SDK/ui-server session so a Teams-online agent's plan can be approved/rejected from the
+ * thread. Returns a promise resolved LATE by {@link handlePendingPlanApproval} when the
+ * decision arrives. The relay of the plan itself rides the normal event stream
+ * (`exit_plan_mode.requested` → server watcherCallback), NOT this callback.
+ */
+export function makeExitPlanModeHandler(sessionId: string): ExitPlanModeHandler {
+  return (_request, ctx) =>
+    new Promise<ExitPlanModeResult>((resolve) => {
+      const scope = sessionId || ctx?.sessionId || '';
+      const existing = pendingPlanApproval.get(scope);
+      if (existing) {
+        // exit_plan_mode blocks the turn, so a second pending approval for the same
+        // session should not occur. If it somehow does, the old resolver would leak — warn.
+        console.warn(
+          `[terminal-backend] makeExitPlanModeHandler: replacing an UNRESOLVED pending plan approval for session="${scope}" (its promise will never resolve)`,
+        );
+      }
+      pendingPlanApproval.set(scope, { resolve, sessionId: scope });
+    });
+}
+
+/**
+ * Resolve the pending plan approval for `sessionId`. Idempotent: an unknown or
+ * already-resolved session is a no-op + warn (supports the single-resolution Teams/local
+ * race). Returns true only when a stored resolver actually fired.
+ */
+export function handlePendingPlanApproval(sessionId: string, result: ExitPlanModeResult): boolean {
+  const entry = pendingPlanApproval.get(sessionId);
+  if (!entry) {
+    console.warn(
+      `[terminal-backend] handlePendingPlanApproval: no pending plan approval for session="${sessionId}" (already resolved or unknown) — no-op`,
+    );
+    return false;
+  }
+  pendingPlanApproval.delete(sessionId);
+  entry.resolve(result);
+  return true;
+}
+
+/**
+ * GC the outstanding pending plan approval owned by `sessionId`. Called when a session
+ * exits/resets/is killed so an agent torn down mid-plan cannot leak an unresolved
+ * resolver. Returns the number of entries dropped (0 or 1).
+ */
+export function clearPendingPlanApprovalForSession(sessionId: string): number {
+  return pendingPlanApproval.delete(sessionId) ? 1 : 0;
+}
+
+/** Test/diagnostics helper: number of outstanding pending plan approvals. */
+export function pendingPlanApprovalCount(): number {
+  return pendingPlanApproval.size;
+}
+
 export interface TerminalExitEvent {
   exitCode: number;
 }
@@ -139,6 +218,15 @@ export interface TerminalProcess {
    * sent to the agent — the model receives only `text`.
    */
   submitPrompt?(text: string, label?: string): void;
+
+  /**
+   * Optional: run a session control command (`/compact`, `/usage`, `/model`) via the
+   * SDK control plane (`session.rpc.*`) and return structured, postable data. Implemented
+   * by SDK-backed processes only; the raw node-pty backend omits it (the server falls
+   * back to keystroke-injecting the raw slash command into the TUI). Rejects if the
+   * session's RPC surface does not support the requested command.
+   */
+  runControl?(cmd: ControlCommand): Promise<ControlData>;
 
   /**
    * Optional: build the {@link CopilotEventSource} for this process's agent.
@@ -390,6 +478,106 @@ export class NodePtyBackend implements TerminalBackend {
   }
 }
 
+// ── Session control (Teams slash-command execution via the SDK control plane) ────
+//
+// The managed SDK/ui-server session is a full `CopilotSession` exposing a typed
+// `rpc` surface. `/compact`, `/usage` and `/model` map to real RPC calls that return
+// structured, postable content — so Teams can execute them instead of enqueueing the
+// slash text as a model prompt. Only the narrow subset used here is typed; each call
+// site guards for method presence so an older runtime degrades to a clear error
+// (which the server turns into a graceful Teams notice) rather than throwing opaquely.
+
+type ControlSession = {
+  rpc?: {
+    history?: {
+      compact?(params?: { instructions?: string }): Promise<{
+        success?: boolean;
+        tokensRemoved?: number;
+        messagesRemoved?: number;
+        summaryContent?: string;
+      }>;
+    };
+    usage?: {
+      getMetrics?(): Promise<{
+        totalPremiumRequestCost?: number;
+        totalUserRequests?: number;
+        totalApiDurationMs?: number;
+      }>;
+    };
+    metadata?: {
+      contextInfo?(params: {
+        promptTokenLimit: number;
+        outputTokenLimit: number;
+        selectedModel?: string;
+      }): Promise<{
+        contextInfo?: { totalTokens?: number; promptTokenLimit?: number; compactionThreshold?: number } | null;
+      }>;
+    };
+    model?: {
+      getCurrent?(): Promise<{ modelId?: string; reasoningEffort?: string }>;
+      switchTo?(params: { modelId: string }): Promise<{ modelId?: string }>;
+    };
+  };
+};
+
+/**
+ * Execute a control command against an SDK-backed session's RPC surface. Shared by
+ * {@link CopilotSdkProcess} and {@link UiServerProcess}. Rejects with a descriptive
+ * error when the session lacks the required RPC method.
+ */
+export async function runSessionControl(session: ControlSession, cmd: ControlCommand): Promise<ControlData> {
+  const rpc = session?.rpc;
+  if (!rpc) throw new Error('SDK session exposes no rpc control surface');
+
+  switch (cmd.command) {
+    case 'compact': {
+      if (!rpc.history?.compact) throw new Error('compaction is not supported by this session');
+      const r = await rpc.history.compact(cmd.arg ? { instructions: cmd.arg } : undefined);
+      return {
+        kind: 'compact',
+        success: !!r?.success,
+        tokensRemoved: r?.tokensRemoved ?? 0,
+        messagesRemoved: r?.messagesRemoved ?? 0,
+        summary: r?.summaryContent,
+      };
+    }
+    case 'usage': {
+      if (!rpc.usage?.getMetrics) throw new Error('usage metrics are not supported by this session');
+      const m = await rpc.usage.getMetrics();
+      let ctx: { totalTokens?: number; promptTokenLimit?: number; compactionThreshold?: number } | undefined;
+      try {
+        const info = await rpc.metadata?.contextInfo?.({ promptTokenLimit: 0, outputTokenLimit: 0 });
+        ctx = info?.contextInfo ?? undefined;
+      } catch {
+        ctx = undefined; // context breakdown is best-effort — usage metrics alone still post.
+      }
+      return {
+        kind: 'usage',
+        premiumRequestCost: m?.totalPremiumRequestCost,
+        userRequests: m?.totalUserRequests,
+        apiDurationMs: m?.totalApiDurationMs,
+        totalTokens: ctx?.totalTokens,
+        promptTokenLimit: ctx?.promptTokenLimit,
+        compactionThreshold: ctx?.compactionThreshold,
+      };
+    }
+    case 'model': {
+      if (!rpc.model?.getCurrent) throw new Error('model control is not supported by this session');
+      let switchedTo: string | undefined;
+      if (cmd.arg && rpc.model.switchTo) {
+        const s = await rpc.model.switchTo({ modelId: cmd.arg });
+        switchedTo = s?.modelId ?? cmd.arg;
+      }
+      const cur = await rpc.model.getCurrent();
+      return { kind: 'model', current: cur?.modelId, reasoningEffort: cur?.reasoningEffort, switchedTo };
+    }
+    default: {
+      const never: never = cmd.command;
+      throw new Error(`unknown control command: ${String(never)}`);
+    }
+  }
+}
+
 class CopilotSdkProcess implements TerminalProcess {
   private readonly dataListeners: Array<(data: string) => void> = [];
   private readonly exitListeners: Array<(event: TerminalExitEvent) => void> = [];
@@ -459,6 +647,11 @@ class CopilotSdkProcess implements TerminalProcess {
     const tag = label ? `\x1b[2;36m[${label}]\x1b[0m ` : '';
     this.emitData(`${tag}${prompt.replace(/\n/g, '\r\n')}\r\n`);
     this.enqueuePrompt(prompt);
+  }
+
+  /** Run a control command (`/compact`, `/usage`, `/model`) via the SDK RPC surface. */
+  runControl(cmd: ControlCommand): Promise<ControlData> {
+    return runSessionControl(this.session as unknown as ControlSession, cmd);
   }
 
   /** Queue a prompt for the SDK session, serialized after any in-flight send. */
@@ -662,6 +855,10 @@ export class CopilotSdkBackend implements TerminalBackend {
       // the model is told `ask_user` is available and Teams/local answers can
       // resolve the pending interaction late. See makeUserInputHandler.
       onUserInputRequest: makeUserInputHandler(options.sessionId),
+      // Plan mode: register the exit_plan_mode approval handler so a Teams-online agent's
+      // plan can be approved/rejected from the thread (resolved late via
+      // handlePendingPlanApproval). The plan content itself relays over the event stream.
+      onExitPlanModeRequest: makeExitPlanModeHandler(options.sessionId),
     };
 
     try {
@@ -914,6 +1111,9 @@ export class ControlPlaneClient {
       // to call ask_user. The relay of the question itself rides the normal event
       // stream (user_input.requested → server watcherCallback).
       onUserInputRequest: makeUserInputHandler(sessionId),
+      // Plan mode: register the exit_plan_mode approval handler (ControlPlaneClient /
+      // ui-server path). See resumeOrCreateSession for the rationale.
+      onExitPlanModeRequest: makeExitPlanModeHandler(sessionId),
     };
 
     try {
@@ -1044,6 +1244,11 @@ export class UiServerProcess implements TerminalProcess {
       .catch((error: unknown) => {
         console.warn(`[UiServerProcess] Failed to submit prompt for ${this.sessionId}: ${String(error)}`);
       });
+  }
+
+  /** Run a control command (`/compact`, `/usage`, `/model`) via the SDK RPC surface. */
+  runControl(cmd: ControlCommand): Promise<ControlData> {
+    return runSessionControl(this.session as unknown as ControlSession, cmd);
   }
 
   kill(): void {

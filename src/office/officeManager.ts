@@ -37,6 +37,34 @@ export interface OfficeConfig {
    */
   teamsMentionType?: 'user' | 'tag' | 'none';
   teamsMentionValue?: string;
+  /**
+   * Persisted "needs user review" markers (Done / Waiting) that survive an app
+   * restart. Keyed by agentId. Recorded when an agent enters a review-required
+   * state and cleared only when the user focuses that agent's terminal (or the
+   * agent itself progresses past it). Re-seeded into the runtime AgentStatus on
+   * boot so the existing status pipeline (badge / dashboards / notifications)
+   * renders it without any per-surface changes.
+   */
+  pendingReviews?: Record<string, PersistedAgentReview>;
+  /**
+   * User-applied "Flagged / Needs attention" markers, keyed set of agentIds.
+   * Unlike pendingReviews (system-set on Done/Waiting), a flag is toggled
+   * manually by the user to remember to come back to an agent, and persists
+   * until the user clears it — independent of the agent's live status. Stored
+   * as a string[] (agent ids) for a compact durable representation.
+   */
+  flaggedAgents?: string[];
+}
+
+/** Kinds of agent state that require the user to review / acknowledge. */
+export type AgentReviewKind = 'done' | 'waiting';
+
+/** A durable snapshot of a review-required agent state (see OfficeConfig.pendingReviews). */
+export interface PersistedAgentReview {
+  agentId: string;
+  kind: AgentReviewKind;
+  detail: string | null;   // waiting reason/question or last completed action
+  at: number;              // Date.now() when the review state was entered
 }
 
 export type AgentState = 'slacking' | 'active';
@@ -362,6 +390,11 @@ export class OfficeManager {
         agentTools: existing?.agentTools ?? new Map(),
       };
       this.offices.set(config.id, officeData);
+      // Re-seed durable Done/Waiting review markers into the runtime status so the
+      // existing status pipeline (badge / dashboards / notifications) shows them
+      // after a restart. Only seeds agents with no live runtime status yet, so the
+      // later async durable reload never clobbers in-session state.
+      this.restorePendingReviews(officeData);
     }
 
     if (currentOfficeId && this.offices.has(currentOfficeId)) {
@@ -374,6 +407,35 @@ export class OfficeManager {
   // Agent status helpers
   getAgentStatus(officeId: string, agentId: string): AgentStatus | undefined {
     return this.offices.get(officeId)?.agents.get(agentId);
+  }
+
+  /**
+   * Seed runtime AgentStatus entries from durable review markers so a restored
+   * Done/Waiting state is visible immediately on boot. Skips any agent that
+   * already has a runtime status, so live in-session state is never clobbered.
+   */
+  private restorePendingReviews(office: OfficeData): void {
+    const reviews = office.config.pendingReviews;
+    if (!reviews) return;
+    for (const agentId of Object.keys(reviews)) {
+      if (office.agents.has(agentId)) continue;
+      const review = reviews[agentId];
+      const isWaiting = review.kind === 'waiting';
+      office.agents.set(agentId, {
+        agentId,
+        state: 'active',
+        subState: isWaiting ? 'waiting' : 'ready',
+        thinkingDetail: null,
+        currentTool: null,
+        completionPendingAck: review.kind === 'done',
+        unreadCount: 0,
+        lastEvent: null,
+        activityStartTime: isWaiting ? review.at : null,
+        lastCompletedAction: review.kind === 'done' ? review.detail : null,
+        recentActions: [],
+        taskSummary: null,
+      });
+    }
   }
 
   private getOrCreateStatus(officeId: string, agentId: string): AgentStatus | null {
@@ -469,6 +531,8 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     status.activityStartTime = null;
+    // Agent settled to idle-ready: any prior Done/Waiting review is resolved.
+    this.clearAgentReview(officeId, agentId);
     this.emitLifecycleTransition(officeId, agentId, status, from, reason);
   }
 
@@ -483,14 +547,91 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = true;
     status.activityStartTime = null;
+    // Durable "Done — awaiting your review" marker (survives app restart).
+    this.recordAgentReview(officeId, agentId, 'done', status.lastCompletedAction ?? reason ?? null);
     this.emitLifecycleTransition(officeId, agentId, status, from, reason ?? 'done_pending_ack');
   }
 
   acknowledgeAgentCompletion(officeId: string, agentId: string): boolean {
     const status = this.getOrCreateStatus(officeId, agentId);
-    if (!status || !status.completionPendingAck) return false;
-    status.completionPendingAck = false;
+    let changed = false;
+    if (status?.completionPendingAck) {
+      status.completionPendingAck = false;
+      changed = true;
+    }
+    // FR: focusing an agent's terminal clears any persisted review marker so it
+    // does not resurface after the next app restart.
+    if (this.clearAgentReview(officeId, agentId)) changed = true;
+    return changed;
+  }
+
+  /**
+   * Record a durable review marker (Done / Waiting) for an agent. Persisted to
+   * OfficeConfig.pendingReviews so it survives an app restart. Called from the
+   * review-entering state setters; the entry time is preserved across repeated
+   * same-kind events so the elapsed timer doesn't reset.
+   */
+  recordAgentReview(officeId: string, agentId: string, kind: AgentReviewKind, detail: string | null): void {
+    const office = this.offices.get(officeId);
+    if (!office) return;
+    const reviews = office.config.pendingReviews ?? (office.config.pendingReviews = {});
+    const existing = reviews[agentId];
+    const at = existing && existing.kind === kind ? existing.at : Date.now();
+    reviews[agentId] = { agentId, kind, detail, at };
+    this.saveToStorage();
+  }
+
+  /** Clear an agent's persisted review marker. Returns true if one was removed. */
+  clearAgentReview(officeId: string, agentId: string): boolean {
+    const office = this.offices.get(officeId);
+    const reviews = office?.config.pendingReviews;
+    if (!reviews || !reviews[agentId]) return false;
+    delete reviews[agentId];
+    if (Object.keys(reviews).length === 0) delete office!.config.pendingReviews;
+    this.saveToStorage();
     return true;
+  }
+
+  /** The persisted review marker for an agent, if any. */
+  getAgentReview(officeId: string, agentId: string): PersistedAgentReview | undefined {
+    return this.offices.get(officeId)?.config.pendingReviews?.[agentId];
+  }
+
+  /**
+   * User-driven "Flagged / Needs attention" marker. Orthogonal to status: a
+   * flagged agent keeps its live status but also renders the flag chrome
+   * (banner + pill + border) until the user clears it. Persisted to
+   * OfficeConfig.flaggedAgents so it survives an app restart.
+   */
+  isAgentFlagged(officeId: string, agentId: string): boolean {
+    const flags = this.offices.get(officeId)?.config.flaggedAgents;
+    return !!flags && flags.includes(agentId);
+  }
+
+  /** All flagged agent ids for an office, as a Set (empty when none). */
+  getFlaggedAgentIds(officeId: string): Set<string> {
+    return new Set(this.offices.get(officeId)?.config.flaggedAgents ?? []);
+  }
+
+  /**
+   * Toggle an agent's flag. Returns the new flagged state (true = now flagged).
+   * Persists on every change. No-op returns current state when the office is
+   * missing.
+   */
+  toggleAgentFlag(officeId: string, agentId: string): boolean {
+    const office = this.offices.get(officeId);
+    if (!office) return false;
+    const current = office.config.flaggedAgents ?? [];
+    const isFlagged = current.includes(agentId);
+    if (isFlagged) {
+      const next = current.filter((id) => id !== agentId);
+      if (next.length === 0) delete office.config.flaggedAgents;
+      else office.config.flaggedAgents = next;
+    } else {
+      office.config.flaggedAgents = [...current, agentId];
+    }
+    this.saveToStorage();
+    return !isFlagged;
   }
 
   setAgentWaiting(officeId: string, agentId: string, reason?: string): void {
@@ -504,6 +645,8 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
+    // Durable "Waiting on you" marker (survives app restart).
+    this.recordAgentReview(officeId, agentId, 'waiting', reason ?? status.thinkingDetail ?? null);
     this.emitLifecycleTransition(officeId, agentId, status, from, reason);
   }
 
@@ -521,6 +664,8 @@ export class OfficeManager {
     status.currentTool = tools?.length ? tools[tools.length - 1].name ?? null : null;
     status.completionPendingAck = false;
     if (!status.activityStartTime) status.activityStartTime = Date.now();
+    // New activity supersedes any prior Done/Waiting review.
+    this.clearAgentReview(officeId, agentId);
     this.emitLifecycleTransition(officeId, agentId, status, from, reason, detail ?? undefined);
   }
 
@@ -557,6 +702,7 @@ export class OfficeManager {
     status.currentTool = null;
     status.completionPendingAck = false;
     status.activityStartTime = null;
+    this.clearAgentReview(officeId, agentId);
     this.emitLifecycleTransition(officeId, agentId, status, from, reason, detail ?? undefined);
   }
 

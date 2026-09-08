@@ -122,9 +122,9 @@ export class SeriousTerminalController {
       flex-direction: column;
       flex: 1;
       min-height: 0;
-      background: #11131c;
-      color: #d7defa;
-      border-left: 2px solid #2f3f62;
+      background: var(--co-bg-panel);
+      color: var(--co-text);
+      border-left: 2px solid var(--co-border);
       font-family: 'Cascadia Code', Consolas, monospace;
     `;
 
@@ -135,24 +135,24 @@ export class SeriousTerminalController {
       justify-content: space-between;
       gap: 8px;
       padding: 12px 14px;
-      border-bottom: 1px solid #27314e;
-      background: #171b2a;
+      border-bottom: 1px solid var(--co-border);
+      background: var(--co-bg-header);
       flex-shrink: 0;
     `;
 
     const leftHeader = document.createElement('div');
     leftHeader.style.cssText = 'min-width: 0;';
     this.titleEl = document.createElement('div');
-    this.titleEl.style.cssText = 'font-size: 14px; font-weight: 700; color: #9fc2ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+    this.titleEl.style.cssText = 'font-size: 14px; font-weight: 700; color: var(--co-heading); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
     this.subtitleEl = document.createElement('div');
-    this.subtitleEl.style.cssText = 'font-size: 11px; color: #7f8bad; margin-top: 3px;';
+    this.subtitleEl.style.cssText = 'font-size: 11px; color: var(--co-text-secondary); margin-top: 3px;';
     leftHeader.appendChild(this.titleEl);
     leftHeader.appendChild(this.subtitleEl);
 
     const rightHeader = document.createElement('div');
     rightHeader.style.cssText = 'display: flex; align-items: center; gap: 6px;';
     this.statusEl = document.createElement('div');
-    this.statusEl.style.cssText = 'font-size: 11px; color: #8ca2db; margin-right: 4px;';
+    this.statusEl.style.cssText = 'font-size: 11px; color: var(--co-text-secondary); margin-right: 4px;';
 
     const detachBtn = document.createElement('button');
     detachBtn.textContent = 'Detach';
@@ -199,10 +199,10 @@ export class SeriousTerminalController {
     this.spriteCardEl = document.createElement('div');
     this.spriteCardEl.style.cssText = `
       width: 100%;
-      background: #13131f;
-      border-top: 1px solid #252540;
+      background: var(--co-bg-card);
+      border-top: 1px solid var(--co-border-subtle);
       font-family: 'Cascadia Code', Consolas, monospace;
-      color: #c8d4ff;
+      color: var(--co-text);
       display: flex;
       flex-shrink: 0;
       justify-content: space-between;
@@ -219,8 +219,8 @@ export class SeriousTerminalController {
     const spriteFrame = document.createElement('div');
     spriteFrame.style.cssText = `
       width: 72px;
-      background: #2a2a40;
-      border: 1px solid #3a3a58;
+      background: var(--co-bg-inset);
+      border: 1px solid var(--co-border);
       border-radius: 8px;
       display: flex;
       align-items: center;
@@ -243,12 +243,12 @@ export class SeriousTerminalController {
     const spriteCardText = document.createElement('div');
     spriteCardText.style.cssText = 'display: flex; flex-direction: column; gap: 4px; min-width: 0;';
     this.spriteNameEl = document.createElement('span');
-    this.spriteNameEl.style.cssText = 'font-size: 18px; font-weight: 700; color: #dde; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+    this.spriteNameEl.style.cssText = 'font-size: 18px; font-weight: 700; color: var(--co-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
     this.spriteSubtitleEl = document.createElement('span');
-    this.spriteSubtitleEl.style.cssText = 'font-size: 13px; color: #778; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+    this.spriteSubtitleEl.style.cssText = 'font-size: 13px; color: var(--co-text-muted); line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
     this.sessionTitleEl = document.createElement('span');
     this.sessionTitleEl.textContent = 'Untitled session';
-    this.sessionTitleEl.style.cssText = 'font-size: 14px; font-weight: 700; color: #77839f; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+    this.sessionTitleEl.style.cssText = 'font-size: 14px; font-weight: 700; color: var(--co-text-secondary); line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
     spriteCardText.appendChild(this.spriteNameEl);
     spriteCardText.appendChild(this.spriteSubtitleEl);
     spriteCardText.appendChild(this.sessionTitleEl);
@@ -259,10 +259,10 @@ export class SeriousTerminalController {
     spriteCardRight.style.cssText = 'display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 8px;';
     const sessionLabel = document.createElement('span');
     sessionLabel.textContent = 'Session ID';
-    sessionLabel.style.cssText = 'font-size: 11px; color: #6f7fa9;';
+    sessionLabel.style.cssText = 'font-size: 11px; color: var(--co-text-muted);';
     this.sessionIdEl = document.createElement('span');
     this.sessionIdEl.textContent = '--';
-    this.sessionIdEl.style.cssText = 'font-size: 12px; color: #8ec3ff; cursor: pointer;';
+    this.sessionIdEl.style.cssText = 'font-size: 12px; color: var(--co-accent-link); cursor: pointer;';
     this.sessionIdEl.title = 'Copy session ID';
     this.sessionIdEl.onclick = () => this.copySessionId();
     spriteCardRight.appendChild(sessionLabel);
@@ -650,7 +650,7 @@ export class SeriousTerminalController {
     this.sessionId = null;
     this.wheelPager.reset();
     this.sessionTitleEl.textContent = 'Untitled session';
-    this.sessionTitleEl.style.color = '#77839f';
+    this.sessionTitleEl.style.color = 'var(--co-text-secondary)';
     this.updateSessionIdDisplay();
     this.setStatus('');
     this.clearRefitTimers();
@@ -712,7 +712,7 @@ export class SeriousTerminalController {
   private async updateSessionTitle(officeId: string, agentId: string): Promise<void> {
     if (!window.copilotBridge?.getSessionMeta) {
       this.sessionTitleEl.textContent = 'Untitled session';
-      this.sessionTitleEl.style.color = '#77839f';
+      this.sessionTitleEl.style.color = 'var(--co-text-secondary)';
       return;
     }
     try {
@@ -720,14 +720,14 @@ export class SeriousTerminalController {
       const title = meta?.title?.trim();
       if (title) {
         this.sessionTitleEl.textContent = title;
-        this.sessionTitleEl.style.color = '#c8d4ff';
+        this.sessionTitleEl.style.color = 'var(--co-text)';
       } else {
         this.sessionTitleEl.textContent = 'Untitled session';
-        this.sessionTitleEl.style.color = '#77839f';
+        this.sessionTitleEl.style.color = 'var(--co-text-secondary)';
       }
     } catch {
       this.sessionTitleEl.textContent = 'Untitled session';
-      this.sessionTitleEl.style.color = '#77839f';
+      this.sessionTitleEl.style.color = 'var(--co-text-secondary)';
     }
   }
 
@@ -861,26 +861,26 @@ export class SeriousTerminalController {
       width: min(620px, 88vw);
       max-height: 280px;
       overflow: auto;
-      background: #101629;
-      border: 1px solid #2f3f62;
+      background: var(--co-bg-panel);
+      border: 1px solid var(--co-border);
       border-radius: 8px;
       box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
       padding: 10px 12px;
       z-index: ${ZIndex.SERIOUS_TERMINAL};
-      color: #c8d4ff;
+      color: var(--co-text);
       font-size: 12px;
       white-space: pre-wrap;
       line-height: 1.4;
     `;
     const title = document.createElement('div');
     title.textContent = `Session History (${history.length})`;
-    title.style.cssText = 'font-weight: 700; margin-bottom: 8px; color: #9fc2ff;';
+    title.style.cssText = 'font-weight: 700; margin-bottom: 8px; color: var(--co-heading);';
     pop.appendChild(title);
 
     const body = document.createElement('div');
     if (history.length === 0) {
       body.textContent = 'No history yet.';
-      body.style.cssText = 'color: #77839f; font-style: italic;';
+      body.style.cssText = 'color: var(--co-text-secondary); font-style: italic;';
     } else {
       // Per-entry rendering: #N + literal-text title + exact copyable id (spec 019, FR-014).
       // Spec 020: rows are clickable to restore/switch to a past session (dual-surface parity, FR-011).
@@ -967,10 +967,10 @@ export class SeriousTerminalController {
     void this.copyToClipboard(this.sessionId, 'session').then((success) => {
       const original = this.sessionIdEl.textContent;
       this.sessionIdEl.textContent = success ? 'Copied!' : 'Copy failed';
-      this.sessionIdEl.style.color = success ? '#61d394' : '#ff6b6b';
+      this.sessionIdEl.style.color = success ? 'var(--co-success)' : 'var(--co-danger)';
       setTimeout(() => {
         this.sessionIdEl.textContent = original;
-        this.sessionIdEl.style.color = '#8ec3ff';
+        this.sessionIdEl.style.color = 'var(--co-accent-link)';
       }, 900);
     });
   }
@@ -1067,14 +1067,14 @@ export class SeriousTerminalController {
       display: none;
       z-index: ${ZIndex.TERMINAL_SPRITE_CARD + 10};
       min-width: 160px;
-      background: #1c1c2a;
-      border: 1px solid #3a3a55;
+      background: var(--co-bg-raised);
+      border: 1px solid var(--co-border);
       border-radius: 6px;
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
       padding: 4px 0;
       font-family: 'Cascadia Code', Consolas, monospace;
       font-size: 13px;
-      color: #cfd0e0;
+      color: var(--co-text);
       user-select: none;
     `;
     const makeItem = (label: string, onClick: () => void): HTMLDivElement => {
@@ -1083,7 +1083,7 @@ export class SeriousTerminalController {
       item.style.cssText = `padding: 6px 14px; cursor: pointer;`;
       item.dataset.enabled = 'true';
       item.addEventListener('mouseenter', () => {
-        if (item.dataset.enabled === 'true') item.style.background = '#2a2a45';
+        if (item.dataset.enabled === 'true') item.style.background = 'var(--co-bg-raised-hover)';
       });
       item.addEventListener('mouseleave', () => { item.style.background = ''; });
       item.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
@@ -1375,7 +1375,7 @@ export class SeriousTerminalController {
       officePanel.style.display = 'flex';
       officePanel.style.flexDirection = 'column';
       terminalPanel.style.width = '50%';
-      terminalPanel.style.borderLeft = '2px solid #333';
+      terminalPanel.style.borderLeft = '2px solid var(--co-border-strong)';
       return;
     }
 

@@ -8,10 +8,10 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
-import { formatToolStatus, buildAskUserRelay } from './events-watcher';
+import { formatToolStatus, buildAskUserRelay, buildPlanRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
-import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -792,6 +792,13 @@ async function startTerminalForAgentImpl(
           if (askRelay) {
             send({ type: 'copilot-ask-user', agentId, toolId: askRelay.toolId, requestId: askRelay.requestId, question: askRelay.question, options: askRelay.options, freeform: askRelay.freeform });
           }
+          // Plan mode (node-pty/degraded path): surface the plan payload best-effort from
+          // the exit_plan_mode tool arguments IN ADDITION to copilot-tool-start above
+          // (requestId unavailable → render-only; approval resolves in the local TUI).
+          const planRelayTool = buildPlanRelay(event, activeBackend.name);
+          if (planRelayTool) {
+            send({ type: 'copilot-plan', agentId, toolId: planRelayTool.toolId, requestId: planRelayTool.requestId, summary: planRelayTool.summary, planContent: planRelayTool.planContent, actions: planRelayTool.actions, recommendedAction: planRelayTool.recommendedAction });
+          }
         } else if (event.type === 'user_input.requested') {
           // spec 015: SDK/ui-server backend — `ask_user` is the SDK user-input
           // interaction. The payload arrives natively. Emit copilot-tool-start with
@@ -812,6 +819,25 @@ async function startTerminalForAgentImpl(
           const completedRequestId = d.requestId != null ? String(d.requestId) : '';
           console.log(`[TermServer] Forwarding ask_user complete (user_input.completed) for ${ck}: requestId=${completedRequestId}`);
           send({ type: 'copilot-ask-user-complete', agentId, requestId: completedRequestId });
+        } else if (event.type === 'exit_plan_mode.requested') {
+          // Plan mode (SDK/ui-server): the ephemeral request carries the plan payload
+          // natively (incl. the requestId single-resolution key). Emit copilot-tool-start
+          // for status parity plus the dedicated copilot-plan carrying the plan content
+          // and available actions so the Teams consumer can relay + resolve it.
+          const planRelay = buildPlanRelay(event, activeBackend.name);
+          if (planRelay) {
+            console.log(`[TermServer] Forwarding plan (exit_plan_mode.requested) for ${ck}: requestId=${planRelay.requestId}, ${planRelay.actions.length} action(s)`);
+            send({ type: 'copilot-tool-start', agentId, toolName: 'exit_plan_mode', toolId: planRelay.toolId, status: 'Awaiting plan approval' });
+            send({ type: 'copilot-plan', agentId, toolId: planRelay.toolId, requestId: planRelay.requestId, summary: planRelay.summary, planContent: planRelay.planContent, actions: planRelay.actions, recommendedAction: planRelay.recommendedAction });
+          }
+        } else if (event.type === 'exit_plan_mode.completed') {
+          // Plan mode resolved (SDK/ui-server) — mirrors user_input.completed. Forward
+          // ALWAYS (outside the viewer gate) so the Teams consumer can PRECISELY clear a
+          // locally-approved plan by requestId (first-resolver-wins).
+          const d = (event.data ?? {}) as { requestId?: unknown; approved?: unknown; selectedAction?: unknown; feedback?: unknown };
+          const completedRequestId = d.requestId != null ? String(d.requestId) : '';
+          console.log(`[TermServer] Forwarding plan complete (exit_plan_mode.completed) for ${ck}: requestId=${completedRequestId}, approved=${d.approved}`);
+          send({ type: 'copilot-plan-complete', agentId, requestId: completedRequestId, approved: Boolean(d.approved), selectedAction: d.selectedAction != null ? String(d.selectedAction) : undefined, feedback: d.feedback != null ? String(d.feedback) : undefined });
         } else if (event.type === 'tool.execution_complete') {
           const d = event.data as { toolCallId: string; success: boolean };
           console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
@@ -997,6 +1023,12 @@ async function startTerminalForAgentImpl(
       if (dropped > 0) {
         console.log(`[TermServer] Cleared ${dropped} pending ask_user interaction(s) for exited session ${sessionId} (${ck})`);
       }
+      // Same GC for plan-mode approvals: an agent torn down mid-plan must not leak an
+      // unresolved exit_plan_mode resolver.
+      const droppedPlans = clearPendingPlanApprovalForSession(sessionId);
+      if (droppedPlans > 0) {
+        console.log(`[TermServer] Cleared ${droppedPlans} pending plan approval(s) for exited session ${sessionId} (${ck})`);
+      }
     });
 
     if (!shellOnlyMode && activeBackend.name === 'node-pty') {
@@ -1080,6 +1112,40 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       break;
     }
 
+    case 'run-control-command': {
+      // Teams slash-command interception (`/compact`, `/usage`, `/model`). SDK-backed
+      // backends execute the command through `session.rpc.*` and return structured,
+      // postable data. The raw node-pty backend has no SDK session, so we keystroke-
+      // inject the literal slash command into the real TUI (best-effort; the TUI
+      // renders its own output, captured downstream via forwarding).
+      const key = getTerminalKey(msg.officeId, msg.agentId);
+      const proc = key ? ptyProcesses.get(key) : null;
+      if (!proc) {
+        const ck = compositeKey(msg.officeId, msg.agentId);
+        console.log(`[TermServer] RUN-CONTROL FAILED — no PTY for ${ck}`);
+        send({ type: 'response', requestId: msg.requestId, result: { executed: false, error: `No PTY for ${ck}` } });
+        break;
+      }
+      // Ensure any resulting events reach the main-process Teams consumer even
+      // without a renderer viewer (mirrors submit-prompt).
+      agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
+      const backendProc = proc.process;
+      if (typeof backendProc.runControl === 'function') {
+        try {
+          const data = await backendProc.runControl({ command: msg.command, arg: msg.arg });
+          send({ type: 'response', requestId: msg.requestId, result: { executed: true, via: 'sdk', data } });
+        } catch (error) {
+          send({ type: 'response', requestId: msg.requestId, result: { executed: false, error: String((error as Error)?.message ?? error) } });
+        }
+      } else {
+        // node-pty fallback: type the raw slash command into the TUI input line.
+        const raw = msg.arg ? `/${msg.command} ${msg.arg}` : `/${msg.command}`;
+        submitViaKeystrokes(backendProc, raw, key!);
+        send({ type: 'response', requestId: msg.requestId, result: { executed: true, via: 'keystroke' } });
+      }
+      break;
+    }
+
     case 'submit-answer': {
       // spec 015: answer a pending ask_user interaction. Distinct from submit-prompt —
       // this resolves the pending user-input interaction, it does NOT enqueue a new
@@ -1116,6 +1182,40 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
         console.log(`[TermServer] SUBMIT-ANSWER FAILED — no PTY for ${ck}`);
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
+      }
+      break;
+    }
+
+    case 'submit-plan-decision': {
+      // Plan mode: approve/reject a pending exit_plan_mode interaction from Teams.
+      // SDK/ui-server backend → handlePendingPlanApproval(sessionId) resolves the blocked
+      // onExitPlanModeRequest handler. node-pty backend → render-only: there is no SDK
+      // responder, so report failure so the Teams consumer keeps the plan resolvable in-app.
+      const key = getTerminalKey(msg.officeId, msg.agentId);
+      const proc = key ? ptyProcesses.get(key) : null;
+      if (proc) {
+        // A plan decision resumes this turn; ensure its resulting events reach the
+        // main-process Teams consumer even without a renderer viewer.
+        agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
+        const backendProc = proc.process;
+        if (answerTransport(backendProc) === 'sdk') {
+          const resolved = handlePendingPlanApproval(proc.sessionId, {
+            approved: msg.approved,
+            selectedAction: msg.selectedAction,
+            feedback: msg.feedback,
+          });
+          if (!resolved) {
+            console.warn(`[TermServer] submit-plan-decision: no pending plan approval for session="${proc.sessionId}" (${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
+          }
+          send({ type: 'response', requestId: msg.requestId, result: { success: resolved, error: resolved ? undefined : 'no pending plan approval to resolve' } });
+        } else {
+          console.warn(`[TermServer] submit-plan-decision: node-pty backend for ${compositeKey(msg.officeId, msg.agentId)} — plan approval must be resolved in the local TUI (render-only)`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'plan approval is not resolvable from Teams on the node-pty backend' } });
+        }
+      } else {
+        const ck = compositeKey(msg.officeId, msg.agentId);
+        console.log(`[TermServer] SUBMIT-PLAN-DECISION FAILED — no PTY for ${ck}`);
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
       }
       break;

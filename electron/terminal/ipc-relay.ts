@@ -7,7 +7,7 @@ import { fork, ChildProcess, execSync } from 'child_process';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo, SessionHistoryEntry } from './protocol';
+import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo, SessionHistoryEntry, ControlCommandName, ControlCommandResult } from './protocol';
 import { reapRegisteredPtys } from './pty-registry';
 
 export class TerminalRelay {
@@ -258,6 +258,28 @@ export class TerminalRelay {
   }
 
   /**
+   * Reset (close + re-mint) an agent's session — the main-process equivalent of the
+   * renderer's `terminal-reset-session` IPC. Used by Teams `/new` and `/clear` so a
+   * remote user can start a fresh session for the agent. Resolves with the new GUID.
+   */
+  mainResetSession(officeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> {
+    return this.request({ type: 'reset-session', requestId: this.id(), officeId, agentId }) as Promise<{ success: boolean; sessionId?: string }>;
+  }
+
+  /**
+   * Run a session control command (`/compact`, `/usage`, `/model`) via the SDK control
+   * plane (or node-pty keystroke fallback). Used by Teams slash-command interception.
+   */
+  mainRunControl(
+    officeId: string,
+    agentId: string,
+    command: ControlCommandName,
+    arg?: string,
+  ): Promise<ControlCommandResult> {
+    return this.request({ type: 'run-control-command', requestId: this.id(), officeId, agentId, command, arg }) as Promise<ControlCommandResult>;
+  }
+
+  /**
    * spec 015: answer a pending `ask_user` interaction. Distinct from
    * mainSubmitPrompt — resolves the pending user-input interaction (SDK/ui-server)
    * or injects keystrokes (node-pty). `requestId` is the single-resolution key.
@@ -281,6 +303,28 @@ export class TerminalRelay {
   /** Fire-and-forget: control whether copilot-events are mirrored to main for an agent without a viewer. */
   mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void {
     this.send({ type: 'set-agent-forwarding', officeId, agentId, enabled });
+  }
+
+  /**
+   * Approve/reject a pending plan-mode (`exit_plan_mode`) interaction. Resolves the
+   * blocked SDK handler (SDK/ui-server). node-pty reports failure (render-only — the
+   * plan is resolved in the local TUI). `planRequestId` is the single-resolution key.
+   */
+  mainSubmitPlanDecision(
+    officeId: string,
+    agentId: string,
+    d: { requestId?: string; approved: boolean; selectedAction?: string; feedback?: string },
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.request({
+      type: 'submit-plan-decision',
+      requestId: this.id(),
+      officeId,
+      agentId,
+      planRequestId: d.requestId,
+      approved: d.approved,
+      selectedAction: d.selectedAction,
+      feedback: d.feedback,
+    }) as Promise<{ success: boolean; error?: string }>;
   }
 
   private handleServerMessage(
@@ -356,6 +400,12 @@ export class TerminalRelay {
         break;
       case 'copilot-ask-user-complete':
         this.mainEvents.emit('copilot-ask-user-complete', msg.agentId, msg.requestId);
+        break;
+      case 'copilot-plan':
+        this.mainEvents.emit('copilot-plan', msg.agentId, msg.toolId, msg.requestId, msg.summary, msg.planContent, msg.actions, msg.recommendedAction);
+        break;
+      case 'copilot-plan-complete':
+        this.mainEvents.emit('copilot-plan-complete', msg.agentId, msg.requestId, msg.approved, msg.selectedAction, msg.feedback);
         break;
       case 'session-meta-updated':
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);

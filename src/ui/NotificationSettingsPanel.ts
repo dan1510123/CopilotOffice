@@ -67,7 +67,7 @@ export class NotificationSettingsPanel {
     this.overlay.style.cssText = `
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.6);
+      background: var(--co-bg-overlay-scrim);
       z-index: ${ZIndex.NOTIFICATION_SETTINGS};
       display: flex;
       align-items: center;
@@ -77,14 +77,14 @@ export class NotificationSettingsPanel {
 
     const panel = document.createElement('div');
     panel.style.cssText = `
-      background: #1a1a2e;
-      border: 2px solid #333;
+      background: var(--co-bg-panel);
+      border: 2px solid var(--co-border);
       border-radius: 12px;
       padding: 24px;
       width: 600px;
       max-height: 80vh;
       overflow-y: auto;
-      color: #dde;
+      color: var(--co-text);
     `;
 
     panel.innerHTML = this.renderContent(settings);
@@ -123,7 +123,7 @@ export class NotificationSettingsPanel {
       const cfg = settings.events[eventType];
       const label = NOTIFICATION_EVENT_LABELS[eventType];
       rows += `
-        <tr style="border-bottom: 1px solid #2a2a3e;">
+        <tr style="border-bottom: 1px solid var(--co-border-subtle);">
           <td style="padding: 10px 8px; font-size: 13px;">${label}</td>
           <td style="padding: 10px 8px; text-align: center;">
             <input type="checkbox" data-event="${eventType}" data-field="enabled" ${cfg.enabled ? 'checked' : ''} style="cursor: pointer; width: 16px; height: 16px;" />
@@ -138,11 +138,11 @@ export class NotificationSettingsPanel {
             <input type="text" data-event="${eventType}" data-field="message" value="${this.escapeHtml(cfg.message)}" ${!cfg.enabled ? 'disabled' : ''}
               style="
                 width: 100%;
-                background: #12121f;
-                border: 1px solid #333;
+                background: var(--co-bg-inset);
+                border: 1px solid var(--co-border);
                 border-radius: 4px;
                 padding: 4px 8px;
-                color: #dde;
+                color: var(--co-text);
                 font-family: inherit;
                 font-size: 11px;
               "
@@ -154,30 +154,30 @@ export class NotificationSettingsPanel {
 
     return `
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h2 style="margin: 0; font-size: 18px; color: #fff;">🔔 Notification Settings</h2>
+        <h2 style="margin: 0; font-size: 18px; color: var(--co-text-strong);">🔔 Notification Settings</h2>
         <button id="notif-close-btn" style="
-          background: none; border: none; color: #666; font-size: 20px; cursor: pointer; padding: 4px 8px;
+          background: none; border: none; color: var(--co-text-muted); font-size: 20px; cursor: pointer; padding: 4px 8px;
         ">✕</button>
       </div>
 
       <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 12px;">
-        <label style="font-size: 12px; color: #889;">Dedup window (ms):</label>
+        <label style="font-size: 12px; color: var(--co-text-secondary);">Dedup window (ms):</label>
         <input type="number" id="notif-dedupe-ms" value="${settings.dedupeWindowMs}" min="0" max="30000" step="500"
           style="
-            width: 80px; background: #12121f; border: 1px solid #333; border-radius: 4px;
-            padding: 4px 8px; color: #dde; font-family: inherit; font-size: 12px;
+            width: 80px; background: var(--co-bg-inset); border: 1px solid var(--co-border); border-radius: 4px;
+            padding: 4px 8px; color: var(--co-text); font-family: inherit; font-size: 12px;
           "
         />
       </div>
 
       <table style="width: 100%; border-collapse: collapse;">
         <thead>
-          <tr style="border-bottom: 2px solid #333;">
-            <th style="padding: 8px; text-align: left; font-size: 12px; color: #889;">Event</th>
-            <th style="padding: 8px; text-align: center; font-size: 12px; color: #889;">On</th>
-            <th style="padding: 8px; text-align: center; font-size: 12px; color: #889;">Toast</th>
-            <th style="padding: 8px; text-align: center; font-size: 12px; color: #889;">OS</th>
-            <th style="padding: 8px; text-align: left; font-size: 12px; color: #889;">Message template</th>
+          <tr style="border-bottom: 2px solid var(--co-border);">
+            <th style="padding: 8px; text-align: left; font-size: 12px; color: var(--co-text-secondary);">Event</th>
+            <th style="padding: 8px; text-align: center; font-size: 12px; color: var(--co-text-secondary);">On</th>
+            <th style="padding: 8px; text-align: center; font-size: 12px; color: var(--co-text-secondary);">Toast</th>
+            <th style="padding: 8px; text-align: center; font-size: 12px; color: var(--co-text-secondary);">OS</th>
+            <th style="padding: 8px; text-align: left; font-size: 12px; color: var(--co-text-secondary);">Message template</th>
           </tr>
         </thead>
         <tbody>
@@ -193,8 +193,8 @@ export class NotificationSettingsPanel {
         </div>
       </div>
 
-      <p style="margin-top: 12px; font-size: 10px; color: #556;">
-        Use <code style="color: #889;">{agent}</code> and <code style="color: #889;">{tool}</code> in message templates.
+      <p style="margin-top: 12px; font-size: 10px; color: var(--co-text-faint);">
+        Use <code style="color: var(--co-text-secondary);">{agent}</code> and <code style="color: var(--co-text-secondary);">{tool}</code> in message templates.
         Dedup window prevents the same notification from showing twice within the specified time.
       </p>
     `;

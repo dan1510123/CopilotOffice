@@ -61,7 +61,7 @@ export function createSessionHistoryRow(
 
   const num = document.createElement('span');
   num.textContent = `#${displayNumber}`;
-  num.style.cssText = 'color: #555; flex: 0 0 auto;';
+  num.style.cssText = 'color: var(--co-text-faint); flex: 0 0 auto;';
   row.appendChild(num);
 
   const hasTitle = typeof entry.title === 'string' && entry.title.trim().length > 0;
@@ -78,7 +78,7 @@ export function createSessionHistoryRow(
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: ${hasTitle ? '#cdd6ff' : '#77839f'};
+    color: ${hasTitle ? 'var(--co-text)' : 'var(--co-text-secondary)'};
     ${hasTitle ? '' : 'font-style: italic;'}
   `;
   row.appendChild(titleSpan);
@@ -86,7 +86,7 @@ export function createSessionHistoryRow(
   const idSpan = document.createElement('span');
   // Verbatim, exact, copyable identifier (FR-007).
   idSpan.textContent = entry.id;
-  idSpan.style.cssText = 'color: #6f7aa0; font-size: 11px; user-select: all; flex: 0 0 auto;';
+  idSpan.style.cssText = 'color: var(--co-text-muted); font-size: 11px; user-select: all; flex: 0 0 auto;';
   row.appendChild(idSpan);
 
   // Spec 020: turn the row into a navigational control when a selection handler is

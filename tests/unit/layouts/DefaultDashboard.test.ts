@@ -41,6 +41,72 @@ function ctx(meta: Record<string, { title: string; sessionId?: string }>): Dashb
   };
 }
 
+describe('DefaultDashboard — partial refresh (renderDynamicRegions)', () => {
+  it('exposes stable data-* wrappers for each dynamic region and the session panel', () => {
+    const html = defaultDashboard.renderCards(ctx({ a1: { title: 'My session' } }));
+    expect(html).toContain('data-badge-slot-agent="a1"');
+    expect(html).toContain('data-status-panel-agent="a1"');
+    expect(html).toContain('data-activity-detail-agent="a1"');
+    expect(html).toContain('data-dynamic-agent="a1"');
+    // The Session Info panel remains a distinct region (never patched).
+    expect(html).toContain('class="session-meta-panel"');
+  });
+
+  it('describes dynamic regions without ever targeting the Session Info panel', () => {
+    const regions = defaultDashboard.renderDynamicRegions!(ctx({ a1: { title: 'My session' } }));
+    expect(regions).toBeTruthy();
+    const selectors = regions!.map((r) => r.selector);
+    expect(selectors).toContain('[data-status-panel-agent="a1"]');
+    expect(selectors).toContain('[data-activity-detail-agent="a1"]');
+    expect(selectors).toContain('[data-dynamic-agent="a1"]');
+    expect(selectors).toContain('[data-badge-slot-agent="a1"]');
+    // Critical: nothing touches the session-title editor or its panel.
+    for (const sel of selectors) {
+      expect(sel).not.toContain('session-meta-panel');
+      expect(sel).not.toContain('session-title-display');
+    }
+  });
+
+  it('patched regions match the full-render markup (parity, no drift)', () => {
+    const context = ctx({ a1: { title: 'My session' } });
+    const full = defaultDashboard.renderCards(context);
+    const regions = defaultDashboard.renderDynamicRegions!(context)!;
+    const statusRegion = regions.find((r) => r.selector === '[data-status-panel-agent="a1"]');
+    // The status-panel inner html emitted for patching must appear verbatim in
+    // the full render, so a partial refresh cannot diverge from a full one.
+    expect(statusRegion?.html).toBeTruthy();
+    expect(full).toContain(statusRegion!.html!.trim().slice(0, 40));
+  });
+
+  it('applying regions to a rendered card preserves a focused edit input', () => {
+    const context = ctx({ a1: { title: 'My session' } });
+    document.body.innerHTML = `<div id="content">${defaultDashboard.renderCards(context)}</div>`;
+    const content = document.getElementById('content')!;
+
+    // Simulate an active inline title edit: swap the display for a live input.
+    const titleEl = content.querySelector('.session-title-display') as HTMLElement;
+    titleEl.innerHTML = '';
+    const input = document.createElement('input');
+    input.value = 'typing in progress';
+    titleEl.appendChild(input);
+    const originalInput = titleEl.querySelector('input');
+
+    // Apply the same patch main.ts would apply.
+    const regions = defaultDashboard.renderDynamicRegions!(context)!;
+    for (const region of regions) {
+      const el = content.querySelector(region.selector) as HTMLElement | null;
+      if (!el) continue;
+      if (region.html !== undefined) el.innerHTML = region.html;
+      if (region.attrs) for (const [k, v] of Object.entries(region.attrs)) el.setAttribute(k, v);
+    }
+
+    // The edit input must survive the refresh untouched.
+    const afterInput = content.querySelector('.session-title-display input') as HTMLInputElement | null;
+    expect(afterInput).toBe(originalInput);
+    expect(afterInput?.value).toBe('typing in progress');
+  });
+});
+
 describe('DefaultDashboard — session info panel enhancements', () => {
   it('renders the Close Session button alongside New Session for an active agent', () => {
     const html = defaultDashboard.renderCards(ctx({ a1: { title: 'My session' } }));
@@ -70,7 +136,7 @@ describe('DefaultDashboard — session info panel enhancements', () => {
     const html = defaultDashboard.renderCards(ctx({ a1: { title: 'titled' } }));
     expect(html).not.toContain('class="session-id-badge"');
     // Other session-info chrome must still render.
-    expect(html).toContain('Session Info');
+    expect(html).toContain('Now doing');
     expect(html).toContain('class="session-title-display"');
   });
 
@@ -82,6 +148,33 @@ describe('DefaultDashboard — session info panel enhancements', () => {
     expect(html).toContain('Untitled session');
     expect(html).toContain('class="session-id-badge"');
     expect(html).toContain(`>${fullId}</div>`);
+  });
+
+  it('keeps the session-title chip after completion (slacking) when meta is cached', () => {
+    // Regression: the chip used to be gated on live state === 'active', so when a
+    // task completed and the PTY exited (agent -> slacking) the title flashed out
+    // and vanished. It must now persist on cached meta until the user reopens the
+    // terminal / starts a new session.
+    const slackingOffice = () => {
+      const agents = new Map<string, any>();
+      agents.set('a1', { state: 'slacking', subState: null });
+      return {
+        config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
+        agents,
+        agentTools: new Map(),
+      } as unknown as OfficeData;
+    };
+    const html = defaultDashboard.renderCards({
+      agents: [agent('a1', 'Alice')],
+      office: slackingOffice(),
+      selectedAgentId: 'a1',
+      cachedSessionMeta: { a1: { title: 'My completed task', sessionId: 'abcdef12-3456-7890-abcd-ef1234567890' } },
+      agentTools: new Map(),
+      formatElapsed: () => '0s',
+      formatRelativeTime: () => 'now',
+    });
+    expect(html).toContain('class="session-title-display"');
+    expect(html).toContain('My completed task');
   });
 });
 
@@ -144,3 +237,125 @@ describe('DefaultClickHandler — Close Session routing', () => {
     expect(startNewSession).not.toHaveBeenCalled();
   });
 });
+
+describe('DefaultDashboard — user flag (Needs attention) marker', () => {
+  function slackingOffice(): OfficeData {
+    const agents = new Map<string, any>();
+    agents.set('a1', { state: 'slacking', subState: null });
+    return {
+      config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
+      agents,
+      agentTools: new Map(),
+    } as unknown as OfficeData;
+  }
+  function flagCtx(flagged: boolean, useSlacking = false): DashboardRenderContext {
+    return {
+      agents: [agent('a1', 'Alice')],
+      office: useSlacking ? slackingOffice() : office(),
+      selectedAgentId: 'a1',
+      cachedSessionMeta: { a1: { title: 'My session' } },
+      agentTools: new Map(),
+      formatElapsed: () => '0s',
+      formatRelativeTime: () => 'now',
+      flaggedAgentIds: flagged ? new Set(['a1']) : new Set<string>(),
+    };
+  }
+
+  it('renders a "🚩 Flag" toggle button (off state) for an active agent', () => {
+    const html = defaultDashboard.renderCards(flagCtx(false));
+    expect(html).toContain('class="session-flag-btn ');
+    expect(html).toMatch(/class="session-flag-btn [^"]*ui-btn--flag"/);
+    expect(html).toContain('🚩 Flag');
+    expect(html).toMatch(/class="session-flag-btn [^"]*"[^>]*data-agent="a1"/);
+  });
+
+  it('shows the filled "✓ Resolve" button, flag pill, and banner when flagged', () => {
+    const html = defaultDashboard.renderCards(flagCtx(true));
+    // Button flips to the filled ui-btn--flagged variant and an action-oriented
+    // "Resolve" label (the pill/banner already announce the "Flagged" state).
+    expect(html).toMatch(/class="session-flag-btn [^"]*ui-btn--flagged"/);
+    expect(html).toContain('✓ Resolve');
+    // Flag pill beside the status pill.
+    expect(html).toContain('>Flagged</span>');
+    // Amber-gold attention banner takes over.
+    expect(html).toContain('FLAGGED · NEEDS ATTENTION');
+    // Flag chrome paints the border/bg from the dedicated flag var.
+    expect(html).toContain('var(--co-flag)');
+  });
+
+  it('does not render flag chrome (banner/pill) when not flagged', () => {
+    const html = defaultDashboard.renderCards(flagCtx(false));
+    expect(html).not.toContain('FLAGGED · NEEDS ATTENTION');
+    expect(html).not.toContain('>Flagged</span>');
+  });
+
+  // Adaptive chip emphasis: exactly one pill leads. When the status is itself an
+  // attention state (Done/Waiting) the status pill leads; when the status is quiet
+  // (e.g. Ready after acknowledging Done) the flag pill leads instead.
+  function statusFlagCtx(st: any): DashboardRenderContext {
+    const agents = new Map<string, any>();
+    agents.set('a1', st);
+    const off = {
+      config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
+      agents,
+      agentTools: new Map(),
+    } as unknown as OfficeData;
+    return {
+      agents: [agent('a1', 'Alice')],
+      office: off,
+      selectedAgentId: 'a1',
+      cachedSessionMeta: { a1: { title: 'My session' } },
+      agentTools: new Map(),
+      formatElapsed: () => '0s',
+      formatRelativeTime: () => 'now',
+      flaggedAgentIds: new Set(['a1']),
+    };
+  }
+
+  it('leads with the status chip (Done) when flagged AND done — Done before Flagged', () => {
+    // Done = ready + completionPendingAck (resolveStatusKey folds to "done").
+    const html = defaultDashboard.renderCards(
+      statusFlagCtx({ state: 'active', subState: 'ready', completionPendingAck: true }),
+    );
+    const donePillIdx = html.indexOf('Done');
+    const flagPillIdx = html.indexOf('>Flagged</span>');
+    expect(donePillIdx).toBeGreaterThan(-1);
+    expect(flagPillIdx).toBeGreaterThan(-1);
+    // Status pill appears before the flag pill (it leads).
+    expect(donePillIdx).toBeLessThan(flagPillIdx);
+    // The lead flag pill's big pulse/glow is NOT applied to the trailing flag here.
+  });
+
+  it('leads with the flag chip when flagged AND the status is quiet (Ready)', () => {
+    // Ready (acknowledged) is a quiet status — the flag should take the lead.
+    const html = defaultDashboard.renderCards(
+      statusFlagCtx({ state: 'active', subState: 'ready', completionPendingAck: false }),
+    );
+    const flagPillIdx = html.indexOf('>Flagged</span>');
+    const statusPillIdx = html.indexOf('Ready');
+    expect(flagPillIdx).toBeGreaterThan(-1);
+    expect(statusPillIdx).toBeGreaterThan(-1);
+    // Flag pill appears before the status pill (it leads).
+    expect(flagPillIdx).toBeLessThan(statusPillIdx);
+    // The leading flag pill carries the emphasis glow (box-shadow on the flag var).
+    expect(html).toContain('box-shadow: 0 0 14px -2px var(--co-flag)');
+  });
+
+  it('offers the flag button even for a slacking (no-session) agent', () => {
+    const html = defaultDashboard.renderCards(flagCtx(false, true));
+    // No active session, but the flag toggle is still present so the user can
+    // mark it to come back to.
+    expect(html).not.toContain('class="session-meta-panel"');
+    expect(html).toContain('class="session-flag-btn ');
+    expect(html).toContain('🚩 Flag');
+  });
+
+  it('keeps flag chrome in the partial-refresh dynamic regions (banner + status panel)', () => {
+    const regions = defaultDashboard.renderDynamicRegions!(flagCtx(true))!;
+    const banner = regions.find((r) => r.selector === '[data-attn-banner-agent="a1"]');
+    const statusPanel = regions.find((r) => r.selector === '[data-status-panel-agent="a1"]');
+    expect(banner?.html).toContain('FLAGGED · NEEDS ATTENTION');
+    expect(statusPanel?.html).toContain('>Flagged</span>');
+  });
+});
+

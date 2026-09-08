@@ -43,6 +43,68 @@ export interface MsgSetAgentForwarding {
   enabled: boolean;
 }
 
+// ── Session control commands (Teams slash-command interception) ─────────────────
+//
+// A small allow-list of Copilot CLI slash commands (`/compact`, `/usage`, `/model`)
+// that Teams intercepts and executes via the SDK control plane instead of enqueueing
+// them as model prompts. The SDK-backed backends run them through `session.rpc.*`
+// and return structured, postable content; the node-pty fallback keystroke-injects the
+// raw command into the real TUI (best-effort, no structured result).
+
+/** Control commands that map to SDK `session.rpc.*` calls. */
+export type ControlCommandName = 'compact' | 'usage' | 'model';
+
+export interface ControlCommand {
+  command: ControlCommandName;
+  /** Optional argument: compaction instructions, or a model id for `/model`. */
+  arg?: string;
+}
+
+/** Structured `/compact` result (`session.rpc.history.compact`). */
+export interface ControlCompactData {
+  kind: 'compact';
+  success: boolean;
+  tokensRemoved: number;
+  messagesRemoved: number;
+  summary?: string;
+}
+
+/** Structured `/usage` result (`session.rpc.usage.getMetrics` + `metadata.contextInfo`). */
+export interface ControlUsageData {
+  kind: 'usage';
+  premiumRequestCost?: number;
+  userRequests?: number;
+  apiDurationMs?: number;
+  totalTokens?: number;
+  promptTokenLimit?: number;
+  compactionThreshold?: number;
+}
+
+/** Structured `/model` result (`session.rpc.model.getCurrent` / `switchTo`). */
+export interface ControlModelData {
+  kind: 'model';
+  current?: string;
+  reasoningEffort?: string;
+  switchedTo?: string;
+}
+
+export type ControlData = ControlCompactData | ControlUsageData | ControlModelData;
+
+/** Response payload of `run-control-command` (carried in `SrvResponse.result`). */
+export type ControlCommandResult =
+  | { executed: true; via: 'sdk'; data: ControlData }
+  | { executed: true; via: 'keystroke' }
+  | { executed: false; error: string };
+
+export interface MsgRunControlCommand {
+  type: 'run-control-command';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  command: ControlCommandName;
+  arg?: string;
+}
+
 /**
  * Answer to a pending `ask_user` interaction (spec 015). Distinct from
  * `submit-prompt`: this resolves the pending user-input interaction (SDK/ui-server
@@ -58,6 +120,26 @@ export interface MsgSubmitAnswer {
   answerRequestId?: string;
   answer: string;
   wasFreeform: boolean;
+}
+
+/**
+ * Decision on a pending plan-mode (`exit_plan_mode`) interaction. Resolves the blocked
+ * SDK `onExitPlanModeRequest` handler (SDK/ui-server → `handlePendingPlanApproval`). The
+ * node-pty backend has no SDK responder — plan approval there is resolved in the local
+ * TUI, and this message reports failure so the caller keeps the plan open.
+ */
+export interface MsgSubmitPlanDecision {
+  type: 'submit-plan-decision';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  /** SDK single-resolution key from `exit_plan_mode.requested`; '' on the node-pty path. */
+  planRequestId?: string;
+  approved: boolean;
+  /** The chosen exit action (e.g. `interactive`, `autopilot`) when approved. */
+  selectedAction?: string;
+  /** Free-form feedback when the user requested changes (approved === false). */
+  feedback?: string;
 }
 
 export interface MsgResize {
@@ -306,7 +388,9 @@ export type MainToServer =
   | MsgWrite
   | MsgSubmitPrompt
   | MsgSubmitAnswer
+  | MsgSubmitPlanDecision
   | MsgSetAgentForwarding
+  | MsgRunControlCommand
   | MsgResize
   | MsgKill
   | MsgAttach
@@ -444,6 +528,46 @@ export interface SrvCopilotAskUserComplete {
   requestId: string;
 }
 
+/**
+ * Emitted IN ADDITION to `copilot-tool-start` when an agent presents a plan via
+ * `exit_plan_mode`. SDK/ui-server backend: fields come natively from the ephemeral
+ * `exit_plan_mode.requested` event (incl. the `requestId` used to resolve the plan).
+ * node-pty backend: extracted from `tool.execution_start` arguments (`requestId` is ''
+ * → render-only). The server stays a dumb forwarder — it does not format HTML or assign
+ * selector labels.
+ */
+export interface SrvCopilotPlan {
+  type: 'copilot-plan';
+  agentId: string;
+  toolId: string;
+  /** SDK exit_plan_mode.requested id (single-resolution key); '' on node-pty. */
+  requestId: string;
+  /** Concise bullet-point plan summary (markdown). */
+  summary: string;
+  /** Full plan content (markdown), when available. */
+  planContent: string;
+  /** ORDERED available exit actions (e.g. exit_only, interactive, autopilot). */
+  actions: string[];
+  /** The action the runtime recommends (rendered first). */
+  recommendedAction: string;
+}
+
+/**
+ * Emitted when the SDK signals a resolved plan interaction (`exit_plan_mode.completed`).
+ * Always forwarded (outside the viewer gate) so the main-process Teams consumer can
+ * PRECISELY clear a locally-approved plan by `requestId` (first-resolver-wins). node-pty
+ * has no such event (its records carry an empty `requestId`).
+ */
+export interface SrvCopilotPlanComplete {
+  type: 'copilot-plan-complete';
+  agentId: string;
+  /** The resolved SDK exit_plan_mode requestId; '' when unavailable. */
+  requestId: string;
+  approved: boolean;
+  selectedAction?: string;
+  feedback?: string;
+}
+
 export interface SrvCopilotTurnEnd {
   type: 'copilot-turn-end';
   agentId: string;
@@ -516,6 +640,8 @@ export type ServerToMain =
   | SrvCopilotToolStart
   | SrvCopilotAskUser
   | SrvCopilotAskUserComplete
+  | SrvCopilotPlan
+  | SrvCopilotPlanComplete
   | SrvCopilotToolComplete
   | SrvCopilotTurnEnd
   | SrvCopilotTurnStart
