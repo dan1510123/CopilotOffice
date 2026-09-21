@@ -188,6 +188,46 @@ export const RESERVE_AGENTS: Record<string, AgentConfig> = {
     greeting: "💰 Hi there! I'm Penny, the Accountant. I track metrics, costs, and keep your project's numbers in order!",
     description: 'The Accountant',
   },
+  'unassigned-below-left-4': {
+    id: 'writer',
+    name: 'Quill',
+    skill: 'general',
+    sprite: 'npc_writer',
+    color: 0x118899,
+    position: { x: 4, y: 6 },
+    greeting: "✍️ Hello! I'm Quill, the Writer. Docs, comments, commit messages, release notes — I'll make your words shine!",
+    description: 'The Writer',
+  },
+  'unassigned-below-right-4': {
+    id: 'designer',
+    name: 'Pixel',
+    skill: 'general',
+    sprite: 'npc_designer',
+    color: 0xcc3399,
+    position: { x: 6, y: 6 },
+    greeting: "🎨 Hey! I'm Pixel, the Designer. UI layouts, color palettes, and polish — let's make it look great!",
+    description: 'The Designer',
+  },
+  'unassigned-below-left-13': {
+    id: 'security',
+    name: 'Sable',
+    skill: 'general',
+    sprite: 'npc_security',
+    color: 0x223344,
+    position: { x: 13, y: 6 },
+    greeting: "🔒 Greetings. I'm Sable, Security. I audit for vulnerabilities, secrets, and unsafe patterns. Let me lock things down.",
+    description: 'Security',
+  },
+  'unassigned-below-right-13': {
+    id: 'optimizer',
+    name: 'Turbo',
+    skill: 'general',
+    sprite: 'npc_optimizer',
+    color: 0xddaa22,
+    position: { x: 15, y: 6 },
+    greeting: "⚡ Hey! I'm Turbo, the Optimizer. Slow queries, big bundles, wasted cycles — I'll make it fast!",
+    description: 'The Optimizer',
+  },
 };
 
 // Temporary toggle to hide Arthur from the default office.
@@ -290,11 +330,15 @@ const CORE_POSITIONS: { x: number; y: number }[] = [
 const RESERVE_DESK_IDS = [
   'unassigned-left-4', 'unassigned-right-4', 'unassigned-above-4',
   'unassigned-left-13', 'unassigned-right-13', 'unassigned-above-13',
+  'unassigned-below-left-4', 'unassigned-below-right-4',
+  'unassigned-below-left-13', 'unassigned-below-right-13',
 ];
 
 const RESERVE_POSITIONS: { x: number; y: number }[] = [
   { x: 3, y: 5 }, { x: 7, y: 5 }, { x: 6, y: 3 },
   { x: 12, y: 5 }, { x: 16, y: 5 }, { x: 15, y: 3 },
+  { x: 4, y: 6 }, { x: 6, y: 6 },
+  { x: 13, y: 6 }, { x: 15, y: 6 },
 ];
 
 const ROLE_TITLES = [

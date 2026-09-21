@@ -20,6 +20,7 @@
 // after a deletion would remap later offices onto the wrong session file.
 
 import type { AgentConfig } from '../config/agents';
+import { generateRandomOfficeAgents } from '../config/agents';
 import type { OfficeConfig, OfficeLayout, PersistedAgentReview, SeatedAgent } from './officeManager';
 
 /**
@@ -118,6 +119,54 @@ function normalizeAgentIdsForOffice(office: OfficeConfig): void {
   }
   if (Array.isArray(office.flaggedAgents)) {
     office.flaggedAgents = Array.from(new Set(office.flaggedAgents.map(remapId)));
+  }
+}
+
+/**
+ * Roster backfill: new reserve seats (and the agents that fill them) can be
+ * added to the office layout in a later release, but offices persisted before
+ * that release only carry the reserve agents that existed when they were
+ * created. A stool whose desk id has no `customReserveAgents` entry still
+ * renders, but is inert — `OfficeScene.setupEmptySeatInteractivity` only makes
+ * a seat clickable when a reserve config exists for its desk id.
+ *
+ * Regenerate this office's roster from the same deterministic seed and copy in
+ * only the desk ids that are missing. New desk ids are appended to the end of
+ * the generation order, so every previously generated entry keeps its exact
+ * name / sprite / id and stored agents are never rewritten. Idempotent.
+ */
+function backfillReserveAgents(office: OfficeConfig): void {
+  // Office-0 and rosterless offices fall back to the built-in default reserve
+  // map, which always carries every seat — nothing to backfill.
+  if (office.id === 'office-0' || !office.customAgents?.length) return;
+
+  let generated: Record<string, AgentConfig>;
+  try {
+    generated = generateRandomOfficeAgents(office.id).reserveAgents;
+  } catch {
+    return; // never let a backfill failure block loading the office
+  }
+
+  const existing = office.customReserveAgents ?? {};
+  const takenIds = new Set<string>();
+  for (const a of office.customAgents ?? []) {
+    if (a && typeof a.id === 'string') takenIds.add(a.id);
+  }
+  for (const a of Object.values(existing)) {
+    if (a && typeof a.id === 'string') takenIds.add(a.id);
+  }
+
+  let added = 0;
+  for (const [deskId, agent] of Object.entries(generated)) {
+    if (existing[deskId]) continue;       // never overwrite a stored seat
+    if (takenIds.has(agent.id)) continue; // defensive: keep agent ids unique
+    existing[deskId] = agent;
+    takenIds.add(agent.id);
+    added++;
+  }
+
+  if (added > 0) {
+    office.customReserveAgents = existing;
   }
 }
 
@@ -242,6 +291,8 @@ export function deserializeOffices(stored: string | null): NormalizedOfficeState
     // Repair legacy id collisions (another office's baked-in agent ids) so every
     // agent id is unique to its own office. Idempotent for already-correct data.
     normalizeAgentIdsForOffice(normalized);
+    // Backfill reserve seats added by newer layout revisions (idempotent).
+    backfillReserveAgents(normalized);
     offices.push(normalized);
   }
 

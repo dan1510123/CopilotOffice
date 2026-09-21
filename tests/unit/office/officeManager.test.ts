@@ -22,7 +22,7 @@ describe('office/officeManager', () => {
     const office = manager.createOffice('Branch', '.');
     expect(office.config.id).toBe('office-1');
     expect(office.config.customAgents?.length).toBe(4);
-    expect(Object.keys(office.config.customReserveAgents || {})).toHaveLength(6);
+    expect(Object.keys(office.config.customReserveAgents || {})).toHaveLength(10);
   });
 
   it('protects office-0 from deletion', () => {
