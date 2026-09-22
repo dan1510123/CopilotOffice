@@ -11,6 +11,7 @@ export interface MsgStart {
   officeId: string;
   agentId: string;
   workingDir?: string;
+  hostWorkingDir?: string;
   cols?: number;
   rows?: number;
   preseededPrompt?: string;
@@ -201,6 +202,7 @@ export interface MsgActivate {
   officeId: string;
   agentId: string;
   workingDir?: string;
+  hostWorkingDir?: string;
   cols?: number;
   rows?: number;
   launchMode?: 'copilot' | 'shell';

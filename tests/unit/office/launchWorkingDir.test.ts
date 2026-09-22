@@ -54,10 +54,31 @@ describe('resolveOfficeAgentWorkingDir', () => {
     expect(res?.workingDir).toBe('C:\\repos\\reserve-dir');
   });
 
+  it('is determined only by the supplied office, not another current office', () => {
+    const target = makeOffice({
+      id: 'office-target',
+      workingDirectory: 'D:\\repos\\target',
+      customAgents: [agent('shared-agent')],
+    });
+    const other = makeOffice({
+      id: 'office-current',
+      workingDirectory: 'C:\\repos\\current',
+      customAgents: [agent('shared-agent', 'C:\\repos\\wrong')],
+    });
+
+    expect(resolveOfficeAgentWorkingDir(target, 'shared-agent')?.workingDir).toBe('D:\\repos\\target');
+    expect(resolveOfficeAgentWorkingDir(other, 'shared-agent')?.workingDir).toBe('C:\\repos\\wrong');
+  });
+
   it('uses shell launch mode for the PC terminal', () => {
     const office = makeOffice();
     const res = resolveOfficeAgentWorkingDir(office, PC_TERMINAL_AGENT_ID);
     expect(res).toEqual({ workingDir: 'C:\\repos\\override-folder', launchMode: 'shell' });
+  });
+
+  it('preserves default-office agent overrides', () => {
+    const office = makeOffice({ id: 'office-0' });
+    expect(resolveOfficeAgentWorkingDir(office, 'admin')?.workingDir).toBe('.');
   });
 
   it('returns undefined for an unknown/missing office', () => {

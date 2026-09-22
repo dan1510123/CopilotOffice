@@ -471,8 +471,8 @@ export class TerminalRelay {
   registerIpc(): void {
     ipcMain.handle('terminal-backend-info', () => this.backendInfo);
 
-    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') =>
-      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode })
+    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) =>
+      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, hostWorkingDir, cols, rows, preseededPrompt, launchMode })
     );
 
     ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string, foreground?: boolean) =>
@@ -487,6 +487,7 @@ export class TerminalRelay {
         agentId: string,
         opts?: {
           workingDir?: string;
+          hostWorkingDir?: string;
           cols?: number;
           rows?: number;
           launchMode?: 'copilot' | 'shell';
@@ -500,6 +501,7 @@ export class TerminalRelay {
           officeId,
           agentId,
           workingDir: opts?.workingDir,
+          hostWorkingDir: opts?.hostWorkingDir,
           cols: opts?.cols,
           rows: opts?.rows,
           launchMode: opts?.launchMode,

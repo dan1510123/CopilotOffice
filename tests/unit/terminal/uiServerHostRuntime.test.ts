@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { UiServerHostRuntime } from '../../../electron/terminal/terminal-backend';
+import {
+  buildUiServerHostOptions,
+  UiServerHostRuntime,
+  type StartTerminalOptions,
+} from '../../../electron/terminal/terminal-backend';
 
 /**
  * Regression guard for the T037 finding: a Copilot ui-server runtime that never
@@ -22,6 +26,25 @@ function makeFakePty() {
 }
 
 const opts = { cols: 80, rows: 24, cwd: process.cwd(), env: { PATH: '' } };
+
+describe('ui-server host working directory', () => {
+  it('uses the office host cwd without changing the session cwd', () => {
+    const sessionOptions: StartTerminalOptions = {
+      sessionId: 'session-1',
+      officeId: 'office-1',
+      shell: 'powershell.exe',
+      cols: 80,
+      rows: 24,
+      cwd: 'D:\\repos\\agent-override',
+      hostCwd: 'D:\\repos\\office',
+      env: {},
+    };
+
+    const hostOptions = buildUiServerHostOptions(sessionOptions);
+    expect(hostOptions.cwd).toBe('D:\\repos\\office');
+    expect(sessionOptions.cwd).toBe('D:\\repos\\agent-override');
+  });
+});
 
 describe('UiServerHostRuntime port-discovery failure (T037 regression)', () => {
   it('rejects whenListening() with a timeout error instead of crashing', async () => {

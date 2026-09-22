@@ -25,6 +25,7 @@ import {
 } from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
+import { resolveAccessibleWorkingDir } from './working-dir';
 
 // Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
 // Copilot runtime inheriting this process's env, so setting COPILOT_AUTO_UPDATE
@@ -41,6 +42,7 @@ interface PtyProcess {
   agentId: string;
   sessionId: string;
   workingDir?: string;
+  hostWorkingDir?: string;
   launchMode: 'copilot' | 'shell';
 }
 
@@ -509,6 +511,7 @@ function startTerminalForAgent(
   rows?: number,
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
+  hostWorkingDir?: string,
 ): Promise<StartTerminalResult> {
   const ck = compositeKey(officeId, agentId);
   const pending = inFlightStarts.get(ck);
@@ -517,7 +520,16 @@ function startTerminalForAgent(
     // spawning a second backend process (and a second shared-host onData listener).
     return pending.then((r) => (r.success ? { ...r, reused: true } : r));
   }
-  const started = startTerminalForAgentImpl(officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode);
+  const started = startTerminalForAgentImpl(
+    officeId,
+    agentId,
+    workingDir,
+    cols,
+    rows,
+    preseededPrompt,
+    launchMode,
+    hostWorkingDir,
+  );
   inFlightStarts.set(ck, started);
   return started.finally(() => {
     inFlightStarts.delete(ck);
@@ -532,6 +544,7 @@ async function startTerminalForAgentImpl(
   rows?: number,
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
+  hostWorkingDir?: string,
 ): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
   // Spec 008-smoke: force shell mode end-to-end when the e2e harness is driving
   // the app. Avoids depending on a real copilot CLI binary on the test runner
@@ -587,25 +600,20 @@ async function startTerminalForAgentImpl(
 
   const terminalKey = ck;
   const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-  let cwd = process.cwd();
-  if (workingDir) {
-    const customPath = path.isAbsolute(workingDir)
-      ? workingDir
-      : path.join(process.cwd(), workingDir);
-    try {
-      await fs.promises.access(customPath, fs.constants.F_OK);
-      cwd = customPath;
-    } catch {
-      // The requested override folder does not exist / is not accessible, so we
-      // silently fall back to process.cwd() (the main/default folder). Log it so
-      // a "new session opened in the wrong folder" report is diagnosable.
-      console.warn(
-        `[workingDir] ${ck}: requested workingDir="${workingDir}" (resolved="${customPath}") ` +
-        `is not accessible; falling back to process.cwd()="${process.cwd()}"`,
-      );
-    }
+  let cwd: string;
+  let hostCwd: string;
+  try {
+    cwd = await resolveAccessibleWorkingDir(workingDir);
+    hostCwd = await resolveAccessibleWorkingDir(hostWorkingDir ?? workingDir);
+  } catch (error) {
+    const message = String((error as Error)?.message ?? error);
+    console.error(`[workingDir] ${ck}: ${message}`);
+    return { success: false, error: message };
   }
-  console.log(`[workingDir] ${ck}: terminalStart requested="${workingDir ?? '(none)'}" finalCwd="${cwd}"`);
+  console.log(
+    `[workingDir] ${ck}: terminalStart requested="${workingDir ?? '(none)'}" finalCwd="${cwd}" ` +
+    `hostRequested="${hostWorkingDir ?? workingDir ?? '(none)'}" hostCwd="${hostCwd}"`,
+  );
 
   const taggedEnv = {
     ...process.env,
@@ -624,6 +632,7 @@ async function startTerminalForAgentImpl(
       cols: cols ?? 120,
       rows: rows ?? 30,
       cwd,
+      hostCwd,
       env: taggedEnv,
       officeId,
       yolo: yoloEnabled,
@@ -664,7 +673,8 @@ async function startTerminalForAgentImpl(
       process: proc,
       agentId: terminalKey,
       sessionId,
-      workingDir,
+      workingDir: cwd,
+      hostWorkingDir: hostCwd,
       launchMode,
     });
 
@@ -1056,7 +1066,16 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       activeAgentViewers.add(ck);
-      const result = await startTerminalForAgent(msg.officeId, msg.agentId, msg.workingDir, msg.cols, msg.rows, msg.preseededPrompt, msg.launchMode);
+      const result = await startTerminalForAgent(
+        msg.officeId,
+        msg.agentId,
+        msg.workingDir,
+        msg.cols,
+        msg.rows,
+        msg.preseededPrompt,
+        msg.launchMode,
+        msg.hostWorkingDir,
+      );
       send({ type: 'response', requestId: msg.requestId, result });
       break;
     }
@@ -1363,6 +1382,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           msg.rows,
           undefined,
           msg.launchMode,
+          msg.hostWorkingDir,
         );
         if (!startResult.success) {
           const failure: ActivateResult = { success: false, error: startResult.error || 'terminal start failed' };
@@ -1555,14 +1575,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       }
       const termKey = agentToTerminal.get(ck);
       const ptyProc = termKey ? ptyProcesses.get(termKey) : null;
-      let cwd = process.cwd();
-      if (ptyProc?.workingDir) {
-        const customPath = path.join(process.cwd(), ptyProc.workingDir);
-        try {
-          await fs.promises.access(customPath, fs.constants.F_OK);
-          cwd = customPath;
-        } catch { /* use default */ }
-      }
+      const cwd = ptyProc?.workingDir ?? process.cwd();
       try {
         const wtArgs = ['-d', cwd, 'copilot', '--session-id', sid, '--no-auto-update'];
         if (yoloEnabled) wtArgs.push('--yolo');
@@ -1686,6 +1699,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const restartTargets: Array<{
         agentId: string;
         workingDir?: string;
+        hostWorkingDir?: string;
         viewed: boolean;
         forwarded: boolean;
       }> = [];
@@ -1697,6 +1711,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         restartTargets.push({
           agentId: ck.slice(officeId.length + 1),
           workingDir: proc.workingDir,
+          hostWorkingDir: proc.hostWorkingDir,
           viewed: activeAgentViewers.has(ck),
           forwarded: agentForwardKeys.has(ck),
         });
@@ -1732,7 +1747,16 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           const ck = compositeKey(officeId, target.agentId);
           if (target.viewed) activeAgentViewers.add(ck);
           if (target.forwarded) agentForwardKeys.add(ck);
-          const result = await startTerminalForAgent(officeId, target.agentId, target.workingDir);
+          const result = await startTerminalForAgent(
+            officeId,
+            target.agentId,
+            target.workingDir,
+            undefined,
+            undefined,
+            undefined,
+            'copilot',
+            target.hostWorkingDir,
+          );
           if (!result.success) {
             throw new Error(result.error || `Failed to restart ${target.agentId}`);
           }

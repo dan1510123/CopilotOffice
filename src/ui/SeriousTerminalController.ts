@@ -10,6 +10,7 @@ import { sanitizeTerminalSelection } from './terminalSelection';
 import { getAutoStartCoordinator } from '../agents/AutoStartCoordinator';
 import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { officeManager } from '../office/officeManager';
+import { resolveOfficeAgentWorkingDir } from '../office/launchWorkingDir';
 import { perfMark } from './terminalPerf';
 import { injectUiKit, uiButtonClass } from './uiKit';
 import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
@@ -38,6 +39,7 @@ type SeriousTerminalOpenOptions = {
   description: string;
   color?: number;
   workingDir?: string;
+  hostWorkingDir?: string;
   launchMode?: 'copilot' | 'shell';
 };
 
@@ -456,7 +458,9 @@ export class SeriousTerminalController {
     // the retained buffer is the whole point of the cache.
     try {
       this.titleEl.textContent = `${options.name} (${agentId})`;
-      this.subtitleEl.textContent = options.description;
+      this.subtitleEl.textContent = options.workingDir
+        ? `${options.description} · ${options.workingDir}`
+        : options.description;
       this.updateSpriteCard(options);
       void this.updateSessionTitle(officeId, agentId);
       this.updateSessionIdDisplay();
@@ -491,7 +495,14 @@ export class SeriousTerminalController {
           // ui-server start may not auto-foreground during a switch).
           cacheLog(`activate ${officeId}:${agentId} → COLD/new: terminalStart + foreground activate`);
           const startResult = await window.copilotBridge.terminalStart(
-            officeId, agentId, options.workingDir, dims?.cols, dims?.rows, undefined, options.launchMode || 'copilot',
+            officeId,
+            agentId,
+            options.workingDir,
+            dims?.cols,
+            dims?.rows,
+            undefined,
+            options.launchMode || 'copilot',
+            options.hostWorkingDir,
           );
           if (!startResult.success) {
             this.terminal.writeln(`\r\nFailed to start terminal: ${startResult.error || 'unknown error'}`);
@@ -620,6 +631,7 @@ export class SeriousTerminalController {
       undefined,
       undefined,
       options.launchMode || 'copilot',
+      options.hostWorkingDir,
     );
 
     if (!startResult.success) {
@@ -795,7 +807,12 @@ export class SeriousTerminalController {
     this.setTeamsButtonState(false, true);
     const office = officeManager.getOffice(officeId)?.config;
     const officeChannelUrl = office?.teamsChannelUrl;
-    const workingDir = this.activeOptions.workingDir || officeManager.getCurrentWorkingDirectory();
+    const workingDir = resolveOfficeAgentWorkingDir(office, agentId)?.workingDir;
+    if (!workingDir) {
+      this.setTeamsButtonState(false);
+      showClipboardToast(`No working directory configured for ${officeId}/${agentId}`, 'error');
+      return;
+    }
     const res = await window.copilotBridge.teamsRegister({
       officeId,
       agentId,

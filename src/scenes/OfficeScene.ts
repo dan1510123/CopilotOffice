@@ -11,6 +11,7 @@ import { Depths, ySortDepth } from '../config/depths';
 import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager, OfficeLayout } from '../office/officeManager';
+import { resolveOfficeAgentWorkingDir } from '../office/launchWorkingDir';
 import { MeetingPlan } from '../meeting/types';
 import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
@@ -1765,6 +1766,14 @@ export class OfficeScene extends Phaser.Scene {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: ${reserveConfig.id} already spawned`);
       return 'already-active';
     }
+    const officeId = officeManager.currentOfficeId;
+    const office = officeId ? officeManager.getOffice(officeId)?.config : undefined;
+    const launch = resolveOfficeAgentWorkingDir(office, reserveConfig.id);
+    const canStartTerminal = typeof window.copilotBridge?.terminalStart === 'function';
+    if (officeId && canStartTerminal && (!office || !launch)) {
+      console.error(`[OfficeScene] No launch directory for ${officeId}/${reserveConfig.id}`);
+      return 'invalid-target';
+    }
 
     console.log(`[OfficeScene] Spawning reserve agent: ${reserveConfig.name} (${reserveConfig.id}) at seat ${deskId}`);
 
@@ -1791,7 +1800,6 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Persist seat assignment so it survives restart
-    const officeId = officeManager.currentOfficeId;
     if (officeId) {
       officeManager.addSeatedAgent(officeId, deskId, reserveConfig.id);
     }
@@ -1803,10 +1811,19 @@ export class OfficeScene extends Phaser.Scene {
     npc.setLabelsVisible(true);
 
     // Start terminal in background immediately
-    if (officeId && window.copilotBridge?.terminalStart) {
+    if (officeId && office && launch && canStartTerminal) {
       officeManager.setAgentStarting(officeId, reserveConfig.id);
       this.game.events.emit('agent:status:changed', reserveConfig.id);
-      window.copilotBridge.terminalStart(officeId, reserveConfig.id, officeManager.getCurrentWorkingDirectory()).catch(err => {
+      window.copilotBridge.terminalStart(
+        officeId,
+        reserveConfig.id,
+        launch.workingDir,
+        undefined,
+        undefined,
+        undefined,
+        launch.launchMode,
+        office.workingDirectory,
+      ).catch(err => {
         console.error(`[OfficeScene] Failed to start terminal for ${reserveConfig.id}:`, err);
       });
     }
@@ -2223,10 +2240,20 @@ export class OfficeScene extends Phaser.Scene {
         } else {
           console.log(`[CopilotOffice] Starting new ${label} session (no saved session found)`);
         }
+        const office = officeManager.getOffice(oid)?.config;
+        const launch = resolveOfficeAgentWorkingDir(office, agentConfig.id);
+        if (!office || !launch) {
+          throw new Error(`No launch directory configured for ${oid}/${agentConfig.id}`);
+        }
         const result = await window.copilotBridge.terminalStart(
           oid,
           agentConfig.id,
-          agentConfig.workingDir || officeManager.getCurrentWorkingDirectory(),
+          launch.workingDir,
+          undefined,
+          undefined,
+          undefined,
+          launch.launchMode,
+          office.workingDirectory,
         );
         console.log(`[CopilotOffice] ${label} session ready`);
         if (DEBUG_COLD_START) {
@@ -2651,7 +2678,9 @@ export class OfficeScene extends Phaser.Scene {
   private openPlayerPcTerminal(): void {
     if (!getLayout(this.currentLayout).behaviors.hasPlayerPcTerminal) return;
 
-    const workingDir = officeManager.getCurrentWorkingDirectory();
+    const office = officeManager.currentOffice?.config;
+    const workingDir = resolveOfficeAgentWorkingDir(office, PC_TERMINAL_ID)?.workingDir;
+    if (!workingDir) return;
     const pcTerminalConfig: AgentConfig = {
       id: PC_TERMINAL_ID,
       name: 'PC TERMINAL',

@@ -1527,20 +1527,34 @@ function getAgentConfig(agentId: string) {
 
 let seriousTerminalController: SeriousTerminalController | null = null;
 
+function resolveAgentLaunchConfig(
+  officeId: string,
+  agentId: string,
+): { workingDir: string; hostWorkingDir: string; launchMode: 'copilot' | 'shell' } | null {
+  const office = officeManager.getOffice(officeId)?.config;
+  const session = resolveOfficeAgentWorkingDir(office, agentId);
+  if (!office || !session) return null;
+  return { ...session, hostWorkingDir: office.workingDirectory };
+}
+
 function getSeriousLaunchConfig(agentId: string): {
   name: string;
   description: string;
   color?: number;
   workingDir?: string;
+  hostWorkingDir?: string;
   launchMode?: 'copilot' | 'shell';
 } | null {
+  const officeId = officeManager.currentOfficeId;
+  if (!officeId) return null;
+  const launch = resolveAgentLaunchConfig(officeId, agentId);
+  if (!launch) return null;
   if (agentId === PC_TERMINAL_ID) {
     return {
       name: 'PC TERMINAL',
       description: 'Local Shell',
       color: 0x6f8ed8,
-      workingDir: officeManager.getCurrentWorkingDirectory(),
-      launchMode: 'shell',
+      ...launch,
     };
   }
   const agent = getAgentConfig(agentId);
@@ -1549,8 +1563,7 @@ function getSeriousLaunchConfig(agentId: string): {
     name: agent.name,
     description: agent.description,
     color: agent.color,
-    workingDir: agent.workingDir || officeManager.getCurrentWorkingDirectory(),
-    launchMode: 'copilot',
+    ...launch,
   };
 }
 
@@ -1674,24 +1687,13 @@ let autoStartTerminalStartCount = 0;
 async function warmAgentSession(
   officeId: string,
   agentId: string,
-  fallback?: { workingDir: string; launchMode: 'copilot' | 'shell' },
 ): Promise<boolean> {
   if (!window.copilotBridge) return false;
-  // getSeriousLaunchConfig resolves against the CURRENT office's active roster
-  // and defaults workingDir to the current office's cwd, so it is only valid
-  // for the current office. Crucially, default-layout agent IDs (generalist /
-  // debugger / admin) are reused across offices, so calling it for a
-  // non-current office would silently warm that binding with the WRONG working
-  // directory. For any non-current office we therefore ignore it and rely on
-  // the caller's fallback (the persisted Teams binding's authoritative dir).
-  const isCurrentOffice = officeId === officeManager.currentOfficeId;
-  const launchConfig = isCurrentOffice ? getSeriousLaunchConfig(agentId) : null;
-  const workingDir = launchConfig?.workingDir ?? fallback?.workingDir;
-  const launchMode = launchConfig?.launchMode ?? fallback?.launchMode ?? 'copilot';
-  if (!workingDir) return false;
+  const launchConfig = resolveAgentLaunchConfig(officeId, agentId);
+  if (!launchConfig) return false;
   console.log(
-    `[workingDir] warmAgentSession office=${officeId} agent=${agentId} isCurrentOffice=${isCurrentOffice} ` +
-    `resolved="${workingDir}" source=${launchConfig?.workingDir != null ? 'launchConfig' : (fallback?.workingDir != null ? 'fallback' : 'none')}`,
+    `[workingDir] warmAgentSession office=${officeId} agent=${agentId} ` +
+    `session="${launchConfig.workingDir}" host="${launchConfig.hostWorkingDir}" source=office-config`,
   );
   // Surface the "starting" transition on the badge (FR-004). Same call the
   // manual openAgentTerminal path makes; safe to repeat — the office status
@@ -1707,32 +1709,14 @@ async function warmAgentSession(
   const res = await window.copilotBridge.terminalStart(
     officeId,
     agentId,
-    workingDir,
+    launchConfig.workingDir,
     undefined,
     undefined,
     undefined,
-    launchMode,
+    launchConfig.launchMode,
+    launchConfig.hostWorkingDir,
   );
   return res?.success !== false;
-}
-
-/**
- * Resolve a launch fallback (workingDir + launchMode) for `agentId` in `officeId`
- * that is valid even when `officeId` is NOT the currently rendered office.
- *
- * `getSeriousLaunchConfig` (and the global `AGENTS` roster it reads) reflect only
- * the CURRENT office — `swapActiveAgents` rebinds that roster on every office
- * switch — so warming a non-current office through it silently resolves the wrong
- * working directory (or none). Read the target office's own persisted config
- * instead: a per-agent `workingDir` override from its custom roster, else the
- * office's `workingDirectory`. Returns undefined only when no dir can be found.
- */
-function resolveLaunchFallback(
-  officeId: string,
-  agentId: string,
-): { workingDir: string; launchMode: 'copilot' | 'shell' } | undefined {
-  const office = officeManager.getOffice(officeId)?.config;
-  return resolveOfficeAgentWorkingDir(office, agentId);
 }
 
 /**
@@ -1756,14 +1740,14 @@ async function bringAgentFullyOnline(officeId: string, agentId: string): Promise
   // No live PTY. If the renderer still marks it active, the NPC is already seated,
   // so a plain re-warm (with a cross-office-safe workingDir) restores the session.
   if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
-    const warmed = await warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId));
+    const warmed = await warmAgentSession(officeId, agentId);
     if (warmed && (await waitForSessionReady(officeId, agentId))) return true;
     // Re-warm couldn't establish a session — fall through to a full bring-online.
   }
   const result = await executeBringOnline(
     agentId,
     {
-      startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
+      startSeated: (oid, aid) => warmAgentSession(oid, aid),
       activateReserve: activateReserveViaScene,
       switchOffice: switchOfficeAndSettle,
       isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
@@ -1855,7 +1839,6 @@ async function warmAllTeamsBoundAgents(): Promise<void> {
     const bindings = teamsRes.bindings as Array<{
       officeId: string;
       agentId: string;
-      workingDir?: string;
     }>;
     if (bindings.length === 0) {
       // Could be genuinely empty OR the service hasn't finished loading its
@@ -1866,18 +1849,7 @@ async function warmAllTeamsBoundAgents(): Promise<void> {
     const results = await Promise.all(
       bindings.map(async (b) => {
         try {
-          return await warmAgentSession(
-            b.officeId,
-            b.agentId,
-            b.workingDir
-              ? {
-                  workingDir: b.workingDir,
-                  // A raw shell can't be Teams-bound (nothing to resume), but
-                  // guard defensively so PC_TERMINAL never resumes as copilot.
-                  launchMode: b.agentId === PC_TERMINAL_ID ? 'shell' : 'copilot',
-                }
-              : undefined,
-          );
+          return await warmAgentSession(b.officeId, b.agentId);
         } catch (err) {
           console.warn(
             `[Teams] cold-launch warm failed for ${b.officeId}/${b.agentId}:`,
@@ -1963,26 +1935,13 @@ const autoStartCoordinator = new AutoStartCoordinator({
       return null;
     }
   },
-  getAgentLaunchConfig: (_oid, aid) => {
-    const cfg = getSeriousLaunchConfig(aid);
-    return {
-      workingDir: cfg?.workingDir ?? officeManager.getCurrentWorkingDirectory(),
-      launchMode: cfg?.launchMode ?? 'copilot',
-    };
-  },
   resetSession: async (oid, aid) => {
     if (!window.copilotBridge) return null;
     const r = await window.copilotBridge.resetSession(oid, aid);
     return r?.sessionId ?? null;
   },
   warmAgentSession: async (oid, aid) => {
-    // New Session (replaceSession) path. Pass an office-id-keyed fallback
-    // (office.customAgents[].workingDir ?? office.workingDirectory) so the fresh
-    // session lands in the office's override folder even when the snapshotted
-    // office is not the ambient current office. Without this the warm silently
-    // depended on getSeriousLaunchConfig (ambient currentOffice) and could
-    // collapse to the main/default folder.
-    await warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid));
+    await warmAgentSession(oid, aid);
   },
   getSettings: () => getAgentAutoStartSettings(),
 });
@@ -2122,7 +2081,7 @@ if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
       const result = await executeBringOnline(
         agentId,
         {
-          startSeated: (oid, aid) => warmAgentSession(oid, aid, resolveLaunchFallback(oid, aid)),
+          startSeated: (oid, aid) => warmAgentSession(oid, aid),
           activateReserve: activateReserveViaScene,
           switchOffice: switchOfficeAndSettle,
           isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
@@ -2241,8 +2200,7 @@ function registerOrchestratorSpec017Resolvers(): void {
 
   // ── Shared act-on deps (reuse sanctioned per-agent session ops) ────────────
   const actOnDeps: ActOnDeps = {
-    ensureOnline: (officeId, agentId) =>
-      warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId)),
+    ensureOnline: (officeId, agentId) => warmAgentSession(officeId, agentId),
     bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
@@ -2281,7 +2239,7 @@ function registerOrchestratorSpec017Resolvers(): void {
     },
     restartSession: async (officeId, agentId) => {
       await window.copilotBridge.terminalKill(officeId, agentId).catch(() => {});
-      return warmAgentSession(officeId, agentId, resolveLaunchFallback(officeId, agentId));
+      return warmAgentSession(officeId, agentId);
     },
     teamsEnabled: async () => {
       try {
@@ -2295,7 +2253,8 @@ function registerOrchestratorSpec017Resolvers(): void {
       const office = officeManager.getOffice(officeId)?.config;
       const launch = officeId === officeManager.currentOfficeId ? getSeriousLaunchConfig(agentId) : null;
       const displayName = launch?.name ?? agentId;
-      const workingDir = launch?.workingDir || office?.workingDirectory || officeManager.getCurrentWorkingDirectory();
+      const workingDir = resolveAgentLaunchConfig(officeId, agentId)?.workingDir;
+      if (!workingDir) return { success: false, error: `No working directory configured for ${officeId}/${agentId}` };
       const res = await window.copilotBridge.teamsRegister({
         officeId,
         agentId,
@@ -2452,13 +2411,15 @@ async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
   }
   const agent = getSeriousLaunchConfig(agentId);
   if (!agent) return;
+  const launch = resolveAgentLaunchConfig(officeId, agentId);
+  if (!launch) return;
   const office = officeManager.getOffice(officeId)?.config;
   const officeChannelUrl = office?.teamsChannelUrl;
   const res = await window.copilotBridge.teamsRegister({
     officeId,
     agentId,
     displayName: agent.name,
-    workingDir: agent.workingDir || officeManager.getCurrentWorkingDirectory(),
+    workingDir: launch.workingDir,
     officeChannelUrl,
     officeMentionType: office?.teamsMentionType,
     officeMentionValue: office?.teamsMentionValue,
@@ -2871,6 +2832,7 @@ async function startSessionFromOverview(agentId: string): Promise<void> {
         undefined,
         undefined,
         launchConfig.launchMode,
+        launchConfig.hostWorkingDir,
       );
     }
   } catch (error) {

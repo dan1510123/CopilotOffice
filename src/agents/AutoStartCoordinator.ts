@@ -120,11 +120,6 @@ export interface AutoStartCoordinatorDeps {
    *  the renderer to delegate to `copilotBridge.getSessionId` without a new
    *  bridge surface (Principle V). */
   getCurrentSessionId(officeId: string, agentId: string): Promise<string | null>;
-  /** Returns the agent's working dir + launch mode for terminalStart. */
-  getAgentLaunchConfig(
-    officeId: string,
-    agentId: string,
-  ): { workingDir: string; launchMode: 'copilot' | 'shell' };
   /** Per-agent close (reset) — wraps copilotBridge.resetSession. Returns the
    *  freshly-minted session id the server mints on reset (or null when
    *  unavailable) so `replaceSession` can surface it without an extra
