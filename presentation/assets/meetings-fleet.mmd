@@ -1,0 +1,12 @@
+flowchart LR
+  Plan["🧠 Planning agent<br/>drafts a plan"]:::a --> Approve{"You approve?"}:::dec
+  Approve -->|yes| Team["🏢 New team office<br/>opens"]:::b
+  Approve -->|no| Plan
+  Team --> Spawn["👥 Agents start<br/>working in parallel"]:::c
+  Spawn --> Watch["📊 Progress shown as<br/>agents moving & status badges"]:::d
+
+  classDef a fill:#6366f1,stroke:#3730a3,color:#fff;
+  classDef b fill:#0ea5e9,stroke:#075985,color:#fff;
+  classDef c fill:#10b981,stroke:#047857,color:#fff;
+  classDef d fill:#f472b6,stroke:#be185d,color:#fff;
+  classDef dec fill:#fbbf24,stroke:#b45309,color:#3b2600,font-weight:bold;

@@ -1,0 +1,42 @@
+flowchart LR
+  User(["🧑‍💻 You"]):::actor --> Game
+
+  subgraph Game["🎮 Game & UI"]
+    direction TB
+    World["Office world<br/>& agents you talk to"]:::a
+    Terminals["Terminal & dashboard<br/>screens"]:::a
+    Orchestrator["Orchestrator<br/>(talk to run the whole office)"]:::a
+    World ~~~ Terminals ~~~ Orchestrator
+  end
+
+  subgraph Coordinator["⚙️ Coordinator"]
+    direction TB
+    Services["Routing · orchestrator ·<br/>Teams · saving"]:::b
+  end
+
+  subgraph Engine["🧵 Terminal Engine"]
+    direction TB
+    Sessions["Live agent sessions<br/>(one per agent, per office)"]:::c
+  end
+
+  subgraph Outside["🌐 Outside World"]
+    direction TB
+    Copilot["Copilot AI runtime"]:::d
+    Teams["Microsoft Teams"]:::d
+    Storage[("Saved data on disk")]:::disk
+    Copilot ~~~ Teams ~~~ Storage
+  end
+
+  Game <--> Coordinator
+  Coordinator <--> Engine
+  Engine <--> Copilot
+  Coordinator <--> Teams
+  Game <--> Storage
+  Coordinator <--> Storage
+
+  classDef actor fill:#1f2937,stroke:#111827,color:#f9fafb,font-weight:bold;
+  classDef a fill:#6366f1,stroke:#3730a3,color:#fff;
+  classDef b fill:#0ea5e9,stroke:#075985,color:#fff;
+  classDef c fill:#10b981,stroke:#047857,color:#fff;
+  classDef d fill:#f472b6,stroke:#be185d,color:#fff;
+  classDef disk fill:#fbbf24,stroke:#b45309,color:#3b2600,font-weight:bold;

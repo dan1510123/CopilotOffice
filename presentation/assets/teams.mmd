@@ -1,0 +1,12 @@
+flowchart LR
+  TeamsUser(["💬 Someone replies<br/>in a Teams thread"]):::actor --> Recv["📥 App receives<br/>the message"]:::t
+  Recv --> Check["✅ Is this for an<br/>online agent?"]:::t
+  Check --> Session["Live agent session"]:::c
+  Session <--> AI(["🤖 Copilot AI"]):::d
+  Session --> Reply["📤 Format the answer<br/>(image if rich)"]:::t
+  Reply --> Thread(["📨 Posted back to<br/>the Teams thread"]):::actor
+
+  classDef actor fill:#1f2937,stroke:#111827,color:#f9fafb,font-weight:bold;
+  classDef t fill:#7c3aed,stroke:#5b21b6,color:#fff;
+  classDef c fill:#10b981,stroke:#047857,color:#fff;
+  classDef d fill:#f472b6,stroke:#be185d,color:#fff;
