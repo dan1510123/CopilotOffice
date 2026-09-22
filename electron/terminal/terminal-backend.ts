@@ -276,6 +276,7 @@ export interface TerminalBackend {
   readonly name: string;
   isAvailable(): boolean;
   start(options: StartTerminalOptions): Promise<TerminalProcess>;
+  restartOffice?(officeId: string): Promise<void>;
 }
 
 function splitPathEntries(pathValue: string): string[] {
@@ -1354,6 +1355,18 @@ export class UiServerBackend implements TerminalBackend {
       try { entry.runtime.stop(); } catch { /* best effort */ }
       this.offices.delete(officeId);
       throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  async restartOffice(officeId: string): Promise<void> {
+    const entry = this.offices.get(officeId);
+    if (!entry) return;
+
+    this.offices.delete(officeId);
+    try {
+      await entry.client.stop();
+    } finally {
+      entry.runtime.stop();
     }
   }
 

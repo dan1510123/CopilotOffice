@@ -292,6 +292,16 @@ export interface MsgResetAllSessions {
   officeId: string;
 }
 
+export interface MsgRefreshOfficeBackend {
+  type: 'refresh-office-backend';
+  requestId: string;
+  officeId: string;
+}
+
+export type RefreshOfficeBackendResult =
+  | { success: true; restartedAgentIds: string[] }
+  | { success: false; restartedAgentIds: string[]; error: string };
+
 export interface MsgResetSession {
   type: 'reset-session';
   requestId: string;
@@ -405,6 +415,7 @@ export type MainToServer =
   | MsgSetYolo
   | MsgSetAdditionalParams
   | MsgResetAllSessions
+  | MsgRefreshOfficeBackend
   | MsgResetSession
   | MsgGetSessionHistory
   | MsgClearSessionHistory
@@ -593,6 +604,7 @@ export interface SrvTerminalPreloadStatus {
   type: 'terminal-preload-status';
   agentId: string;
   status: 'preloading' | 'ready' | 'failed';
+  officeId?: string;
 }
 
 /**

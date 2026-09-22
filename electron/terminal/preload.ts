@@ -93,6 +93,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   resetAllSessions: (officeId: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('reset-all-sessions', officeId);
   },
+  refreshOfficeBackend: (officeId: string): Promise<{ success: boolean; restartedAgentIds: string[]; error?: string }> => {
+    return ipcRenderer.invoke('refresh-office-backend', officeId);
+  },
   resetSession: (officeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
     return ipcRenderer.invoke('terminal-reset-session', officeId, agentId);
   },
@@ -163,8 +166,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('terminal-exit', handler);
     return () => ipcRenderer.removeListener('terminal-exit', handler);
   },
-  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => {
-    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed') => callback(agentId, status);
+  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => callback(agentId, status, officeId);
     ipcRenderer.on('terminal-preload-status', handler);
     return () => ipcRenderer.removeListener('terminal-preload-status', handler);
   },
@@ -526,6 +529,7 @@ declare global {
       getSessionId: (officeId: string, agentId: string) => Promise<string | null>;
       setSessionId: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       resetAllSessions: (officeId: string) => Promise<{ success: boolean }>;
+      refreshOfficeBackend: (officeId: string) => Promise<{ success: boolean; restartedAgentIds: string[]; error?: string }>;
       resetSession: (officeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
       restoreSession: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean; sessionId?: string; resumeContextUncertain?: boolean; error?: string }>;
       getSessionHistory: (officeId: string, agentId: string) => Promise<SessionHistoryEntry[]>;
@@ -540,7 +544,7 @@ declare global {
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       onTerminalData: (callback: (agentId: string, data: string, officeId?: string, sessionId?: string) => void) => () => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string) => void) => () => void;
-      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => () => void;
+      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => void) => () => void;
       onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => () => void;
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
       onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => () => void;

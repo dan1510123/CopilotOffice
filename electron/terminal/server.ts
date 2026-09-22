@@ -41,6 +41,7 @@ interface PtyProcess {
   agentId: string;
   sessionId: string;
   workingDir?: string;
+  launchMode: 'copilot' | 'shell';
 }
 
 const ptyProcesses: Map<string, PtyProcess> = new Map();
@@ -664,6 +665,7 @@ async function startTerminalForAgentImpl(
       agentId: terminalKey,
       sessionId,
       workingDir,
+      launchMode,
     });
 
     agentToTerminal.set(ck, terminalKey);
@@ -714,7 +716,7 @@ async function startTerminalForAgentImpl(
 
     if (!shellOnlyMode) {
       // Signal that the PTY is spawned and copilot CLI is starting
-      send({ type: 'terminal-preload-status', agentId, status: 'preloading' });
+      send({ type: 'terminal-preload-status', agentId, status: 'preloading', officeId });
     }
 
     let hasSignalledReady = shellOnlyMode;
@@ -731,7 +733,7 @@ async function startTerminalForAgentImpl(
       hasSignalledReady = true;
       agentReadyState.set(ck, true);
       console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
-      send({ type: 'terminal-preload-status', agentId, status: 'ready' });
+      send({ type: 'terminal-preload-status', agentId, status: 'ready', officeId });
 
       // Write pre-seeded prompt to PTY once CLI is ready
       const prompt = pendingPreseededPrompts.get(ck);
@@ -1662,6 +1664,101 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       await saveOfficeSessionFile(officeId);
       console.log(`[TermServer] All sessions reset for ${officeId}`);
       send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      break;
+    }
+
+    case 'refresh-office-backend': {
+      const { officeId } = msg;
+      const restartedAgentIds: string[] = [];
+      if (terminalBackend?.name !== 'ui-server' || typeof terminalBackend.restartOffice !== 'function') {
+        send({
+          type: 'response',
+          requestId: msg.requestId,
+          result: {
+            success: false,
+            restartedAgentIds,
+            error: 'The active terminal backend is not ui-server',
+          },
+        });
+        break;
+      }
+
+      const restartTargets: Array<{
+        agentId: string;
+        workingDir?: string;
+        viewed: boolean;
+        forwarded: boolean;
+      }> = [];
+
+      for (const [ck, key] of agentToTerminal) {
+        if (!ck.startsWith(`${officeId}:`) || key !== ck) continue;
+        const proc = ptyProcesses.get(key);
+        if (!proc || proc.launchMode !== 'copilot') continue;
+        restartTargets.push({
+          agentId: ck.slice(officeId.length + 1),
+          workingDir: proc.workingDir,
+          viewed: activeAgentViewers.has(ck),
+          forwarded: agentForwardKeys.has(ck),
+        });
+      }
+
+      console.log(`[lifecycle] refreshing ui-server office=${officeId} agents=${restartTargets.map((target) => target.agentId).join(',') || '(none)'}`);
+
+      for (const target of restartTargets) {
+        const ck = compositeKey(officeId, target.agentId);
+        const proc = ptyProcesses.get(ck);
+        if (proc) {
+          killPtyProcess(proc);
+          ptyProcesses.delete(ck);
+        }
+        agentToTerminal.delete(ck);
+        const watcher = agentWatchers.get(ck);
+        if (watcher) {
+          watcher.stop();
+          agentWatchers.delete(ck);
+        }
+        agentScrollbackBuffers.delete(ck);
+        agentScrollbackBytes.delete(ck);
+        agentReadyState.delete(ck);
+        agentInTurn.delete(ck);
+        lastPtyDataAt.delete(ck);
+        clearForegroundIf(officeId, ck);
+      }
+
+      uiServerOnlineOffices.delete(officeId);
+      try {
+        await terminalBackend.restartOffice(officeId);
+        for (const target of restartTargets) {
+          const ck = compositeKey(officeId, target.agentId);
+          if (target.viewed) activeAgentViewers.add(ck);
+          if (target.forwarded) agentForwardKeys.add(ck);
+          const result = await startTerminalForAgent(officeId, target.agentId, target.workingDir);
+          if (!result.success) {
+            throw new Error(result.error || `Failed to restart ${target.agentId}`);
+          }
+          restartedAgentIds.push(target.agentId);
+        }
+
+        if (restartTargets.length > 0 && !uiServerOnlineOffices.has(officeId)) {
+          throw new Error('UI-server retry failed; sessions remain on node-pty fallback');
+        }
+
+        send({
+          type: 'response',
+          requestId: msg.requestId,
+          result: { success: true, restartedAgentIds },
+        });
+      } catch (error) {
+        send({
+          type: 'response',
+          requestId: msg.requestId,
+          result: {
+            success: false,
+            restartedAgentIds,
+            error: String((error as Error)?.message ?? error),
+          },
+        });
+      }
       break;
     }
 

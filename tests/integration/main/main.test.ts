@@ -172,6 +172,27 @@ describe('integration/main bootstrap and wiring', () => {
     expect(subtitle?.textContent).toContain('Main Office');
   });
 
+  it('refreshes an office UI server from the tab context menu', async () => {
+    const { bridge } = await bootstrapMain();
+    const tab = findOfficeTab('Main Office');
+    expect(tab).toBeTruthy();
+
+    tab?.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 40,
+      clientY: 30,
+    }));
+
+    const refreshButton = Array.from(document.querySelectorAll('.office-tab-context-menu button'))
+      .find((button) => button.textContent === 'Refresh') as HTMLButtonElement | undefined;
+    expect(refreshButton).toBeTruthy();
+    refreshButton?.click();
+    await flushUi();
+
+    expect(bridge.refreshOfficeBackend).toHaveBeenCalledWith('office-0');
+  });
+
   it('routes preload-ready bridge events to visible toast notifications', async () => {
     await bootstrapMain();
 
@@ -185,4 +206,3 @@ describe('integration/main bootstrap and wiring', () => {
     expect(toastContainer?.textContent).toContain('Gene');
   });
 });
-

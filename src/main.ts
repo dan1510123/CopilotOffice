@@ -642,6 +642,8 @@ function installE2eDebugHook(): void {
 // node-pty offices never emit that event, so getOfficeIndicator() also treats
 // an office with any active agent session as online.
 const onlineOffices = new Set<string>();
+let officeTabContextMenu: HTMLDivElement | null = null;
+let officeTabContextMenuDismiss: ((event: Event) => void) | null = null;
 
 type OfficeIndicator = 'offline' | 'online' | 'working';
 
@@ -724,8 +726,92 @@ function injectTopBarStyles() {
     #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s, border-color .15s, color .15s; }
     #office-tabs .tb-pill:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
     #office-tabs #new-office-btn:hover { background: var(--co-bg-raised-hover); }
+    .office-tab-context-menu {
+      position: fixed;
+      z-index: ${ZIndex.OFFICE_TAB_CONTEXT_MENU};
+      min-width: 150px;
+      padding: 5px;
+      border: 1px solid var(--co-border);
+      border-radius: 8px;
+      background: var(--co-bg-raised);
+      box-shadow: 0 10px 30px rgba(0,0,0,.32);
+    }
+    .office-tab-context-menu button {
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--co-text-strong);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .office-tab-context-menu button:hover { background: var(--co-bg-raised-hover); }
   `;
   document.head.appendChild(style);
+}
+
+function hideOfficeTabContextMenu(): void {
+  officeTabContextMenu?.remove();
+  officeTabContextMenu = null;
+  if (officeTabContextMenuDismiss) {
+    document.removeEventListener('mousedown', officeTabContextMenuDismiss, true);
+    document.removeEventListener('keydown', officeTabContextMenuDismiss, true);
+    officeTabContextMenuDismiss = null;
+  }
+}
+
+function showOfficeTabContextMenu(officeId: string, x: number, y: number): void {
+  hideOfficeTabContextMenu();
+  const office = officeManager.getOffice(officeId);
+  if (!office) return;
+
+  const menu = document.createElement('div');
+  menu.className = 'office-tab-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - 170))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - 60))}px`;
+
+  const refresh = document.createElement('button');
+  refresh.type = 'button';
+  refresh.textContent = 'Refresh';
+  refresh.setAttribute('role', 'menuitem');
+  refresh.title = 'Retry this office through the Copilot SDK UI server';
+  refresh.addEventListener('click', async () => {
+    hideOfficeTabContextMenu();
+    onlineOffices.delete(officeId);
+    updateOfficeTabIndicators();
+    showClipboardToast(`Refreshing Copilot SDK server for ${office.config.name}...`, 'info');
+    try {
+      const result = await window.copilotBridge.refreshOfficeBackend(officeId);
+      if (!result.success) {
+        throw new Error(result.error || 'UI-server refresh failed');
+      }
+      if (result.restartedAgentIds.length === 0) {
+        showClipboardToast(`No active Copilot sessions to refresh in ${office.config.name}`, 'info');
+      } else {
+        showClipboardToast(`Refreshed ${office.config.name} through Copilot SDK UI server`, 'success');
+      }
+    } catch (error) {
+      showClipboardToast(
+        `Could not refresh ${office.config.name}: ${String((error as Error)?.message ?? error)}`,
+        'error',
+        10_000,
+      );
+    }
+  });
+  menu.appendChild(refresh);
+  document.body.appendChild(menu);
+  officeTabContextMenu = menu;
+
+  officeTabContextMenuDismiss = (event: Event) => {
+    if (event.type === 'keydown' && (event as KeyboardEvent).key !== 'Escape') return;
+    if (event.type === 'mousedown' && menu.contains(event.target as Node)) return;
+    hideOfficeTabContextMenu();
+  };
+  document.addEventListener('mousedown', officeTabContextMenuDismiss, true);
+  document.addEventListener('keydown', officeTabContextMenuDismiss, true);
 }
 
 function renderOfficeTabs() {
@@ -916,6 +1002,12 @@ function renderOfficeTabs() {
       if (officeId && officeId !== officeManager.currentOfficeId) {
         switchToOffice(officeId);
       }
+    });
+    tab.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const mouseEvent = e as MouseEvent;
+      const officeId = (e.currentTarget as HTMLElement).dataset.officeId;
+      if (officeId) showOfficeTabContextMenu(officeId, mouseEvent.clientX, mouseEvent.clientY);
     });
   });
 
@@ -3235,11 +3327,11 @@ if (window.copilotBridge) {
   // Initial load of the Teams feature flag + online set for the dashboard.
   void refreshTeamsDashboardState();
 
-  window.copilotBridge.onTerminalPreloadStatus((agentId, status) => {
+  window.copilotBridge.onTerminalPreloadStatus((agentId, status, eventOfficeId) => {
     console.log(`[Office] Preload status for ${agentId}: ${status}`);
     agentPreloadStatus.set(agentId, status);
 
-    const officeId = officeManager.currentOfficeId;
+    const officeId = eventOfficeId ?? officeManager.currentOfficeId;
     if (officeId) {
       const current = officeManager.getAgentStatus(officeId, agentId);
       if (status === 'preloading') {
@@ -3568,17 +3660,23 @@ setInterval(() => {
 function updateStatusBarNow() {
   syncActiveRosterForCurrentOffice();
   const office = officeManager.currentOffice;
-  const agents = office ? Array.from(office.agents.values()) : [];
+  // Count only agents on the current office roster. `office.agents` is a lazily
+  // populated map that also retains entries for fleet subagents, unseated
+  // reserves and prior rosters, so counting it directly inflates the totals.
+  // Roster agents with no status entry yet are slacking.
+  const agents = office
+    ? getCurrentAgents().map(agent => office.agents.get(agent.id) ?? null)
+    : [];
   const officeName = officeManager.currentOffice?.config.name || 'No Office';
 
   // Count per state
-  const slackingCount = getCurrentAgents().length - agents.filter(a => a.state === 'active').length;
-  const startingCount = agents.filter(a => a.subState === 'starting').length;
-  const doneCount = agents.filter(a => a.subState === 'ready' && isDonePendingAck(a)).length;
-  const readyCount = agents.filter(a => a.subState === 'ready' && !isDonePendingAck(a)).length;
-  const waitingCount = agents.filter(a => a.subState === 'waiting').length;
-  const thinkingCount = agents.filter(a => a.subState === 'thinking').length;
-  const errorCount = agents.filter(a => a.subState === 'error').length;
+  const slackingCount = agents.filter(a => a?.state !== 'active').length;
+  const startingCount = agents.filter(a => a?.subState === 'starting').length;
+  const doneCount = agents.filter(a => a?.subState === 'ready' && isDonePendingAck(a)).length;
+  const readyCount = agents.filter(a => a?.subState === 'ready' && !isDonePendingAck(a)).length;
+  const waitingCount = agents.filter(a => a?.subState === 'waiting').length;
+  const thinkingCount = agents.filter(a => a?.subState === 'thinking').length;
+  const errorCount = agents.filter(a => a?.subState === 'error').length;
 
   const chip = (color: string, label: string) =>
     `<span style="display:inline-flex;align-items:center;margin-right:10px;padding:4px 11px;border-radius:999px;background:${color}1a;border:1px solid ${color}44;color:${color};font-weight:500;white-space:nowrap;">${label}</span>`;
