@@ -5,6 +5,7 @@ import {
   serializeOffices,
 } from '../../../src/office/officePersistence';
 import type { OfficeConfig } from '../../../src/office/officeManager';
+import { generateRandomOfficeAgents } from '../../../src/config/agents';
 
 const baseOffice: OfficeConfig = {
   id: 'office-0',
@@ -173,7 +174,8 @@ describe('office/officePersistence.deserializeOffices', () => {
     const restored = deserializeOffices(collided);
     const office = restored.offices[0] as Record<string, unknown>;
     expect(office.customAgents).toEqual([{ id: 'office-3-agent-0' }, { id: 'office-3-agent-1' }]);
-    expect(office.customReserveAgents).toEqual({
+    // toMatchObject: unrelated reserve seats may be backfilled by newer layouts.
+    expect(office.customReserveAgents).toMatchObject({
       'desk-a': { id: 'office-3-reserve-0' },
       'desk-b': { id: 'office-3-reserve-4' },
     });
@@ -203,7 +205,7 @@ describe('office/officePersistence.deserializeOffices', () => {
     const restored = deserializeOffices(correct);
     const office = restored.offices[0] as Record<string, unknown>;
     expect(office.customAgents).toEqual([{ id: 'office-2-agent-0' }]);
-    expect(office.customReserveAgents).toEqual({ d: { id: 'office-2-reserve-1' } });
+    expect(office.customReserveAgents).toMatchObject({ d: { id: 'office-2-reserve-1' } });
     expect(restored.offices[0].seatedAgents).toEqual([{ deskId: 'd', agentId: 'office-2-reserve-1' }]);
   });
 
@@ -226,7 +228,7 @@ describe('office/officePersistence.deserializeOffices', () => {
     const restored = deserializeOffices(custom);
     const office = restored.offices[0] as Record<string, unknown>;
     expect(office.customAgents).toEqual([{ id: 'custom-a' }]);
-    expect(office.customReserveAgents).toEqual({ d: { id: 'validator' } });
+    expect(office.customReserveAgents).toMatchObject({ d: { id: 'validator' } });
     expect(restored.offices[0].seatedAgents).toEqual([{ deskId: 'd', agentId: 'generalist' }]);
   });
 
@@ -288,5 +290,97 @@ describe('office/officePersistence.createNoopPersistencePort', () => {
     await expect(port.saveDurable('{}')).resolves.toBeUndefined();
     await expect(port.createOfficeSession('office-0')).resolves.toBeUndefined();
     await expect(port.deleteOfficeSession('office-0')).resolves.toBeUndefined();
+  });
+});
+
+
+describe('office/officePersistence — reserve seat backfill', () => {
+  // Desk ids that existed before the "below table" seats were added.
+  const LEGACY_DESK_IDS = [
+    'unassigned-left-4', 'unassigned-right-4', 'unassigned-above-4',
+    'unassigned-left-13', 'unassigned-right-13', 'unassigned-above-13',
+  ];
+  const NEW_DESK_IDS = [
+    'unassigned-below-left-4', 'unassigned-below-right-4',
+    'unassigned-below-left-13', 'unassigned-below-right-13',
+  ];
+
+  /** Build a payload for an office persisted with only the legacy 6 seats. */
+  function legacyPayload(officeId = 'office-3') {
+    const gen = generateRandomOfficeAgents(officeId);
+    const reserve: Record<string, unknown> = {};
+    for (const id of LEGACY_DESK_IDS) reserve[id] = gen.reserveAgents[id];
+    return {
+      gen,
+      reserve,
+      json: JSON.stringify({
+        currentOfficeId: officeId,
+        offices: [{
+          id: officeId,
+          name: 'Legacy',
+          workingDirectory: '.',
+          createdAt: 1,
+          layout: 'default',
+          seatedAgents: [{ deskId: 'unassigned-left-4', agentId: gen.reserveAgents['unassigned-left-4'].id }],
+          customAgents: gen.coreAgents,
+          customReserveAgents: reserve,
+        }],
+      }),
+    };
+  }
+
+  it('backfills reserve seats added after the office was created', () => {
+    const { json } = legacyPayload();
+    const reserve = deserializeOffices(json).offices[0].customReserveAgents!;
+    expect(Object.keys(reserve)).toHaveLength(10);
+    for (const deskId of NEW_DESK_IDS) {
+      expect(reserve[deskId]).toBeDefined();
+    }
+  });
+
+  it('never rewrites reserve agents that were already stored', () => {
+    const { json, reserve: original } = legacyPayload();
+    const reserve = deserializeOffices(json).offices[0].customReserveAgents!;
+    for (const deskId of LEGACY_DESK_IDS) {
+      expect(reserve[deskId]).toEqual(original[deskId]);
+    }
+  });
+
+  it('keeps every agent id unique after backfill', () => {
+    const { json } = legacyPayload();
+    const office = deserializeOffices(json).offices[0];
+    const ids = [
+      ...(office.customAgents ?? []).map((a) => a.id),
+      ...Object.values(office.customReserveAgents ?? {}).map((a) => a.id),
+    ];
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('preserves the seated-agent mapping across backfill', () => {
+    const { json, reserve: original } = legacyPayload();
+    const office = deserializeOffices(json).offices[0];
+    expect(office.seatedAgents).toEqual([
+      { deskId: 'unassigned-left-4', agentId: (original['unassigned-left-4'] as { id: string }).id },
+    ]);
+  });
+
+  it('is idempotent — a second load adds nothing', () => {
+    const { json } = legacyPayload();
+    const once = deserializeOffices(json).offices[0];
+    const twice = deserializeOffices(
+      serializeOffices({ currentOfficeId: 'office-3', offices: [once] }),
+    ).offices[0];
+    expect(twice).toEqual(once);
+  });
+
+  it('leaves office-0 alone (it uses the built-in default reserve map)', () => {
+    const json = JSON.stringify({
+      currentOfficeId: 'office-0',
+      offices: [{
+        id: 'office-0', name: 'Main', workingDirectory: '.',
+        createdAt: 1, layout: 'default', seatedAgents: [],
+      }],
+    });
+    expect(deserializeOffices(json).offices[0].customReserveAgents).toBeUndefined();
   });
 });

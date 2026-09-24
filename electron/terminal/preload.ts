@@ -18,8 +18,8 @@ contextBridge.exposeInMainWorld('__copilotOfficeE2E', process.env.COPILOT_E2E ==
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
-  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell'): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
-    return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode);
+  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
+    return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode, hostWorkingDir);
   },
   terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-write', officeId, agentId, data);
@@ -64,6 +64,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     agentId: string,
     opts?: {
       workingDir?: string;
+      hostWorkingDir?: string;
       cols?: number;
       rows?: number;
       launchMode?: 'copilot' | 'shell';
@@ -92,6 +93,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   resetAllSessions: (officeId: string): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('reset-all-sessions', officeId);
+  },
+  refreshOfficeBackend: (officeId: string): Promise<{ success: boolean; restartedAgentIds: string[]; error?: string }> => {
+    return ipcRenderer.invoke('refresh-office-backend', officeId);
   },
   resetSession: (officeId: string, agentId: string): Promise<{ success: boolean; sessionId?: string }> => {
     return ipcRenderer.invoke('terminal-reset-session', officeId, agentId);
@@ -163,8 +167,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('terminal-exit', handler);
     return () => ipcRenderer.removeListener('terminal-exit', handler);
   },
-  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => {
-    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed') => callback(agentId, status);
+  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => callback(agentId, status, officeId);
     ipcRenderer.on('terminal-preload-status', handler);
     return () => ipcRenderer.removeListener('terminal-preload-status', handler);
   },
@@ -496,7 +500,7 @@ declare global {
     __copilotOfficeDebug?: CopilotOfficeDebugApi;
     __copilotOfficeE2E?: boolean;
     copilotBridge: {
-      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
+      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitAnswer: (officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitPrompt: (officeId: string, agentId: string, prompt: string, label?: string) => Promise<{ success: boolean; error?: string }>;
@@ -511,6 +515,7 @@ declare global {
         agentId: string,
         opts?: {
           workingDir?: string;
+          hostWorkingDir?: string;
           cols?: number;
           rows?: number;
           launchMode?: 'copilot' | 'shell';
@@ -526,6 +531,7 @@ declare global {
       getSessionId: (officeId: string, agentId: string) => Promise<string | null>;
       setSessionId: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean }>;
       resetAllSessions: (officeId: string) => Promise<{ success: boolean }>;
+      refreshOfficeBackend: (officeId: string) => Promise<{ success: boolean; restartedAgentIds: string[]; error?: string }>;
       resetSession: (officeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string }>;
       restoreSession: (officeId: string, agentId: string, sessionId: string) => Promise<{ success: boolean; sessionId?: string; resumeContextUncertain?: boolean; error?: string }>;
       getSessionHistory: (officeId: string, agentId: string) => Promise<SessionHistoryEntry[]>;
@@ -540,7 +546,7 @@ declare global {
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       onTerminalData: (callback: (agentId: string, data: string, officeId?: string, sessionId?: string) => void) => () => void;
       onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string) => void) => () => void;
-      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed') => void) => () => void;
+      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => void) => () => void;
       onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => () => void;
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
       onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => () => void;

@@ -27,7 +27,7 @@ describe('config/agents', () => {
   it('returns expected core and reserve counts', () => {
     const result = generateRandomOfficeAgents('office-3');
     expect(result.coreAgents).toHaveLength(4);
-    expect(Object.keys(result.reserveAgents)).toHaveLength(6);
+    expect(Object.keys(result.reserveAgents)).toHaveLength(10);
     expect(result.coreAgents[0].id).toContain('office-3-agent-');
   });
 });

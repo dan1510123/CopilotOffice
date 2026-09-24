@@ -252,6 +252,8 @@ export interface StartTerminalOptions {
   cols: number;
   rows: number;
   cwd: string;
+  /** Office-level cwd for the shared ui-server host; session cwd may be agent-specific. */
+  hostCwd?: string;
   env: { [key: string]: string };
   /** YOLO/auto-approve posture for this session (FR-009). Defaults to false. */
   yolo?: boolean;
@@ -276,6 +278,7 @@ export interface TerminalBackend {
   readonly name: string;
   isAvailable(): boolean;
   start(options: StartTerminalOptions): Promise<TerminalProcess>;
+  restartOffice?(officeId: string): Promise<void>;
 }
 
 function splitPathEntries(pathValue: string): string[] {
@@ -1297,6 +1300,10 @@ type UiServerOfficeEntry = {
 
 const DEFAULT_UI_SERVER_OFFICE_ID = '__default__';
 
+export function buildUiServerHostOptions(options: StartTerminalOptions): StartTerminalOptions {
+  return { ...options, cwd: options.hostCwd ?? options.cwd };
+}
+
 /**
  * Terminal backend for SDK Control Plane Variant 1: one shared Copilot
  * TUI+server runtime per office, with per-agent SDK sessions multiplexed onto
@@ -1357,13 +1364,31 @@ export class UiServerBackend implements TerminalBackend {
     }
   }
 
+  async restartOffice(officeId: string): Promise<void> {
+    const entry = this.offices.get(officeId);
+    if (!entry) return;
+
+    this.offices.delete(officeId);
+    try {
+      await entry.client.stop();
+    } finally {
+      entry.runtime.stop();
+    }
+  }
+
   private getOrCreateOfficeEntry(officeId: string, options: StartTerminalOptions): UiServerOfficeEntry {
     const existing = this.offices.get(officeId);
     if (existing && existing.runtime.status !== 'crashed' && existing.runtime.status !== 'stopped') {
       return existing;
     }
 
-    const runtime = new UiServerHostRuntime(officeId, this.pty, this.cliPath!, this.repoRoot, options);
+    const runtime = new UiServerHostRuntime(
+      officeId,
+      this.pty,
+      this.cliPath!,
+      this.repoRoot,
+      buildUiServerHostOptions(options),
+    );
     const client = new ControlPlaneClient(runtime);
     const entry = { runtime, client };
     this.offices.set(officeId, entry);

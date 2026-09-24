@@ -1,4 +1,4 @@
-import type { AgentConfig } from '../config/agents';
+import { DEFAULT_AGENTS, type AgentConfig } from '../config/agents';
 import type { OfficeConfig } from './officeManager';
 
 /** The canonical local-shell agent id (mirrors PC_TERMINAL_ID in main.ts / OfficeScene.ts). */
@@ -44,6 +44,9 @@ function findRosterWorkingDir(office: OfficeConfig, agentId: string): string | u
       (a: AgentConfig) => a.id === agentId,
     )?.workingDir;
     if (reserve) return reserve;
+  }
+  if (office.id === 'office-0') {
+    return DEFAULT_AGENTS.find((agent) => agent.id === agentId)?.workingDir;
   }
   return undefined;
 }

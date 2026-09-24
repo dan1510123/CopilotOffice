@@ -45,6 +45,7 @@ export class TerminalRelay {
    * Request types whose handler may await ui-server host startup:
    * - `start`  → startTerminalForAgent → sessionBackend.start (spins up the host)
    * - `attach` → foreground switch → getStartedClient → host whenListening()
+   * - `refresh-office-backend` → restarts the office host and its live sessions
    * All other types (fast polls like `query-agent-statuses`, metadata, session
    * file ops) keep the default {@link REQUEST_TIMEOUT_MS} so a genuinely wedged
    * server surfaces quickly instead of hanging the UI for 30s.
@@ -53,6 +54,7 @@ export class TerminalRelay {
     'start',
     'attach',
     'activate',
+    'refresh-office-backend',
   ]);
 
   /** Resolve the request-timeout budget for a given message type. */
@@ -453,7 +455,7 @@ export class TerminalRelay {
         win.webContents.send('session-meta-updated', msg.agentId, msg.meta);
         break;
       case 'terminal-preload-status':
-        win.webContents.send('terminal-preload-status', msg.agentId, msg.status);
+        win.webContents.send('terminal-preload-status', msg.agentId, msg.status, msg.officeId);
         break;
       case 'backend-online':
         win.webContents.send('backend-online', msg.officeId, msg.backend);
@@ -469,8 +471,8 @@ export class TerminalRelay {
   registerIpc(): void {
     ipcMain.handle('terminal-backend-info', () => this.backendInfo);
 
-    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell') =>
-      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode })
+    ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) =>
+      this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, hostWorkingDir, cols, rows, preseededPrompt, launchMode })
     );
 
     ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string, foreground?: boolean) =>
@@ -485,6 +487,7 @@ export class TerminalRelay {
         agentId: string,
         opts?: {
           workingDir?: string;
+          hostWorkingDir?: string;
           cols?: number;
           rows?: number;
           launchMode?: 'copilot' | 'shell';
@@ -498,6 +501,7 @@ export class TerminalRelay {
           officeId,
           agentId,
           workingDir: opts?.workingDir,
+          hostWorkingDir: opts?.hostWorkingDir,
           cols: opts?.cols,
           rows: opts?.rows,
           launchMode: opts?.launchMode,
@@ -573,6 +577,10 @@ export class TerminalRelay {
 
     ipcMain.handle('reset-all-sessions', (_event, officeId: string) =>
       this.request({ type: 'reset-all-sessions', requestId: this.id(), officeId })
+    );
+
+    ipcMain.handle('refresh-office-backend', (_event, officeId: string) =>
+      this.request({ type: 'refresh-office-backend', requestId: this.id(), officeId })
     );
 
     ipcMain.handle('terminal-reset-session', (_event, officeId: string, agentId: string) =>

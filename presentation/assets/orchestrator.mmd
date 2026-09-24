@@ -1,0 +1,14 @@
+flowchart LR
+  You(["🧑‍💻 Plain-language commands"]):::actor --> Orch["🗣️ Orchestrator"]:::orch
+  Orch --> Look["🔎 See what agents<br/>are doing"]:::ro
+  Orch --> Act{"🔒 Change something?<br/>asks permission"}:::dec
+  Act -->|approved| Do["Start / answer / stop<br/>an agent"]:::mut
+  Look --> Office["🏢 The office & its agents"]:::a
+  Do --> Office
+
+  classDef actor fill:#1f2937,stroke:#111827,color:#f9fafb,font-weight:bold;
+  classDef orch fill:#f59e0b,stroke:#b45309,color:#3b2600,font-weight:bold;
+  classDef ro fill:#86efac,stroke:#15803d,color:#052e16;
+  classDef mut fill:#fca5a5,stroke:#b91c1c,color:#450a0a;
+  classDef a fill:#6366f1,stroke:#3730a3,color:#fff;
+  classDef dec fill:#fbbf24,stroke:#b45309,color:#3b2600,font-weight:bold;

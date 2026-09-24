@@ -90,7 +90,10 @@ describe('integration/TerminalOverlay', () => {
       'generalist',
       '.',
       80,
-      24
+      24,
+      undefined,
+      'copilot',
+      '.',
     );
     expect(inputManager.activateTerminalF10).toHaveBeenCalled();
     expect(inputManager.switchToTerminal).toHaveBeenCalled();

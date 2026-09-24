@@ -196,4 +196,49 @@ describe('integration/SeriousTerminalController', () => {
     setTerminalPerfEnabled(false);
     resetTerminalPerf();
   });
+
+  it('regression: every terminalActivate carries the office launch directories', async () => {
+    // `activate`'s server-side cold branch starts the PTY itself when the
+    // session is gone (e.g. right after a New Session reset). If the renderer
+    // omits the directories, the server silently falls back to the app's own
+    // folder and the fresh session is created in the wrong repo.
+    const existsFor = new Set<string>(['debugger']);
+    const bridge = installMockCopilotBridge({
+      terminalExists: vi.fn((_office: string, agentId: string) => Promise.resolve(existsFor.has(agentId))),
+      terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-new' }),
+      terminalActivate: vi.fn().mockResolvedValue({ success: true, existed: true, sessionId: 'sess-act', title: 'T' }),
+      getSessionId: vi.fn().mockResolvedValue('sess-act'),
+      getSessionMeta: vi.fn().mockResolvedValue({ title: 'T' }),
+    });
+
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    controller = new SeriousTerminalController(host);
+
+    const opts = {
+      officeId: 'office-9',
+      agentId: 'office-9-reserve-2',
+      name: 'Kent',
+      description: 'Developer',
+      workingDir: 'C:\\repos\\sample-repo',
+      hostWorkingDir: 'C:\\repos\\sample-repo',
+      launchMode: 'copilot' as const,
+    };
+
+    // Cold + already running on the server, then a warm re-open.
+    await controller.openAgentTerminal(opts);
+    await controller.openAgentTerminal(opts);
+
+    // …and the cold/new branch (server reports no session).
+    existsFor.clear();
+    await controller.openAgentTerminal({ ...opts, agentId: 'office-9-reserve-3' });
+
+    const calls = (bridge.terminalActivate as any).mock.calls as unknown[][];
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    for (const call of calls) {
+      const activateOpts = call[2] as { workingDir?: string; hostWorkingDir?: string };
+      expect(activateOpts?.workingDir).toBe('C:\\repos\\sample-repo');
+      expect(activateOpts?.hostWorkingDir).toBe('C:\\repos\\sample-repo');
+    }
+  });
 });

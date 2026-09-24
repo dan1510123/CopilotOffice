@@ -20,7 +20,9 @@
   ],
   "allowlist": [
     "223556219\\+Copilot@users\\.noreply\\.github\\.com",
-    "teams\\.microsoft\\.com"
+    "teams\\.microsoft\\.com",
+    "graph\\.microsoft\\.com",
+    "ic3\\.teams\\.office\\.com"
   ],
   "ignorePaths": [
     "internal-references.config.json",

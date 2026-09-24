@@ -129,6 +129,51 @@ export class BootScene extends Phaser.Scene {
       accessoryColor: 0xffcc00,
     });
 
+    // Quill - The Writer (teal coat, book)
+    generateHeroSpritesheet(this, 'npc_writer', {
+      skinColor: 0xe0ac69,
+      hairColor: 0x3a2a1a,
+      hairStyle: 'bun',
+      bodyColor: 0x118899,
+      bodyStyle: 'coat',
+      accessory: 'book',
+      accessoryColor: 0x66ddee,
+    });
+
+    // Pixel - The Designer (magenta vest, blueprint)
+    generateHeroSpritesheet(this, 'npc_designer', {
+      skinColor: 0xffdbac,
+      hairColor: 0xaa2288,
+      hairStyle: 'long',
+      bodyColor: 0xcc3399,
+      bodyStyle: 'vest',
+      accessory: 'blueprint',
+      accessoryColor: 0xff88cc,
+    });
+
+    // Sable - Security (dark armor, shield)
+    generateHeroSpritesheet(this, 'npc_security', {
+      skinColor: 0xc68642,
+      hairColor: 0x1a1a1a,
+      hairStyle: 'helmet',
+      helmetColor: 0x334455,
+      bodyColor: 0x223344,
+      bodyStyle: 'armor',
+      accessory: 'shield',
+      accessoryColor: 0x6699cc,
+    });
+
+    // Turbo - The Optimizer (yellow pilot suit, rocket)
+    generateHeroSpritesheet(this, 'npc_optimizer', {
+      skinColor: 0xffdbac,
+      hairColor: 0x664411,
+      hairStyle: 'goggles',
+      bodyColor: 0xddaa22,
+      bodyStyle: 'pilot',
+      accessory: 'rocket',
+      accessoryColor: 0xffdd66,
+    });
+
     // Office Admin - Meta wizard (magenta/pink, recursive symbol)
     generateHeroSpritesheet(this, 'npc_admin', {
       skinColor: 0xffdbac,
@@ -1144,6 +1189,38 @@ export class BootScene extends Phaser.Scene {
     hoopGraphics.fillRect(10, 25, 12, 1);
     hoopGraphics.generateTexture('basketball_hoop', 32, 32);
     hoopGraphics.destroy();
+
+    // Ping pong table (top-down view, 2:1 ratio at 64×32)
+    const pongTableGraphics = this.make.graphics({ x: 0, y: 0 });
+    // Table surface
+    pongTableGraphics.fillStyle(0x1a7a3a, 1);
+    pongTableGraphics.fillRect(2, 4, 60, 24);
+    // White border
+    pongTableGraphics.lineStyle(2, 0xffffff, 1);
+    pongTableGraphics.strokeRect(2, 4, 60, 24);
+    // Center net line
+    pongTableGraphics.fillStyle(0xffffff, 1);
+    pongTableGraphics.fillRect(31, 4, 2, 24);
+    // Center line horizontal divider
+    pongTableGraphics.fillStyle(0xffffff, 0.4);
+    pongTableGraphics.fillRect(2, 15, 60, 1);
+    // Left paddle (red)
+    pongTableGraphics.fillStyle(0xdd2222, 1);
+    pongTableGraphics.fillRect(6, 12, 3, 8);
+    // Right paddle (blue)
+    pongTableGraphics.fillStyle(0x2255dd, 1);
+    pongTableGraphics.fillRect(55, 12, 3, 8);
+    // Ball (white dot near center)
+    pongTableGraphics.fillStyle(0xffffff, 1);
+    pongTableGraphics.fillRect(36, 14, 3, 3);
+    // Table legs (corner dots)
+    pongTableGraphics.fillStyle(0x8a6030, 1);
+    pongTableGraphics.fillRect(2, 4, 4, 4);
+    pongTableGraphics.fillRect(58, 4, 4, 4);
+    pongTableGraphics.fillRect(2, 24, 4, 4);
+    pongTableGraphics.fillRect(58, 24, 4, 4);
+    pongTableGraphics.generateTexture('ping_pong_table', 64, 32);
+    pongTableGraphics.destroy();
 
     // Coffee machine
     const coffeeGraphics = this.make.graphics({ x: 0, y: 0 });

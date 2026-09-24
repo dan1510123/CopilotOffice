@@ -14,7 +14,7 @@ interface HarnessOptions {
   sessionIds?: Record<string, Record<string, string | null>>;
   warmAgentSessionImpl?: (officeId: string, agentId: string) => Promise<void>;
   resetSessionImpl?: (officeId: string, agentId: string) => Promise<string | null>;
-  launchConfig?: { workingDir: string; launchMode: 'copilot' | 'shell' };}
+}
 
 interface Harness {
   coordinator: AutoStartCoordinator;
@@ -32,14 +32,12 @@ function buildHarness(opts: HarnessOptions = {}): Harness {
   const sessionIds = opts.sessionIds ?? {};
   const warmCalls: Array<[string, string]> = [];
   const resetCalls: Array<[string, string]> = [];
-  const launchConfig = opts.launchConfig ?? { workingDir: '/tmp', launchMode: 'shell' as const };
 
   const deps: AutoStartCoordinatorDeps = {
     getCurrentOfficeId: () => currentOfficeId,
     getCanonicalAgentIds: (oid) => roster[oid] || [],
     getSessionMeta: async (oid) => meta[oid] || {},
     getCurrentSessionId: async (oid, aid) => (sessionIds[oid] ? sessionIds[oid][aid] ?? null : null),
-    getAgentLaunchConfig: () => launchConfig,
     resetSession: async (oid, aid) => {
       resetCalls.push([oid, aid]);
       if (opts.resetSessionImpl) return opts.resetSessionImpl(oid, aid);
@@ -228,7 +226,6 @@ describe('agents/AutoStartCoordinator — tryWarmCurrentOffice', () => {
       getSessionMeta: async (oid) =>
         oid === 'office-0' ? { a: { title: 'A' } } : { b: { title: 'B' } },
       getCurrentSessionId: async (oid, aid) => `${oid}:${aid}`,
-      getAgentLaunchConfig: () => ({ workingDir: '/tmp', launchMode: 'shell' }),
       resetSession: async () => null,
       warmAgentSession: async (oid, aid) => {
         warmCalls.push([oid, aid]);

@@ -11,6 +11,7 @@ export interface MsgStart {
   officeId: string;
   agentId: string;
   workingDir?: string;
+  hostWorkingDir?: string;
   cols?: number;
   rows?: number;
   preseededPrompt?: string;
@@ -201,6 +202,7 @@ export interface MsgActivate {
   officeId: string;
   agentId: string;
   workingDir?: string;
+  hostWorkingDir?: string;
   cols?: number;
   rows?: number;
   launchMode?: 'copilot' | 'shell';
@@ -291,6 +293,16 @@ export interface MsgResetAllSessions {
   requestId: string;
   officeId: string;
 }
+
+export interface MsgRefreshOfficeBackend {
+  type: 'refresh-office-backend';
+  requestId: string;
+  officeId: string;
+}
+
+export type RefreshOfficeBackendResult =
+  | { success: true; restartedAgentIds: string[] }
+  | { success: false; restartedAgentIds: string[]; error: string };
 
 export interface MsgResetSession {
   type: 'reset-session';
@@ -405,6 +417,7 @@ export type MainToServer =
   | MsgSetYolo
   | MsgSetAdditionalParams
   | MsgResetAllSessions
+  | MsgRefreshOfficeBackend
   | MsgResetSession
   | MsgGetSessionHistory
   | MsgClearSessionHistory
@@ -593,6 +606,7 @@ export interface SrvTerminalPreloadStatus {
   type: 'terminal-preload-status';
   agentId: string;
   status: 'preloading' | 'ready' | 'failed';
+  officeId?: string;
 }
 
 /**

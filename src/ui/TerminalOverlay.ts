@@ -6,6 +6,7 @@ import { AgentConfig, ADMIN_AGENT_ID } from '../config/agents';
 import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager } from '../office/officeManager';
+import { resolveOfficeAgentWorkingDir } from '../office/launchWorkingDir';
 import { showClipboardToast } from './clipboardToast';
 import { ensureXtermStyles } from './xtermStyles';
 import { WheelPager } from './terminalWheel';
@@ -597,7 +598,11 @@ export class TerminalOverlay {
     }
     const agentDescriptionDisplay = this.spriteCardElement?.querySelector('.agent-description-display') as HTMLElement | null;
     if (agentDescriptionDisplay) {
-      agentDescriptionDisplay.textContent = agent.description;
+      const office = officeManager.getOffice(officeId)?.config;
+      const workingDir = resolveOfficeAgentWorkingDir(office, agent.id)?.workingDir ?? agent.workingDir;
+      agentDescriptionDisplay.textContent = workingDir
+        ? `${agent.description} · ${workingDir}`
+        : agent.description;
     }
     this.updateSessionTitleDisplay(sessionTitle);
     
@@ -629,6 +634,11 @@ export class TerminalOverlay {
       try {
         this.fitAndResizeTerminal({ officeId, agentId: agent.id });
         const dims = this.resolveTerminalDimensions();
+        // Thread the office's launch directories through EVERY activate call:
+        // activate's server-side cold branch starts the PTY itself when the
+        // session is gone (e.g. killed by a New Session reset), and without
+        // these it would silently launch in the app's own folder.
+        const activateDirs = this.resolveLaunchDirs(officeId, agent.id);
         perfMark('overlay', 'switch:activate-start', perfTarget);
 
         if (created) {
@@ -645,9 +655,11 @@ export class TerminalOverlay {
           perfMark('overlay', 'switch:exists-done', perfTarget, existsOnServer ? 1 : 0);
 
           if (!existsOnServer) {
-            await this.startNewSession(agent.id, agent.workingDir || officeManager.getCurrentWorkingDirectory(), officeId);
+            await this.startNewSession(agent.id, officeId);
             const act = await withTimeout(
-              window.copilotBridge.terminalActivate(officeId, agent.id, { foreground: true, needScrollback: false }),
+              window.copilotBridge.terminalActivate(officeId, agent.id, {
+                foreground: true, needScrollback: false, ...activateDirs,
+              }),
               IPC_TIMEOUT, 'terminalActivate',
             );
             if (act.success) {
@@ -664,6 +676,7 @@ export class TerminalOverlay {
             const act = await withTimeout(
               window.copilotBridge.terminalActivate(officeId, agent.id, {
                 foreground: true, needScrollback: true, cols: dims?.cols, rows: dims?.rows,
+                ...activateDirs,
               }),
               IPC_TIMEOUT, 'terminalActivate',
             );
@@ -687,6 +700,7 @@ export class TerminalOverlay {
           const act = await withTimeout(
             window.copilotBridge.terminalActivate(officeId, agent.id, {
               foreground: true, needScrollback: false, cols: dims?.cols, rows: dims?.rows,
+              ...activateDirs,
             }),
             IPC_TIMEOUT, 'terminalActivate',
           );
@@ -770,7 +784,30 @@ export class TerminalOverlay {
     }, 50);
   }
 
-  private async startNewSession(agentId: string, workingDir?: string, officeId?: string): Promise<void> {
+  /**
+   * Office-scoped launch directories for an agent, shaped for the
+   * `terminalActivate` options bag. Returns an empty object when nothing can be
+   * resolved so the server falls back to its own last-known directory rather
+   * than receiving a wrong one.
+   */
+  private resolveLaunchDirs(
+    officeId: string,
+    agentId: string,
+  ): { workingDir?: string; hostWorkingDir?: string; launchMode?: 'copilot' | 'shell' } {
+    const office = officeManager.getOffice(officeId)?.config;
+    const launch = resolveOfficeAgentWorkingDir(office, agentId)
+      ?? (this.currentAgent?.id === agentId && this.currentAgent.workingDir
+        ? { workingDir: this.currentAgent.workingDir, launchMode: this.launchMode }
+        : undefined);
+    if (!launch) return {};
+    return {
+      workingDir: launch.workingDir,
+      hostWorkingDir: office?.workingDirectory ?? launch.workingDir,
+      launchMode: this.launchMode === 'shell' ? 'shell' : launch.launchMode,
+    };
+  }
+
+  private async startNewSession(agentId: string, officeId?: string): Promise<void> {
     this.sessionId = null;
     this.updateSessionDisplay();
     
@@ -780,6 +817,16 @@ export class TerminalOverlay {
     }
 
     const targetOfficeId = officeId ?? this.getActiveOfficeId();
+    const office = officeManager.getOffice(targetOfficeId)?.config;
+    const launch = resolveOfficeAgentWorkingDir(office, agentId)
+      ?? (this.currentAgent?.id === agentId && this.currentAgent.workingDir
+        ? { workingDir: this.currentAgent.workingDir, launchMode: this.launchMode }
+        : undefined);
+    const hostWorkingDir = office?.workingDirectory ?? launch?.workingDir;
+    if (!launch || !hostWorkingDir) {
+      this.terminal?.writeln(`Failed to start terminal: no working directory for ${targetOfficeId}/${agentId}`);
+      return;
+    }
     const dims = this.fitAndResizeTerminal({ officeId: targetOfficeId, agentId });
 
     const result = await withTimeout(
@@ -787,18 +834,22 @@ export class TerminalOverlay {
         ? window.copilotBridge.terminalStart(
             targetOfficeId,
             agentId,
-            workingDir,
+            launch.workingDir,
             dims?.cols,
             dims?.rows,
             undefined,
             'shell',
+            hostWorkingDir,
           )
         : window.copilotBridge.terminalStart(
             targetOfficeId,
             agentId,
-            workingDir,
+            launch.workingDir,
             dims?.cols,
             dims?.rows,
+            undefined,
+            launch.launchMode,
+            hostWorkingDir,
           ),
       IPC_TIMEOUT, 'terminalStart'
     );
@@ -1152,7 +1203,13 @@ export class TerminalOverlay {
     this.setTeamsButtonState(false, true);
     const office = officeManager.getOffice(officeId)?.config;
     const officeChannelUrl = office?.teamsChannelUrl;
-    const workingDir = this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory();
+    const workingDir = resolveOfficeAgentWorkingDir(office, agentId)?.workingDir
+      ?? this.currentAgent.workingDir;
+    if (!workingDir) {
+      this.setTeamsButtonState(false);
+      showClipboardToast(`No working directory configured for ${officeId}/${agentId}`, 'error');
+      return;
+    }
     const res = await window.copilotBridge.teamsRegister({
       officeId,
       agentId,
@@ -1264,23 +1321,37 @@ export class TerminalOverlay {
     ).catch(() => { /* ignore */ });
 
     const dims = this.fitAndResizeTerminal({ officeId, agentId });
+    const office = officeManager.getOffice(officeId)?.config;
+    const launch = resolveOfficeAgentWorkingDir(office, agentId)
+      ?? (this.currentAgent.workingDir
+        ? { workingDir: this.currentAgent.workingDir, launchMode: this.launchMode }
+        : undefined);
+    const hostWorkingDir = office?.workingDirectory ?? launch?.workingDir;
+    if (!launch || !hostWorkingDir) {
+      this.terminal?.writeln(`Failed to start terminal: no working directory for ${officeId}/${agentId}`);
+      return;
+    }
     const result = await withTimeout(
       this.launchMode === 'shell'
         ? window.copilotBridge.terminalStart(
             officeId,
             agentId,
-            this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(),
+            launch.workingDir,
             dims?.cols,
             dims?.rows,
             undefined,
             'shell',
+            hostWorkingDir,
           )
         : window.copilotBridge.terminalStart(
             officeId,
             agentId,
-            this.currentAgent.workingDir || officeManager.getCurrentWorkingDirectory(),
+            launch.workingDir,
             dims?.cols,
             dims?.rows,
+            undefined,
+            launch.launchMode,
+            hostWorkingDir,
           ),
       IPC_TIMEOUT, 'terminalStart'
     );

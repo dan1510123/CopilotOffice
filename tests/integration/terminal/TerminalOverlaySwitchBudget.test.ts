@@ -231,7 +231,6 @@ describe('integration/TerminalOverlay New Session action budget', () => {
       getCanonicalAgentIds: () => ['generalist'],
       getSessionMeta: async () => ({}),
       getCurrentSessionId: async () => null,
-      getAgentLaunchConfig: () => ({ workingDir: '.', launchMode: 'copilot' }),
       resetSession: async (oid, aid) => {
         const r = await bridge.resetSession(oid, aid);
         return r?.sessionId ?? null;

@@ -4,12 +4,14 @@ import { NPC } from '../entities/NPC';
 import { TerminalOverlay, DEBUG_SPRITE_SERIOUS } from '../ui/TerminalOverlay';
 import { BasketballGame } from '../ui/BasketballGame';
 import { GalaxianGame } from '../ui/GalaxianGame';
+import { PongGame } from '../ui/PongGame';
 import { AGENTS, AgentConfig, RESERVE_AGENTS, RESERVE_AGENT_DESK, CORE_AGENT_IDS, ARCHITECT_AGENT_ID, swapActiveAgents, restoreSeatedReserveAgents } from '../config/agents';
 import { getLayout } from '../layouts/index';
 import { Depths, ySortDepth } from '../config/depths';
 import { ZIndex } from '../config/zIndex';
 import { InputManager } from '../input/InputManager';
 import { officeManager, OfficeLayout } from '../office/officeManager';
+import { resolveOfficeAgentWorkingDir } from '../office/launchWorkingDir';
 import { MeetingPlan } from '../meeting/types';
 import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
@@ -55,7 +57,8 @@ interface ExitDoor {
 // Feature flags
 const ENABLE_DECORATIONS = false;
 const ENABLE_BASKETBALL = false;
-const ENABLE_GALAXIAN = true;
+const ENABLE_GALAXIAN = false;
+const ENABLE_PONG = true;
 const ENABLE_ZOOM_BAR = true;
 const PC_TERMINAL_ID = 'pc-terminal';
 
@@ -95,12 +98,16 @@ export class OfficeScene extends Phaser.Scene {
   }
   private basketballGame!: BasketballGame;
   private galaxianGame!: GalaxianGame;
+  private pongGame!: PongGame;
   private basketballHoop: GameTable | null = null;
   private arcadeMachine: GameTable | null = null;
+  private pongTable: GameTable | null = null;
   private nearBasketball: boolean = false;
   private nearArcade: boolean = false;
+  private nearPong: boolean = false;
   private basketballPrompt!: Phaser.GameObjects.Text;
   private arcadePrompt!: Phaser.GameObjects.Text;
+  private pongPrompt!: Phaser.GameObjects.Text;
   private tileSize: number = 64;
   private mapWidth: number = 20;
   private mapHeight: number = 12;
@@ -305,6 +312,9 @@ export class OfficeScene extends Phaser.Scene {
     // Create galaxian game overlay
     this.galaxianGame = new GalaxianGame(this);
 
+    // Create pong game overlay
+    this.pongGame = new PongGame(this);
+
     // Create basketball prompt (hidden by default)
     this.basketballPrompt = this.add.text(0, 0, '[E] Play Basketball', {
       font: 'bold 14px monospace',
@@ -326,6 +336,17 @@ export class OfficeScene extends Phaser.Scene {
     this.arcadePrompt.setOrigin(0.5, 1);
     this.arcadePrompt.setDepth(Depths.UI_OVERLAY);
     this.arcadePrompt.setVisible(false);
+
+    // Create pong prompt (hidden by default)
+    this.pongPrompt = this.add.text(0, 0, '[E] Play Ping Pong', {
+      font: 'bold 14px monospace',
+      color: '#88ff88',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 4 },
+    });
+    this.pongPrompt.setOrigin(0.5, 1);
+    this.pongPrompt.setDepth(Depths.UI_OVERLAY);
+    this.pongPrompt.setVisible(false);
 
     // Create exit prompt(hidden by default)
     this.exitPrompt = this.add.text(0, 0, '[E] Exit', {
@@ -957,6 +978,24 @@ export class OfficeScene extends Phaser.Scene {
         x: rightStoolX,
         y: sideStoolY,
       });
+
+      // Below stools: two seats one row below the table (row 6), facing up.
+      // Tracked as unassigned seats for reserve agent hiring.
+      const belowStoolY = (tableStartRow + 2) * this.tileSize + this.tileSize / 2;
+      const belowPositions: Array<{ x: number; side: 'left' | 'right' }> = [
+        { x: table.startCol * this.tileSize + this.tileSize / 2, side: 'left' },
+        { x: (table.startCol + 2) * this.tileSize + this.tileSize / 2, side: 'right' },
+      ];
+      belowPositions.forEach(({ x: bx, side }) => {
+        const belowStool = addDecor(bx, belowStoolY, 'stool')
+          .setDepth(Depths.FLOOR_DETAIL);
+        this.desks.push({
+          sprite: belowStool,
+          agentId: `unassigned-below-${side}-${table.startCol}`,
+          x: bx,
+          y: belowStoolY,
+        });
+      });
     });
 
     // === CORNER DESKS (bottom-row seats) ===
@@ -1075,6 +1114,25 @@ export class OfficeScene extends Phaser.Scene {
         sprite: hoopSprite,
         x: hoopX,
         y: hoopY,
+      };
+    }
+
+    // Ping pong table (lower center area)
+    if (ENABLE_PONG) {
+      const pongX = 10 * this.tileSize + this.tileSize / 2;
+      const pongY = 8 * this.tileSize + this.tileSize / 2;
+      const pongSprite = addFurniture(pongX, pongY, 'ping_pong_table', {
+        bodyWidth: 48,
+        bodyHeight: 20,
+        bodyOffsetX: 8,
+        bodyOffsetY: 6,
+        depthSortY: pongY,
+      });
+
+      this.pongTable = {
+        sprite: pongSprite,
+        x: pongX,
+        y: pongY,
       };
     }
 
@@ -1520,16 +1578,23 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   private triggerAgentWalkIn(agentIds: string[], onAllSeated?: () => void): void {
-    this.onAllWalkInsComplete = onAllSeated;
+    // Preserve an existing completion callback if this call doesn't provide one
+    // (concurrent reserve hires pass none and must not clobber a pending callback).
+    if (onAllSeated) this.onAllWalkInsComplete = onAllSeated;
     const entranceX = this.mapWidth * this.tileSize / 2;
     const startY = (this.mapHeight + 1) * this.tileSize;
 
+    // Re-entrant: if a walk-in is already in flight, append to the existing
+    // tracking arrays instead of resetting them, so concurrent agents can walk
+    // to their seats simultaneously without cancelling each other.
+    const alreadyAnimating = this.animating;
     this.pendingWalkIns += agentIds.length;
     this.setAnimating(true);
 
-    // Reset skip tracking
-    this.walkInTimers = [];
-    this.walkInAgents = [];
+    if (!alreadyAnimating) {
+      this.walkInTimers = [];
+      this.walkInAgents = [];
+    }
 
     // For fleet layouts, use conga-line paths around the table
     if (this.currentLayout === 'fleet-vteam') {
@@ -1690,11 +1755,8 @@ export class OfficeScene extends Phaser.Scene {
   /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance.
    *  Returns the bring-online outcome so the orchestrator delegation can resolve it. */
   private spawnReserveAgent(deskId: string): 'started' | 'already-active' | 'invalid-target' {
-    // Guards
-    if (this.animating) {
-      console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: animating`);
-      return 'already-active';
-    }
+    // Note: reserve agents may be hired while other agents are still walking in —
+    // walk-ins are re-entrant, so no `animating` guard here.
     const reserveConfig = RESERVE_AGENTS[deskId];
     if (!reserveConfig) {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: no reserve config`);
@@ -1703,6 +1765,14 @@ export class OfficeScene extends Phaser.Scene {
     if (AGENTS.find(a => a.id === reserveConfig.id)) {
       console.log(`[OfficeScene] spawnReserveAgent(${deskId}) skipped: ${reserveConfig.id} already spawned`);
       return 'already-active';
+    }
+    const officeId = officeManager.currentOfficeId;
+    const office = officeId ? officeManager.getOffice(officeId)?.config : undefined;
+    const launch = resolveOfficeAgentWorkingDir(office, reserveConfig.id);
+    const canStartTerminal = typeof window.copilotBridge?.terminalStart === 'function';
+    if (officeId && canStartTerminal && (!office || !launch)) {
+      console.error(`[OfficeScene] No launch directory for ${officeId}/${reserveConfig.id}`);
+      return 'invalid-target';
     }
 
     console.log(`[OfficeScene] Spawning reserve agent: ${reserveConfig.name} (${reserveConfig.id}) at seat ${deskId}`);
@@ -1730,7 +1800,6 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Persist seat assignment so it survives restart
-    const officeId = officeManager.currentOfficeId;
     if (officeId) {
       officeManager.addSeatedAgent(officeId, deskId, reserveConfig.id);
     }
@@ -1742,10 +1811,19 @@ export class OfficeScene extends Phaser.Scene {
     npc.setLabelsVisible(true);
 
     // Start terminal in background immediately
-    if (officeId && window.copilotBridge?.terminalStart) {
+    if (officeId && office && launch && canStartTerminal) {
       officeManager.setAgentStarting(officeId, reserveConfig.id);
       this.game.events.emit('agent:status:changed', reserveConfig.id);
-      window.copilotBridge.terminalStart(officeId, reserveConfig.id, officeManager.getCurrentWorkingDirectory()).catch(err => {
+      window.copilotBridge.terminalStart(
+        officeId,
+        reserveConfig.id,
+        launch.workingDir,
+        undefined,
+        undefined,
+        undefined,
+        launch.launchMode,
+        office.workingDirectory,
+      ).catch(err => {
         console.error(`[OfficeScene] Failed to start terminal for ${reserveConfig.id}:`, err);
       });
     }
@@ -1951,6 +2029,7 @@ export class OfficeScene extends Phaser.Scene {
     if (this.instructionText) preserveSet.add(this.instructionText);
     if (this.basketballPrompt) preserveSet.add(this.basketballPrompt);
     if (this.arcadePrompt) preserveSet.add(this.arcadePrompt);
+    if (this.pongPrompt) preserveSet.add(this.pongPrompt);
     if (this.exitPrompt) preserveSet.add(this.exitPrompt);
     if (this.dismissPrompt) preserveSet.add(this.dismissPrompt);
 
@@ -1995,6 +2074,7 @@ export class OfficeScene extends Phaser.Scene {
     this.exitDoors = [];
     this.basketballHoop = null;
     this.arcadeMachine = null;
+    this.pongTable = null;
     this.nearestNPC = null;
     this.nearestDesk = null;
     this.nearestExitDoor = null;
@@ -2160,10 +2240,20 @@ export class OfficeScene extends Phaser.Scene {
         } else {
           console.log(`[CopilotOffice] Starting new ${label} session (no saved session found)`);
         }
+        const office = officeManager.getOffice(oid)?.config;
+        const launch = resolveOfficeAgentWorkingDir(office, agentConfig.id);
+        if (!office || !launch) {
+          throw new Error(`No launch directory configured for ${oid}/${agentConfig.id}`);
+        }
         const result = await window.copilotBridge.terminalStart(
           oid,
           agentConfig.id,
-          agentConfig.workingDir || officeManager.getCurrentWorkingDirectory(),
+          launch.workingDir,
+          undefined,
+          undefined,
+          undefined,
+          launch.launchMode,
+          office.workingDirectory,
         );
         console.log(`[CopilotOffice] ${label} session ready`);
         if (DEBUG_COLD_START) {
@@ -2204,7 +2294,7 @@ export class OfficeScene extends Phaser.Scene {
     }
 
     // Don't update if player hasn't entered, pong game, basketball game, or terminal overlay is active
-    if (!this.playerInScene || this.basketballGame.getIsVisible() || this.galaxianGame.getIsVisible() || !this.playerMovementEnabled) {
+    if (!this.playerInScene || this.basketballGame.getIsVisible() || this.galaxianGame.getIsVisible() || this.pongGame.getIsVisible() || !this.playerMovementEnabled) {
       return;
     }
 
@@ -2233,6 +2323,9 @@ export class OfficeScene extends Phaser.Scene {
     // Check for arcade machine proximity
     this.updateArcadeProximity();
 
+    // Check for ping pong table proximity
+    this.updatePongProximity();
+
     // Check for exit door proximity
     this.updateExitDoorProximity();
 
@@ -2254,6 +2347,8 @@ export class OfficeScene extends Phaser.Scene {
         this.startBasketballGame();
       } else if (this.nearArcade) {
         this.startGalaxianGame();
+      } else if (this.nearPong) {
+        this.startPongGame();
       } else if (this.nearestExitDoor) {
         this.triggerExit();
       } else if (this.nearestNPC) {
@@ -2341,6 +2436,39 @@ export class OfficeScene extends Phaser.Scene {
     this.cameraDrag?.disable();
 
     this.galaxianGame.show(() => {
+      this.player.enableMovement();
+      this.applyZoom(this.cameras.main.zoom);
+    });
+  }
+
+  private updatePongProximity(): void {
+    if (!this.pongTable) {
+      this.nearPong = false;
+      return;
+    }
+
+    const dist = Phaser.Math.Distance.Between(
+      this.player.x, this.player.y,
+      this.pongTable.x, this.pongTable.y
+    );
+
+    const interactionDistance = this.tileSize * 2;
+    this.nearPong = dist < interactionDistance;
+
+    if (this.nearPong && !this.terminalOverlay.getIsVisible()) {
+      this.pongPrompt.setPosition(this.pongTable.x, this.pongTable.y - 40);
+      this.pongPrompt.setVisible(true);
+    } else {
+      this.pongPrompt.setVisible(false);
+    }
+  }
+
+  private startPongGame(): void {
+    this.player.disableMovement();
+    this.pongPrompt.setVisible(false);
+    this.cameraDrag?.disable();
+
+    this.pongGame.show(() => {
       this.player.enableMovement();
       this.applyZoom(this.cameras.main.zoom);
     });
@@ -2550,7 +2678,9 @@ export class OfficeScene extends Phaser.Scene {
   private openPlayerPcTerminal(): void {
     if (!getLayout(this.currentLayout).behaviors.hasPlayerPcTerminal) return;
 
-    const workingDir = officeManager.getCurrentWorkingDirectory();
+    const office = officeManager.currentOffice?.config;
+    const workingDir = resolveOfficeAgentWorkingDir(office, PC_TERMINAL_ID)?.workingDir;
+    if (!workingDir) return;
     const pcTerminalConfig: AgentConfig = {
       id: PC_TERMINAL_ID,
       name: 'PC TERMINAL',
