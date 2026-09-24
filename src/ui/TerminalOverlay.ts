@@ -634,6 +634,11 @@ export class TerminalOverlay {
       try {
         this.fitAndResizeTerminal({ officeId, agentId: agent.id });
         const dims = this.resolveTerminalDimensions();
+        // Thread the office's launch directories through EVERY activate call:
+        // activate's server-side cold branch starts the PTY itself when the
+        // session is gone (e.g. killed by a New Session reset), and without
+        // these it would silently launch in the app's own folder.
+        const activateDirs = this.resolveLaunchDirs(officeId, agent.id);
         perfMark('overlay', 'switch:activate-start', perfTarget);
 
         if (created) {
@@ -652,7 +657,9 @@ export class TerminalOverlay {
           if (!existsOnServer) {
             await this.startNewSession(agent.id, officeId);
             const act = await withTimeout(
-              window.copilotBridge.terminalActivate(officeId, agent.id, { foreground: true, needScrollback: false }),
+              window.copilotBridge.terminalActivate(officeId, agent.id, {
+                foreground: true, needScrollback: false, ...activateDirs,
+              }),
               IPC_TIMEOUT, 'terminalActivate',
             );
             if (act.success) {
@@ -669,6 +676,7 @@ export class TerminalOverlay {
             const act = await withTimeout(
               window.copilotBridge.terminalActivate(officeId, agent.id, {
                 foreground: true, needScrollback: true, cols: dims?.cols, rows: dims?.rows,
+                ...activateDirs,
               }),
               IPC_TIMEOUT, 'terminalActivate',
             );
@@ -692,6 +700,7 @@ export class TerminalOverlay {
           const act = await withTimeout(
             window.copilotBridge.terminalActivate(officeId, agent.id, {
               foreground: true, needScrollback: false, cols: dims?.cols, rows: dims?.rows,
+              ...activateDirs,
             }),
             IPC_TIMEOUT, 'terminalActivate',
           );
@@ -773,6 +782,29 @@ export class TerminalOverlay {
         ctx.drawImage(source, 0, 0);
       }
     }, 50);
+  }
+
+  /**
+   * Office-scoped launch directories for an agent, shaped for the
+   * `terminalActivate` options bag. Returns an empty object when nothing can be
+   * resolved so the server falls back to its own last-known directory rather
+   * than receiving a wrong one.
+   */
+  private resolveLaunchDirs(
+    officeId: string,
+    agentId: string,
+  ): { workingDir?: string; hostWorkingDir?: string; launchMode?: 'copilot' | 'shell' } {
+    const office = officeManager.getOffice(officeId)?.config;
+    const launch = resolveOfficeAgentWorkingDir(office, agentId)
+      ?? (this.currentAgent?.id === agentId && this.currentAgent.workingDir
+        ? { workingDir: this.currentAgent.workingDir, launchMode: this.launchMode }
+        : undefined);
+    if (!launch) return {};
+    return {
+      workingDir: launch.workingDir,
+      hostWorkingDir: office?.workingDirectory ?? launch.workingDir,
+      launchMode: this.launchMode === 'shell' ? 'shell' : launch.launchMode,
+    };
   }
 
   private async startNewSession(agentId: string, officeId?: string): Promise<void> {

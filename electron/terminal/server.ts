@@ -48,6 +48,20 @@ interface PtyProcess {
 
 const ptyProcesses: Map<string, PtyProcess> = new Map();
 
+/**
+ * Last successfully-resolved launch directories per composite key.
+ *
+ * Safety net for the "new session opened in the wrong folder" class of bug: the
+ * `activate` cold path (and any other restart path) can reach
+ * `startTerminalForAgent` without a `workingDir` — e.g. a viewer re-activates an
+ * agent whose PTY was just killed by `reset-session`. Without a remembered
+ * directory the resolver silently fell back to `process.cwd()` (the app repo),
+ * so the fresh session was created in CopilotOffice instead of the office's
+ * folder. Entries survive PTY death on purpose; they are cleared only when the
+ * agent is fully removed (kill).
+ */
+const lastLaunchDirs: Map<string, { workingDir: string; hostWorkingDir: string }> = new Map();
+
 // ── Feature 002 forensic logging ──
 // Set to true (or define COPILOT_OFFICE_DEBUG_COLD_START=1) to surface the
 // per-agent cold-start log lines documented in
@@ -600,19 +614,36 @@ async function startTerminalForAgentImpl(
 
   const terminalKey = ck;
   const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
+  // Restart paths (notably `activate`'s cold branch) may not carry the launch
+  // directories. Reuse the last ones we resolved for this agent instead of
+  // letting the resolver silently collapse to process.cwd().
+  const remembered = lastLaunchDirs.get(ck);
+  const requestedWorkingDir = workingDir ?? remembered?.workingDir;
+  const requestedHostWorkingDir = hostWorkingDir ?? remembered?.hostWorkingDir ?? requestedWorkingDir;
+  if (!workingDir && requestedWorkingDir) {
+    console.warn(
+      `[workingDir] ${ck}: start requested without a workingDir; reusing last known "${requestedWorkingDir}"`,
+    );
+  } else if (!requestedWorkingDir) {
+    console.warn(
+      `[workingDir] ${ck}: start requested without a workingDir and no last-known directory; ` +
+      `falling back to process.cwd()="${process.cwd()}"`,
+    );
+  }
   let cwd: string;
   let hostCwd: string;
   try {
-    cwd = await resolveAccessibleWorkingDir(workingDir);
-    hostCwd = await resolveAccessibleWorkingDir(hostWorkingDir ?? workingDir);
+    cwd = await resolveAccessibleWorkingDir(requestedWorkingDir);
+    hostCwd = await resolveAccessibleWorkingDir(requestedHostWorkingDir);
   } catch (error) {
     const message = String((error as Error)?.message ?? error);
     console.error(`[workingDir] ${ck}: ${message}`);
     return { success: false, error: message };
   }
+  lastLaunchDirs.set(ck, { workingDir: cwd, hostWorkingDir: hostCwd });
   console.log(
-    `[workingDir] ${ck}: terminalStart requested="${workingDir ?? '(none)'}" finalCwd="${cwd}" ` +
-    `hostRequested="${hostWorkingDir ?? workingDir ?? '(none)'}" hostCwd="${hostCwd}"`,
+    `[workingDir] ${ck}: terminalStart requested="${requestedWorkingDir ?? '(none)'}" finalCwd="${cwd}" ` +
+    `hostRequested="${requestedHostWorkingDir ?? '(none)'}" hostCwd="${hostCwd}"`,
   );
 
   const taggedEnv = {

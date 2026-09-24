@@ -509,7 +509,13 @@ export class SeriousTerminalController {
             this.setStatus('Start failed');
             return;
           }
-          const act = await window.copilotBridge.terminalActivate(officeId, agentId, { foreground: true, needScrollback: false });
+          const act = await window.copilotBridge.terminalActivate(officeId, agentId, {
+            foreground: true,
+            needScrollback: false,
+            workingDir: options.workingDir,
+            hostWorkingDir: options.hostWorkingDir,
+            launchMode: options.launchMode || 'copilot',
+          });
           if (act.success) {
             cache.setAttached(officeId, agentId, true);
             const sid = startResult.sessionId ?? act.sessionId ?? null;
@@ -522,6 +528,9 @@ export class SeriousTerminalController {
           cacheLog(`activate ${officeId}:${agentId} → COLD/existing: atomic activate + one-time scrollback replay`);
           const act = await window.copilotBridge.terminalActivate(officeId, agentId, {
             foreground: true, needScrollback: true, cols: dims?.cols, rows: dims?.rows,
+            workingDir: options.workingDir,
+            hostWorkingDir: options.hostWorkingDir,
+            launchMode: options.launchMode || 'copilot',
           });
           if (!act.success) {
             this.terminal.writeln('\r\nFailed to attach terminal session.');
@@ -544,6 +553,9 @@ export class SeriousTerminalController {
         cacheLog(`activate ${officeId}:${agentId} → WARM: single foreground activate, no replay`);
         const act = await window.copilotBridge.terminalActivate(officeId, agentId, {
           foreground: true, needScrollback: false, cols: dims?.cols, rows: dims?.rows,
+          workingDir: options.workingDir,
+          hostWorkingDir: options.hostWorkingDir,
+          launchMode: options.launchMode || 'copilot',
         });
         if (act.success) {
           cache.setAttached(officeId, agentId, true);
