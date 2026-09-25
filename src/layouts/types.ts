@@ -24,6 +24,8 @@ export interface DashboardRenderContext {
   teamsEnabled?: boolean;
   /** Teams Remote (011): agent ids currently online in Teams (for button state). */
   teamsOnlineAgentIds?: Set<string>;
+  /** In-flight Teams action per agent, kept separate from status events until the request settles. */
+  teamsPendingActions?: Map<string, 'connecting' | 'disconnecting'>;
   /** User "Flagged / Needs attention" markers: agent ids the user flagged to revisit. */
   flaggedAgentIds?: Set<string>;
 }

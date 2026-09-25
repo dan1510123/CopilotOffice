@@ -118,6 +118,31 @@ describe('DefaultDashboard — session info panel enhancements', () => {
     expect(html).toMatch(/class="session-close-btn [\s\S]*Close Session/);
   });
 
+  it('renders a disabled loading state while Teams registration is pending', () => {
+    const context = ctx({ a1: { title: 'My session' } });
+    context.teamsEnabled = true;
+    context.teamsOnlineAgentIds = new Set(['a1']);
+    context.teamsPendingActions = new Map([['a1', 'connecting']]);
+    const html = defaultDashboard.renderCards(context);
+
+    expect(html).toContain('class="session-teams-btn ');
+    expect(html).toContain('disabled aria-busy="true"');
+    expect(html).toContain('class="ui-btn__spinner"');
+    expect(html).toContain('Connecting…');
+    expect(html).not.toContain('Disconnecting…');
+  });
+
+  it('renders a disabled disconnecting state for an online pending agent', () => {
+    const context = ctx({ a1: { title: 'My session' } });
+    context.teamsEnabled = true;
+    context.teamsPendingActions = new Map([['a1', 'disconnecting']]);
+    const html = defaultDashboard.renderCards(context);
+
+    expect(html).toContain('disabled aria-busy="true"');
+    expect(html).toContain('Disconnecting…');
+    expect(html).not.toContain('Connecting…');
+  });
+
   it('renders a session-id badge with the full id when sessionId is present', () => {
     const fullId = 'abcdef12-3456-7890-abcd-ef1234567890';
     const html = defaultDashboard.renderCards(
@@ -358,4 +383,3 @@ describe('DefaultDashboard — user flag (Needs attention) marker', () => {
     expect(statusPanel?.html).toContain('>Flagged</span>');
   });
 });
-

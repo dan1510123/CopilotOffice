@@ -2412,6 +2412,7 @@ let activeSessionTitleEditAgentId: string | null = null;
 // "Teams Remote" button on the feature flag + per-agent online state.
 let teamsFeatureEnabled = false;
 const teamsOnlineAgentIds = new Set<string>();
+const teamsPendingActions = new Map<string, 'connecting' | 'disconnecting'>();
 /** All agent ids with a Teams binding (online or pending reconnect) for the current office. */
 const teamsBoundAgentIds = new Set<string>();
 
@@ -2456,35 +2457,41 @@ function scheduleTeamsReconcile(): void {
 /** Toggle an agent online/offline in Teams from an overview dashboard tile. */
 async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
   if (!window.copilotBridge?.teamsRegister) return;
+  if (teamsPendingActions.has(agentId)) return;
   const officeId = officeManager.currentOfficeId || 'office-0';
-  if (teamsOnlineAgentIds.has(agentId)) {
-    await window.copilotBridge.teamsStop({ officeId, agentId });
-    teamsOnlineAgentIds.delete(agentId);
+  teamsPendingActions.set(agentId, teamsOnlineAgentIds.has(agentId) ? 'disconnecting' : 'connecting');
+  updateTerminalContent();
+  try {
+    if (teamsOnlineAgentIds.has(agentId)) {
+      await window.copilotBridge.teamsStop({ officeId, agentId });
+      teamsOnlineAgentIds.delete(agentId);
+      return;
+    }
+    const agent = getSeriousLaunchConfig(agentId);
+    if (!agent) return;
+    const launch = resolveAgentLaunchConfig(officeId, agentId);
+    if (!launch) return;
+    const office = officeManager.getOffice(officeId)?.config;
+    const officeChannelUrl = office?.teamsChannelUrl;
+    const res = await window.copilotBridge.teamsRegister({
+      officeId,
+      agentId,
+      displayName: agent.name,
+      workingDir: launch.workingDir,
+      officeChannelUrl,
+      officeMentionType: office?.teamsMentionType,
+      officeMentionValue: office?.teamsMentionValue,
+    });
+    if (res?.success) {
+      teamsOnlineAgentIds.add(agentId);
+    } else if (res?.error === 'no-channel') {
+      void teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
+    } else if (res?.error) {
+      showClipboardToast(`Teams: ${res.error}`, 'error');
+    }
+  } finally {
+    teamsPendingActions.delete(agentId);
     updateTerminalContent();
-    return;
-  }
-  const agent = getSeriousLaunchConfig(agentId);
-  if (!agent) return;
-  const launch = resolveAgentLaunchConfig(officeId, agentId);
-  if (!launch) return;
-  const office = officeManager.getOffice(officeId)?.config;
-  const officeChannelUrl = office?.teamsChannelUrl;
-  const res = await window.copilotBridge.teamsRegister({
-    officeId,
-    agentId,
-    displayName: agent.name,
-    workingDir: launch.workingDir,
-    officeChannelUrl,
-    officeMentionType: office?.teamsMentionType,
-    officeMentionValue: office?.teamsMentionValue,
-  });
-  if (res?.success) {
-    teamsOnlineAgentIds.add(agentId);
-    updateTerminalContent();
-  } else if (res?.error === 'no-channel') {
-    void teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
-  } else if (res?.error) {
-    showClipboardToast(`Teams: ${res.error}`, 'error');
   }
 }
 
@@ -2545,6 +2552,7 @@ function updateTerminalContentNow() {
     formatRelativeTime,
     teamsEnabled: teamsFeatureEnabled,
     teamsOnlineAgentIds,
+    teamsPendingActions,
     flaggedAgentIds,
   });
 
@@ -2570,6 +2578,7 @@ function updateTerminalContentNow() {
         formatRelativeTime,
         teamsEnabled: teamsFeatureEnabled,
         teamsOnlineAgentIds,
+        teamsPendingActions,
         flaggedAgentIds,
       });
       if (regions) {

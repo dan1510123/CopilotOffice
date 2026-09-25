@@ -77,6 +77,14 @@ export function injectUiKit(): void {
     .ui-btn:hover { background: var(--co-bg-raised-hover); border-color: color-mix(in srgb, var(--co-border) 40%, var(--co-text-secondary)); color: var(--co-text-strong); }
     .ui-btn:active { transform: translateY(1px); }
     .ui-btn:disabled { opacity: .5; cursor: default; transform: none; box-shadow: none; }
+    .ui-btn__spinner {
+      width: 11px;
+      height: 11px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: copilot-btn-spin .7s linear infinite;
+    }
 
     .ui-btn--primary { background: color-mix(in srgb, var(--co-accent-strong) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-accent-strong) 45%, var(--co-border)); color: var(--co-accent); }
     .ui-btn--primary:hover { background: color-mix(in srgb, var(--co-accent-strong) 26%, var(--co-bg-raised)); border-color: var(--co-accent-strong); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-accent-strong) 22%, transparent); }
@@ -110,8 +118,9 @@ export function injectUiKit(): void {
     @keyframes copilot-ring-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
     @keyframes copilot-attn-bar { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
     @keyframes copilot-pill-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+    @keyframes copilot-btn-spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) {
-      [data-ring-agent], [data-attn-banner-agent] > *, [data-status-panel-agent] span { animation: none !important; }
+      [data-ring-agent], [data-attn-banner-agent] > *, [data-status-panel-agent] span, .ui-btn__spinner { animation: none !important; }
     }
   `;
   document.head.appendChild(style);
