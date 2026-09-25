@@ -10,14 +10,14 @@ describe('interpretUiServerProbe', () => {
     expect(interpretUiServerProbe('Error: Unknown Option --ui-server')).toBe(false);
   });
 
-  it('treats a normal fall-through message as supported', () => {
+  it('treats normal TUI output as unsupported', () => {
     expect(
       interpretUiServerProbe('No prompt provided. Run in an interactive terminal or provide a prompt with -p'),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('treats empty output as supported (no rejection reported)', () => {
-    expect(interpretUiServerProbe('')).toBe(true);
+  it('treats empty output as unsupported', () => {
+    expect(interpretUiServerProbe('')).toBe(false);
   });
 
   it('treats a listening-on-port message as supported', () => {

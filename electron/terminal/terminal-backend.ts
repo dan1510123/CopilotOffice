@@ -362,7 +362,7 @@ export function resolveCopilotCliPath(repoRoot: string, pathValue: string | unde
  * Pure and unit-testable — kept separate from the process-spawning probe below.
  */
 export function interpretUiServerProbe(output: string): boolean {
-  return !/unknown option/i.test(output);
+  return /listening on port \d+/i.test(output);
 }
 
 const uiServerProbeCache = new Map<string, boolean>();
@@ -370,11 +370,12 @@ const uiServerProbeCache = new Map<string, boolean>();
 /**
  * Probe whether the resolved Copilot CLI supports the (undocumented) `--ui-server`
  * TUI+server mode. Runs the CLI with the flag in a non-interactive context (no TTY,
- * piped stdio) and inspects the output via {@link interpretUiServerProbe}. Results
- * are cached per `cliPath`. Never throws.
+ * piped stdio) and requires the control-port announcement via
+ * {@link interpretUiServerProbe}. Results are cached per `cliPath`. Never throws.
  *
- * A timeout (the CLI started a server and did not exit) is treated as supported,
- * since a hang implies the flag was accepted rather than rejected.
+ * The hidden flag was removed in CLI 1.0.88, which ignores it and launches the
+ * normal interactive TUI. A process timeout alone is therefore not evidence of
+ * support; only an announced control port is.
  */
 export function probeUiServerSupport(cliPath: string | null): boolean {
   if (!cliPath) return false;
@@ -386,15 +387,11 @@ export function probeUiServerSupport(cliPath: string | null): boolean {
 
   let supported = false;
   try {
-    execSync(command, { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    supported = true; // exited 0 → flag accepted
+    const output = execSync(command, { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    supported = interpretUiServerProbe(output);
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; killed?: boolean; signal?: string };
-    if (e.killed || e.signal) {
-      supported = true; // timed out because a server started → flag accepted
-    } else {
-      supported = interpretUiServerProbe(`${e.stdout ?? ''}${e.stderr ?? ''}`);
-    }
+    const e = err as { stdout?: string; stderr?: string };
+    supported = interpretUiServerProbe(`${e.stdout ?? ''}${e.stderr ?? ''}`);
   }
 
   uiServerProbeCache.set(cliPath, supported);
