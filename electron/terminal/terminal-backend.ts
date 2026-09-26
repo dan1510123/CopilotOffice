@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
@@ -279,6 +279,7 @@ export interface TerminalBackend {
   isAvailable(): boolean;
   start(options: StartTerminalOptions): Promise<TerminalProcess>;
   restartOffice?(officeId: string): Promise<void>;
+  stop?(): Promise<void>;
 }
 
 function splitPathEntries(pathValue: string): string[] {
@@ -589,6 +590,7 @@ class CopilotSdkProcess implements TerminalProcess {
 
   constructor(
     readonly pid: number,
+    private readonly sessionId: string,
     private readonly session: any,
     private readonly disconnectSession: () => Promise<void>,
   ) {
@@ -692,6 +694,20 @@ class CopilotSdkProcess implements TerminalProcess {
       });
   }
 
+  handleHostExit(error: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.emitData(`\r\n\x1b[31m[SDK host exited: ${error.message}]\x1b[0m\r\n`);
+    this.emitExit({ exitCode: 1 });
+  }
+
+  createEventSource(): CopilotEventSource {
+    return new SdkEventSource(
+      this.sessionId,
+      this.session as unknown as SdkCopilotSession,
+    );
+  }
+
   private bindSessionEvents(): void {
     this.session.on((event: any) => {
       switch (event.type) {
@@ -760,39 +776,206 @@ class CopilotSdkProcess implements TerminalProcess {
   }
 }
 
+type HeadlessHostStatus = 'launching' | 'listening' | 'crashed' | 'stopped';
+
+type HeadlessSpawn = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcessWithoutNullStreams;
+
+const spawnHeadless: HeadlessSpawn = (command, args, options) =>
+  spawn(command, [...args], options) as ChildProcessWithoutNullStreams;
+
+const HEADLESS_PORT_PATTERN = /CLI server listening on port\s+(\d+)/i;
+
+/** Incremental parser for the headless CLI's buffered port announcement. */
+export class HeadlessPortParser {
+  private buffer = '';
+
+  push(chunk: string | Buffer): number | null {
+    this.buffer = (this.buffer + chunk.toString()).slice(-64 * 1024);
+    const match = HEADLESS_PORT_PATTERN.exec(this.buffer);
+    if (!match) return null;
+    const port = Number(match[1]);
+    return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
+  }
+}
+
+export function buildHeadlessHostArgs(extraArgs: readonly string[] = []): string[] {
+  return [...extraArgs, '--headless', '--port', '0', '--no-auto-update'];
+}
+
+function buildHeadlessHostEnv(
+  env: { [key: string]: string },
+  repoRoot: string,
+): { [key: string]: string } {
+  const sanitizedPath = sanitizeCopilotPath(env.PATH ?? env.Path ?? process.env.PATH, repoRoot);
+  return {
+    ...env,
+    PATH: sanitizedPath,
+    Path: sanitizedPath,
+    COPILOT_AUTO_UPDATE: 'false',
+  };
+}
+
+export class HeadlessCliHost {
+  private readonly proc: ChildProcessWithoutNullStreams;
+  private readonly listeningPromise: Promise<number>;
+  private readonly exitListeners = new Set<(error: Error) => void>();
+  private statusValue: HeadlessHostStatus = 'launching';
+
+  constructor(
+    readonly officeId: string,
+    cliPath: string,
+    repoRoot: string,
+    options: Pick<StartTerminalOptions, 'cwd' | 'hostCwd' | 'env' | 'extraArgs'>,
+    spawnProcess: HeadlessSpawn = spawnHeadless,
+    listeningTimeoutMs = 15_000,
+  ) {
+    let settle!: (port: number) => void;
+    let fail!: (error: Error) => void;
+    this.listeningPromise = new Promise<number>((resolve, reject) => {
+      settle = resolve;
+      fail = reject;
+    });
+    void this.listeningPromise.catch(() => { /* caller observes via whenListening */ });
+
+    const parser = new HeadlessPortParser();
+    let settled = false;
+    const resolvePort = (chunk: string | Buffer) => {
+      if (settled) return;
+      const port = parser.push(chunk);
+      if (port === null) return;
+      settled = true;
+      this.statusValue = 'listening';
+      clearTimeout(timeout);
+      settle(port);
+    };
+    const rejectStartup = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      this.statusValue = 'crashed';
+      clearTimeout(timeout);
+      fail(error);
+    };
+
+    this.proc = spawnProcess(
+      cliPath,
+      buildHeadlessHostArgs(options.extraArgs),
+      {
+        cwd: options.hostCwd ?? options.cwd,
+        env: buildHeadlessHostEnv(options.env, repoRoot),
+        shell: false,
+        windowsHide: true,
+        stdio: 'pipe',
+      },
+    );
+    const timeout = setTimeout(() => {
+      rejectStartup(new Error(`Timed out waiting for headless Copilot host for office ${officeId}`));
+      this.stop();
+    }, listeningTimeoutMs);
+
+    this.proc.stdout.on('data', resolvePort);
+    this.proc.stderr.on('data', resolvePort);
+    this.proc.once('error', (error) => rejectStartup(error));
+    this.proc.once('exit', (code, signal) => {
+      if (this.statusValue !== 'stopped') this.statusValue = 'crashed';
+      const error = new Error(
+        `Headless Copilot host for office ${officeId} exited (code=${String(code)}, signal=${String(signal)})`,
+      );
+      rejectStartup(error);
+      if (this.statusValue === 'crashed') {
+        for (const listener of this.exitListeners) listener(error);
+      }
+    });
+  }
+
+  get status(): HeadlessHostStatus {
+    return this.statusValue;
+  }
+
+  whenListening(): Promise<number> {
+    return this.listeningPromise;
+  }
+
+  onExit(callback: (error: Error) => void): () => void {
+    this.exitListeners.add(callback);
+    return () => this.exitListeners.delete(callback);
+  }
+
+  stop(): void {
+    if (this.statusValue === 'stopped') return;
+    this.statusValue = 'stopped';
+    if (this.proc.killed) return;
+    if (os.platform() === 'win32' && typeof this.proc.pid === 'number') {
+      try {
+        execSync(`taskkill /T /F /PID ${this.proc.pid}`, { stdio: 'ignore' });
+        return;
+      } catch {
+        // Fall through to the direct child kill if tree termination fails.
+      }
+    }
+    this.proc.kill();
+  }
+}
+
+type SdkHostClient = {
+  start(): Promise<void>;
+  createSession(options: Record<string, unknown>): Promise<any>;
+  resumeSession(sessionId: string, options: Record<string, unknown>): Promise<any>;
+  stop?(): Promise<unknown>;
+  forceStop?(): Promise<void>;
+};
+
+type SdkHostClientConstructor = new (options?: Record<string, unknown>) => SdkHostClient;
+
+type SdkOfficeEntry = {
+  host: HeadlessCliHost;
+  client: SdkHostClient | null;
+  startPromise: Promise<SdkHostClient>;
+  processes: Set<CopilotSdkProcess>;
+};
+
+const DEFAULT_SDK_OFFICE_ID = '__default__';
+
 export class CopilotSdkBackend implements TerminalBackend {
-  readonly name = 'copilot-sdk';
-  private client: any | null = null;
-  private startPromise: Promise<void> | null = null;
+  readonly name = 'sdk';
+  private readonly offices = new Map<string, SdkOfficeEntry>();
   private nextPid = 1_000_000;
 
   constructor(
-    private readonly CopilotClient: new (options?: Record<string, unknown>) => any,
-    private readonly RuntimeConnection: { forStdio: (opts?: { path?: string; args?: readonly string[] }) => unknown },
+    private readonly CopilotClient: SdkHostClientConstructor,
+    private readonly RuntimeConnection: RuntimeConnectionForUri,
     private readonly approveAll: unknown,
     private readonly cliPath: string,
-    private readonly cliArgs: string[],
+    private readonly repoRoot = process.cwd(),
+    private readonly spawnProcess: HeadlessSpawn = spawnHeadless,
   ) {}
 
   static async tryCreate(cliPath: string | null): Promise<CopilotSdkBackend | null> {
     if (!cliPath) {
       return null;
     }
+    // The headless host is intentionally spawned without a shell. Windows
+    // command scripts require cmd.exe and therefore are not valid host binaries;
+    // normal packaged installs resolve the native platform executable first.
+    if (os.platform() === 'win32' && /\.(bat|cmd)$/i.test(cliPath)) {
+      return null;
+    }
 
     try {
       const sdk = await import('@github/copilot-sdk') as {
-        CopilotClient?: new (options?: Record<string, unknown>) => any;
-        RuntimeConnection?: { forStdio: (opts?: { path?: string; args?: readonly string[] }) => unknown };
+        CopilotClient?: SdkHostClientConstructor;
+        RuntimeConnection?: RuntimeConnectionForUri;
         approveAll?: unknown;
       };
-      if (!sdk.CopilotClient || !sdk.RuntimeConnection) return null;
-      const launchConfig = createSdkCliLaunchConfig(cliPath);
+      if (!sdk.CopilotClient || !sdk.RuntimeConnection?.forUri) return null;
       return new CopilotSdkBackend(
         sdk.CopilotClient,
         sdk.RuntimeConnection,
         sdk.approveAll,
-        launchConfig.cliPath,
-        launchConfig.cliArgs,
+        cliPath,
       );
     } catch {
       return null;
@@ -804,39 +987,95 @@ export class CopilotSdkBackend implements TerminalBackend {
   }
 
   async start(options: StartTerminalOptions): Promise<TerminalProcess> {
-    const client = await this.getClient();
+    const officeId = options.officeId ?? DEFAULT_SDK_OFFICE_ID;
+    const entry = this.getOrCreateOfficeEntry(officeId, options);
+    let client: SdkHostClient;
+    try {
+      client = await entry.startPromise;
+    } catch (error) {
+      await this.disposeOfficeEntry(officeId, entry);
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+
+    // Session creation is isolated: a bad resume/create request for one agent
+    // must not tear down the shared office host and disconnect sibling agents.
     const session = await this.resumeOrCreateSession(client, options);
+    const process = new CopilotSdkProcess(this.nextPid++, options.sessionId, session, async () => {
+      await session.disconnect();
+    });
+    entry.processes.add(process);
+    process.onExit(() => entry.processes.delete(process));
+    return process;
+  }
 
-    return new CopilotSdkProcess(
-      this.nextPid++,
-      session,
-      async () => {
-        await session.disconnect();
-      },
+  async restartOffice(officeId: string): Promise<void> {
+    const entry = this.offices.get(officeId);
+    if (entry) await this.disposeOfficeEntry(officeId, entry);
+  }
+
+  async stop(): Promise<void> {
+    const entries = [...this.offices.entries()];
+    this.offices.clear();
+    await Promise.all(entries.map(async ([, entry]) => {
+      if (entry.client) await this.stopClient(entry.client);
+      entry.host.stop();
+    }));
+  }
+
+  private getOrCreateOfficeEntry(officeId: string, options: StartTerminalOptions): SdkOfficeEntry {
+    const existing = this.offices.get(officeId);
+    if (existing && existing.host.status !== 'crashed' && existing.host.status !== 'stopped') {
+      return existing;
+    }
+    if (existing) {
+      this.offices.delete(officeId);
+      if (existing.client) void this.stopClient(existing.client);
+      existing.host.stop();
+    }
+
+    const host = new HeadlessCliHost(
+      officeId,
+      this.cliPath,
+      this.repoRoot,
+      options,
+      this.spawnProcess,
     );
-  }
-
-  private async getClient(): Promise<any> {
-    if (this.client) {
-      return this.client;
-    }
-
-    if (!this.startPromise) {
-      // SDK 1.x: connection mode is expressed via RuntimeConnection rather than
-      // the legacy cliPath/cliArgs/autoStart options. This backend spawns its own
-      // headless runtime over stdio using the resolved (non-local) CLI binary.
-      this.client = new this.CopilotClient({
-        useLoggedInUser: true,
-        connection: this.RuntimeConnection.forStdio({ path: this.cliPath, args: this.cliArgs }),
+    const startPromise = host.whenListening()
+      .then(async (port) => {
+        const connectedClient = new this.CopilotClient({
+          connection: this.RuntimeConnection.forUri(`localhost:${port}`),
+        });
+        entry.client = connectedClient;
+        await connectedClient.start();
+        return connectedClient;
       });
-      this.startPromise = this.client.start();
-    }
-
-    await this.startPromise;
-    return this.client;
+    const entry: SdkOfficeEntry = { host, client: null, startPromise, processes: new Set() };
+    host.onExit((error) => {
+      if (this.offices.get(officeId) !== entry) return;
+      this.offices.delete(officeId);
+      for (const process of entry.processes) process.handleHostExit(error);
+      entry.processes.clear();
+      if (entry.client) void this.stopClient(entry.client);
+    });
+    this.offices.set(officeId, entry);
+    return entry;
   }
 
-  private async resumeOrCreateSession(client: any, options: StartTerminalOptions): Promise<any> {
+  private async disposeOfficeEntry(officeId: string, entry: SdkOfficeEntry): Promise<void> {
+    if (this.offices.get(officeId) === entry) this.offices.delete(officeId);
+    if (entry.client) await this.stopClient(entry.client);
+    entry.host.stop();
+  }
+
+  private async stopClient(client: SdkHostClient): Promise<void> {
+    try {
+      await client.stop?.();
+    } catch {
+      await client.forceStop?.();
+    }
+  }
+
+  private async resumeOrCreateSession(client: SdkHostClient, options: StartTerminalOptions): Promise<any> {
     const sharedConfig: Record<string, unknown> = {
       streaming: true,
       workingDirectory: options.cwd,
@@ -1371,6 +1610,18 @@ export class UiServerBackend implements TerminalBackend {
     } finally {
       entry.runtime.stop();
     }
+  }
+
+  async stop(): Promise<void> {
+    const entries = [...this.offices.values()];
+    this.offices.clear();
+    await Promise.all(entries.map(async (entry) => {
+      try {
+        await entry.client.stop();
+      } finally {
+        entry.runtime.stop();
+      }
+    }));
   }
 
   private getOrCreateOfficeEntry(officeId: string, options: StartTerminalOptions): UiServerOfficeEntry {

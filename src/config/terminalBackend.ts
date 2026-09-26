@@ -4,12 +4,12 @@
 export type TerminalBackendKind = 'node-pty' | 'ui-server' | 'sdk';
 
 /**
- * Default terminal backend. `ui-server` runs the Variant-1 SDK control plane
- * (node-pty hosts the real TUI via `--ui-server`) and auto-probes capability,
- * falling back to node-pty when the CLI cannot host it. node-pty remains the
- * permanent fallback and can be forced via `COPILOT_TERMINAL_BACKEND=node-pty`.
+ * Default terminal backend. `sdk` launches one headless Copilot CLI host per
+ * office and multiplexes independent SDK sessions over it. `ui-server` remains
+ * selectable for compatibility; node-pty is reserved for shell mode or an
+ * explicit `COPILOT_TERMINAL_BACKEND=node-pty` selection.
  */
-export const DEFAULT_TERMINAL_BACKEND: TerminalBackendKind = 'ui-server';
+export const DEFAULT_TERMINAL_BACKEND: TerminalBackendKind = 'sdk';
 
 const TERMINAL_BACKEND_ALIASES: Record<string, TerminalBackendKind> = {
   'node-pty': 'node-pty',
@@ -28,10 +28,10 @@ const TERMINAL_BACKEND_ALIASES: Record<string, TerminalBackendKind> = {
  * Parse a user/config/env value into a supported terminal backend kind.
  *
  * Values:
- * - `node-pty`: legacy render/control path; default and permanent fallback.
+ * - `node-pty`: legacy render/control path and shell backend.
  * - `ui-server`: Variant-1 SDK control plane where node-pty hosts the real TUI
  *   via `--ui-server`; T008 handles the capability probe and auto-fallback.
- * - `sdk`: existing headless SDK backend retained for compatibility.
+ * - `sdk`: one spawned headless CLI host per office; the default.
  *
  * The parser trims, lowercases, accepts known aliases, and never throws. Empty
  * or unknown input falls back to `DEFAULT_TERMINAL_BACKEND`.

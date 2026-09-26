@@ -6,6 +6,10 @@ import {
 } from '../../../src/config/terminalBackend';
 
 describe('config/terminalBackend', () => {
+  it('defaults to the SDK backend', () => {
+    expect(DEFAULT_TERMINAL_BACKEND).toBe('sdk');
+  });
+
   it.each([undefined, '', '   ', 'unknown', 'websocket'])(
     'falls back to default for %s',
     (value) => {
