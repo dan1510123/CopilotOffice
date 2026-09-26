@@ -19,6 +19,7 @@ import {
   type TerminalCacheFactoryContext,
   type CreatedTerminal,
 } from './TerminalInstanceCache';
+import { CopilotConversationView } from './CopilotConversationView';
 
 /**
  * Spec 021 Phase 5b: high-volume trace of the serious-mode xterm cache lifecycle
@@ -65,6 +66,7 @@ export class SeriousTerminalController {
   private readonly statusEl: HTMLDivElement;
   private readonly terminalOuterEl: HTMLDivElement;
   private readonly terminalDivEl: HTMLDivElement;
+  private readonly conversationView: CopilotConversationView;
   private readonly spriteCardEl: HTMLDivElement;
   private readonly spriteCanvasEl: HTMLCanvasElement;
   private readonly spriteNameEl: HTMLSpanElement;
@@ -98,6 +100,7 @@ export class SeriousTerminalController {
   private openedAt = 0;
   private sessionId: string | null = null;
   private activeOptions: SeriousTerminalOpenOptions | null = null;
+  private customRenderedMode = false;
   /** Spec 020: single-flight latch so a rapid double-confirm can't launch overlapping switches (FR-010). */
   private restoreInFlight = false;
   private isFullWidth = false;
@@ -189,6 +192,7 @@ export class SeriousTerminalController {
     this.terminalDivEl = document.createElement('div');
     this.terminalDivEl.style.cssText = 'width: 100%; height: 100%;';
     this.terminalOuterEl.appendChild(this.terminalDivEl);
+    this.conversationView = new CopilotConversationView(this.terminalOuterEl);
     // Any click in the terminal area must (re-)assert xterm keyboard focus.
     // mousedown alone loses the race when the browser settles focus after the
     // click (e.g. focus was on a sprite-card button/history row), so re-assert
@@ -370,6 +374,9 @@ export class SeriousTerminalController {
       window.copilotBridge.onTeamsStatusChanged?.((status: { agentId: string; online: boolean }) => {
         if (status?.agentId === this.activeAgentId) this.setTeamsButtonState(!!status.online);
       });
+      window.copilotBridge.onCopilotEvent((agentId, event) => {
+        this.conversationView.handleEvent(agentId, event);
+      });
     }
   }
 
@@ -434,6 +441,15 @@ export class SeriousTerminalController {
     this.openedAt = Date.now();
     this.sessionId = null;
     this.container.style.display = 'flex';
+    await this.updateRenderMode(options.launchMode || 'copilot');
+    if (this.customRenderedMode) {
+      this.conversationView.bind(officeId, agentId, options.name);
+      this.conversationView.show();
+      this.terminalDivEl.style.display = 'none';
+    } else {
+      this.conversationView.hide();
+      this.terminalDivEl.style.display = 'block';
+    }
 
     // Acquire (or lazily create) the retained xterm for this office+agent. A warm
     // hit re-shows the already-rendered terminal with NO reset/clear/replay; a miss
@@ -571,12 +587,21 @@ export class SeriousTerminalController {
       perfMark('serious', 'switch:activate-done', perfTarget);
 
       this.setStatus(`Attached · ${this.formatElapsed(this.openedAt)}`);
-      this.focusTerminalHardened();
+      if (this.customRenderedMode) {
+        this.conversationView.focus();
+      } else {
+        this.focusTerminalHardened();
+      }
       this.debouncedRefit(officeId, agentId);
       this.refreshCardFromOverview();
       perfMark('serious', 'switch:first-ready', perfTarget);
     } catch (error) {
       this.terminal.writeln(`\r\nTerminal error: ${(error as Error)?.message || String(error)}`);
+      if (this.customRenderedMode) {
+        this.conversationView.appendSystemNotice(
+          `Session error: ${(error as Error)?.message || String(error)}`,
+        );
+      }
       this.setStatus('Error');
       this.refreshCardFromOverview();
     }
@@ -667,6 +692,7 @@ export class SeriousTerminalController {
 
     this.visible = false;
     this.container.style.display = 'none';
+    this.conversationView.hide();
     this.hideTerminalContextMenu();
     this.activeOfficeId = null;
     this.activeAgentId = null;
@@ -689,6 +715,22 @@ export class SeriousTerminalController {
 
   private setStatus(text: string): void {
     this.statusEl.textContent = text;
+  }
+
+  private async updateRenderMode(launchMode: 'copilot' | 'shell'): Promise<void> {
+    if (launchMode === 'shell') {
+      this.customRenderedMode = false;
+      return;
+    }
+    try {
+      const backend = await window.copilotBridge.getBackendInfo();
+      this.customRenderedMode =
+        backend?.name === 'sdk' ||
+        backend?.name === 'copilot-sdk' ||
+        backend?.name === 'headless-server';
+    } catch {
+      this.customRenderedMode = false;
+    }
   }
 
   private updateSpriteCard(options: SeriousTerminalOpenOptions): void {
