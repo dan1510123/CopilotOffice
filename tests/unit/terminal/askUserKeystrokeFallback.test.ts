@@ -18,6 +18,11 @@ describe('answerTransport — submit-answer backend routing (spec 015)', () => {
     expect(answerTransport(sdk as never)).toBe('sdk');
   });
 
+  it('routes a native-bridge process (has submitAnswer) to its dedicated bridge command', () => {
+    const bridge = { submitPrompt: vi.fn(), submitAnswer: vi.fn() };
+    expect(answerTransport(bridge as never)).toBe('bridge');
+  });
+
   it('degraded node-pty path does NOT resolve a pending user-input for a foreign session', () => {
     // node-pty has no SDK resolver; resolving an unrelated session is a no-op and must
     // not consume the SDK session's pending interaction.

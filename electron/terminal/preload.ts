@@ -210,8 +210,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-user-message', handler);
     return () => ipcRenderer.removeListener('copilot-user-message', handler);
   },
-  onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => {
-    const handler = (_event: unknown, agentId: string, meta: { title: string }) => callback(agentId, meta);
+  onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => callback(agentId, meta, officeId);
     ipcRenderer.on('session-meta-updated', handler);
     return () => ipcRenderer.removeListener('session-meta-updated', handler);
   },
@@ -554,7 +554,7 @@ declare global {
       onCopilotTurnEnd: (callback: (agentId: string) => void) => () => void;
       onCopilotTurnStart: (callback: (agentId: string) => void) => () => void;
       onCopilotUserMessage: (callback: (agentId: string) => void) => () => void;
-      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => () => void;
+      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => void) => () => void;
       removeTerminalListeners: () => void;
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;

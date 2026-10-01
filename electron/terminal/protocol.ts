@@ -16,6 +16,28 @@ export interface MsgStart {
   rows?: number;
   preseededPrompt?: string;
   launchMode?: 'copilot' | 'shell';
+  /**
+   * Main-process start (e.g. the Teams ensure-session-online seam). Starts or
+   * reuses the agent's session WITHOUT claiming a renderer viewer.
+   */
+  background?: boolean;
+  /**
+   * When > 0, the response waits (bounded) for the agent's ready signal — for
+   * the native bridge, its authenticated bridge connection — and reports an
+   * explicit error if it does not arrive in time.
+   */
+  readyTimeoutMs?: number;
+}
+
+/** Response payload of `start` (carried in `SrvResponse.result`). */
+export interface StartResult {
+  success: boolean;
+  pid?: number;
+  sessionId?: string;
+  reused?: boolean;
+  /** Present when `readyTimeoutMs` was requested: whether the agent became ready. */
+  ready?: boolean;
+  error?: string;
 }
 
 export interface MsgWrite {
@@ -438,7 +460,10 @@ export interface BackendSelectionInfo {
   name: string;
   /** The backend that was requested via COPILOT_TERMINAL_BACKEND. */
   requested: string;
-  /** True when a non-default backend was requested but we fell back to node-pty. */
+  /**
+   * True when the requested backend could not load and another one was used
+   * instead (native-bridge → sdk, ui-server → node-pty).
+   */
   fellBack: boolean;
   /** Human-readable reason for the fallback, when one occurred. */
   reason?: string;
@@ -637,7 +662,15 @@ export interface SrvBackendSessionFallback {
 export interface SrvSessionMetaUpdated {
   type: 'session-meta-updated';
   agentId: string;
-  meta: { title: string };
+  /**
+   * `sessionId` is present when the agent's current session itself changed
+   * without a restart (native bridge `/clear` or session replacement): renderer
+   * surfaces rebind their terminal generation token to it so the live native
+   * TUI output keeps rendering.
+   */
+  meta: { title: string; sessionId?: string };
+  /** Owning office, when known. */
+  officeId?: string;
 }
 
 export interface SrvResponse {

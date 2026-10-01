@@ -367,7 +367,17 @@ export class SeriousTerminalController {
         entry.terminal.writeln(`\r\n[terminal exited with code ${exitCode}]`);
         if (this.visible && this.activeAgentId === agentId) this.setStatus('Exited');
       });
-      window.copilotBridge.onSessionMetaUpdated((agentId) => {
+      window.copilotBridge.onSessionMetaUpdated((agentId, meta, officeId?) => {
+        // Native bridge /clear keeps the same live PTY on a NEW session: rebind
+        // the cached terminal's generation token so its output keeps rendering.
+        if (meta?.sessionId) {
+          const targetOfficeId = officeId ?? this.activeOfficeId;
+          if (targetOfficeId) this.terminalCache?.setSessionId(targetOfficeId, agentId, meta.sessionId);
+          if (this.activeAgentId === agentId && targetOfficeId === this.activeOfficeId) {
+            this.sessionId = meta.sessionId;
+            this.updateSessionIdDisplay();
+          }
+        }
         if (!this.visible || !this.activeOfficeId || this.activeAgentId !== agentId) return;
         void this.updateSessionTitle(this.activeOfficeId, agentId);
       });

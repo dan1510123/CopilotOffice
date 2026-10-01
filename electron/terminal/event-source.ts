@@ -88,6 +88,59 @@ export class SdkEventSource implements CopilotEventSource {
   }
 }
 
+/** Minimal broker surface the bridge event source needs (see native-bridge-broker.ts). */
+export interface BridgeEventSubscriber {
+  subscribe(
+    terminalKey: string,
+    listener: (event: unknown, connection: { sessionId: string }) => void,
+  ): () => void;
+}
+
+/**
+ * Event source for a native TUI driven through the SDK extension bridge.
+ *
+ * Events arrive from the extension's `session.on(...)` over the broker and are
+ * normalized with {@link mapSdkEventToCopilotEvent}, so the server's watcher
+ * callback (fleet-critical forwarding, Teams mirroring, ask_user/plan relays)
+ * sees exactly the same `CopilotEvent` contract as the other backends. The
+ * subscription is keyed by the TUI's terminal key rather than a session id, so
+ * it keeps flowing when `/clear` replaces the session; `getSessionId()` tracks
+ * the session of the latest delivered event.
+ */
+export class BrokerEventSource implements CopilotEventSource {
+  private unsubscribe: (() => void) | null = null;
+
+  constructor(
+    private sessionId: string,
+    private readonly terminalKey: string,
+    private readonly broker: BridgeEventSubscriber,
+  ) {}
+
+  start(onEvent: EventCallback): void {
+    this.stop();
+    try {
+      this.unsubscribe = this.broker.subscribe(this.terminalKey, (evt, connection) => {
+        if (connection?.sessionId) this.sessionId = connection.sessionId;
+        onEvent(mapSdkEventToCopilotEvent(evt), false);
+      });
+    } catch (error) {
+      // The broker only refuses subscriptions once it is closed (server shutdown).
+      console.warn(`[BrokerEventSource] Cannot subscribe to ${this.terminalKey}: ${String((error as Error)?.message ?? error)}`);
+    }
+  }
+
+  stop(): void {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+}
+
 class FileWatcherEventSource implements CopilotEventSource {
   private readonly watcher: EventsWatcher;
 

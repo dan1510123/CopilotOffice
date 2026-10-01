@@ -2,6 +2,8 @@ import * as net from 'net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   NativeBridgeBroker,
+  isNativeBridgeEnvName,
+  withoutNativeBridgeEnv,
   type NativeBridgeCredentials,
 } from '../../../electron/terminal/native-bridge-broker';
 
@@ -15,6 +17,7 @@ interface ServerRequest {
 class BridgeTestClient {
   readonly socket: net.Socket;
   readonly requests: ServerRequest[] = [];
+  readonly frames: Array<{ type?: string }> = [];
   private buffer = Buffer.alloc(0);
   private registeredResolve!: () => void;
   private closedResolve!: () => void;
@@ -26,7 +29,12 @@ class BridgeTestClient {
   });
   onRequest?: (request: ServerRequest) => void;
 
-  constructor(credentials: NativeBridgeCredentials, sessionId: string, token = credentials.token) {
+  constructor(
+    credentials: NativeBridgeCredentials,
+    sessionId: string,
+    token = credentials.token,
+    parentPid?: number,
+  ) {
     this.socket = net.createConnection(credentials.endpoint);
     this.socket.on('connect', () => {
       this.send({
@@ -34,6 +42,7 @@ class BridgeTestClient {
         terminalKey: credentials.terminalKey,
         token,
         sessionId,
+        ...(parentPid !== undefined ? { parentPid } : {}),
       });
     });
     this.socket.on('data', (chunk: Buffer) => this.handleData(chunk));
@@ -61,6 +70,7 @@ class BridgeTestClient {
       const line = this.buffer.subarray(0, newline).toString('utf8');
       this.buffer = this.buffer.subarray(newline + 1);
       const message = JSON.parse(line) as { type?: string };
+      this.frames.push(message);
       if (message.type === 'registered') {
         this.registeredResolve();
       } else if (message.type === 'request') {
@@ -85,8 +95,9 @@ function createClient(
   credentials: NativeBridgeCredentials,
   sessionId: string,
   token?: string,
+  parentPid?: number,
 ): BridgeTestClient {
-  const client = new BridgeTestClient(credentials, sessionId, token);
+  const client = new BridgeTestClient(credentials, sessionId, token, parentPid);
   clients.push(client);
   return client;
 }
@@ -214,5 +225,67 @@ describe('NativeBridgeBroker', () => {
 
     await broker.close();
     expect(() => broker.allocateCredentials('another')).toThrow('closed');
+  });
+
+  it('only accepts registrations from the bound native TUI process', async () => {
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:agent-a');
+    broker.bindProcess(credentials.terminalKey, 4242);
+
+    const nested = createClient(credentials, 'session-nested', undefined, 4243);
+    await nested.closed;
+    expect(nested.frames).toEqual([{ type: 'registration-error', error: 'authentication failed' }]);
+    const missingPid = createClient(credentials, 'session-missing');
+    await missingPid.closed;
+    expect(missingPid.frames).toEqual([{ type: 'registration-error', error: 'authentication failed' }]);
+
+    const tui = createClient(credentials, 'session-a', undefined, 4242);
+    await tui.registered;
+    expect((await broker.waitForConnection(credentials.terminalKey)).sessionId).toBe('session-a');
+    expect(() => broker.bindProcess('unknown-terminal', 1)).toThrow('not allocated');
+    expect(() => broker.bindProcess(credentials.terminalKey, 0)).toThrow('Invalid native bridge process id');
+  });
+
+  it('tells a superseded registration to stand down before closing it', async () => {
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:agent-a');
+    const stale = createClient(credentials, 'session-old');
+    await stale.registered;
+
+    const current = createClient(credentials, 'session-new');
+    await current.registered;
+    await stale.closed;
+
+    expect(stale.frames.map((frame) => frame.type)).toEqual(['registered', 'replaced']);
+    expect(current.frames.map((frame) => frame.type)).toEqual(['registered']);
+  });
+
+  it('ignores an unregister carrying a stale token', async () => {
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:agent-a');
+    const client = createClient(credentials, 'session-a');
+    client.onRequest = (request) => client.respond(request, 'still-here');
+    await client.registered;
+
+    broker.unregister(credentials.terminalKey, 'not-the-current-token');
+    await expect(broker.request(credentials.terminalKey, 'send')).resolves.toBe('still-here');
+
+    broker.unregister(credentials.terminalKey, credentials.token);
+    await client.closed;
+    await expect(broker.request(credentials.terminalKey, 'send')).rejects.toThrow('not connected');
+  });
+});
+
+describe('native bridge env helpers', () => {
+  it('detects and strips bridge credentials case-insensitively', () => {
+    expect(isNativeBridgeEnvName('COPILOT_OFFICE_BRIDGE_NONCE')).toBe(true);
+    expect(isNativeBridgeEnvName('copilot_office_bridge_endpoint')).toBe(true);
+    expect(isNativeBridgeEnvName('COPILOT_OFFICE_AGENT')).toBe(false);
+    expect(withoutNativeBridgeEnv({
+      COPILOT_OFFICE_BRIDGE_TERMINAL_KEY: 'k',
+      Copilot_Office_Bridge_Nonce: 't',
+      COPILOT_OFFICE_AGENT: 'generalist',
+      UNSET: undefined,
+    })).toEqual({ COPILOT_OFFICE_AGENT: 'generalist' });
   });
 });

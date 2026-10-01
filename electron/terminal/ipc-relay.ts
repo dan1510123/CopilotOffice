@@ -7,7 +7,7 @@ import { fork, ChildProcess, execSync } from 'child_process';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo, SessionHistoryEntry, ControlCommandName, ControlCommandResult } from './protocol';
+import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo, SessionHistoryEntry, ControlCommandName, ControlCommandResult, StartResult } from './protocol';
 import { reapRegisteredPtys } from './pty-registry';
 
 export class TerminalRelay {
@@ -17,7 +17,7 @@ export class TerminalRelay {
    * Emits: 'copilot-event' (agentId, event), 'copilot-turn-start' (agentId),
    * 'copilot-turn-end' (agentId), 'copilot-tool-start' (agentId, toolName, toolId, status),
    * 'copilot-ask-user' (agentId, toolId, requestId, question, options, freeform),
-   * 'session-meta-updated' (agentId, meta), 'terminal-exit' (agentId, exitCode).
+   * 'session-meta-updated' (agentId, meta, officeId?), 'terminal-exit' (agentId, exitCode).
    * Accepts (via mainSubmitAnswer): 'submit-answer' (officeId, agentId, requestId?, answer, wasFreeform).
    */
   public readonly mainEvents = new EventEmitter();
@@ -41,6 +41,16 @@ export class TerminalRelay {
    * the extra wait only applies to a slow-but-succeeding bring-up.
    */
   private static readonly UI_SERVER_START_TIMEOUT_MS = 30_000;
+  /** Bridge prompt/interaction requests may wait for an extension reconnect. */
+  private static readonly BRIDGE_COMMAND_TIMEOUT_MS = 30_000;
+  /** Compaction can invoke the model and legitimately exceed normal IPC budgets. */
+  private static readonly CONTROL_COMMAND_TIMEOUT_MS = 130_000;
+  /**
+   * Bounded wait for a background (Teams) start to become ready. Must stay below
+   * {@link UI_SERVER_START_TIMEOUT_MS} so the server's explicit readiness error
+   * (not a generic relay timeout) reaches the caller.
+   */
+  private static readonly ENSURE_ONLINE_READY_TIMEOUT_MS = 20_000;
   /**
    * Request types whose handler may await ui-server host startup:
    * - `start`  → startTerminalForAgent → sessionBackend.start (spins up the host)
@@ -59,6 +69,16 @@ export class TerminalRelay {
 
   /** Resolve the request-timeout budget for a given message type. */
   private timeoutFor(type: MainToServer['type']): number {
+    if (type === 'run-control-command') {
+      return TerminalRelay.CONTROL_COMMAND_TIMEOUT_MS;
+    }
+    if (
+      type === 'submit-prompt'
+      || type === 'submit-answer'
+      || type === 'submit-plan-decision'
+    ) {
+      return TerminalRelay.BRIDGE_COMMAND_TIMEOUT_MS;
+    }
     return TerminalRelay.SLOW_START_TYPES.has(type)
       ? TerminalRelay.UI_SERVER_START_TIMEOUT_MS
       : TerminalRelay.REQUEST_TIMEOUT_MS;
@@ -260,6 +280,30 @@ export class TerminalRelay {
   }
 
   /**
+   * Ensure an agent's Copilot session is running and ready for programmatic use
+   * without claiming a renderer viewer (Teams register). Reuses a live, ready
+   * session; otherwise resumes the persisted session in `workingDir` and waits
+   * (bounded) for readiness — for the native bridge, its authenticated bridge
+   * connection. Resolves with an explicit error when that does not happen.
+   */
+  mainEnsureSessionOnline(
+    officeId: string,
+    agentId: string,
+    workingDir?: string,
+    readyTimeoutMs: number = TerminalRelay.ENSURE_ONLINE_READY_TIMEOUT_MS,
+  ): Promise<StartResult> {
+    return this.request({
+      type: 'start',
+      requestId: this.id(),
+      officeId,
+      agentId,
+      workingDir,
+      background: true,
+      readyTimeoutMs,
+    }) as Promise<StartResult>;
+  }
+
+  /**
    * Reset (close + re-mint) an agent's session — the main-process equivalent of the
    * renderer's `terminal-reset-session` IPC. Used by Teams `/new` and `/clear` so a
    * remote user can start a fresh session for the agent. Resolves with the new GUID.
@@ -410,7 +454,7 @@ export class TerminalRelay {
         this.mainEvents.emit('copilot-plan-complete', msg.agentId, msg.requestId, msg.approved, msg.selectedAction, msg.feedback);
         break;
       case 'session-meta-updated':
-        this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta);
+        this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta, msg.officeId);
         break;
       case 'terminal-exit':
         this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
@@ -452,7 +496,7 @@ export class TerminalRelay {
         win.webContents.send('copilot-user-message', msg.agentId, msg.text);
         break;
       case 'session-meta-updated':
-        win.webContents.send('session-meta-updated', msg.agentId, msg.meta);
+        win.webContents.send('session-meta-updated', msg.agentId, msg.meta, msg.officeId);
         break;
       case 'terminal-preload-status':
         win.webContents.send('terminal-preload-status', msg.agentId, msg.status, msg.officeId);

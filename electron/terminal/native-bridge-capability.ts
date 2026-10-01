@@ -32,6 +32,13 @@ export interface NativeBridgeCapability {
   cliPath: string;
   extensionExportPath: string;
   sdkPackageDir: string;
+  /**
+   * Directory handed to `--extension-sdk-path`. The CLI only accepts an
+   * override folder that directly contains `index.js` and `extension.js` (the
+   * SDK's ESM `dist/` folder) and otherwise silently falls back to its bundled
+   * SDK, so this is resolved from the package's ESM exports and verified.
+   */
+  extensionSdkPath: string;
 }
 
 interface CapabilityDependencies {
@@ -40,6 +47,9 @@ interface CapabilityDependencies {
   platform?: NodeJS.Platform;
   arch?: string;
 }
+
+const CLI_HELP_TIMEOUT_MS = 10_000;
+const EXTENSION_SDK_REQUIRED_FILES = ['index.js', 'extension.js'] as const;
 
 export function interpretNativeBridgeHelp(helpText: string): NativeBridgeHelpCapability {
   const missingFlags: NativeBridgeHelpCapability['missingFlags'] = [];
@@ -65,7 +75,8 @@ export async function resolveNativeBridgeCapability(
     );
   }
 
-  const sdkPackageDir = await findSdkPackageDir(extensionExportPath);
+  const { dir: sdkPackageDir, packageJson } = await findSdkPackage(extensionExportPath);
+  const extensionSdkPath = await resolveExtensionSdkPath(sdkPackageDir, packageJson);
   const platform = dependencies.platform ?? process.platform;
   const arch = dependencies.arch ?? process.arch;
   let cliPath: string;
@@ -97,16 +108,23 @@ export async function resolveNativeBridgeCapability(
     );
   }
 
-  return { cliPath, extensionExportPath, sdkPackageDir };
+  return { cliPath, extensionExportPath, sdkPackageDir, extensionSdkPath };
 }
 
-async function findSdkPackageDir(extensionExportPath: string): Promise<string> {
+interface SdkPackageJson {
+  name?: unknown;
+  exports?: unknown;
+}
+
+async function findSdkPackage(
+  extensionExportPath: string,
+): Promise<{ dir: string; packageJson: SdkPackageJson }> {
   let current = path.dirname(extensionExportPath);
   while (true) {
     const packagePath = path.join(current, 'package.json');
     try {
-      const packageJson = JSON.parse(await fs.readFile(packagePath, 'utf8')) as { name?: unknown };
-      if (packageJson.name === '@github/copilot-sdk') return current;
+      const packageJson = JSON.parse(await fs.readFile(packagePath, 'utf8')) as SdkPackageJson;
+      if (packageJson.name === '@github/copilot-sdk') return { dir: current, packageJson };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw new NativeBridgeCapabilityError(
@@ -127,10 +145,45 @@ async function findSdkPackageDir(extensionExportPath: string): Promise<string> {
   }
 }
 
+function esmExtensionEntry(packageJson: SdkPackageJson): string | null {
+  const exportsField = packageJson.exports;
+  if (!exportsField || typeof exportsField !== 'object') return null;
+  const extensionExport = (exportsField as Record<string, unknown>)['./extension'];
+  if (!extensionExport || typeof extensionExport !== 'object') return null;
+  const importCondition = (extensionExport as Record<string, unknown>).import;
+  if (typeof importCondition === 'string') return importCondition;
+  if (importCondition && typeof importCondition === 'object') {
+    const target = (importCondition as Record<string, unknown>).default;
+    if (typeof target === 'string') return target;
+  }
+  return null;
+}
+
+async function resolveExtensionSdkPath(
+  sdkPackageDir: string,
+  packageJson: SdkPackageJson,
+): Promise<string> {
+  const entry = esmExtensionEntry(packageJson) ?? './dist/extension.js';
+  const directory = path.resolve(sdkPackageDir, path.dirname(entry));
+  for (const file of EXTENSION_SDK_REQUIRED_FILES) {
+    try {
+      await fs.access(path.join(directory, file));
+    } catch (error) {
+      throw new NativeBridgeCapabilityError(
+        'SDK_PACKAGE_INVALID',
+        `Copilot SDK extension folder ${directory} is missing ${file}; the CLI would silently fall back to its bundled SDK`,
+        { cause: error },
+      );
+    }
+  }
+  return directory;
+}
+
 function runCliHelp(cliPath: string): string {
   return execFileSync(cliPath, ['--help'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: CLI_HELP_TIMEOUT_MS,
     windowsHide: true,
   });
 }

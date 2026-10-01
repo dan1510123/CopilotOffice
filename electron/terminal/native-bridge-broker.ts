@@ -12,6 +12,28 @@ export const NATIVE_BRIDGE_ENV = {
   nonce: 'COPILOT_OFFICE_BRIDGE_NONCE',
 } as const;
 
+const NATIVE_BRIDGE_ENV_PREFIX = 'COPILOT_OFFICE_BRIDGE_';
+
+/** True for any bridge credential variable name (case-insensitive, as on Windows). */
+export function isNativeBridgeEnvName(name: string): boolean {
+  return name.toUpperCase().startsWith(NATIVE_BRIDGE_ENV_PREFIX);
+}
+
+/**
+ * Copy an environment without any bridge credentials. Credentials are minted
+ * per TUI and must only ever reach that TUI's child env — never be inherited by
+ * unrelated children (shells, headless hosts, pop-outs) from a parent process.
+ */
+export function withoutNativeBridgeEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (typeof value === 'string' && !isNativeBridgeEnvName(name)) result[name] = value;
+  }
+  return result;
+}
+
 export const DEFAULT_BRIDGE_MAX_MESSAGE_BYTES = 256 * 1024;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
@@ -42,6 +64,13 @@ export interface NativeBridgeBrokerOptions {
 interface CredentialRecord {
   token: string;
   lastSessionId?: string;
+  /**
+   * PID of the native TUI process these credentials were minted for. When set,
+   * only an extension whose parent process is that TUI may register, so a
+   * nested `copilot` launched from the agent's own shell (which inherits the
+   * TUI's environment, including these credentials) cannot hijack the bridge.
+   */
+  expectedParentPid?: number;
 }
 
 interface PendingRequest {
@@ -75,6 +104,7 @@ type ClientMessage =
       terminalKey: string;
       token: string;
       sessionId: string;
+      parentPid?: number;
     }
   | {
       type: 'response';
@@ -202,6 +232,24 @@ export class NativeBridgeBroker {
     };
   }
 
+  /**
+   * Bind credentials to the native TUI process they were minted for. Must be
+   * called synchronously after spawning that process (before its extension can
+   * connect); registrations whose `parentPid` differs are then rejected.
+   */
+  bindProcess(terminalKey: string, pid: number): void {
+    this.assertOpen();
+    validateIdentifier(terminalKey, 'terminal key');
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error(`Invalid native bridge process id for ${terminalKey}`);
+    }
+    const credential = this.credentials.get(terminalKey);
+    if (!credential) {
+      throw new Error(`Native bridge credentials are not allocated: ${terminalKey}`);
+    }
+    credential.expectedParentPid = pid;
+  }
+
   waitForConnection(terminalKey: string, timeoutMs = this.requestTimeoutMs): Promise<NativeBridgeConnection> {
     this.assertOpen();
     validateIdentifier(terminalKey, 'terminal key');
@@ -288,8 +336,17 @@ export class NativeBridgeBroker {
     return () => this.sessionChangeListeners.delete(listener);
   }
 
-  unregister(terminalKey: string): void {
+  /**
+   * Revoke a terminal's credentials and drop its connection. When `token` is
+   * supplied, the call is a no-op unless it still matches the live credentials,
+   * so a late cleanup from an earlier launch can never revoke a newer one.
+   */
+  unregister(terminalKey: string, token?: string): void {
     validateIdentifier(terminalKey, 'terminal key');
+    if (token !== undefined) {
+      const credential = this.credentials.get(terminalKey);
+      if (!credential || !secureTokenEquals(credential.token, token)) return;
+    }
     this.credentials.delete(terminalKey);
     this.destroyRegistration(terminalKey, new Error(`Native bridge unregistered: ${terminalKey}`));
     this.eventListeners.delete(terminalKey);
@@ -418,7 +475,11 @@ export class NativeBridgeBroker {
     const sessionId = validateIdentifier(message.sessionId, 'session ID');
     const token = validateIdentifier(message.token, 'token');
     const credential = this.credentials.get(terminalKey);
-    if (!credential || !secureTokenEquals(credential.token, token)) {
+    if (
+      !credential
+      || !secureTokenEquals(credential.token, token)
+      || (credential.expectedParentPid !== undefined && message.parentPid !== credential.expectedParentPid)
+    ) {
       socket.write(`${JSON.stringify({ type: 'registration-error', error: 'authentication failed' })}\n`);
       socket.end();
       return;
@@ -438,7 +499,11 @@ export class NativeBridgeBroker {
     this.registrations.set(terminalKey, registration);
     if (previous) {
       this.rejectPending(previous, new Error('Native bridge connection replaced'));
-      previous.socket.destroy();
+      // Tell the superseded extension instance to stand down instead of
+      // reconnecting and re-registering its stale session over the new one.
+      const previousSocket = previous.socket;
+      previousSocket.end(`${JSON.stringify({ type: 'replaced' })}\n`);
+      setTimeout(() => previousSocket.destroy(), 1_000).unref();
     }
 
     socket.write(`${JSON.stringify({

@@ -10,25 +10,36 @@ import * as net from "node:net";
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const INITIAL_RECONNECT_DELAY_MS = 100;
 const MAX_RECONNECT_DELAY_MS = 5000;
+const MAX_UNREGISTERED_CONNECT_ATTEMPTS = 8;
 
-const endpoint = requireEnv("COPILOT_OFFICE_BRIDGE_ENDPOINT");
-const terminalKey = requireEnv("COPILOT_OFFICE_BRIDGE_TERMINAL_KEY");
-const token = requireEnv("COPILOT_OFFICE_BRIDGE_NONCE");
+const endpoint = process.env.COPILOT_OFFICE_BRIDGE_ENDPOINT;
+const terminalKey = process.env.COPILOT_OFFICE_BRIDGE_TERMINAL_KEY;
+const token = process.env.COPILOT_OFFICE_BRIDGE_NONCE;
+const sessionId = process.env.SESSION_ID;
+
+// Never hand the bridge credentials to anything this process might start.
+for (const name of Object.keys(process.env)) {
+  if (name.toUpperCase().startsWith("COPILOT_OFFICE_BRIDGE_")) delete process.env[name];
+}
+
+// This user-level extension loads in every experimental Copilot session. Only
+// TUIs launched by Copilot Office carry bridge credentials; anywhere else, exit
+// before joining so unrelated sessions are left untouched.
+if (!endpoint || !terminalKey || !token || !sessionId) {
+  process.exit(0);
+}
 
 let socket;
 let registered = false;
+let everRegistered = false;
+let failedConnectAttempts = 0;
 let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
 let reconnectTimer;
 let terminated = false;
 let unsubscribeEvents;
+let sessionPromise;
 let pendingUserInput;
 let pendingPlanDecision;
-
-function requireEnv(name) {
-  const value = process.env[name];
-  if (!value) throw new Error("Missing required environment variable: " + name);
-  return value;
-}
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -46,6 +57,12 @@ function sendFrame(value, target = socket) {
 
 function scheduleReconnect() {
   if (terminated || reconnectTimer) return;
+  if (!everRegistered && ++failedConnectAttempts >= MAX_UNREGISTERED_CONNECT_ATTEMPTS) {
+    // The broker that minted these credentials is gone (e.g. stale inherited
+    // environment); never join a session we cannot be driven from.
+    void shutdown(0);
+    return;
+  }
   const delay = reconnectDelayMs;
   reconnectDelayMs = Math.min(MAX_RECONNECT_DELAY_MS, reconnectDelayMs * 2);
   reconnectTimer = setTimeout(() => {
@@ -68,7 +85,8 @@ function connect() {
       type: "register",
       terminalKey,
       token,
-      sessionId: session.sessionId,
+      sessionId,
+      parentPid: process.ppid,
     }, candidate);
   });
   candidate.on("data", (chunk) => {
@@ -117,11 +135,21 @@ async function handleBrokerMessage(candidate, message) {
       return;
     }
     registered = true;
+    everRegistered = true;
+    failedConnectAttempts = 0;
     reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
+    if (!sessionPromise) {
+      // Join only once the broker has authenticated this TUI, so a rejected or
+      // orphaned extension never attaches handlers to the session.
+      sessionPromise = joinBridgeSession();
+      sessionPromise.catch(() => void shutdown(1));
+    }
     return;
   }
-  if (message.type === "registration-error") {
-    candidate.destroy();
+  if (message.type === "registration-error" || message.type === "replaced") {
+    // Not this TUI's credentials, or a newer extension instance owns the
+    // bridge: stand down for good instead of reconnecting.
+    void shutdown(0);
     return;
   }
   if (message.type !== "request" || typeof message.id !== "string") {
@@ -143,6 +171,7 @@ async function handleBrokerMessage(candidate, message) {
 }
 
 async function executeCommand(command, params) {
+  const session = await requireSession();
   switch (command) {
     case "send": {
       const prompt = params?.prompt;
@@ -152,7 +181,7 @@ async function executeCommand(command, params) {
       return session.send({ prompt, mode: "enqueue" });
     }
     case "run-control":
-      return runControl(params);
+      return runControl(session, params);
     case "submit-answer": {
       if (!pendingUserInput) throw new Error("No pending user-input request");
       const answer = params?.answer;
@@ -183,7 +212,7 @@ async function executeCommand(command, params) {
   }
 }
 
-async function runControl(params) {
+async function runControl(session, params) {
   switch (params?.command) {
     case "compact": {
       if (!session.rpc?.history?.compact) {
@@ -255,35 +284,43 @@ async function runControl(params) {
   }
 }
 
-const session = await joinSession({
-  onUserInputRequest(request) {
-    if (pendingUserInput) {
-      throw new Error("A user-input request is already pending");
-    }
-    return new Promise((resolve) => {
-      pendingUserInput = { request, resolve };
-    });
-  },
-  onExitPlanModeRequest(request) {
-    if (pendingPlanDecision) {
-      throw new Error("A plan decision is already pending");
-    }
-    return new Promise((resolve) => {
-      pendingPlanDecision = { request, resolve };
-    });
-  },
-});
+function requireSession() {
+  if (!sessionPromise) throw new Error("Bridge session is not joined");
+  return sessionPromise;
+}
 
-unsubscribeEvents = session.on((event) => {
-  if (!registered) return;
-  try {
-    sendFrame({ type: "event", event });
-  } catch {
-    socket?.destroy();
-  }
-});
+async function joinBridgeSession() {
+  const session = await joinSession({
+    onUserInputRequest(request) {
+      if (pendingUserInput) {
+        throw new Error("A user-input request is already pending");
+      }
+      return new Promise((resolve) => {
+        pendingUserInput = { request, resolve };
+      });
+    },
+    onExitPlanModeRequest(request) {
+      if (pendingPlanDecision) {
+        throw new Error("A plan decision is already pending");
+      }
+      return new Promise((resolve) => {
+        pendingPlanDecision = { request, resolve };
+      });
+    },
+  });
+  if (terminated) return session;
+  unsubscribeEvents = session.on((event) => {
+    if (!registered) return;
+    try {
+      sendFrame({ type: "event", event });
+    } catch {
+      socket?.destroy();
+    }
+  });
+  return session;
+}
 
-async function shutdown() {
+async function shutdown(exitCode = 0) {
   if (terminated) return;
   terminated = true;
   if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -303,10 +340,11 @@ async function shutdown() {
   registered = false;
   activeSocket?.end();
   activeSocket?.destroy();
+  process.exit(exitCode);
 }
 
-process.once("SIGTERM", () => void shutdown());
-process.once("SIGINT", () => void shutdown());
+process.once("SIGTERM", () => void shutdown(0));
+process.once("SIGINT", () => void shutdown(0));
 connect();
 `;
 

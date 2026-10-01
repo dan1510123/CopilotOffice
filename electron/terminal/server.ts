@@ -9,9 +9,14 @@ import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay, buildPlanRelay } from './events-watcher';
-import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult } from './protocol';
+import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
 import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
+import type { TerminalSessionChange } from './terminal-backend';
+import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEND_NAME } from './native-bridge-backend';
+import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
+import { applyBridgeSessionChange } from './bridge-session-change';
+import { ReadyWaiters } from './ready-waiters';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -26,7 +31,7 @@ import {
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 import { resolveAccessibleWorkingDir } from './working-dir';
-import { parseTerminalBackend } from '../../src/config/terminalBackend';
+import { didTerminalBackendFallBack, parseTerminalBackend } from '../../src/config/terminalBackend';
 
 // Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
 // Copilot runtime inheriting this process's env, so setting COPILOT_AUTO_UPDATE
@@ -34,6 +39,13 @@ import { parseTerminalBackend } from '../../src/config/terminalBackend';
 // build its own env object. Belt-and-suspenders with the per-spawn --no-auto-update
 // flag and per-backend env; keeps the self-updating SEA on the npm-locked version.
 process.env.COPILOT_AUTO_UPDATE = 'false';
+
+// Native-bridge credentials are minted per TUI and handed ONLY to that TUI's
+// child env. Drop any inherited from a parent (e.g. this app started from inside
+// an agent's own TUI) so they can never leak into our other children.
+for (const name of Object.keys(process.env)) {
+  if (isNativeBridgeEnvName(name)) delete process.env[name];
+}
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -100,6 +112,9 @@ const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 const officeForegroundCk: Map<string, string> = new Map();
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
+// Shared authenticated broker for the native-bridge backend (one per server).
+// Every native TUI gets its own credentials on it; closed on shutdown.
+let nativeBridgeBroker: NativeBridgeBroker | null = null;
 // Lazily-created node-pty backend used only as a start-time fallback when the
 // compatibility ui-server backend fails to bring an office runtime online:
 // selection-time probe success is necessary but not sufficient (the resolved
@@ -130,6 +145,20 @@ const eventSourceFactory = new FileWatcherEventSourceFactory();
 
 // Track per-agent ready state so it can be queried by the renderer
 const agentReadyState: Map<string, boolean> = new Map();
+
+// Callers awaiting an agent's ready signal (bounded) — e.g. the Teams
+// ensure-session-online seam. Settled by signalReady, or failed when the
+// session exits first. Keyed by terminal key.
+const agentReadyWaiters = new ReadyWaiters((key) => agentReadyState.get(key) === true);
+
+function waitForAgentReady(key: string, timeoutMs: number): Promise<void> {
+  return agentReadyWaiters.wait(key, timeoutMs, (waitedKey, waitedMs) =>
+    `Copilot session for ${waitedKey} did not become ready within ${Math.round(waitedMs / 1000)}s` +
+    (terminalBackend?.name === NATIVE_BRIDGE_BACKEND_NAME
+      ? ' — its bridge extension has not connected (the TUI may be waiting for input such as folder trust)'
+      : ''),
+  );
+}
 
 // Track per-agent turn activity (between turn_start and turn_end)
 const agentInTurn: Map<string, boolean> = new Map();
@@ -382,6 +411,64 @@ function getTerminalKey(officeId: string, agentId: string): string | null {
 }
 
 /**
+ * Native bridge: a registration reported the session the TUI is actually on.
+ * It is authoritative — after `/clear` (or a session replacement inside the
+ * TUI) the same PTY keeps running on a NEW session. Update the live process and
+ * the persisted current session (archiving the prior one once), reset per-turn
+ * tracking, and notify the session-metadata path so renderers rebind their
+ * terminal generation token instead of dropping the live native output.
+ */
+function applyNativeBridgeSessionChange(
+  officeId: string,
+  agentId: string,
+  terminalKey: string,
+  change: TerminalSessionChange,
+): void {
+  const entry = ptyProcesses.get(terminalKey);
+  if (!entry || !change.sessionId) return;
+  const ck = compositeKey(officeId, agentId);
+  const previousLiveSessionId = entry.sessionId;
+  if (previousLiveSessionId !== change.sessionId) {
+    entry.sessionId = change.sessionId;
+    // Interactions pending on the replaced session can never be answered now.
+    clearPendingUserInputForSession(previousLiveSessionId);
+    clearPendingPlanApprovalForSession(previousLiveSessionId);
+  }
+
+  // The owning office plus any office this PTY was transferred into.
+  const offices = [officeId];
+  for (const [aliasCk, key] of agentToTerminal) {
+    if (key !== terminalKey || aliasCk === ck || !aliasCk.endsWith(`:${agentId}`)) continue;
+    offices.push(aliasCk.slice(0, aliasCk.length - agentId.length - 1));
+  }
+
+  for (const office of offices) {
+    const result = applyBridgeSessionChange(getOfficeSession(office), agentId, change.sessionId);
+    if (!result.changed) continue;
+    const officeCk = compositeKey(office, agentId);
+    if (result.title) hasAutoTitled.add(officeCk);
+    else hasAutoTitled.delete(officeCk);
+    agentInTurn.set(officeCk, false);
+    userMessageSeq.delete(officeCk);
+    lastUserMessageText.delete(officeCk);
+    void saveOfficeSessionFile(office);
+    console.log(
+      `[lifecycle] native bridge session for ${officeCk}: ${result.previousSessionId ?? '(none)'} -> ${result.sessionId}` +
+      `${result.restoredFromHistory ? ' (restored from history)' : ''}`,
+    );
+    if (result.collidesWithAgentId) {
+      console.warn(`[TermServer] ${officeCk} is now on session ${result.sessionId}, which ${result.collidesWithAgentId} in ${office} also claims`);
+    }
+    send({
+      type: 'session-meta-updated',
+      agentId,
+      officeId: office,
+      meta: { title: result.title, sessionId: result.sessionId },
+    });
+  }
+}
+
+/**
  * Inject a full prompt into the interactive Copilot CLI (Ink/React TUI) running
  * under node-pty, and submit it. There is no programmatic submit for a raw PTY,
  * so we simulate a paste + Enter the way a human would:
@@ -503,7 +590,7 @@ const backendOnlineOffices = new Set<string>();
 /** Stores pre-seeded prompts to send once the agent signals ready. */
 const pendingPreseededPrompts = new Map<string, string>();
 
-type StartTerminalResult = { success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string };
+type StartTerminalResult = StartResult;
 
 /**
  * In-flight start coalescing (R-DBL): `startTerminalForAgentImpl` awaits the
@@ -560,7 +647,7 @@ async function startTerminalForAgentImpl(
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
   hostWorkingDir?: string,
-): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
+): Promise<StartTerminalResult> {
   // Spec 008-smoke: force shell mode end-to-end when the e2e harness is driving
   // the app. Avoids depending on a real copilot CLI binary on the test runner
   // while still exercising the full IPC + PTY + xterm pipeline.
@@ -660,6 +747,7 @@ async function startTerminalForAgentImpl(
   try {
     const startOptions = {
       sessionId,
+      terminalKey,
       shell,
       cols: cols ?? 120,
       rows: rows ?? 30,
@@ -749,9 +837,10 @@ async function startTerminalForAgentImpl(
 
     // Persist the PTY root PID so a crashed/ungracefully-killed session can be
     // reaped on the next launch (see electron/terminal/pty-registry.ts). Only
-    // real OS PIDs from node-pty are tracked — the SDK backend hands out
+    // real OS PIDs are tracked — node-pty shells and native-bridge TUIs (the
+    // pinned CLI spawned directly under node-pty). The SDK backends hand out
     // synthetic PIDs (1_000_000+) that must never be force-killed.
-    if (activeBackend.name === 'node-pty') {
+    if (activeBackend.name === 'node-pty' || activeBackend.name === NATIVE_BRIDGE_BACKEND_NAME) {
       registerPty({ pid: proc.pid, agentId, sessionId, startedAt: Date.now() });
     }
 
@@ -775,15 +864,55 @@ async function startTerminalForAgentImpl(
       agentReadyState.set(ck, true);
       console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
       send({ type: 'terminal-preload-status', agentId, status: 'ready', officeId });
+      agentReadyWaiters.settle(ck);
 
-      // Write pre-seeded prompt to PTY once CLI is ready
+      // Deliver the pre-seeded prompt once the CLI is ready. Backends with a
+      // programmatic submit (SDK session.send — for the native bridge, through
+      // the authenticated extension so it renders in the native TUI) never get
+      // raw keystrokes; only the raw PTY backend falls back to a typed line.
       const prompt = pendingPreseededPrompts.get(ck);
       if (prompt) {
         pendingPreseededPrompts.delete(ck);
-        console.log(`[TermServer] Writing pre-seeded prompt for ${ck}`);
-        proc.write(prompt + '\r');
+        if (typeof proc.submitPrompt === 'function') {
+          console.log(`[TermServer] Submitting pre-seeded prompt for ${ck}`);
+          const submitPrompt = proc.submitPrompt.bind(proc);
+          void Promise.resolve()
+            .then(() => submitPrompt(prompt))
+            .catch((error: unknown) => {
+              console.error(`[TermServer] Pre-seeded prompt for ${ck} was not delivered: ${String((error as Error)?.message ?? error)}`);
+              send({ type: 'terminal-preload-status', agentId, status: 'failed', officeId });
+            });
+        } else {
+          console.log(`[TermServer] Writing pre-seeded prompt for ${ck}`);
+          proc.write(prompt + '\r');
+        }
       }
     };
+
+    if (!shellOnlyMode && typeof proc.onSessionChange === 'function') {
+      // Native bridge: the extension's authenticated registration is the ready
+      // signal, and every registration carries the session the TUI is really
+      // on. Apply it BEFORE signalling ready so a pre-seeded prompt and the
+      // persisted mapping already point at the authoritative session (/clear
+      // re-registers on a new session through this same path).
+      const unsubscribeSessionChanges = proc.onSessionChange((change) => {
+        if (ptyProcesses.get(terminalKey)?.process !== proc) return;
+        applyNativeBridgeSessionChange(officeId, agentId, terminalKey, change);
+        if (!hasSignalledReady) {
+          if (!backendOnlineOffices.has(officeId)) {
+            backendOnlineOffices.add(officeId);
+            send({ type: 'backend-online', officeId, backend: activeBackend.name });
+          }
+          signalReady();
+        }
+      });
+      proc.onExit(() => unsubscribeSessionChanges());
+      setTimeout(() => {
+        if (!hasSignalledReady && ptyProcesses.get(terminalKey)?.process === proc) {
+          console.warn(`[lifecycle] native bridge for ${ck} has not connected after 60s — programmatic prompts will fail until it does (the TUI may be waiting for input such as folder trust)`);
+        }
+      }, 60_000).unref?.();
+    }
 
     if (!shellOnlyMode) {
       // EventsWatcher — defer start so the preloading signal has time to reach
@@ -1033,6 +1162,12 @@ async function startTerminalForAgentImpl(
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
       unregisterPty(proc.pid);
+      // Fail any caller still waiting for this session to become ready — unless
+      // a newer process already took over this terminal key (kill-then-relaunch).
+      const currentEntry = ptyProcesses.get(terminalKey);
+      if (!currentEntry || currentEntry.process === proc) {
+        agentReadyWaiters.settle(ck, new Error(`Copilot session for ${ck} exited before it was ready (code ${exitCode})`));
+      }
       // Identity guard: only tear down the shared per-agent (ck / terminalKey) state
       // if THIS process is still the registered one. A kill-then-relaunch under the
       // same composite key (e.g. spec 020 restore-session) can start a new PTY before
@@ -1096,8 +1231,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
   switch (msg.type) {
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
-      activeAgentViewers.add(ck);
-      const result = await startTerminalForAgent(
+      // A main-process (background) start — the Teams ensure-online seam — must
+      // never claim a renderer viewer. Renderer starts register through the
+      // dual-key helper (R-002).
+      if (!msg.background) addAgentViewer(ck, viewerMaps);
+      let result: StartTerminalResult = await startTerminalForAgent(
         msg.officeId,
         msg.agentId,
         msg.workingDir,
@@ -1107,6 +1245,15 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         msg.launchMode,
         msg.hostWorkingDir,
       );
+      if (result.success && msg.readyTimeoutMs && msg.readyTimeoutMs > 0) {
+        const readyKey = getTerminalKey(msg.officeId, msg.agentId) ?? ck;
+        try {
+          await waitForAgentReady(readyKey, msg.readyTimeoutMs);
+          result = { ...result, ready: true };
+        } catch (error) {
+          result = { ...result, success: false, ready: false, error: String((error as Error)?.message ?? error) };
+        }
+      }
       send({ type: 'response', requestId: msg.requestId, result });
       break;
     }
@@ -1142,8 +1289,18 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
         if (typeof backendProc.submitPrompt === 'function') {
-          // SDK backend: atomic programmatic submit (session.send enqueue).
-          backendProc.submitPrompt(msg.prompt, msg.label);
+          // Programmatic submit (SDK session.send enqueue; the native bridge routes
+          // it through the TUI's authenticated extension). Await it so the caller
+          // learns whether the agent actually accepted the prompt.
+          try {
+            await backendProc.submitPrompt(msg.prompt, msg.label);
+          } catch (error) {
+            const ck = compositeKey(msg.officeId, msg.agentId);
+            const message = String((error as Error)?.message ?? error);
+            console.warn(`[TermServer] SUBMIT-PROMPT FAILED for ${ck}: ${message}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+            break;
+          }
         } else {
           // node-pty backend: the real Copilot CLI is an Ink/React TUI. It has no
           // programmatic submit — inject keystrokes. Bracketed paste avoids @ / //
@@ -1211,7 +1368,20 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // main-process Teams consumer even without a renderer viewer.
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
-        if (answerTransport(backendProc) === 'sdk') {
+        const transport = answerTransport(backendProc);
+        if (transport === 'bridge') {
+          // Native bridge: the pending interaction lives in the TUI's extension —
+          // resolve it there over the authenticated broker and report the REAL
+          // outcome (e.g. "No pending user-input request") to the caller.
+          try {
+            await backendProc.submitAnswer!({ answer: msg.answer, wasFreeform: msg.wasFreeform });
+            send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          } catch (error) {
+            const message = String((error as Error)?.message ?? error);
+            console.warn(`[TermServer] submit-answer via bridge failed for ${compositeKey(msg.officeId, msg.agentId)} (answerRequestId="${msg.answerRequestId ?? ''}"): ${message}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          }
+        } else if (transport === 'sdk') {
           // SDK/ui-server backend: resolve the session's single pending interaction.
           // The resolver is correlated by sessionId (the onUserInputRequest callback
           // carries no requestId — see terminal-backend module header); answerRequestId
@@ -1251,7 +1421,22 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // main-process Teams consumer even without a renderer viewer.
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
-        if (answerTransport(backendProc) === 'sdk') {
+        if (typeof backendProc.submitPlanDecision === 'function') {
+          // Native bridge: resolve the extension's blocked plan decision over the
+          // authenticated broker and report the real outcome.
+          try {
+            await backendProc.submitPlanDecision({
+              approved: msg.approved,
+              selectedAction: msg.selectedAction,
+              feedback: msg.feedback,
+            });
+            send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          } catch (error) {
+            const message = String((error as Error)?.message ?? error);
+            console.warn(`[TermServer] submit-plan-decision via bridge failed for ${compositeKey(msg.officeId, msg.agentId)}: ${message}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          }
+        } else if (answerTransport(backendProc) === 'sdk') {
           const resolved = handlePendingPlanApproval(proc.sessionId, {
             approved: msg.approved,
             selectedAction: msg.selectedAction,
@@ -1779,7 +1964,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         await terminalBackend.restartOffice(officeId);
         for (const target of restartTargets) {
           const ck = compositeKey(officeId, target.agentId);
-          if (target.viewed) activeAgentViewers.add(ck);
+          if (target.viewed) addAgentViewer(ck, viewerMaps);
           if (target.forwarded) agentForwardKeys.add(ck);
           const result = await startTerminalForAgent(
             officeId,
@@ -1946,8 +2131,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // watcher via the shared object reference. The destination creates its own watcher
         // when startTerminalForAgent is called for a new session.
         // Carry over active viewer registration so PTY output is forwarded under the new key
+        // (dual-key helper: toCk now aliases existingTermKey — R-002).
         if (activeAgentViewers.has(fromCk)) {
-          activeAgentViewers.add(toCk);
+          addAgentViewer(toCk, viewerMaps);
         }
       }
 
@@ -1967,9 +2153,21 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       try {
         await terminalBackend?.stop?.();
       } finally {
+        await closeNativeBridgeBroker();
         process.exit(0);
       }
     }
+  }
+}
+
+/** Close the shared bridge broker (revokes every credential/connection). Never throws. */
+async function closeNativeBridgeBroker(): Promise<void> {
+  const broker = nativeBridgeBroker;
+  nativeBridgeBroker = null;
+  try {
+    await broker?.close();
+  } catch (error) {
+    console.warn(`[TermServer] Failed to close native bridge broker: ${String((error as Error)?.message ?? error)}`);
   }
 }
 
@@ -1980,14 +2178,33 @@ async function main(): Promise<void> {
 
   const resolvedCopilotCliPath = resolveCopilotCliPath(process.cwd(), process.env.PATH);
   // Backend selection (T008). Values mirror src/config/terminalBackend.ts
-  // ('node-pty' | 'ui-server' | 'sdk'); the renderer decides and passes the choice
-  // via COPILOT_TERMINAL_BACKEND. Default is sdk (one spawned headless host per
-  // office). ui-server remains selectable for compatibility; node-pty is used
-  // only when explicitly selected, for shell mode, or as ui-server's legacy
-  // compatibility fallback.
+  // ('native-bridge' | 'node-pty' | 'ui-server' | 'sdk'); the renderer decides and
+  // passes the choice via COPILOT_TERMINAL_BACKEND. Default is native-bridge (one
+  // pinned native TUI per agent under node-pty, driven through the authenticated
+  // SDK extension bridge). When its startup capability check fails we report the
+  // reason and fall back GLOBALLY to sdk (headless host + custom renderer) —
+  // never to an unauthenticated raw-PTY programmatic path. ui-server remains
+  // selectable for compatibility; node-pty is used only when explicitly selected,
+  // for shell mode, or as ui-server's legacy compatibility fallback.
   const preferredBackend = parseTerminalBackend(process.env.COPILOT_TERMINAL_BACKEND);
   let backendFallbackReason: string | undefined;
-  if (preferredBackend === 'ui-server') {
+  if (preferredBackend === 'native-bridge') {
+    const selection = await selectNativeBridgeBackend({
+      initialize: () => initializeNativeBridge({ repoRoot: process.cwd() }),
+      createSdkFallback: () => CopilotSdkBackend.tryCreate(resolvedCopilotCliPath),
+    });
+    terminalBackend = selection.backend;
+    nativeBridgeBroker = selection.broker;
+    backendFallbackReason = selection.fallbackReason;
+    if (selection.ready) {
+      console.log(
+        `[TermServer] Native bridge ready: cli=${selection.ready.capability.cliPath} ` +
+        `extensionSdk=${selection.ready.capability.extensionSdkPath} extension=${selection.ready.extensionPath}`,
+      );
+    } else {
+      console.error(`[TermServer] ${backendFallbackReason}; using ${terminalBackend?.name ?? 'no backend'} (never a raw-PTY programmatic fallback)`);
+    }
+  } else if (preferredBackend === 'ui-server') {
     const candidate = UiServerBackend.tryCreate(resolvedCopilotCliPath);
     // isAvailable() runs the --ui-server capability probe (undocumented flag);
     // on any failure we fall back to node-pty rather than surfacing an error.
@@ -2035,15 +2252,17 @@ async function main(): Promise<void> {
   // Clean up on unexpected exit
   process.on('SIGTERM', () => {
     killAllPtyProcesses();
-    void Promise.resolve(terminalBackend?.stop?.()).finally(() => process.exit(0));
+    void Promise.resolve(terminalBackend?.stop?.())
+      .catch(() => undefined)
+      .then(() => closeNativeBridgeBroker())
+      .finally(() => process.exit(0));
   });
 
   // Signal ready, including the backend-selection outcome so the renderer can
-  // surface a toast when a requested backend (e.g. ui-server) fell back to node-pty.
+  // surface a toast when a requested backend fell back (native-bridge → sdk,
+  // ui-server → node-pty).
   const loadedBackendName = terminalBackend?.name ?? 'none';
-  const fellBack =
-    preferredBackend === 'ui-server' &&
-    loadedBackendName === 'node-pty';
+  const fellBack = didTerminalBackendFallBack(preferredBackend, loadedBackendName);
   send({
     type: 'ready',
     backend: {

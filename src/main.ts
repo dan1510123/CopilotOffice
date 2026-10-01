@@ -3206,9 +3206,17 @@ if (window.copilotBridge) {
     updateTerminalContent();
   });
 
-  window.copilotBridge.onSessionMetaUpdated((agentId, meta) => {
-    console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"`);
+  window.copilotBridge.onSessionMetaUpdated((agentId, meta, eventOfficeId) => {
+    console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"${meta.sessionId ? ` (session ${meta.sessionId})` : ''}`);
     const officeId = officeManager.currentOfficeId || 'office-0';
+    if (eventOfficeId && eventOfficeId !== officeId) {
+      // Another office's agent (e.g. native bridge /clear in a background office):
+      // update that office's persisted cache without touching the current view.
+      const otherOfficeMeta = getSessionMetaCacheForOffice(eventOfficeId);
+      otherOfficeMeta[agentId] = meta;
+      setSessionMetaCacheForOffice(eventOfficeId, otherOfficeMeta);
+      return;
+    }
     cachedSessionMeta[agentId] = meta;
     setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
     updateTerminalContent();

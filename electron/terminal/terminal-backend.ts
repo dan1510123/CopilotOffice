@@ -108,13 +108,18 @@ export function pendingUserInputCount(): number {
 
 /**
  * Decide how an `ask_user` answer is delivered for a backend process (spec 015).
+ * Native-bridge processes expose `submitAnswer`: the pending interaction lives in the
+ * TUI's bridge extension, so the answer is routed over the authenticated broker.
  * SDK/ui-server backends expose `submitPrompt` (a real programmatic session) and resolve
  * the pending interaction by `requestId` via {@link handlePendingUserInput}. The raw
- * node-pty backend omits `submitPrompt`; there is no SDK session, so the answer is typed
+ * node-pty backend omits both; there is no SDK session, so the answer is typed
  * onto the TUI's interaction input line via keystroke injection (best-effort/degraded,
  * no requestId). This is the single source of truth for the server's submit-answer routing.
  */
-export function answerTransport(proc: Pick<TerminalProcess, 'submitPrompt'>): 'sdk' | 'keystroke' {
+export function answerTransport(
+  proc: Pick<TerminalProcess, 'submitPrompt' | 'submitAnswer'>,
+): 'bridge' | 'sdk' | 'keystroke' {
+  if (typeof proc.submitAnswer === 'function') return 'bridge';
   return typeof proc.submitPrompt === 'function' ? 'sdk' : 'keystroke';
 }
 
@@ -200,6 +205,21 @@ export interface TerminalExitEvent {
   exitCode: number;
 }
 
+/** A bridge registration observed for a process's native TUI (initial connect or replacement). */
+export interface TerminalSessionChange {
+  /** Session the TUI is attached to now — authoritative over any persisted id. */
+  sessionId: string;
+  /** Session the bridge was attached to before this registration, if any. */
+  previousSessionId?: string;
+}
+
+/** Decision on a pending plan-mode (`exit_plan_mode`) interaction. */
+export interface TerminalPlanDecision {
+  approved: boolean;
+  selectedAction?: string;
+  feedback?: string;
+}
+
 export interface TerminalProcess {
   readonly pid: number;
   write(data: string): void;
@@ -211,13 +231,43 @@ export interface TerminalProcess {
    * Optional: submit a full prompt to the underlying agent atomically, bypassing
    * the character-by-character line editor. Implemented by SDK-backed processes
    * (calls `session.send({ prompt, mode: 'enqueue' })` directly). Backends that
-   * omit it (raw PTY) are driven via bracketed-paste `write()` instead.
+   * omit it (raw PTY) are driven via bracketed-paste `write()` instead. May
+   * return a promise (native bridge) that settles once the agent accepted the
+   * prompt or rejects with an explicit error; callers must await it.
    *
    * `label`, when provided, is rendered as a display-only tag in front of the
    * echoed prompt (e.g. "[Teams · Alice]"). It is NEVER included in the text
    * sent to the agent — the model receives only `text`.
    */
-  submitPrompt?(text: string, label?: string): void;
+  submitPrompt?(text: string, label?: string): void | Promise<void>;
+
+  /**
+   * Optional: answer the session's pending `ask_user` interaction through a
+   * dedicated control channel (native bridge). Rejects with an explicit error
+   * when there is no pending interaction or the channel is unavailable.
+   */
+  submitAnswer?(answer: { answer: string; wasFreeform: boolean }): Promise<void>;
+
+  /**
+   * Optional: resolve the session's pending plan-mode decision through a
+   * dedicated control channel (native bridge). Rejects with an explicit error
+   * when there is no pending plan or the channel is unavailable.
+   */
+  submitPlanDecision?(decision: TerminalPlanDecision): Promise<void>;
+
+  /**
+   * Optional: resolves once the process's programmatic control channel is
+   * connected (native bridge registration); rejects after `timeoutMs`.
+   */
+  whenReady?(timeoutMs?: number): Promise<void>;
+
+  /**
+   * Optional: observe bridge registrations for this process's TUI — the first
+   * connect and every later session replacement (e.g. `/clear`). The listener
+   * is invoked synchronously, before any event from the new registration is
+   * delivered. Returns an unsubscribe function.
+   */
+  onSessionChange?(listener: (change: TerminalSessionChange) => void): () => void;
 
   /**
    * Optional: run a session control command (`/compact`, `/usage`, `/model`) via the
@@ -248,6 +298,12 @@ export interface TerminalProcess {
 export interface StartTerminalOptions {
   sessionId: string;
   officeId?: string;
+  /**
+   * Stable identity of the terminal being started (the server's composite
+   * `${officeId}:${agentId}` key). Backends that allocate per-terminal
+   * resources (native bridge credentials) use it as a readable prefix.
+   */
+  terminalKey?: string;
   shell: string;
   cols: number;
   rows: number;
