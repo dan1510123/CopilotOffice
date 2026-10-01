@@ -195,8 +195,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-tool-complete', handler);
     return () => ipcRenderer.removeListener('copilot-tool-complete', handler);
   },
-  onCopilotTurnEnd: (callback: (agentId: string) => void) => {
-    const handler = (_event: unknown, agentId: string) => callback(agentId);
+  onCopilotTurnEnd: (callback: (agentId: string, officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, officeId?: string) => callback(agentId, officeId);
     ipcRenderer.on('copilot-turn-end', handler);
     return () => ipcRenderer.removeListener('copilot-turn-end', handler);
   },
@@ -551,7 +551,7 @@ declare global {
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
       onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => () => void;
       onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => () => void;
-      onCopilotTurnEnd: (callback: (agentId: string) => void) => () => void;
+      onCopilotTurnEnd: (callback: (agentId: string, officeId?: string) => void) => () => void;
       onCopilotTurnStart: (callback: (agentId: string) => void) => () => void;
       onCopilotUserMessage: (callback: (agentId: string) => void) => () => void;
       onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => void) => () => void;

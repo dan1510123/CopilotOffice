@@ -431,7 +431,7 @@ export class TerminalRelay {
         this.mainEvents.emit('copilot-turn-start', msg.agentId);
         break;
       case 'copilot-turn-end':
-        this.mainEvents.emit('copilot-turn-end', msg.agentId);
+        this.mainEvents.emit('copilot-turn-end', msg.agentId, msg.officeId);
         break;
       case 'copilot-user-message':
         // Mirror to main-process consumers (the Teams service streams locally-typed
@@ -487,7 +487,7 @@ export class TerminalRelay {
         win.webContents.send('copilot-tool-complete', msg.agentId, msg.toolId, msg.success);
         break;
       case 'copilot-turn-end':
-        win.webContents.send('copilot-turn-end', msg.agentId);
+        win.webContents.send('copilot-turn-end', msg.agentId, msg.officeId);
         break;
       case 'copilot-turn-start':
         win.webContents.send('copilot-turn-start', msg.agentId);

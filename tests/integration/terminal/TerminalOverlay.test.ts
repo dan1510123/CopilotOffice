@@ -518,7 +518,11 @@ describe('integration/TerminalOverlay', () => {
   });
 
   it('spec 007: intercepts /new and calls bridge.resetSession (no /session PTY parse)', async () => {
-    let onSessionMetaUpdatedCb: ((agentId: string, meta: { title: string }) => void) | undefined;
+    let onSessionMetaUpdatedCb: ((
+      agentId: string,
+      meta: { title: string },
+      officeId?: string,
+    ) => void) | undefined;
     const bridge = installMockCopilotBridge({
       terminalExists: vi.fn().mockResolvedValue(false),
       terminalStart: vi.fn().mockResolvedValue({ success: true, sessionId: 'sess-initial' }),
@@ -565,6 +569,8 @@ describe('integration/TerminalOverlay', () => {
     expect(sessionDisplay.textContent).toBe('sess-after-new');
 
     const titleDisplay = document.querySelector('.session-title-display') as HTMLElement;
+    expect(titleDisplay.textContent).toBe('Old title');
+    onSessionMetaUpdatedCb?.('generalist', { title: 'Other office title' }, 'office-1');
     expect(titleDisplay.textContent).toBe('Old title');
     onSessionMetaUpdatedCb?.('generalist', { title: 'New title from first message' });
     expect(titleDisplay.textContent).toBe('New title from first message');

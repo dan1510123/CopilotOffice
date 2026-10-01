@@ -194,8 +194,8 @@ export class FleetOrchestrator {
     };
 
     // Copilot turn end signals task completion
-    const onTurnEnd = (agentId: string) => {
-      if (this.detached || !this.agents.has(agentId)) return;
+    const onTurnEnd = (agentId: string, eventOfficeId?: string) => {
+      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
       const current = this.agents.get(agentId)!;
       if (current.state !== 'working') return;
 

@@ -52,6 +52,35 @@ export async function joinSession(config) {
     },
     on(listener) {
       listeners.add(listener);
+      if (process.env.STUB_SCENARIO === "local-user-input") {
+        setTimeout(() => {
+          void config.onUserInputRequest({ question: "Q1" });
+          listener({ type: "user_input.requested", data: { requestId: "req-1" } });
+          listener({ type: "user_input.completed", data: { requestId: "req-1" } });
+          const second = config.onUserInputRequest({ question: "Q2" });
+          listener({ type: "user_input.requested", data: { requestId: "req-2" } });
+          second.then((answer) => record({ type: "user-answer", requestId: "req-2", answer }));
+        }, 0);
+      }
+      if (process.env.STUB_SCENARIO === "oversized-event") {
+        setTimeout(() => {
+          listener({
+            type: "assistant.message",
+            id: "large-event",
+            data: { content: "x".repeat(300 * 1024) },
+          });
+        }, 0);
+      }
+      if (process.env.STUB_SCENARIO === "local-plan") {
+        setTimeout(() => {
+          void config.onExitPlanModeRequest({ summary: "Plan 1" });
+          listener({ type: "exit_plan_mode.requested", data: { requestId: "plan-1" } });
+          listener({ type: "exit_plan_mode.completed", data: { requestId: "plan-1" } });
+          const second = config.onExitPlanModeRequest({ summary: "Plan 2" });
+          listener({ type: "exit_plan_mode.requested", data: { requestId: "plan-2" } });
+          second.then((decision) => record({ type: "plan-decision", requestId: "plan-2", decision }));
+        }, 0);
+      }
       return () => listeners.delete(listener);
     },
     rpc: {
@@ -233,5 +262,105 @@ describe('bundled native bridge extension runtime', () => {
     await expect(first.exited).resolves.toBe(0);
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect((await broker.waitForConnection(credentials.terminalKey)).sessionId).toBe('session-after-clear');
+  }, 20_000);
+
+  it('clears locally-completed ask_user slots and rejects mismatched remote answers', async () => {
+    const fixture = await writeExtensionFixture();
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:generalist#ask-user');
+    broker.bindProcess(credentials.terminalKey, process.pid);
+    const events: unknown[] = [];
+    broker.subscribe(credentials.terminalKey, (event) => events.push(event));
+
+    runExtension(fixture, {
+      ...credentials.env,
+      SESSION_ID: 'session-ask-user',
+      STUB_SCENARIO: 'local-user-input',
+    });
+    await broker.waitForConnection(credentials.terminalKey, 10_000);
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: 'user_input.requested',
+      data: { requestId: 'req-2' },
+    }));
+
+    await expect(broker.request(credentials.terminalKey, 'submit-answer', {
+      requestId: 'req-1',
+      answer: 'stale',
+      wasFreeform: false,
+    })).rejects.toThrow('does not match req-1');
+    await expect(broker.request(credentials.terminalKey, 'submit-answer', {
+      requestId: 'req-2',
+      answer: 'current',
+      wasFreeform: false,
+    })).resolves.toEqual({ resolved: true });
+    await vi.waitFor(async () => {
+      expect(await readStubLog(fixture.logPath)).toContainEqual({
+        type: 'user-answer',
+        requestId: 'req-2',
+        answer: { answer: 'current', wasFreeform: false },
+      });
+    });
+  }, 20_000);
+
+  it('truncates oversized SDK events without dropping the command connection', async () => {
+    const fixture = await writeExtensionFixture();
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:generalist#large-event');
+    broker.bindProcess(credentials.terminalKey, process.pid);
+    const events: Array<{ type?: string; data?: Record<string, unknown> }> = [];
+    broker.subscribe(credentials.terminalKey, (event) => {
+      events.push(event as { type?: string; data?: Record<string, unknown> });
+    });
+
+    runExtension(fixture, {
+      ...credentials.env,
+      SESSION_ID: 'session-large-event',
+      STUB_SCENARIO: 'oversized-event',
+    });
+    await broker.waitForConnection(credentials.terminalKey, 10_000);
+    await vi.waitFor(() => expect(events.some((event) => event.type === 'assistant.message')).toBe(true));
+    const largeEvent = events.find((event) => event.type === 'assistant.message');
+    expect(largeEvent?.data?.bridgeTruncated).toBe(true);
+    expect(String(largeEvent?.data?.content)).toContain('[bridge content truncated]');
+
+    await expect(broker.request(credentials.terminalKey, 'send', { prompt: 'still connected' }))
+      .resolves.toBe('message-1');
+  }, 20_000);
+
+  it('clears locally-completed plan slots and rejects mismatched remote decisions', async () => {
+    const fixture = await writeExtensionFixture();
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:generalist#plan');
+    broker.bindProcess(credentials.terminalKey, process.pid);
+    const events: unknown[] = [];
+    broker.subscribe(credentials.terminalKey, (event) => events.push(event));
+
+    runExtension(fixture, {
+      ...credentials.env,
+      SESSION_ID: 'session-plan',
+      STUB_SCENARIO: 'local-plan',
+    });
+    await broker.waitForConnection(credentials.terminalKey, 10_000);
+    await vi.waitFor(() => expect(events).toContainEqual({
+      type: 'exit_plan_mode.requested',
+      data: { requestId: 'plan-2' },
+    }));
+
+    await expect(broker.request(credentials.terminalKey, 'submit-plan-decision', {
+      requestId: 'plan-1',
+      approved: true,
+    })).rejects.toThrow('does not match plan-1');
+    await expect(broker.request(credentials.terminalKey, 'submit-plan-decision', {
+      requestId: 'plan-2',
+      approved: false,
+      feedback: 'revise',
+    })).resolves.toEqual({ resolved: true });
+    await vi.waitFor(async () => {
+      expect(await readStubLog(fixture.logPath)).toContainEqual({
+        type: 'plan-decision',
+        requestId: 'plan-2',
+        decision: { approved: false, feedback: 'revise' },
+      });
+    });
   }, 20_000);
 });

@@ -300,12 +300,17 @@ export class NativeBridgeProcess implements TerminalProcess {
     return normalizeBridgeControlData(cmd.command, raw);
   }
 
-  async submitAnswer(answer: { answer: string; wasFreeform: boolean }): Promise<void> {
-    await this.command('submit-answer', { answer: answer.answer, wasFreeform: answer.wasFreeform });
+  async submitAnswer(answer: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void> {
+    await this.command('submit-answer', {
+      ...(answer.requestId ? { requestId: answer.requestId } : {}),
+      answer: answer.answer,
+      wasFreeform: answer.wasFreeform,
+    });
   }
 
   async submitPlanDecision(decision: TerminalPlanDecision): Promise<void> {
     await this.command('submit-plan-decision', {
+      ...(decision.requestId ? { requestId: decision.requestId } : {}),
       approved: decision.approved,
       ...(decision.selectedAction ? { selectedAction: decision.selectedAction } : {}),
       ...(decision.feedback ? { feedback: decision.feedback } : {}),

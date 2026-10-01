@@ -6,7 +6,7 @@ import { installMockCopilotBridge } from '../../setup/copilot-bridge-mock';
 interface CapturedListeners {
   preloadStatus: ((agentId: string, status: string, officeId?: string) => void) | null;
   terminalExit: ((agentId: string, exitCode: number, officeId?: string) => void) | null;
-  turnEnd: ((agentId: string) => void) | null;
+  turnEnd: ((agentId: string, officeId?: string) => void) | null;
 }
 
 function setupBridge() {
@@ -140,8 +140,25 @@ describe('meeting/fleetOrchestrator — spawn/track/teardown contract', () => {
     void orch.executePlan(PLAN, '.', OFFICE_ID);
     await vi.advanceTimersByTimeAsync(0);
     captured.preloadStatus?.('generalist', 'ready');
-    captured.turnEnd?.('generalist');
+    captured.turnEnd?.('generalist', OFFICE_ID);
 
+    expect(doneAgents).toEqual(['generalist']);
+  });
+
+  it('ignores turnEnd from another office for an agent with the same id', async () => {
+    const { captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const doneAgents: string[] = [];
+    orch.on('fleet:agent:done', (agentId) => doneAgents.push(agentId));
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID);
+
+    captured.turnEnd?.('generalist', 'other-office');
+    expect(doneAgents).toEqual([]);
+
+    captured.turnEnd?.('generalist', OFFICE_ID);
     expect(doneAgents).toEqual(['generalist']);
   });
 
@@ -212,11 +229,11 @@ describe('meeting/fleetOrchestrator — spawn/track/teardown contract', () => {
     void orch.executePlan(PLAN, '.', OFFICE_ID);
     await vi.advanceTimersByTimeAsync(0);
     captured.preloadStatus?.('generalist', 'ready');
-    captured.turnEnd?.('generalist');
+    captured.turnEnd?.('generalist', OFFICE_ID);
 
     await vi.advanceTimersByTimeAsync(1500);
     captured.preloadStatus?.('debugger', 'ready');
-    captured.turnEnd?.('debugger');
+    captured.turnEnd?.('debugger', OFFICE_ID);
 
     expect(completeStates).toHaveLength(1);
     expect(completeStates[0]).toHaveLength(2);

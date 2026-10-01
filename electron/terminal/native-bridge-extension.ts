@@ -41,6 +41,8 @@ let sessionPromise;
 let joinedSession;
 let pendingUserInput;
 let pendingPlanDecision;
+let latestUserInputRequestId;
+let latestPlanRequestId;
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -192,6 +194,15 @@ async function executeCommand(command, params) {
       if (!pendingUserInput) throw new Error("No pending user-input request");
       const answer = params?.answer;
       if (typeof answer !== "string") throw new Error("submit-answer requires an answer");
+      if (
+        typeof params?.requestId === "string"
+        && params.requestId.length > 0
+        && pendingUserInput.requestId !== params.requestId
+      ) {
+        throw new Error(
+          "Pending user-input request does not match " + params.requestId,
+        );
+      }
       const pending = pendingUserInput;
       pendingUserInput = undefined;
       pending.resolve({ answer, wasFreeform: params?.wasFreeform === true });
@@ -201,6 +212,15 @@ async function executeCommand(command, params) {
       if (!pendingPlanDecision) throw new Error("No pending plan decision");
       if (typeof params?.approved !== "boolean") {
         throw new Error("submit-plan-decision requires approved");
+      }
+      if (
+        typeof params?.requestId === "string"
+        && params.requestId.length > 0
+        && pendingPlanDecision.requestId !== params.requestId
+      ) {
+        throw new Error(
+          "Pending plan decision does not match " + params.requestId,
+        );
       }
       const pending = pendingPlanDecision;
       pendingPlanDecision = undefined;
@@ -299,29 +319,74 @@ async function joinBridgeSession() {
   const session = await joinSession({
     onUserInputRequest(request) {
       if (pendingUserInput) {
-        throw new Error("A user-input request is already pending");
+        // A local TUI answer can settle the runtime before this extension sees
+        // the matching completed event. A new request proves the old slot is
+        // stale, so retire it instead of blocking every future ask_user call.
+        pendingUserInput.resolve({ answer: "", wasFreeform: true });
       }
       return new Promise((resolve) => {
-        pendingUserInput = { request, resolve };
+        pendingUserInput = {
+          request,
+          requestId:
+            typeof request?.requestId === "string"
+              ? request.requestId
+              : latestUserInputRequestId,
+          resolve,
+        };
       });
     },
     onExitPlanModeRequest(request) {
       if (pendingPlanDecision) {
-        throw new Error("A plan decision is already pending");
+        pendingPlanDecision.resolve({
+          approved: false,
+          feedback: "Superseded by a newer plan decision",
+        });
       }
       return new Promise((resolve) => {
-        pendingPlanDecision = { request, resolve };
+        pendingPlanDecision = {
+          request,
+          requestId:
+            typeof request?.requestId === "string"
+              ? request.requestId
+              : latestPlanRequestId,
+          resolve,
+        };
       });
     },
   });
   if (terminated) return session;
   joinedSession = session;
   unsubscribeEvents = session.on((event) => {
+    const requestId =
+      typeof event?.data?.requestId === "string"
+        ? event.data.requestId
+        : undefined;
+    if (event?.type === "user_input.requested") {
+      latestUserInputRequestId = requestId;
+      if (pendingUserInput) pendingUserInput.requestId = requestId;
+    } else if (event?.type === "user_input.completed") {
+      if (!pendingUserInput?.requestId || pendingUserInput.requestId === requestId) {
+        pendingUserInput = undefined;
+      }
+      if (!requestId || latestUserInputRequestId === requestId) {
+        latestUserInputRequestId = undefined;
+      }
+    } else if (event?.type === "exit_plan_mode.requested") {
+      latestPlanRequestId = requestId;
+      if (pendingPlanDecision) pendingPlanDecision.requestId = requestId;
+    } else if (event?.type === "exit_plan_mode.completed") {
+      if (!pendingPlanDecision?.requestId || pendingPlanDecision.requestId === requestId) {
+        pendingPlanDecision = undefined;
+      }
+      if (!requestId || latestPlanRequestId === requestId) {
+        latestPlanRequestId = undefined;
+      }
+    }
     if (!registered) return;
     try {
-      sendFrame({ type: "event", event });
+      sendEventFrame(event);
     } catch {
-      socket?.destroy();
+      // Event delivery is best-effort; never tear down the command channel.
     }
   });
   announceReady(session, socket);
@@ -341,6 +406,76 @@ function announceReady(session, target) {
   sendFrame({ type: "ready", sessionId: session.sessionId }, target);
 }
 
+function truncateUtf8(value, maxBytes) {
+  const bytes = Buffer.from(String(value));
+  if (bytes.length <= maxBytes) return String(value);
+  return bytes.subarray(0, maxBytes).toString("utf8") + "\n[bridge content truncated]";
+}
+
+function compactEvent(event) {
+  const data = event?.data && typeof event.data === "object" && !Array.isArray(event.data)
+    ? event.data
+    : {};
+  const compactData = { bridgeTruncated: true };
+  const identityKeys = [
+    "requestId",
+    "toolCallId",
+    "toolName",
+    "messageId",
+    "success",
+    "approved",
+    "selectedAction",
+    "feedback",
+  ];
+  for (const key of identityKeys) {
+    const value = data[key];
+    if (
+      typeof value === "string"
+      || typeof value === "number"
+      || typeof value === "boolean"
+      || value === null
+    ) {
+      compactData[key] = value;
+    }
+  }
+  for (const key of ["content", "text", "message", "partialOutput", "detailedContent"]) {
+    if (typeof data[key] === "string") {
+      compactData[key] = truncateUtf8(data[key], 192 * 1024);
+      break;
+    }
+  }
+  return {
+    type: event?.type ?? "unknown",
+    ...(typeof event?.id === "string" ? { id: event.id } : {}),
+    ...(typeof event?.timestamp === "string" ? { timestamp: event.timestamp } : {}),
+    ...(
+      typeof event?.parentId === "string" || event?.parentId === null
+        ? { parentId: event.parentId }
+        : {}
+    ),
+    data: compactData,
+  };
+}
+
+function sendEventFrame(event) {
+  try {
+    sendFrame({ type: "event", event });
+  } catch (error) {
+    if (!errorMessage(error).includes("maximum size")) throw error;
+    try {
+      sendFrame({ type: "event", event: compactEvent(event) });
+    } catch {
+      sendFrame({
+        type: "event",
+        event: {
+          type: event?.type ?? "unknown",
+          data: { bridgeTruncated: true, content: "[oversized event omitted]" },
+        },
+      });
+    }
+  }
+}
+
 async function shutdown(exitCode = 0) {
   if (terminated) return;
   terminated = true;
@@ -349,6 +484,8 @@ async function shutdown(exitCode = 0) {
   unsubscribeEvents?.();
   unsubscribeEvents = undefined;
   joinedSession = undefined;
+  latestUserInputRequestId = undefined;
+  latestPlanRequestId = undefined;
   if (pendingUserInput) {
     pendingUserInput.resolve({ answer: "", wasFreeform: true });
     pendingUserInput = undefined;

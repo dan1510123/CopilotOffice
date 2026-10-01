@@ -94,6 +94,7 @@ async function main() {
   const exitEvents = [];
   const startedPids = [];
   const createdSessionIds = new Set();
+  const readyAgents = new Set();
   let readyResolve;
   let readyReject;
   const ready = new Promise((resolve, reject) => {
@@ -190,9 +191,12 @@ async function main() {
   }
 
   async function acceptFolderTrustIfNeeded(agentId) {
-    await delay(8_000);
-    const output = terminalOutput.get(agentId) ?? '';
-    if (/trust|folder|repository/i.test(output)) {
+    // Folder trust is a native TUI prompt, and its ANSI-rendered wording has
+    // changed across CLI builds. Empty Enter is a no-op once the normal prompt
+    // is ready, so press it boundedly while this agent is still preloading.
+    for (const waitMs of [8_000, 10_000, 10_000, 10_000]) {
+      await delay(waitMs);
+      if (readyAgents.has(agentId)) return;
       await request({
         type: 'write',
         officeId: OFFICE_ID,
@@ -206,14 +210,18 @@ async function main() {
     await withTimeout(ready, 20_000, 'Terminal server did not load the native bridge');
 
     const starts = AGENTS.map((agentId) => request({
-      type: 'start',
-      officeId: OFFICE_ID,
-      agentId,
-      workingDir: REPO_ROOT,
-      cols: 120,
-      rows: 40,
-      readyTimeoutMs: 90_000,
-    }, START_TIMEOUT_MS));
+        type: 'start',
+        officeId: OFFICE_ID,
+        agentId,
+        workingDir: REPO_ROOT,
+        cols: 120,
+        rows: 40,
+        readyTimeoutMs: 90_000,
+      }, START_TIMEOUT_MS)
+      .then((result) => {
+        if (result?.success && result?.ready) readyAgents.add(agentId);
+        return result;
+      }));
 
     const trustHelpers = AGENTS.map((agentId) => acceptFolderTrustIfNeeded(agentId));
     const startResults = await Promise.all(starts);

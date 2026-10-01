@@ -68,4 +68,25 @@ describe('TerminalRelay native-bridge seams', () => {
       'office-0',
     );
   });
+
+  it('forwards turn-end with office scope to main and renderer consumers', () => {
+    const webContentsSend = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: webContentsSend } };
+    const { relay, deliver } = connectedRelay(window);
+    const mainListener = vi.fn();
+    relay.mainEvents.on('copilot-turn-end', mainListener);
+
+    deliver({
+      type: 'copilot-turn-end',
+      agentId: 'generalist',
+      officeId: 'office-0',
+    });
+
+    expect(mainListener).toHaveBeenCalledWith('generalist', 'office-0');
+    expect(webContentsSend).toHaveBeenCalledWith(
+      'copilot-turn-end',
+      'generalist',
+      'office-0',
+    );
+  });
 });

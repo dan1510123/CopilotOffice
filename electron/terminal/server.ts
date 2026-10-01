@@ -17,6 +17,7 @@ import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEN
 import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
 import { applyBridgeSessionChange } from './bridge-session-change';
 import { ReadyWaiters } from './ready-waiters';
+import { deliverPreseededPrompt } from './preseeded-prompt';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -677,6 +678,17 @@ async function startTerminalForAgentImpl(
   const existingTerminalKey = agentToTerminal.get(ck);
   if (existingTerminalKey && ptyProcesses.has(existingTerminalKey)) {
     const existing = ptyProcesses.get(existingTerminalKey)!;
+    try {
+      await deliverPreseededPrompt(existing.process, preseededPrompt);
+    } catch (error) {
+      return {
+        success: false,
+        pid: existing.pid,
+        sessionId: existing.sessionId,
+        reused: true,
+        error: `Failed to deliver pre-seeded prompt to reused session: ${String((error as Error)?.message ?? error)}`,
+      };
+    }
     return { success: true, pid: existing.pid, sessionId: existing.sessionId, reused: true };
   }
 
@@ -873,19 +885,11 @@ async function startTerminalForAgentImpl(
       const prompt = pendingPreseededPrompts.get(ck);
       if (prompt) {
         pendingPreseededPrompts.delete(ck);
-        if (typeof proc.submitPrompt === 'function') {
-          console.log(`[TermServer] Submitting pre-seeded prompt for ${ck}`);
-          const submitPrompt = proc.submitPrompt.bind(proc);
-          void Promise.resolve()
-            .then(() => submitPrompt(prompt))
-            .catch((error: unknown) => {
-              console.error(`[TermServer] Pre-seeded prompt for ${ck} was not delivered: ${String((error as Error)?.message ?? error)}`);
-              send({ type: 'terminal-preload-status', agentId, status: 'failed', officeId });
-            });
-        } else {
-          console.log(`[TermServer] Writing pre-seeded prompt for ${ck}`);
-          proc.write(prompt + '\r');
-        }
+        console.log(`[TermServer] Delivering pre-seeded prompt for ${ck}`);
+        void deliverPreseededPrompt(proc, prompt).catch((error: unknown) => {
+          console.error(`[TermServer] Pre-seeded prompt for ${ck} was not delivered: ${String((error as Error)?.message ?? error)}`);
+          send({ type: 'terminal-preload-status', agentId, status: 'failed', officeId });
+        });
       }
     };
 
@@ -1019,7 +1023,7 @@ async function startTerminalForAgentImpl(
         if (event.type === 'assistant.turn_end') {
           agentInTurn.set(ck, false);
           console.log(`[TermServer] Forwarding turn_end for ${ck}`);
-          send({ type: 'copilot-turn-end', agentId });
+          send({ type: 'copilot-turn-end', agentId, officeId });
         } else if (event.type === 'assistant.turn_start') {
           agentInTurn.set(ck, true);
           console.log(`[TermServer] Forwarding turn_start for ${ck}`);
@@ -1053,7 +1057,7 @@ async function startTerminalForAgentImpl(
               saveOfficeSessionFile(officeId);
               hasAutoTitled.add(ck);
               console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
-              send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
+              send({ type: 'session-meta-updated', agentId, officeId, meta: { ...meta } });
             } else {
               hasAutoTitled.delete(ck);
             }
@@ -1374,7 +1378,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // resolve it there over the authenticated broker and report the REAL
           // outcome (e.g. "No pending user-input request") to the caller.
           try {
-            await backendProc.submitAnswer!({ answer: msg.answer, wasFreeform: msg.wasFreeform });
+            await backendProc.submitAnswer!({
+              requestId: msg.answerRequestId,
+              answer: msg.answer,
+              wasFreeform: msg.wasFreeform,
+            });
             send({ type: 'response', requestId: msg.requestId, result: { success: true } });
           } catch (error) {
             const message = String((error as Error)?.message ?? error);
@@ -1426,6 +1434,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // authenticated broker and report the real outcome.
           try {
             await backendProc.submitPlanDecision({
+              requestId: msg.planRequestId,
               approved: msg.approved,
               selectedAction: msg.selectedAction,
               feedback: msg.feedback,
@@ -1746,7 +1755,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (restoredTitle) officeData.sessionMeta.set(msg.agentId, { title: restoredTitle });
       else officeData.sessionMeta.delete(msg.agentId);
       hasAutoTitled.delete(ck);
-      send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: restoredTitle } });
+      send({ type: 'session-meta-updated', agentId: msg.agentId, officeId: msg.officeId, meta: { title: restoredTitle } });
 
       // (8) Kill the existing PTY (if any) + clean up so the renderer's normal
       // attach/start flow relaunches `copilot --session-id=<target>`. Reuse the
@@ -1832,7 +1841,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // Clear session metadata
       officeDataReset.sessionMeta.delete(msg.agentId);
       hasAutoTitled.delete(ck);
-      send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: '' } });
+      send({ type: 'session-meta-updated', agentId: msg.agentId, officeId: msg.officeId, meta: { title: '' } });
       // Generate new session ID (but don't start PTY)
       const newSessionId = crypto.randomUUID();
       officeDataReset.sessionIds.set(msg.agentId, newSessionId);
@@ -1883,7 +1892,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         activeAgentViewers.delete(ck);
         clearForegroundIf(officeId, ck);
         hasAutoTitled.delete(ck);
-        send({ type: 'session-meta-updated', agentId, meta: { title: '' } });
+        send({ type: 'session-meta-updated', agentId, officeId, meta: { title: '' } });
       }
       officeData.sessionMeta.clear();
       // Regenerate fresh GUIDs

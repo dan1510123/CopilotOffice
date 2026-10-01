@@ -609,6 +609,8 @@ export interface SrvCopilotPlanComplete {
 export interface SrvCopilotTurnEnd {
   type: 'copilot-turn-end';
   agentId: string;
+  /** Owning office so concurrent agents with the same id cannot cross streams. */
+  officeId?: string;
 }
 
 export interface SrvCopilotTurnStart {

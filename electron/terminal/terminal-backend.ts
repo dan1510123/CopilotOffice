@@ -215,6 +215,7 @@ export interface TerminalSessionChange {
 
 /** Decision on a pending plan-mode (`exit_plan_mode`) interaction. */
 export interface TerminalPlanDecision {
+  requestId?: string;
   approved: boolean;
   selectedAction?: string;
   feedback?: string;
@@ -246,7 +247,7 @@ export interface TerminalProcess {
    * dedicated control channel (native bridge). Rejects with an explicit error
    * when there is no pending interaction or the channel is unavailable.
    */
-  submitAnswer?(answer: { answer: string; wasFreeform: boolean }): Promise<void>;
+  submitAnswer?(answer: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void>;
 
   /**
    * Optional: resolve the session's pending plan-mode decision through a

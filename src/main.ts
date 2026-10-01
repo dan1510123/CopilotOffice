@@ -3135,9 +3135,9 @@ if (window.copilotBridge) {
     }
   });
 
-  window.copilotBridge.onCopilotTurnEnd((agentId) => {
+  window.copilotBridge.onCopilotTurnEnd((agentId, eventOfficeId) => {
     console.log(`[Office] Turn end: ${agentId}`);
-    const officeId = officeManager.currentOfficeId;
+    const officeId = eventOfficeId ?? officeManager.currentOfficeId;
     if (officeId) {
       // FR-002 guard: a stray turn_end while the agent is still initializing must
       // not settle it to "done" — it hasn't produced a response yet. Startup

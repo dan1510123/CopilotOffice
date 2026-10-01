@@ -193,7 +193,8 @@ export class TerminalOverlay {
               this.updateSessionDisplay();
             }
           }
-          if (agentId === this.currentAgentId) {
+          const activeOfficeId = this.getActiveOfficeId();
+          if (agentId === this.currentAgentId && (!officeId || officeId === activeOfficeId)) {
             this.updateSessionTitleDisplay(meta?.title || null);
           }
         }),

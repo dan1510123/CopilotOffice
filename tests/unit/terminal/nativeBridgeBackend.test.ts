@@ -372,15 +372,15 @@ describe('native bridge programmatic routing', () => {
     await extension.registered;
 
     expect(answerTransport(proc)).toBe('bridge');
-    await proc.submitAnswer!({ answer: 'Yes', wasFreeform: false });
-    await expect(proc.submitAnswer!({ answer: 'again', wasFreeform: true }))
+    await proc.submitAnswer!({ requestId: 'ask-1', answer: 'Yes', wasFreeform: false });
+    await expect(proc.submitAnswer!({ requestId: 'ask-1', answer: 'again', wasFreeform: true }))
       .rejects.toThrow('No pending user-input request');
-    await proc.submitPlanDecision!({ approved: false, feedback: 'split step 2' });
+    await proc.submitPlanDecision!({ requestId: 'plan-1', approved: false, feedback: 'split step 2' });
 
     expect(extension.requests.map(({ command, params }) => ({ command, params }))).toEqual([
-      { command: 'submit-answer', params: { answer: 'Yes', wasFreeform: false } },
-      { command: 'submit-answer', params: { answer: 'again', wasFreeform: true } },
-      { command: 'submit-plan-decision', params: { approved: false, feedback: 'split step 2' } },
+      { command: 'submit-answer', params: { requestId: 'ask-1', answer: 'Yes', wasFreeform: false } },
+      { command: 'submit-answer', params: { requestId: 'ask-1', answer: 'again', wasFreeform: true } },
+      { command: 'submit-plan-decision', params: { requestId: 'plan-1', approved: false, feedback: 'split step 2' } },
     ]);
   });
 
