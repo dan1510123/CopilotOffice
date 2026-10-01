@@ -50,13 +50,12 @@ All sprites generated in code (BootScene + SpriteGenerator) — no external imag
 Renderer → `window.copilotBridge` (preload context bridge) → Electron main → terminal server child process → node-pty.
 
 ### Terminal Backends
-`electron/terminal/server.ts` selects the terminal backend from `COPILOT_TERMINAL_BACKEND` (default `ui-server`, auto-falls back to `node-pty` when the CLI can't host `--ui-server`) and always keeps node-pty as the permanent fallback.
+`electron/terminal/server.ts` selects the terminal backend from `COPILOT_TERMINAL_BACKEND` (default `native-bridge`). node-pty always remains available for shell mode.
 
-- `node-pty` (default/fallback): spawns the real Copilot TUI directly per agent; programmatic prompts use the raw PTY path.
-- `ui-server` (spec 013 Variant 1): node-pty hosts one `copilot --ui-server` runtime per office. An SDK `CopilotClient` attaches with `RuntimeConnection.forUri('localhost:<port>')`; programmatic prompts use `session.send({ prompt, mode: 'enqueue' })`; status/tool/turn events come from `session.on(...)` normalized to `CopilotEvent`; viewer attach calls `setForegroundSessionId` to choose the visible agent.
-- `sdk` (legacy headless): SDK spawns its own headless runtime over stdio; retained for compatibility, not the Variant 1 target.
-
-`--ui-server` is undocumented/hidden. A capability probe and per-session start-time fallback to node-pty are mandatory; do not make `ui-server` the default without revisiting that invariant.
+- `native-bridge` (default): one pinned native Copilot CLI TUI per agent, spawned **directly** under node-pty (`--session-id=<persisted id> --experimental --extension-sdk-path <SDK dist> --no-auto-update` + yolo/additional params; never the global PATH `copilot`). The bundled user extension (`~/.copilot/extensions/copilot-office-bridge`, materialized at server startup) joins the TUI's session and authenticates to the server's single `NativeBridgeBroker` with per-TUI credentials passed only through that child's env and bound to the TUI's pid. Raw write/resize/output stay on the PTY; programmatic prompts (`send`), `run-control`, ask_user answers and plan decisions are awaited broker commands that fail with explicit errors. Events flow through `BrokerEventSource` (`mapSdkEventToCopilotEvent`). A bridge registration's session id is authoritative (`/clear` → archive once + persist the new id + `session-meta-updated` with `sessionId`). The extension exits immediately when the bridge env is absent, so unrelated `copilot --experimental` sessions are unaffected.
+- `sdk` (selectable + native-bridge fallback): one headless CLI host per office with SDK sessions and the custom conversation renderer. When the native-bridge startup capability check fails, the server reports the reason (`ready.backend.fellBack`) and falls back globally to `sdk` — never to an unauthenticated raw-PTY programmatic path.
+- `node-pty`: spawns the real Copilot TUI via a shell per agent; programmatic prompts use the raw PTY keystroke path.
+- `ui-server` (spec 013 Variant 1, compatibility): node-pty hosts one `copilot --ui-server` runtime per office with an SDK `CopilotClient` attached over `RuntimeConnection.forUri`. `--ui-server` is undocumented/hidden (removed in CLI 1.0.88); a capability probe and per-session start-time fallback to node-pty are mandatory.
 
 ### Input Focus
 Two mutually exclusive states: `game` and `terminal`. All transitions through `InputManager` — never manipulate Phaser keyboard directly.

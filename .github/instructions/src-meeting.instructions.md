@@ -35,8 +35,8 @@ DOM-based overlay (`z-index: 10002`) that displays the parsed plan for player re
 Manages parallel agent spawning and task execution after a plan is approved:
 - **`FleetOrchestrator`** class with event-driven architecture (`on`/`off`/`emit` pattern).
 - **`FleetAgentState`** — per-agent state: `pending` → `starting` → `working` → `done`/`failed`, with timestamps and error tracking.
-- **`executePlan(plan, workingDir)`** — initializes all agents as pending, attaches IPC listeners, then spawns agents with staggered starts (`STAGGER_DELAY_MS` = 1500 ms).
-- **`spawnAgent()`** — calls `terminalStart`, retries once on failure (`RETRY_DELAY_MS` = 2000 ms), then writes the task prompt and sets session metadata.
+- **`executePlan(plan, workingDir, officeId)`** — initializes all agents as pending, attaches IPC listeners (ignoring lifecycle events from other offices), then spawns agents with staggered starts (`STAGGER_DELAY_MS` = 1500 ms).
+- **`spawnAgent()`** — calls `terminalStart(officeId, agentId, workingDir, …, task.prompt)` so the task prompt is the atomic pre-seeded start input (the server submits it programmatically once the session is ready — through the native bridge it renders in the agent's own TUI), retries once on failure (`RETRY_DELAY_MS` = 2000 ms), then sets the explicit task title as session metadata. It never writes the prompt as raw terminal input.
 - Tracks readiness via `onTerminalPreloadStatus` (→ `working`), completion via `onCopilotTurnEnd` (→ `done`), and unexpected exits via `onTerminalExit`.
 - **`cancel()`** — kills all active agents and marks them as failed.
 - Events: `fleet:agent:started`, `fleet:agent:working`, `fleet:agent:done`, `fleet:agent:failed`, `fleet:all:complete`.

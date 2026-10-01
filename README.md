@@ -34,16 +34,17 @@ A 2D pixel-art RPG-style desktop game where you walk around a virtual office and
 - **esbuild** — fast bundling for both the game and Electron code
 - **xterm.js** — terminal emulator for agent conversations
 - **node-pty** — pseudo-terminal that hosts the Copilot CLI
-- **@github/copilot-sdk** — SDK control plane for the `ui-server` terminal backend
+- **@github/copilot-sdk** — SDK used by the native-bridge CLI extension and the `sdk` / `ui-server` terminal backends
 - **ws** — WebSocket transport (SDK runtime + Teams real-time receive)
 
 ### Terminal backends
 
 The terminal server (`electron/terminal/server.ts`) selects a backend via the `COPILOT_TERMINAL_BACKEND` environment variable:
 
-- **`node-pty`** (fallback, always available) — spawns the real Copilot TUI directly, one PTY per agent
-- **`ui-server`** (default) — node-pty hosts one `copilot --ui-server` runtime per office and the Copilot SDK attaches over a local port; automatically falls back to `node-pty` when the CLI can't host `--ui-server`
-- **`sdk`** (legacy) — the SDK spawns its own headless runtime over stdio
+- **`native-bridge`** (default) — one pinned native Copilot TUI per agent under node-pty; a bundled CLI extension bridges it to the app over an authenticated local broker for programmatic prompts, session control, ask_user answers, plan decisions and events
+- **`sdk`** — one headless Copilot CLI host per office with SDK sessions and a custom conversation renderer; used automatically (with a notice) when the native bridge is unavailable
+- **`node-pty`** — spawns the real Copilot TUI via a shell, one PTY per agent (always used for the local shell)
+- **`ui-server`** (compatibility) — node-pty hosts one `copilot --ui-server` runtime per office; falls back to `node-pty` when the CLI can't host `--ui-server`
 
 ## Getting Started
 

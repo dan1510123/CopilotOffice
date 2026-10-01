@@ -406,13 +406,33 @@ export class TeamsService {
     }
     tlog(`Register requested: ${ctx.displayName} (${officeId}:${agentId}) → channel ${coords.channelId}`);
 
+    const workingDir = normalizeWorkingDir(ctx.workingDir || '');
+    // Make sure the agent's session is actually up before binding a thread to it:
+    // reuse a live, ready session (an already-connected bridge), otherwise resume
+    // the persisted session in the agent's folder and wait boundedly. This runs in
+    // the main process and never claims a renderer viewer.
+    if (this.deps.gateway.ensureSessionOnline) {
+      let ensured: { success: boolean; error?: string };
+      try {
+        ensured = await this.deps.gateway.ensureSessionOnline(officeId, agentId, workingDir || undefined);
+      } catch (e) {
+        ensured = { success: false, error: (e as Error).message };
+      }
+      if (!ensured.success) {
+        twarn(`Register aborted for ${officeId}:${agentId}: ${ensured.error ?? 'session not online'}`);
+        return {
+          success: false,
+          error: `Couldn't bring the agent's Copilot session online: ${ensured.error ?? 'unknown error'}`,
+        };
+      }
+    }
+
     const sessionId = await this.deps.gateway.getSessionId(officeId, agentId);
     if (!sessionId) {
       return { success: false, error: 'No active session for this agent. Open its terminal first.' };
     }
 
     const displayName = ctx.displayName || agentId;
-    const workingDir = normalizeWorkingDir(ctx.workingDir || '');
 
     // Already online? Return existing binding.
     const existing = this.findBinding(officeId, agentId);

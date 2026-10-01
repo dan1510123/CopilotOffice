@@ -102,6 +102,15 @@ export interface TerminalRelayLike {
   mainSubmitPlanDecision(officeId: string, agentId: string, d: { requestId?: string; approved: boolean; selectedAction?: string; feedback?: string }): Promise<{ success: boolean; error?: string }>;
   mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void;
   mainIsAgentReady(officeId: string, agentId: string): Promise<boolean>;
+  /**
+   * Start (or reuse) an agent's session for main-process use without claiming a
+   * renderer viewer, waiting boundedly for readiness. Optional for test relays.
+   */
+  mainEnsureSessionOnline?(
+    officeId: string,
+    agentId: string,
+    workingDir?: string,
+  ): Promise<{ success: boolean; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }>;
   mainEvents: {
     on(event: string, listener: (...args: unknown[]) => void): unknown;
     off(event: string, listener: (...args: unknown[]) => void): unknown;
@@ -113,6 +122,20 @@ export interface SessionGateway {
   getSessionMeta(officeId: string, agentId: string): Promise<{ title?: string } | null>;
   /** True only when the agent's PTY is alive AND the CLI has signalled ready. */
   isAgentReady(officeId: string, agentId: string): Promise<boolean>;
+  /**
+   * Make sure the agent's session is running and ready for programmatic use
+   * before it is brought online: reuse a live, ready session (e.g. an already
+   * connected native bridge), otherwise resume the persisted session in
+   * `workingDir` and wait boundedly for readiness. Never claims a renderer
+   * viewer. Resolves `{ success: false, error }` with an explicit reason when the
+   * session (bridge) cannot come up. Optional: gateways whose sessions are
+   * always live (e.g. the orchestrator) may omit it.
+   */
+  ensureSessionOnline?(
+    officeId: string,
+    agentId: string,
+    workingDir?: string,
+  ): Promise<{ success: boolean; sessionId?: string; error?: string }>;
   submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void>;
   /**
    * Reset (close + re-mint) an agent's session — used by Teams `/new` and `/clear`.
@@ -173,6 +196,24 @@ export class RelaySessionGateway implements SessionGateway {
 
   isAgentReady(officeId: string, agentId: string): Promise<boolean> {
     return this.relay.mainIsAgentReady(officeId, agentId);
+  }
+
+  async ensureSessionOnline(
+    officeId: string,
+    agentId: string,
+    workingDir?: string,
+  ): Promise<{ success: boolean; sessionId?: string; error?: string }> {
+    // Relays without the seam (older/test relays) keep the previous contract:
+    // the caller's getSessionId check decides.
+    if (!this.relay.mainEnsureSessionOnline) return { success: true };
+    const res = await this.relay.mainEnsureSessionOnline(officeId, agentId, workingDir || undefined);
+    if (!res?.success) {
+      return {
+        success: false,
+        error: res?.error || `Copilot session for ${officeId}:${agentId} could not be brought online`,
+      };
+    }
+    return res.sessionId ? { success: true, sessionId: res.sessionId } : { success: true };
   }
 
   async submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void> {
