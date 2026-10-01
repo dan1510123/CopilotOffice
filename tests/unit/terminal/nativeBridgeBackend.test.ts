@@ -88,8 +88,10 @@ class FakeExtension {
   private resolveClosed!: () => void;
   readonly registered = new Promise<void>((resolve) => { this.resolveRegistered = resolve; });
   readonly closed = new Promise<void>((resolve) => { this.resolveClosed = resolve; });
+  private readonly sessionId: string;
 
   constructor(env: Record<string, string>, sessionId: string, parentPid: number) {
+    this.sessionId = sessionId;
     this.socket = net.createConnection(env[NATIVE_BRIDGE_ENV.endpoint]);
     this.socket.on('connect', () => this.send({
       type: 'register',
@@ -125,7 +127,11 @@ class FakeExtension {
       } & BridgeRequest;
       this.buffer = this.buffer.subarray(newline + 1);
       this.frames.push(message);
-      if (message.type === 'registered') this.resolveRegistered();
+      if (message.type === 'registered') {
+        this.send({ type: 'ready', sessionId: this.sessionId });
+      } else if (message.type === 'ready-ack') {
+        this.resolveRegistered();
+      }
       if (message.type !== 'request') continue;
       this.requests.push(message);
       void this.respond(message);

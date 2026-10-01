@@ -28,6 +28,7 @@ class BridgeTestClient {
     this.closedResolve = resolve;
   });
   onRequest?: (request: ServerRequest) => void;
+  private readonly sessionId: string;
 
   constructor(
     credentials: NativeBridgeCredentials,
@@ -35,6 +36,7 @@ class BridgeTestClient {
     token = credentials.token,
     parentPid?: number,
   ) {
+    this.sessionId = sessionId;
     this.socket = net.createConnection(credentials.endpoint);
     this.socket.on('connect', () => {
       this.send({
@@ -72,6 +74,8 @@ class BridgeTestClient {
       const message = JSON.parse(line) as { type?: string };
       this.frames.push(message);
       if (message.type === 'registered') {
+        this.send({ type: 'ready', sessionId: this.sessionId });
+      } else if (message.type === 'ready-ack') {
         this.registeredResolve();
       } else if (message.type === 'request') {
         const request = message as ServerRequest;
@@ -256,8 +260,8 @@ describe('NativeBridgeBroker', () => {
     await current.registered;
     await stale.closed;
 
-    expect(stale.frames.map((frame) => frame.type)).toEqual(['registered', 'replaced']);
-    expect(current.frames.map((frame) => frame.type)).toEqual(['registered']);
+    expect(stale.frames.map((frame) => frame.type)).toEqual(['registered', 'ready-ack', 'replaced']);
+    expect(current.frames.map((frame) => frame.type)).toEqual(['registered', 'ready-ack']);
   });
 
   it('ignores an unregister carrying a stale token', async () => {

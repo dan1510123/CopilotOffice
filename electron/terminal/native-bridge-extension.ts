@@ -38,6 +38,7 @@ let reconnectTimer;
 let terminated = false;
 let unsubscribeEvents;
 let sessionPromise;
+let joinedSession;
 let pendingUserInput;
 let pendingPlanDecision;
 
@@ -143,6 +144,8 @@ async function handleBrokerMessage(candidate, message) {
       // orphaned extension never attaches handlers to the session.
       sessionPromise = joinBridgeSession();
       sessionPromise.catch(() => void shutdown(1));
+    } else {
+      void sessionPromise.then((session) => announceReady(session, candidate));
     }
     return;
   }
@@ -150,6 +153,9 @@ async function handleBrokerMessage(candidate, message) {
     // Not this TUI's credentials, or a newer extension instance owns the
     // bridge: stand down for good instead of reconnecting.
     void shutdown(0);
+    return;
+  }
+  if (message.type === "ready-ack") {
     return;
   }
   if (message.type !== "request" || typeof message.id !== "string") {
@@ -309,6 +315,7 @@ async function joinBridgeSession() {
     },
   });
   if (terminated) return session;
+  joinedSession = session;
   unsubscribeEvents = session.on((event) => {
     if (!registered) return;
     try {
@@ -317,7 +324,21 @@ async function joinBridgeSession() {
       socket?.destroy();
     }
   });
+  announceReady(session, socket);
   return session;
+}
+
+function announceReady(session, target) {
+  if (
+    terminated
+    || !registered
+    || !target
+    || target !== socket
+    || target.destroyed
+  ) {
+    return;
+  }
+  sendFrame({ type: "ready", sessionId: session.sessionId }, target);
 }
 
 async function shutdown(exitCode = 0) {
@@ -327,6 +348,7 @@ async function shutdown(exitCode = 0) {
   reconnectTimer = undefined;
   unsubscribeEvents?.();
   unsubscribeEvents = undefined;
+  joinedSession = undefined;
   if (pendingUserInput) {
     pendingUserInput.resolve({ answer: "", wasFreeform: true });
     pendingUserInput = undefined;

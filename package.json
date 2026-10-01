@@ -33,7 +33,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "npm run build && playwright test"
+    "test:e2e": "npm run build && playwright test",
+    "smoke:native-bridge": "npm run build && node scripts/smoke-native-bridge.js"
   },
   "keywords": [
     "copilot",

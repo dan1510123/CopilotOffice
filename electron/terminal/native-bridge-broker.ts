@@ -82,6 +82,7 @@ interface PendingRequest {
 interface RegisteredConnection extends NativeBridgeConnection {
   socket: net.Socket;
   pending: Map<string, PendingRequest>;
+  ready: boolean;
 }
 
 interface SocketState {
@@ -116,6 +117,10 @@ type ClientMessage =
   | {
       type: 'event';
       event: unknown;
+    }
+  | {
+      type: 'ready';
+      sessionId: string;
     };
 
 function asError(error: unknown): Error {
@@ -254,7 +259,7 @@ export class NativeBridgeBroker {
     this.assertOpen();
     validateIdentifier(terminalKey, 'terminal key');
     const current = this.registrations.get(terminalKey);
-    if (current) return Promise.resolve(this.connectionSnapshot(current));
+    if (current?.ready) return Promise.resolve(this.connectionSnapshot(current));
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -283,7 +288,7 @@ export class NativeBridgeBroker {
     validateIdentifier(terminalKey, 'terminal key');
     validateIdentifier(command, 'command');
     const registration = this.registrations.get(terminalKey);
-    if (!registration) {
+    if (!registration?.ready) {
       return Promise.reject(new Error(`Native bridge is not connected: ${terminalKey}`));
     }
 
@@ -450,10 +455,12 @@ export class NativeBridgeBroker {
       return;
     }
     if (message.type === 'response') {
+      if (!registration.ready) throw new Error('Native bridge session is not ready');
       this.handleResponse(registration, message);
       return;
     }
     if (message.type === 'event') {
+      if (!registration.ready) throw new Error('Native bridge session is not ready');
       for (const listener of this.eventListeners.get(registration.terminalKey) ?? []) {
         try {
           listener(message.event, this.connectionSnapshot(registration));
@@ -461,6 +468,10 @@ export class NativeBridgeBroker {
           // Listener failures must not break the transport.
         }
       }
+      return;
+    }
+    if (message.type === 'ready') {
+      this.markReady(registration, message.sessionId);
       return;
     }
     throw new Error('Native bridge socket is already registered');
@@ -486,15 +497,14 @@ export class NativeBridgeBroker {
     }
 
     const previous = this.registrations.get(terminalKey);
-    const previousSessionId = previous?.sessionId ?? credential.lastSessionId;
     const registration: RegisteredConnection = {
       terminalKey,
       sessionId,
       generation: this.nextGeneration++,
       socket,
       pending: new Map(),
+      ready: false,
     };
-    credential.lastSessionId = sessionId;
     state.registration = registration;
     this.registrations.set(terminalKey, registration);
     if (previous) {
@@ -512,8 +522,30 @@ export class NativeBridgeBroker {
       sessionId,
       generation: registration.generation,
     })}\n`);
-    this.resolveWaiters(terminalKey, registration);
+  }
 
+  private markReady(registration: RegisteredConnection, reportedSessionId: unknown): void {
+    if (this.registrations.get(registration.terminalKey) !== registration) {
+      registration.socket.destroy(new Error('Stale native bridge socket'));
+      return;
+    }
+    const sessionId = validateIdentifier(reportedSessionId, 'session ID');
+    const credential = this.credentials.get(registration.terminalKey);
+    if (!credential) {
+      registration.socket.destroy(new Error('Native bridge credentials are no longer valid'));
+      return;
+    }
+    const previousSessionId = credential.lastSessionId;
+    registration.sessionId = sessionId;
+    registration.ready = true;
+    credential.lastSessionId = sessionId;
+    registration.socket.write(`${JSON.stringify({
+      type: 'ready-ack',
+      terminalKey: registration.terminalKey,
+      sessionId,
+      generation: registration.generation,
+    })}\n`);
+    this.resolveWaiters(registration.terminalKey, registration);
     const change: NativeBridgeSessionChange = {
       ...this.connectionSnapshot(registration),
       ...(previousSessionId ? { previousSessionId } : {}),
