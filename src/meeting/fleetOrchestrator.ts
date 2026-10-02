@@ -1,35 +1,11 @@
 /**
  * FleetOrchestrator — **Spawn phase** of the fleet pipeline.
  *
- * Owns the lifecycle of N parallel Copilot CLI sessions spawned from an
- * approved {@link MeetingPlan}. One orchestrator instance manages one fleet
- * execution; it stages spawns, watches per-agent readiness via
- * `onPreloadStatus` and `onCopilotEvent`, and emits aggregated `fleet:*`
- * lifecycle events that the UI/visualizer consume.
- *
- * Pipeline contract (see also `MeetingMode.md`):
- *
- *   FleetOrchestrator  ─[spawn]─▶  copilotBridge.terminalStart
- *          │
- *          │ emits fleet:agent:started / working / done / failed
- *          ▼
- *   FleetTracker       ─[track]─▶  copilot-event stream (sub-agent activity)
- *          │
- *          ▼
- *   FleetVisualizer    ─[visualize]─▶ OfficeScene NPC walks/badges
- *          │
- *          ▼
- *   Teardown          ◀─[fleet:all:complete / cancel()]
- *
- * Boundaries:
- *   - The orchestrator does NOT track sub-agent fan-out — that is
- *     {@link FleetTracker}'s job. The orchestrator only sees top-level
- *     spawned-session lifecycle.
- *   - The orchestrator never mutates Phaser state directly — visualization is
- *     mediated by {@link FleetVisualizer}, which listens to FleetTracker.
- *   - On cancel/teardown the orchestrator kills any starting/working PTYs
- *     and detaches its bridge listeners; downstream visualizer/tracker
- *     cleanup is the caller's responsibility (typically OfficeScene).
+ * Each assigned task runs in a server-owned transient session lease. The lease
+ * keeps the native Copilot TUI/node-pty visible while active, but snapshots and
+ * restores the agent's prior persistent session when the task reaches any
+ * terminal state. `fleet:all:complete` is emitted only after every lease has
+ * finished its idempotent server-side disposal.
  */
 
 import { MeetingPlan, TaskAssignment } from './types';
@@ -41,6 +17,8 @@ export interface FleetAgentState {
   error: string | null;
   startedAt: number | null;
   completedAt: number | null;
+  transientSessionId: string | null;
+  cleanupSettled: boolean;
 }
 
 export type FleetEventCallback = (agentId: string, state: FleetAgentState) => void;
@@ -48,6 +26,7 @@ export type FleetCompleteCallback = (states: FleetAgentState[]) => void;
 
 const STAGGER_DELAY_MS = 1500;
 const RETRY_DELAY_MS = 2000;
+const CLEANUP_RETRY_DELAY_MS = 250;
 
 interface FleetEventListeners {
   'fleet:agent:started': FleetEventCallback[];
@@ -58,7 +37,10 @@ interface FleetEventListeners {
 }
 
 export class FleetOrchestrator {
-  private agents: Map<string, FleetAgentState> = new Map();
+  private agents = new Map<string, FleetAgentState>();
+  private lifecycleIds = new Map<string, string>();
+  private spawnPromises = new Map<string, Promise<void>>();
+  private cleanupPromises = new Map<string, Promise<void>>();
   private listeners: FleetEventListeners = {
     'fleet:agent:started': [],
     'fleet:agent:working': [],
@@ -67,47 +49,36 @@ export class FleetOrchestrator {
     'fleet:all:complete': [],
   };
   private cancelled = false;
-  private detached = false;
-  /** Office whose agents this fleet execution drives (set by executePlan). */
+  private allCompleteEmitted = false;
   private officeId = '';
+  private runVersion = 0;
+  private listenerEpoch = 0;
+  private cancellationPromise: Promise<void> | null = null;
 
-  private get bridge(): any {
-    return (window as any).copilotBridge;
+  private get bridge(): Window['copilotBridge'] {
+    return window.copilotBridge;
   }
 
   on(event: 'fleet:agent:started' | 'fleet:agent:working' | 'fleet:agent:done' | 'fleet:agent:failed', cb: FleetEventCallback): void;
   on(event: 'fleet:all:complete', cb: FleetCompleteCallback): void;
-  on(event: string, cb: any): void {
-    const list = this.listeners[event as keyof FleetEventListeners];
-    if (list) {
-      list.push(cb);
-    }
+  on(event: string, cb: FleetEventCallback | FleetCompleteCallback): void {
+    const list = this.listeners[event as keyof FleetEventListeners] as Array<typeof cb> | undefined;
+    list?.push(cb);
   }
 
-  off(event: string, cb: any): void {
-    const list = this.listeners[event as keyof FleetEventListeners];
-    if (list) {
-      const idx = list.indexOf(cb);
-      if (idx !== -1) list.splice(idx, 1);
-    }
-  }
-
-  private emit(event: 'fleet:agent:started' | 'fleet:agent:working' | 'fleet:agent:done' | 'fleet:agent:failed', agentId: string, state: FleetAgentState): void;
-  private emit(event: 'fleet:all:complete', states: FleetAgentState[]): void;
-  private emit(event: string, ...args: any[]): void {
-    const list = this.listeners[event as keyof FleetEventListeners];
-    if (list) {
-      list.forEach((cb: any) => cb(...args));
-    }
+  off(event: string, cb: FleetEventCallback | FleetCompleteCallback): void {
+    const list = this.listeners[event as keyof FleetEventListeners] as Array<typeof cb> | undefined;
+    const idx = list?.indexOf(cb) ?? -1;
+    if (idx >= 0) list!.splice(idx, 1);
   }
 
   async executePlan(plan: MeetingPlan, workingDir: string, officeId: string): Promise<void> {
-    this.reset();
-    this.cancelled = false;
-    this.officeId = officeId;
+    if (this.agents.size > 0) await this.cancel('Superseded by a new fleet run');
+    this.resetState();
 
-    // Initialize all agents as pending
-    plan.tasks.forEach((task) => {
+    const version = ++this.runVersion;
+    this.officeId = officeId;
+    for (const task of plan.tasks) {
       this.agents.set(task.agentId, {
         agentId: task.agentId,
         taskTitle: task.title,
@@ -115,164 +86,310 @@ export class FleetOrchestrator {
         error: null,
         startedAt: null,
         completedAt: null,
+        transientSessionId: null,
+        cleanupSettled: false,
       });
-    });
+    }
 
-    this.attachListeners();
+    this.attachListeners(version);
 
-    // Spawn agents with staggered starts
     for (let i = 0; i < plan.tasks.length; i++) {
-      if (this.cancelled) break;
-      if (i > 0) {
-        await delay(STAGGER_DELAY_MS);
-      }
-      if (this.cancelled) break;
-      this.spawnAgent(plan.tasks[i], workingDir);
+      if (!this.isActiveRun(version)) break;
+      if (i > 0) await delay(STAGGER_DELAY_MS);
+      if (!this.isActiveRun(version)) break;
+      this.launchSpawn(plan.tasks[i], workingDir, version);
     }
   }
 
-  cancel(): void {
+  async cancel(reason = 'Cancelled'): Promise<void> {
+    if (this.cancellationPromise) return this.cancellationPromise;
     this.cancelled = true;
     this.detachListeners();
 
-    const bridge = this.bridge;
-    this.agents.forEach((agentState, agentId) => {
-      if (agentState.state === 'starting' || agentState.state === 'working') {
-        bridge.terminalKill(this.officeId, agentId).catch(() => {});
-        this.updateAgentState(agentId, 'failed', 'Cancelled');
+    this.cancellationPromise = (async () => {
+      const cleanup: Promise<void>[] = [];
+      for (const [agentId, state] of this.agents) {
+        if (state.state === 'pending') {
+          this.finishWithoutLease(agentId, 'failed', reason);
+        } else if (
+          state.state === 'working'
+          || (state.state === 'starting' && state.transientSessionId !== null)
+        ) {
+          cleanup.push(this.settleAgent(agentId, 'failed', reason, this.runVersion));
+        }
       }
+
+      await Promise.allSettled([...this.spawnPromises.values(), ...cleanup]);
+
+      // A begin request can complete after cancellation. spawnAgent observes the
+      // cancellation and disposes it, but this final pass closes any remaining gap.
+      for (const [agentId, state] of this.agents) {
+        if (state.state !== 'done' && state.state !== 'failed') {
+          await this.settleAgent(agentId, 'failed', reason, this.runVersion);
+        }
+      }
+      await Promise.allSettled([...this.cleanupPromises.values()]);
+      this.checkAllComplete();
+    })().finally(() => {
+      this.cancellationPromise = null;
     });
+
+    return this.cancellationPromise;
+  }
+
+  /** Orchestrator teardown is cancellation plus awaited transient disposal. */
+  async dispose(): Promise<void> {
+    await this.cancel('Orchestrator disposed');
+    this.detachListeners();
   }
 
   getFleetState(): FleetAgentState[] {
-    const states: FleetAgentState[] = [];
-    this.agents.forEach((state) => states.push({ ...state }));
-    return states;
+    return [...this.agents.values()].map((state) => ({ ...state }));
   }
 
-  private reset(): void {
+  private emit(
+    event: 'fleet:agent:started' | 'fleet:agent:working' | 'fleet:agent:done' | 'fleet:agent:failed',
+    agentId: string,
+    state: FleetAgentState,
+  ): void;
+  private emit(event: 'fleet:all:complete', states: FleetAgentState[]): void;
+  private emit(event: keyof FleetEventListeners, ...args: unknown[]): void {
+    for (const cb of this.listeners[event] as Array<(...values: unknown[]) => void>) {
+      cb(...args);
+    }
+  }
+
+  private resetState(): void {
     this.detachListeners();
     this.agents.clear();
+    this.lifecycleIds.clear();
+    this.spawnPromises.clear();
+    this.cleanupPromises.clear();
     this.cancelled = false;
+    this.allCompleteEmitted = false;
+    this.cancellationPromise = null;
   }
 
-  private attachListeners(): void {
-    const bridge = this.bridge;
-    this.detached = false;
+  private isActiveRun(version: number): boolean {
+    return !this.cancelled && version === this.runVersion;
+  }
 
-    // Track terminal readiness — agent is working once ready
-    const onPreloadStatus = (agentId: string, status: string, eventOfficeId?: string) => {
-      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
-      if (status === 'ready') {
-        this.updateAgentState(agentId, 'working');
-        const agentState = this.agents.get(agentId)!;
-        this.emit('fleet:agent:working', agentId, { ...agentState });
-      } else if (status === 'failed') {
-        this.updateAgentState(agentId, 'failed', 'Terminal preload failed');
-        const agentState = this.agents.get(agentId)!;
-        this.emit('fleet:agent:failed', agentId, { ...agentState });
-        this.checkAllComplete();
+  private launchSpawn(task: TaskAssignment, workingDir: string, version: number): void {
+    const promise = this.spawnAgent(task, workingDir, version);
+    this.spawnPromises.set(task.agentId, promise);
+    void promise.finally(() => {
+      if (this.spawnPromises.get(task.agentId) === promise) {
+        this.spawnPromises.delete(task.agentId);
       }
-    };
+      this.checkAllComplete();
+    });
+  }
 
-    // Track unexpected exits
-    const onExit = (agentId: string, exitCode: number, eventOfficeId?: string) => {
-      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
+  private attachListeners(version: number): void {
+    const bridge = this.bridge;
+    const epoch = ++this.listenerEpoch;
+    const accepts = (
+      agentId: string,
+      eventOfficeId?: string,
+      eventLifecycleId?: string,
+    ): boolean =>
+      epoch === this.listenerEpoch
+      && version === this.runVersion
+      && this.agents.has(agentId)
+      && (!eventOfficeId || eventOfficeId === this.officeId)
+      && !!eventLifecycleId
+      && eventLifecycleId === this.lifecycleIds.get(agentId);
+
+    bridge.onTerminalPreloadStatus((agentId, status, eventOfficeId, sessionId, lifecycleId) => {
+      if (!accepts(agentId, eventOfficeId, lifecycleId)) return;
+      if (!this.bindSessionEvent(agentId, sessionId)) return;
+      if (status === 'ready') {
+        const current = this.agents.get(agentId)!;
+        if (current.state !== 'starting') return;
+        this.updateAgentState(agentId, 'working');
+        this.emit('fleet:agent:working', agentId, { ...this.agents.get(agentId)! });
+      } else if (status === 'failed') {
+        void this.settleAgent(agentId, 'failed', 'Terminal preload failed', version);
+      }
+    });
+
+    bridge.onTerminalExit((agentId, exitCode, eventOfficeId, sessionId, lifecycleId) => {
+      if (!accepts(agentId, eventOfficeId, lifecycleId)) return;
+      if (!this.bindSessionEvent(agentId, sessionId)) return;
       const current = this.agents.get(agentId)!;
       if (current.state === 'done' || current.state === 'failed') return;
+      void this.settleAgent(
+        agentId,
+        exitCode === 0 ? 'done' : 'failed',
+        exitCode === 0 ? undefined : `Exited with code ${exitCode}`,
+        version,
+      );
+    });
 
-      if (exitCode !== 0) {
-        this.updateAgentState(agentId, 'failed', `Exited with code ${exitCode}`);
-        const agentState = this.agents.get(agentId)!;
-        this.emit('fleet:agent:failed', agentId, { ...agentState });
-      } else {
-        this.updateAgentState(agentId, 'done');
-        const agentState = this.agents.get(agentId)!;
-        this.emit('fleet:agent:done', agentId, { ...agentState });
-      }
-      this.checkAllComplete();
-    };
-
-    // Copilot turn end signals task completion
-    const onTurnEnd = (agentId: string, eventOfficeId?: string) => {
-      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
-      const current = this.agents.get(agentId)!;
-      if (current.state !== 'working') return;
-
-      this.updateAgentState(agentId, 'done');
-      const agentState = this.agents.get(agentId)!;
-      this.emit('fleet:agent:done', agentId, { ...agentState });
-      this.checkAllComplete();
-    };
-
-    bridge.onTerminalPreloadStatus(onPreloadStatus);
-    bridge.onTerminalExit(onExit);
-    bridge.onCopilotTurnEnd(onTurnEnd);
-
-    // Do NOT call removeTerminalListeners/removeCopilotListeners — that nukes ALL
-    // ipcRenderer listeners for those channels, including main.ts's handlers.
-    // Instead, set the detached flag to make callbacks no-op.
+    bridge.onCopilotTurnEnd((agentId, eventOfficeId, sessionId, lifecycleId) => {
+      if (!accepts(agentId, eventOfficeId, lifecycleId)) return;
+      if (!this.bindSessionEvent(agentId, sessionId)) return;
+      if (this.agents.get(agentId)?.state !== 'working') return;
+      void this.settleAgent(agentId, 'done', undefined, version);
+    });
   }
 
   private detachListeners(): void {
-    this.detached = true;
+    this.listenerEpoch++;
   }
 
-  /** Bridge events that carry an office id must belong to this fleet's office. */
-  private isOwnOffice(eventOfficeId?: string): boolean {
-    return !eventOfficeId || eventOfficeId === this.officeId;
+  private bindSessionEvent(agentId: string, sessionId?: string): boolean {
+    const current = this.agents.get(agentId);
+    if (!current) return false;
+    if (!sessionId) return true;
+    // Native bridge registration may replace the initial id before readiness.
+    // Server-side lifecycleId ownership remains authoritative, so update the
+    // generation token rather than rejecting that legitimate replacement.
+    current.transientSessionId = sessionId;
+    return true;
   }
 
-  private async spawnAgent(task: TaskAssignment, workingDir: string): Promise<void> {
+  private async spawnAgent(
+    task: TaskAssignment,
+    workingDir: string,
+    version: number,
+  ): Promise<void> {
+    if (version !== this.runVersion) return;
     const { agentId } = task;
+    const lifecycleId = createLifecycleId(version, agentId);
+    this.lifecycleIds.set(agentId, lifecycleId);
     this.updateAgentState(agentId, 'starting');
-    const agentState = this.agents.get(agentId)!;
-    this.emit('fleet:agent:started', agentId, { ...agentState });
+    this.emit('fleet:agent:started', agentId, { ...this.agents.get(agentId)! });
 
-    // The task prompt rides the atomic start as its pre-seeded prompt: the server
-    // submits it programmatically (SDK session.send — through the native bridge it
-    // renders in the agent's own TUI) once the session is ready. Never inject it
-    // as raw terminal keystrokes.
-    const bridge = this.bridge;
     const start = () =>
-      bridge
-        .terminalStart(this.officeId, agentId, workingDir, undefined, undefined, task.prompt)
-        .catch(() => ({ success: false }));
-    let result = await start();
+      this.bridge
+        .terminalBeginTransientSession(this.officeId, agentId, {
+          lifecycleId,
+          title: task.title,
+          workingDir,
+          preseededPrompt: task.prompt,
+        })
+        .catch((error: unknown) => ({
+          success: false as const,
+          error: String((error as Error)?.message ?? error),
+        }));
 
-    // Retry once on failure
-    if (!result.success) {
+    let result = await start();
+    if (!result.success && this.isActiveRun(version)) {
       await delay(RETRY_DELAY_MS);
-      if (this.cancelled) return;
-      result = await start();
+      if (this.isActiveRun(version)) result = await start();
     }
 
     if (!result.success) {
-      this.updateAgentState(agentId, 'failed', 'Failed to start terminal after retry');
-      const failedState = this.agents.get(agentId)!;
-      this.emit('fleet:agent:failed', agentId, { ...failedState });
-      this.checkAllComplete();
+      await this.settleAgent(
+        agentId,
+        'failed',
+        `Failed to start transient terminal after retry: ${result.error}`,
+        version,
+      );
       return;
     }
 
-    // A warm session does not emit a second preload-ready event. The server
-    // reports whether the reused session is already ready after atomically
-    // submitting this task's prompt; transition it here so turn_end is tracked.
-    if (result.reused && result.ready) {
-      this.updateAgentState(agentId, 'working');
-      const workingState = this.agents.get(agentId)!;
-      this.emit('fleet:agent:working', agentId, { ...workingState });
+    const state = this.agents.get(agentId);
+    if (!state || version !== this.runVersion) {
+      await this.disposeLease(agentId, lifecycleId);
+      return;
     }
+    state.transientSessionId = result.sessionId;
 
-    // Explicit task title wins over auto-titling from the first prompt. The
-    // preload status listener transitions the agent to 'working' once ready.
-    bridge.setSessionMeta(this.officeId, agentId, { title: task.title });
+    if (this.cancelled) {
+      await this.settleAgent(agentId, 'failed', 'Cancelled', version);
+    }
   }
 
-  private updateAgentState(agentId: string, state: FleetAgentState['state'], error?: string): void {
+  private settleAgent(
+    agentId: string,
+    terminalState: 'done' | 'failed',
+    error: string | undefined,
+    version: number,
+  ): Promise<void> {
+    const existing = this.cleanupPromises.get(agentId);
+    if (existing) return existing;
+
+    const current = this.agents.get(agentId);
+    if (!current || current.cleanupSettled || version !== this.runVersion) {
+      return Promise.resolve();
+    }
+
+    const lifecycleId = this.lifecycleIds.get(agentId);
+    const cleanup = (async () => {
+      let cleanupError: string | undefined;
+      if (lifecycleId) {
+        const result = await this.disposeLease(agentId, lifecycleId);
+        if (!result.success) cleanupError = result.error;
+      }
+
+      const finalState: 'done' | 'failed' = cleanupError ? 'failed' : terminalState;
+      const finalError = cleanupError
+        ? [error, `Transient cleanup failed: ${cleanupError}`].filter(Boolean).join('; ')
+        : error;
+      this.updateAgentState(agentId, finalState, finalError);
+      const settled = this.agents.get(agentId);
+      if (!settled) return;
+      settled.cleanupSettled = true;
+      this.emit(
+        finalState === 'done' ? 'fleet:agent:done' : 'fleet:agent:failed',
+        agentId,
+        { ...settled },
+      );
+    })();
+
+    this.cleanupPromises.set(agentId, cleanup);
+    return cleanup.finally(() => {
+      if (this.cleanupPromises.get(agentId) === cleanup) {
+        this.cleanupPromises.delete(agentId);
+      }
+      this.checkAllComplete();
+    });
+  }
+
+  private async disposeLease(agentId: string, lifecycleId: string) {
+    let result = await this.bridge
+      .terminalDisposeTransientSession(this.officeId, agentId, lifecycleId)
+      .catch((error: unknown) => ({
+        success: false as const,
+        error: String((error as Error)?.message ?? error),
+      }));
+    if (!result.success) {
+      await delay(CLEANUP_RETRY_DELAY_MS);
+      result = await this.bridge
+        .terminalDisposeTransientSession(this.officeId, agentId, lifecycleId)
+        .catch((error: unknown) => ({
+          success: false as const,
+          error: String((error as Error)?.message ?? error),
+        }));
+    }
+    return result;
+  }
+
+  private finishWithoutLease(
+    agentId: string,
+    state: 'done' | 'failed',
+    error?: string,
+  ): void {
+    const current = this.agents.get(agentId);
+    if (!current || current.cleanupSettled) return;
+    this.updateAgentState(agentId, state, error);
+    current.cleanupSettled = true;
+    this.emit(
+      state === 'done' ? 'fleet:agent:done' : 'fleet:agent:failed',
+      agentId,
+      { ...current },
+    );
+  }
+
+  private updateAgentState(
+    agentId: string,
+    state: FleetAgentState['state'],
+    error?: string,
+  ): void {
     const current = this.agents.get(agentId);
     if (!current) return;
-
     current.state = state;
     if (error !== undefined) current.error = error;
     if (state === 'starting' && !current.startedAt) current.startedAt = Date.now();
@@ -280,18 +397,23 @@ export class FleetOrchestrator {
   }
 
   private checkAllComplete(): void {
-    let allDone = true;
-    this.agents.forEach((agentState) => {
-      if (agentState.state !== 'done' && agentState.state !== 'failed') {
-        allDone = false;
-      }
-    });
-
-    if (allDone && this.agents.size > 0) {
-      this.emit('fleet:all:complete', this.getFleetState());
-      this.detachListeners();
-    }
+    if (this.allCompleteEmitted || this.agents.size === 0) return;
+    const allSettled = [...this.agents.values()].every(
+      (agent) =>
+        (agent.state === 'done' || agent.state === 'failed') &&
+        agent.cleanupSettled,
+    );
+    if (!allSettled || this.cleanupPromises.size > 0) return;
+    this.allCompleteEmitted = true;
+    this.detachListeners();
+    this.emit('fleet:all:complete', this.getFleetState());
   }
+}
+
+function createLifecycleId(version: number, agentId: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `fleet-${version}-${agentId}-${uuid}`;
 }
 
 function delay(ms: number): Promise<void> {
