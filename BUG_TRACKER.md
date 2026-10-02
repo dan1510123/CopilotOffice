@@ -7,7 +7,7 @@ has regression coverage and the applicable smoke path passes.
 | ID | Status | Defect | Resolution / evidence |
 |---|---|---|---|
 | CO-001 | Fixed | CLI 1.0.88 no longer starts the hidden `--ui-server` mode, leaving startup waiting forever for a port. | Capability probing now rejects unsupported UI-server startup; `native-bridge` is the default and `sdk` is its explicit fallback. |
-| CO-002 | In progress | `EventsWatcher` synchronously reads and parses the complete historical `events.jsonl`; several large histories can block terminal-server IPC and time out startup requests. | Replace full synchronous replay with bounded asynchronous chunks that yield between chunks; add large-history regression and startup stress coverage. |
+| CO-002 | Fixed | `EventsWatcher` synchronously read and parsed the complete historical `events.jsonl`; several large histories could block terminal-server IPC and time out startup requests. | Historical replay now uses bounded asynchronous chunks with coalesced triggers, UTF-8-safe buffering, and regression coverage (`0a590d0`). |
 | CO-003 | Fixed | Bridge credentials could leak into shell or MCP tool child environments. | Bridge variables are passed via `--secret-env-vars` and stripped from inherited child environments (`85f4686`). |
 | CO-004 | Fixed | Parent PID was treated as sufficient bridge identity and could be spoofed. | Each launch now requires a random per-TUI nonce, constant-time comparison, and expected-parent validation (`85f4686`). |
 | CO-005 | Fixed | Bridge readiness could remain latched after the extension disconnected. | Readiness now checks the broker's live registration and bounded reconnect path (`85f4686`). |
@@ -19,12 +19,12 @@ has regression coverage and the applicable smoke path passes.
 | CO-011 | Fixed | `/clear` replaced the foreground session and could leave stale broker/session mappings. | Registration generations replace stale mappings and persist the new authoritative session ID (`6a62e13`, `85f4686`). |
 | CO-012 | Fixed | Smoke failures could leave native TUI processes or temporary Copilot session directories behind. | The bounded smoke harness tracks and removes every process and session artifact in `finally` (`19a212c`, `85f4686`). |
 | CO-013 | Fixed | Teams could unnecessarily respawn a native session instead of reusing an active bridged agent. | Teams now checks live bridge readiness first and resumes persisted sessions only when disconnected (`375a011`, `85f4686`). |
+| CO-014 | Fixed | Every fresh native TUI could block on the SDK extension's sensitive-environment consent dialog, so active agents never registered with the broker without manual input. | The backend recognizes only the exact CopilotOffice extension and three-variable prompt, accepts its one-session `Yes`, rearms after a live connection for `/clear`, and retains CLI secret-variable stripping. |
 
-## Current verification gate
+## Verification
 
-Before CO-002 is closed:
-
-1. Run the large-history `EventsWatcher` regression tests.
-2. Run the full build and unit/integration suite.
-3. Run `npm run smoke:native-bridge` to prove two-agent isolation, SDK-to-TUI
-   delivery, `/clear` reconnection, and cleanup.
+All tracked defects are closed. The final gate passed TypeScript, production
+build, 1,263 tests across 148 files, and `npm run smoke:native-bridge`. The
+smoke proved two independent native TUI processes and sessions, matching
+SDK-to-TUI prompt routing, `/clear` replacement and post-clear delivery, and
+complete process/temp-session cleanup.

@@ -15,6 +15,7 @@ import { randomBytes } from 'crypto';
 import * as os from 'os';
 import { BrokerEventSource, type CopilotEventSource } from './event-source';
 import {
+  NATIVE_BRIDGE_ENV,
   NativeBridgeBroker,
   withoutNativeBridgeEnv,
   type NativeBridgeConnection,
@@ -26,7 +27,10 @@ import {
   resolveNativeBridgeCapability,
   type NativeBridgeCapability,
 } from './native-bridge-capability';
-import { materializeNativeBridgeExtension } from './native-bridge-extension';
+import {
+  NATIVE_BRIDGE_EXTENSION_ID,
+  materializeNativeBridgeExtension,
+} from './native-bridge-extension';
 import type { ControlCommand, ControlCommandName, ControlData } from './protocol';
 import {
   sanitizeCopilotPath,
@@ -40,10 +44,17 @@ import {
 
 export const NATIVE_BRIDGE_BACKEND_NAME = 'native-bridge';
 const NATIVE_BRIDGE_SECRET_ENV_NAMES = [
-  'COPILOT_OFFICE_BRIDGE_ENDPOINT',
-  'COPILOT_OFFICE_BRIDGE_TERMINAL_KEY',
-  'COPILOT_OFFICE_BRIDGE_NONCE',
+  NATIVE_BRIDGE_ENV.endpoint,
+  NATIVE_BRIDGE_ENV.terminalKey,
+  NATIVE_BRIDGE_ENV.nonce,
 ].join(',');
+const NATIVE_BRIDGE_CONSENT_ENV_NAMES = [
+  NATIVE_BRIDGE_ENV.endpoint,
+  NATIVE_BRIDGE_ENV.nonce,
+  NATIVE_BRIDGE_ENV.terminalKey,
+] as const;
+const CONSENT_BUFFER_MAX_CHARS = 64 * 1024;
+const CONSENT_REARM_AFTER_CONNECTION_MS = 3_000;
 
 const DEFAULT_OFFICE_KEY = '__default__';
 // Keep connect + command within the relay's 10s request budget so the caller
@@ -98,6 +109,53 @@ export interface NativeBridgeBackendOptions {
   controlTimeoutMs?: number;
   /** Kill the native process tree; defaults to `taskkill /T /F` on Windows. */
   killTree?: (pty: NativePty) => void;
+}
+
+function stripTerminalControls(value: string): string {
+  return value
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+}
+
+/**
+ * Recognizes only the sensitive-environment prompt for CopilotOffice's bundled
+ * extension. A match authorizes pressing Enter on the default one-session
+ * "Yes"; folder trust and every other consent surface remain user-controlled.
+ */
+export class NativeBridgeConsentResponder {
+  private buffer = '';
+  private armed = true;
+
+  push(data: string): boolean {
+    if (!this.armed) return false;
+    const combined = `${this.buffer}${stripTerminalControls(data)}`;
+    const latestExtensionPrompt = combined.lastIndexOf('Extension "');
+    this.buffer = (
+      latestExtensionPrompt > 0 ? combined.slice(latestExtensionPrompt) : combined
+    ).slice(-CONSENT_BUFFER_MAX_CHARS);
+
+    const normalized = this.buffer.replace(/\s+/g, ' ');
+    const hasExactExtension = normalized.includes(
+      `Extension "user:${NATIVE_BRIDGE_EXTENSION_ID}" wants to read 3 sensitive environment variables`,
+    );
+    const hasExactVariables = NATIVE_BRIDGE_CONSENT_ENV_NAMES.every((name) =>
+      normalized.includes(name));
+    const defaultIsOneSessionApproval = normalized.includes('1. Yes')
+      && normalized.includes('2. Yes, and always allow these variables');
+    if (!hasExactExtension || !hasExactVariables || !defaultIsOneSessionApproval) {
+      return false;
+    }
+
+    this.armed = false;
+    this.buffer = '';
+    return true;
+  }
+
+  arm(): void {
+    this.buffer = '';
+    this.armed = true;
+  }
 }
 
 /** Launch arguments for one agent's native TUI. */
@@ -221,6 +279,8 @@ export class NativeBridgeProcess implements TerminalProcess {
   private sessionId: string;
   private lastChange: TerminalSessionChange | null = null;
   private lastGeneration = 0;
+  private consentRearmTimer: NodeJS.Timeout | null = null;
+  private readonly consentResponder = new NativeBridgeConsentResponder();
   private readonly sessionListeners = new Set<(change: TerminalSessionChange) => void>();
   private readonly unsubscribeSessionChanges: () => void;
 
@@ -234,6 +294,13 @@ export class NativeBridgeProcess implements TerminalProcess {
     private readonly killTree: (pty: NativePty) => void,
   ) {
     this.sessionId = initialSessionId;
+    pty.onData((data) => {
+      if (!this.consentResponder.push(data) || this.closed) return;
+      console.log(
+        `[NativeBridge] Approving scoped environment access for ${terminalKey}`,
+      );
+      pty.write('\r');
+    });
     this.unsubscribeSessionChanges = broker.onSessionChange((change) => {
       if (change.terminalKey === terminalKey) this.observeConnection(change);
     });
@@ -362,6 +429,12 @@ export class NativeBridgeProcess implements TerminalProcess {
   ): void {
     if (this.closed || connection.generation <= this.lastGeneration) return;
     this.lastGeneration = connection.generation;
+    if (this.consentRearmTimer) clearTimeout(this.consentRearmTimer);
+    this.consentRearmTimer = setTimeout(() => {
+      this.consentRearmTimer = null;
+      if (!this.closed) this.consentResponder.arm();
+    }, CONSENT_REARM_AFTER_CONNECTION_MS);
+    this.consentRearmTimer.unref?.();
     const previousSessionId = this.sessionId;
     this.sessionId = connection.sessionId;
     const reportedPrevious = 'previousSessionId' in connection
@@ -386,6 +459,10 @@ export class NativeBridgeProcess implements TerminalProcess {
   private release(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.consentRearmTimer) {
+      clearTimeout(this.consentRearmTimer);
+      this.consentRearmTimer = null;
+    }
     this.unsubscribeSessionChanges();
     this.sessionListeners.clear();
     this.broker.unregister(this.terminalKey, this.token);

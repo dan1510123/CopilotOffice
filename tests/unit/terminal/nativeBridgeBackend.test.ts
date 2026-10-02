@@ -8,6 +8,7 @@ import {
 } from '../../../electron/terminal/native-bridge-broker';
 import {
   NativeBridgeBackend,
+  NativeBridgeConsentResponder,
   NativeBridgeProcess,
   buildNativeBridgeArgs,
   buildNativeBridgeEnv,
@@ -26,6 +27,15 @@ const REPO_ROOT = path.join(FIXTURE_ROOT, 'repo');
 const REPO_BIN = path.join(REPO_ROOT, 'node_modules', '.bin');
 const TOOLS_DIR = path.join(FIXTURE_ROOT, 'tools');
 const AGENT_CWD = path.join(FIXTURE_ROOT, 'work', 'project');
+const BRIDGE_CONSENT_PROMPT = `
+Extension "user:copilot-office-bridge" wants to read 3 sensitive environment variables
+COPILOT_OFFICE_BRIDGE_ENDPOINT
+COPILOT_OFFICE_BRIDGE_NONCE
+COPILOT_OFFICE_BRIDGE_TERMINAL_KEY
+❯ 1. Yes
+  2. Yes, and always allow these variables in this repo
+  3. No (Esc)
+`;
 
 class FakePty implements NativePty {
   readonly written: string[] = [];
@@ -207,6 +217,33 @@ async function createHarness(options: { connectTimeoutMs?: number } = {}) {
 }
 
 describe('native bridge launch contract', () => {
+  it('recognizes only the exact bundled-extension environment consent prompt', () => {
+    const responder = new NativeBridgeConsentResponder();
+
+    expect(responder.push('\x1b[2JExtension "user:copilot-office-bridge" wants to read 3 sens')).toBe(false);
+    expect(responder.push(`itive environment variables${BRIDGE_CONSENT_PROMPT.slice(
+      BRIDGE_CONSENT_PROMPT.indexOf('\nCOPILOT_OFFICE_BRIDGE_ENDPOINT'),
+    )}\x1b[0m`)).toBe(true);
+
+    expect(responder.push(BRIDGE_CONSENT_PROMPT)).toBe(false);
+    responder.arm();
+    expect(responder.push(BRIDGE_CONSENT_PROMPT)).toBe(true);
+  });
+
+  it('does not approve other extensions, variable sets, or folder trust prompts', () => {
+    const responder = new NativeBridgeConsentResponder();
+
+    expect(responder.push(BRIDGE_CONSENT_PROMPT.replace(
+      'user:copilot-office-bridge',
+      'project:unknown-extension',
+    ))).toBe(false);
+    expect(responder.push(BRIDGE_CONSENT_PROMPT.replace(
+      'COPILOT_OFFICE_BRIDGE_NONCE',
+      'GITHUB_TOKEN',
+    ))).toBe(false);
+    expect(responder.push('Do you trust the files in this folder?\n❯ 1. Yes\n 2. No')).toBe(false);
+  });
+
   it('builds the pinned native CLI arguments with the persisted session id', () => {
     expect(buildNativeBridgeArgs('session-a', EXTENSION_SDK_PATH, {
       yolo: true,
@@ -299,6 +336,19 @@ describe('native bridge launch contract', () => {
     expect(pty.written).toEqual(['/clear\r']);
     expect(pty.resized).toEqual([[100, 40]]);
     expect(output).toHaveBeenCalledWith('\x1b[1mnative tui\x1b[0m');
+  });
+
+  it('accepts the exact bridge environment prompt for the current session', async () => {
+    const { backend, spawnCalls } = await createHarness();
+    const proc = await backend.start(startOptions());
+    const pty = spawnCalls[0].pty;
+    const output = vi.fn();
+    proc.onData(output);
+
+    pty.emitData(BRIDGE_CONSENT_PROMPT);
+
+    expect(pty.written).toEqual(['\r']);
+    expect(output).toHaveBeenCalledWith(BRIDGE_CONSENT_PROMPT);
   });
 });
 
