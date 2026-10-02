@@ -1,9 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type {
-  BeginTransientSessionResult,
-  DisposeTransientSessionResult,
-  SessionHistoryEntry,
-} from './protocol';
+import type { SessionHistoryEntry } from './protocol';
 
 // Copilot event types
 export interface CopilotEvent {
@@ -24,28 +20,6 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
   terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode, hostWorkingDir);
-  },
-  terminalBeginTransientSession: (
-    officeId: string,
-    agentId: string,
-    options: {
-      lifecycleId: string;
-      title: string;
-      workingDir?: string;
-      hostWorkingDir?: string;
-      cols?: number;
-      rows?: number;
-      preseededPrompt: string;
-    },
-  ): Promise<BeginTransientSessionResult> => {
-    return ipcRenderer.invoke('terminal-begin-transient-session', officeId, agentId, options);
-  },
-  terminalDisposeTransientSession: (
-    officeId: string,
-    agentId: string,
-    lifecycleId: string,
-  ): Promise<DisposeTransientSessionResult> => {
-    return ipcRenderer.invoke('terminal-dispose-transient-session', officeId, agentId, lifecycleId);
   },
   terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-write', officeId, agentId, data);
@@ -188,13 +162,13 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('terminal-data', handler);
     return () => ipcRenderer.removeListener('terminal-data', handler);
   },
-  onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string, lifecycleId?: string) => void) => {
-    const handler = (_event: unknown, agentId: string, exitCode: number, officeId?: string, sessionId?: string, lifecycleId?: string) => callback(agentId, exitCode, officeId, sessionId, lifecycleId);
+  onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, exitCode: number, officeId?: string, sessionId?: string) => callback(agentId, exitCode, officeId, sessionId);
     ipcRenderer.on('terminal-exit', handler);
     return () => ipcRenderer.removeListener('terminal-exit', handler);
   },
-  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string, sessionId?: string, lifecycleId?: string) => void) => {
-    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string, sessionId?: string, lifecycleId?: string) => callback(agentId, status, officeId, sessionId, lifecycleId);
+  onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => callback(agentId, status, officeId);
     ipcRenderer.on('terminal-preload-status', handler);
     return () => ipcRenderer.removeListener('terminal-preload-status', handler);
   },
@@ -221,8 +195,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-tool-complete', handler);
     return () => ipcRenderer.removeListener('copilot-tool-complete', handler);
   },
-  onCopilotTurnEnd: (callback: (agentId: string, officeId?: string, sessionId?: string, lifecycleId?: string) => void) => {
-    const handler = (_event: unknown, agentId: string, officeId?: string, sessionId?: string, lifecycleId?: string) => callback(agentId, officeId, sessionId, lifecycleId);
+  onCopilotTurnEnd: (callback: (agentId: string, officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, officeId?: string) => callback(agentId, officeId);
     ipcRenderer.on('copilot-turn-end', handler);
     return () => ipcRenderer.removeListener('copilot-turn-end', handler);
   },
@@ -527,24 +501,6 @@ declare global {
     __copilotOfficeE2E?: boolean;
     copilotBridge: {
       terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }>;
-      terminalBeginTransientSession: (
-        officeId: string,
-        agentId: string,
-        options: {
-          lifecycleId: string;
-          title: string;
-          workingDir?: string;
-          hostWorkingDir?: string;
-          cols?: number;
-          rows?: number;
-          preseededPrompt: string;
-        },
-      ) => Promise<BeginTransientSessionResult>;
-      terminalDisposeTransientSession: (
-        officeId: string,
-        agentId: string,
-        lifecycleId: string,
-      ) => Promise<DisposeTransientSessionResult>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitAnswer: (officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitPrompt: (officeId: string, agentId: string, prompt: string, label?: string) => Promise<{ success: boolean; error?: string }>;
@@ -589,13 +545,13 @@ declare global {
       deleteOfficeSession: (officeId: string) => Promise<{ success: boolean }>;
       transferSession: (fromOfficeId: string, toOfficeId: string, agentId: string) => Promise<{ success: boolean; sessionId?: string; error?: string }>;
       onTerminalData: (callback: (agentId: string, data: string, officeId?: string, sessionId?: string) => void) => () => void;
-      onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string, lifecycleId?: string) => void) => () => void;
-      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string, sessionId?: string, lifecycleId?: string) => void) => () => void;
+      onTerminalExit: (callback: (agentId: string, exitCode: number, officeId?: string, sessionId?: string) => void) => () => void;
+      onTerminalPreloadStatus: (callback: (agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string) => void) => () => void;
       onCopilotEvent: (callback: (agentId: string, event: CopilotEventData) => void) => () => void;
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
       onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => () => void;
       onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => () => void;
-      onCopilotTurnEnd: (callback: (agentId: string, officeId?: string, sessionId?: string, lifecycleId?: string) => void) => () => void;
+      onCopilotTurnEnd: (callback: (agentId: string, officeId?: string) => void) => () => void;
       onCopilotTurnStart: (callback: (agentId: string) => void) => () => void;
       onCopilotUserMessage: (callback: (agentId: string) => void) => () => void;
       onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => void) => () => void;

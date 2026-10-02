@@ -4,23 +4,9 @@ import type { MeetingPlan } from '../../../src/meeting/types';
 import { installMockCopilotBridge } from '../../setup/copilot-bridge-mock';
 
 interface CapturedListeners {
-  preloadStatus:
-    | ((agentId: string, status: 'preloading' | 'ready' | 'failed', officeId?: string, sessionId?: string, lifecycleId?: string) => void)
-    | null;
-  terminalExit:
-    | ((agentId: string, exitCode: number, officeId?: string, sessionId?: string, lifecycleId?: string) => void)
-    | null;
-  turnEnd:
-    | ((agentId: string, officeId?: string, sessionId?: string, lifecycleId?: string) => void)
-    | null;
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
+  preloadStatus: ((agentId: string, status: string, officeId?: string) => void) | null;
+  terminalExit: ((agentId: string, exitCode: number, officeId?: string) => void) | null;
+  turnEnd: ((agentId: string, officeId?: string) => void) | null;
 }
 
 function setupBridge() {
@@ -31,25 +17,14 @@ function setupBridge() {
   };
 
   const bridge = installMockCopilotBridge({
-    terminalBeginTransientSession: vi.fn(
-      async (_officeId: string, agentId: string) => ({
-        success: true as const,
-        sessionId: `transient-${agentId}`,
-        previousSessionId: `persistent-${agentId}`,
-        pid: 1,
-      }),
-    ) as any,
     onTerminalPreloadStatus: vi.fn((cb) => {
       captured.preloadStatus = cb;
-      return () => {};
     }) as any,
     onTerminalExit: vi.fn((cb) => {
       captured.terminalExit = cb;
-      return () => {};
     }) as any,
     onCopilotTurnEnd: vi.fn((cb) => {
       captured.turnEnd = cb;
-      return () => {};
     }) as any,
   });
   return { bridge, captured };
@@ -65,17 +40,7 @@ const PLAN: MeetingPlan = {
 
 const OFFICE_ID = 'office-fleet-1';
 
-function lifecycleFor(
-  bridge: Window['copilotBridge'],
-  agentId: string,
-): string {
-  const call = (bridge.terminalBeginTransientSession as any).mock.calls.find(
-    (entry: unknown[]) => entry[1] === agentId,
-  );
-  return call?.[2]?.lifecycleId;
-}
-
-describe('meeting/fleetOrchestrator — transient lifecycle contract', () => {
+describe('meeting/fleetOrchestrator — spawn/track/teardown contract', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -85,240 +50,215 @@ describe('meeting/fleetOrchestrator — transient lifecycle contract', () => {
     vi.restoreAllMocks();
   });
 
-  it('starts each task through a fresh transient API and never reuses terminalStart', async () => {
+  it('initializes all agents as pending then transitions to starting on spawn', async () => {
+    const { bridge } = setupBridge();
+    const orch = new FleetOrchestrator();
+
+    const startedAgents: string[] = [];
+    orch.on('fleet:agent:started', (agentId) => {
+      startedAgents.push(agentId);
+    });
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    // First spawn fires immediately; the stagger delay is mocked.
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(bridge.terminalStart).toHaveBeenCalledWith(OFFICE_ID, 'generalist', '.', undefined, undefined, 'p1');
+    expect(startedAgents).toEqual(['generalist']);
+
+    // After stagger delay, second spawn fires.
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(bridge.terminalStart).toHaveBeenCalledWith(OFFICE_ID, 'debugger', '.', undefined, undefined, 'p2');
+    expect(startedAgents).toEqual(['generalist', 'debugger']);
+  });
+
+  it('delivers each task prompt as the atomic pre-seeded start input, never as raw terminal input', async () => {
+    const { bridge, captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(1500);
+    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID);
+    captured.preloadStatus?.('debugger', 'ready', OFFICE_ID);
+
+    expect(bridge.terminalStart).toHaveBeenCalledTimes(2);
+    expect((bridge.terminalStart as any).mock.calls.map((call: unknown[]) => call[5])).toEqual(['p1', 'p2']);
+    expect(bridge.terminalWrite).not.toHaveBeenCalled();
+    expect(bridge.terminalSubmitPrompt).not.toHaveBeenCalled();
+  });
+
+  it('sets the explicit task title as session metadata after a successful start', async () => {
     const { bridge } = setupBridge();
     const orch = new FleetOrchestrator();
 
     void orch.executePlan(PLAN, '.', OFFICE_ID);
     await vi.advanceTimersByTimeAsync(1500);
 
-    expect(bridge.terminalBeginTransientSession).toHaveBeenCalledTimes(2);
-    expect(bridge.terminalBeginTransientSession).toHaveBeenNthCalledWith(
-      1,
-      OFFICE_ID,
-      'generalist',
-      expect.objectContaining({
-        title: 'do x',
-        workingDir: '.',
-        preseededPrompt: 'p1',
-        lifecycleId: expect.stringContaining('fleet-'),
-      }),
-    );
-    expect(bridge.terminalBeginTransientSession).toHaveBeenNthCalledWith(
-      2,
-      OFFICE_ID,
-      'debugger',
-      expect.objectContaining({
-        title: 'fix y',
-        workingDir: '.',
-        preseededPrompt: 'p2',
-      }),
-    );
-    expect(bridge.terminalStart).not.toHaveBeenCalled();
-    expect(orch.getFleetState().map((state) => state.transientSessionId)).toEqual([
-      'transient-generalist',
-      'transient-debugger',
-    ]);
+    expect(bridge.setSessionMeta).toHaveBeenCalledWith(OFFICE_ID, 'generalist', { title: 'do x' });
+    expect(bridge.setSessionMeta).toHaveBeenCalledWith(OFFICE_ID, 'debugger', { title: 'fix y' });
   });
 
-  it('rejects duplicate agent assignments before starting any transient lease', async () => {
-    const { bridge } = setupBridge();
-    const orch = new FleetOrchestrator();
-    const duplicatePlan: MeetingPlan = {
-      plan: 'bad',
-      tasks: [
-        PLAN.tasks[0],
-        { ...PLAN.tasks[0], title: 'second task', prompt: 'p2' },
-      ],
-    };
-
-    await expect(orch.executePlan(duplicatePlan, '.', OFFICE_ID)).rejects.toThrow(
-      'multiple tasks to the same agent',
-    );
-    expect(bridge.terminalBeginTransientSession).not.toHaveBeenCalled();
-  });
-
-  it('disposes on turn end and waits for restoration before all-complete', async () => {
+  it('treats an already-ready reused terminal as working without another preload event', async () => {
     const { bridge, captured } = setupBridge();
-    const dispose = deferred<{
-      success: true;
-      disposed: true;
-      restoredSessionId: string;
-      removedSessionIds: string[];
-    }>();
-    (bridge.terminalDisposeTransientSession as any).mockReturnValue(dispose.promise);
-    const orch = new FleetOrchestrator();
-    const done: string[] = [];
-    const complete: unknown[] = [];
-    orch.on('fleet:agent:done', (agentId) => done.push(agentId));
-    orch.on('fleet:all:complete', (states) => complete.push(states));
-
-    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
-    await vi.advanceTimersByTimeAsync(0);
-    const lifecycleId = lifecycleFor(bridge, 'generalist');
-    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID, 'transient-generalist', lifecycleId);
-    captured.turnEnd?.('generalist', OFFICE_ID, 'transient-generalist', lifecycleId);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(bridge.terminalDisposeTransientSession).toHaveBeenCalledTimes(1);
-    expect(done).toEqual([]);
-    expect(complete).toEqual([]);
-
-    dispose.resolve({
+    (bridge.terminalStart as any).mockResolvedValue({
       success: true,
-      disposed: true,
-      restoredSessionId: 'persistent-generalist',
-      removedSessionIds: ['transient-generalist'],
+      reused: true,
+      ready: true,
+      sessionId: 'warm-session',
     });
+    const orch = new FleetOrchestrator();
+    const working: string[] = [];
+    const done: string[] = [];
+    orch.on('fleet:agent:working', (agentId) => working.push(agentId));
+    orch.on('fleet:agent:done', (agentId) => done.push(agentId));
+
+    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
     await vi.advanceTimersByTimeAsync(0);
 
+    expect(working).toEqual(['generalist']);
+    captured.turnEnd?.('generalist', OFFICE_ID);
     expect(done).toEqual(['generalist']);
-    expect(complete).toHaveLength(1);
-    expect(orch.getFleetState()[0]).toMatchObject({
-      state: 'done',
-      cleanupSettled: true,
-    });
   });
 
-  it('disposes on terminal failure before emitting failed', async () => {
-    const { bridge, captured } = setupBridge();
+  it('ignores lifecycle events that belong to another office', async () => {
+    const { captured } = setupBridge();
     const orch = new FleetOrchestrator();
+    const workingAgents: string[] = [];
     const failed: string[] = [];
+    orch.on('fleet:agent:working', (agentId) => workingAgents.push(agentId));
     orch.on('fleet:agent:failed', (agentId) => failed.push(agentId));
-
-    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
-    await vi.advanceTimersByTimeAsync(0);
-    const lifecycleId = lifecycleFor(bridge, 'generalist');
-    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID, 'transient-generalist', lifecycleId);
-    captured.terminalExit?.('generalist', 17, OFFICE_ID, 'transient-generalist', lifecycleId);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(bridge.terminalDisposeTransientSession).toHaveBeenCalledTimes(1);
-    expect(failed).toEqual(['generalist']);
-    expect(orch.getFleetState()[0]).toMatchObject({
-      state: 'failed',
-      error: 'Exited with code 17',
-      cleanupSettled: true,
-    });
-  });
-
-  it('duplicate turn-end plus terminal-exit events do not double-clean', async () => {
-    const { bridge, captured } = setupBridge();
-    const orch = new FleetOrchestrator();
-    const complete: unknown[] = [];
-    orch.on('fleet:all:complete', (states) => complete.push(states));
-
-    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
-    await vi.advanceTimersByTimeAsync(0);
-    const lifecycleId = lifecycleFor(bridge, 'generalist');
-    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID, 'transient-generalist', lifecycleId);
-    captured.turnEnd?.('generalist', OFFICE_ID, 'transient-generalist', lifecycleId);
-    captured.terminalExit?.('generalist', 0, OFFICE_ID, 'transient-generalist', lifecycleId);
-    captured.turnEnd?.('generalist', OFFICE_ID, 'transient-generalist', lifecycleId);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(bridge.terminalDisposeTransientSession).toHaveBeenCalledTimes(1);
-    expect(complete).toHaveLength(1);
-  });
-
-  it('ignores a late terminal event from an older lifecycle for the same office and agent', async () => {
-    const { bridge, captured } = setupBridge();
-    const orch = new FleetOrchestrator();
-
-    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
-    await vi.advanceTimersByTimeAsync(0);
-    const lifecycleId = lifecycleFor(bridge, 'generalist');
-    captured.preloadStatus?.(
-      'generalist',
-      'ready',
-      OFFICE_ID,
-      'transient-generalist',
-      lifecycleId,
-    );
-    captured.terminalExit?.(
-      'generalist',
-      1,
-      OFFICE_ID,
-      'old-transient',
-      'older-fleet-lifecycle',
-    );
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(bridge.terminalDisposeTransientSession).not.toHaveBeenCalled();
-    expect(orch.getFleetState()[0].state).toBe('working');
-
-    captured.turnEnd?.(
-      'generalist',
-      OFFICE_ID,
-      'transient-generalist',
-      lifecycleId,
-    );
-    await vi.advanceTimersByTimeAsync(0);
-    expect(bridge.terminalDisposeTransientSession).toHaveBeenCalledTimes(1);
-  });
-
-  it('retries a start failure and requests idempotent cleanup before failing', async () => {
-    const { bridge } = setupBridge();
-    (bridge.terminalBeginTransientSession as any)
-      .mockResolvedValueOnce({ success: false, error: 'spawn failed' })
-      .mockResolvedValueOnce({ success: false, error: 'spawn failed again' });
-    const orch = new FleetOrchestrator();
-    const failed: string[] = [];
-    orch.on('fleet:agent:failed', (agentId) => failed.push(agentId));
-
-    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
-    await vi.advanceTimersByTimeAsync(2500);
-
-    expect(bridge.terminalBeginTransientSession).toHaveBeenCalledTimes(2);
-    expect(bridge.terminalDisposeTransientSession).toHaveBeenCalledTimes(1);
-    expect(failed).toEqual(['generalist']);
-  });
-
-  it('cancel during an in-flight start waits for the late lease to be disposed and stops staggered starts', async () => {
-    const { bridge } = setupBridge();
-    const begin = deferred<{
-      success: true;
-      sessionId: string;
-      previousSessionId: string;
-    }>();
-    (bridge.terminalBeginTransientSession as any).mockReturnValue(begin.promise);
-    const orch = new FleetOrchestrator();
-    const complete: unknown[] = [];
-    orch.on('fleet:all:complete', (states) => complete.push(states));
 
     void orch.executePlan(PLAN, '.', OFFICE_ID);
     await vi.advanceTimersByTimeAsync(0);
-    const cancelPromise = orch.cancel();
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(bridge.terminalBeginTransientSession).toHaveBeenCalledTimes(1);
-    expect(complete).toEqual([]);
 
-    begin.resolve({
-      success: true,
-      sessionId: 'transient-generalist',
-      previousSessionId: 'persistent-generalist',
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    await cancelPromise;
+    captured.preloadStatus?.('generalist', 'ready', 'some-other-office');
+    captured.terminalExit?.('generalist', 1, 'some-other-office');
+    expect(workingAgents).toEqual([]);
+    expect(failed).toEqual([]);
 
-    expect(bridge.terminalDisposeTransientSession).toHaveBeenCalledTimes(1);
-    expect(complete).toHaveLength(1);
-    expect(orch.getFleetState().every((state) => state.state === 'failed')).toBe(true);
-    expect(orch.getFleetState().every((state) => state.cleanupSettled)).toBe(true);
+    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID);
+    expect(workingAgents).toEqual(['generalist']);
   });
 
-  it('ignores lifecycle events from another office', async () => {
+  it('transitions to working when preload status fires ready', async () => {
+    const { captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const workingAgents: string[] = [];
+    orch.on('fleet:agent:working', (agentId) => workingAgents.push(agentId));
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+
+    captured.preloadStatus?.('generalist', 'ready');
+    expect(workingAgents).toContain('generalist');
+  });
+
+  it('transitions to done on turnEnd while in working state', async () => {
+    const { captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const doneAgents: string[] = [];
+    orch.on('fleet:agent:done', (agentId) => doneAgents.push(agentId));
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    captured.preloadStatus?.('generalist', 'ready');
+    captured.turnEnd?.('generalist', OFFICE_ID);
+
+    expect(doneAgents).toEqual(['generalist']);
+  });
+
+  it('ignores turnEnd from another office for an agent with the same id', async () => {
+    const { captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const doneAgents: string[] = [];
+    orch.on('fleet:agent:done', (agentId) => doneAgents.push(agentId));
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    captured.preloadStatus?.('generalist', 'ready', OFFICE_ID);
+
+    captured.turnEnd?.('generalist', 'other-office');
+    expect(doneAgents).toEqual([]);
+
+    captured.turnEnd?.('generalist', OFFICE_ID);
+    expect(doneAgents).toEqual(['generalist']);
+  });
+
+  it('marks agent failed on non-zero terminal exit and emits fleet:agent:failed', async () => {
+    const { captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const failed: string[] = [];
+    orch.on('fleet:agent:failed', (agentId) => failed.push(agentId));
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    captured.preloadStatus?.('generalist', 'ready');
+    captured.terminalExit?.('generalist', 1);
+
+    expect(failed).toEqual(['generalist']);
+  });
+
+  it('retries spawn once on terminalStart failure then marks failed if retry also fails', async () => {
+    const { bridge } = setupBridge();
+    (bridge.terminalStart as any)
+      .mockResolvedValueOnce({ success: false })
+      .mockResolvedValueOnce({ success: false });
+    const orch = new FleetOrchestrator();
+    const failed: string[] = [];
+    orch.on('fleet:agent:failed', (agentId) => failed.push(agentId));
+
+    // Single-task plan keeps the assertion focused on the retry path
+    // (multi-task would also fire a stagger spawn within the retry window).
+    void orch.executePlan(
+      { plan: 'p', tasks: [PLAN.tasks[0]] },
+      '.',
+      OFFICE_ID,
+    );
+    await vi.advanceTimersByTimeAsync(2500); // retry delay = 2000ms
+
+    expect(bridge.terminalStart).toHaveBeenCalledTimes(2);
+    expect(bridge.terminalStart).toHaveBeenLastCalledWith(OFFICE_ID, 'generalist', '.', undefined, undefined, 'p1');
+    expect(bridge.terminalWrite).not.toHaveBeenCalled();
+    expect(bridge.setSessionMeta).not.toHaveBeenCalled();
+    expect(failed).toEqual(['generalist']);
+  });
+
+  it('cancel() kills in-flight terminals and stops further spawns', async () => {
     const { bridge, captured } = setupBridge();
     const orch = new FleetOrchestrator();
 
-    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
     await vi.advanceTimersByTimeAsync(0);
-    const lifecycleId = lifecycleFor(bridge, 'generalist');
-    captured.preloadStatus?.('generalist', 'ready', 'other-office', 'transient-generalist', lifecycleId);
-    captured.turnEnd?.('generalist', 'other-office', 'transient-generalist', lifecycleId);
-    await vi.advanceTimersByTimeAsync(0);
+    // First spawn issued; mark it working then cancel.
+    captured.preloadStatus?.('generalist', 'ready');
 
-    expect(bridge.terminalDisposeTransientSession).not.toHaveBeenCalled();
-    expect(orch.getFleetState()[0].state).toBe('starting');
+    orch.cancel();
+
+    expect(bridge.terminalKill).toHaveBeenCalledWith(OFFICE_ID, 'generalist');
+
+    // Subsequent stagger ticks must NOT issue further spawns.
+    const callsBefore = (bridge.terminalStart as any).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((bridge.terminalStart as any).mock.calls.length).toBe(callsBefore);
+  });
+
+  it('emits fleet:all:complete once every agent finishes', async () => {
+    const { captured } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const completeStates: any[] = [];
+    orch.on('fleet:all:complete', (states) => completeStates.push(states));
+
+    void orch.executePlan(PLAN, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    captured.preloadStatus?.('generalist', 'ready');
+    captured.turnEnd?.('generalist', OFFICE_ID);
+
+    await vi.advanceTimersByTimeAsync(1500);
+    captured.preloadStatus?.('debugger', 'ready');
+    captured.turnEnd?.('debugger', OFFICE_ID);
+
+    expect(completeStates).toHaveLength(1);
+    expect(completeStates[0]).toHaveLength(2);
+    expect(completeStates[0].every((s: any) => s.state === 'done')).toBe(true);
   });
 });

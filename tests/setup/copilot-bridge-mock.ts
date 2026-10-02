@@ -7,18 +7,6 @@ export function createMockCopilotBridge(
 ): MockCopilotBridge {
   const bridge: Partial<MockCopilotBridge> = {
     terminalStart: vi.fn().mockResolvedValue({ success: true, pid: 1, sessionId: 'session-1' }),
-    terminalBeginTransientSession: vi.fn().mockResolvedValue({
-      success: true,
-      pid: 1,
-      sessionId: 'transient-session-1',
-      previousSessionId: 'session-1',
-    }),
-    terminalDisposeTransientSession: vi.fn().mockResolvedValue({
-      success: true,
-      disposed: true,
-      restoredSessionId: 'session-1',
-      removedSessionIds: ['transient-session-1'],
-    }),
     terminalWrite: vi.fn().mockResolvedValue({ success: true }),
     terminalSubmitAnswer: vi.fn().mockResolvedValue({ success: true }),
     terminalSubmitPrompt: vi.fn().mockResolvedValue({ success: true }),

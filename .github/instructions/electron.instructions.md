@@ -25,7 +25,7 @@ Runs as a **forked child process** (not in the main Electron process). Owns all 
 
 - **PTY spawn**: `startTerminalForAgent()` spawns a shell via node-pty, tags the env with `COPILOT_OFFICE_PROCESS`, records the PTY root PID in the registry (`.data/pty-pids.json`) for orphan reaping, then runs `copilot --resume <sessionId>`.
 - **Scrollback buffers**: Per-agent raw ANSI buffers capped at 512 KB (`MAX_BUFFER_BYTES`). Oldest chunks are evicted when the limit is exceeded.
-- **Session persistence**: Session IDs, history, metadata, and crash-recovery records for fleet transient leases are stored in per-office `.data/<officeId>.sessions.json` files. Supports archive (on normal kill/reset) and migration from legacy flat format.
+- **Session persistence**: Session IDs, history, and metadata are stored in `.data/copilot-office-sessions.json`. Supports archive (on kill/reset) and migration from legacy flat format.
 - **Attach/detach**: `activeAgentViewers` set tracks which agents have a live viewer. PTY data is only forwarded when the agent has an active viewer; scrollback is replayed on attach.
 - **Event watchers**: Each agent gets an `EventsWatcher` instance that monitors Copilot CLI events (tool start/complete, turn start/end, user message). Events are only forwarded after the agent signals ready.
 - **Auto-titling**: First `user.message` event auto-sets session title from message content.
@@ -37,7 +37,7 @@ Runs as a **forked child process** (not in the main Electron process). Owns all 
 
 Defines `MainToServer` and `ServerToMain` discriminated union types for all IPC messages:
 
-- **MainToServer**: includes typed `begin-transient-session` / `dispose-transient-session` fleet lifecycle requests in addition to the normal terminal/session APIs.
+- **MainToServer**: `start`, `write`, `resize`, `kill`, `attach`, `detach`, `exists`, `get-session-id`, `pop-out`, `shutdown`, `reset-all-sessions`, `reset-session`, `get-session-history`, `clear-session-history`, `list-active`, `query-agent-statuses`, `set-session-meta`, `get-session-meta`, `get-all-session-meta`, `create-office-session`, `delete-office-session`, `transfer-session`.
 - **ServerToMain**: `ready`, `response`, `terminal-data`, `terminal-exit`, `copilot-event`, `copilot-tool-start`, `copilot-tool-complete`, `copilot-turn-start`, `copilot-turn-end`, `copilot-user-message`, `terminal-preload-status`, `session-meta-updated`.
 
 ## terminal/preload.ts — Context Bridge
@@ -86,7 +86,6 @@ Set `COPILOT_OFFICE_DEBUG_COLD_START=1` (server side) or `window.__COPILOT_OFFIC
 - `native-bridge-extension.ts` — the bundled user-level extension source. It exits immediately when the bridge env is absent (unrelated `copilot --experimental` sessions), registers with the broker before joining the session, and never writes to stdout (stdio is the CLI's JSON-RPC channel).
 - `bridge-session-change.ts` — pure helper applying a registration's authoritative session id to office session data (archive once, promote from history, clear title). `server.ts` then updates the live `PtyProcess`, persists, and emits `session-meta-updated` with `officeId` + `meta.sessionId` so renderers rebind their terminal generation token.
 - `ready-waiters.ts` — bounded readiness waits for background (`start` with `background: true` + `readyTimeoutMs`) starts used by the Teams ensure-session-online seam; background starts never claim a renderer viewer.
-- `transient-session.ts` — pure state/disk helpers for fleet-only leases. Beginning snapshots (but does not archive) the prior persistent current session; disposal restores it and deletes only leased `session-state/<id>` directories.
 
 ## Key Rules
 
@@ -95,9 +94,6 @@ Set `COPILOT_OFFICE_DEBUG_COLD_START=1` (server side) or `window.__COPILOT_OFFIC
 - PTY processes must be cleaned up on session close, reset, and app shutdown. Always use `killPtyProcess()` — never bare `proc.kill()`.
 - `server.ts` runs as a forked child process. Never import or call its functions from main.
 - Protocol types in `protocol.ts` must stay in sync with handlers in both `server.ts` and `ipc-relay.ts`.
-- Fleet renderers must use the atomic transient begin/dispose API. The server owns lifecycle serialization, crash recovery, process teardown, current-pointer restoration, selective history/scrollback cleanup, and session-state directory deletion.
-- `lifecycleId` is the idempotency token: repeated disposal is a no-op, while a stale lifecycle can never delete a newer fleet run.
-- Mutate `activeAgentViewers` only through `agent-viewers.ts`, including cleanup paths.
 
 ## Common Pitfalls
 
