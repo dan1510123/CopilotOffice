@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  ControlPlaneClient,
   CopilotSdkBackend,
   makeUserInputHandler,
   handlePendingUserInput,
@@ -9,34 +8,13 @@ import {
 } from '../../../electron/terminal/terminal-backend';
 
 // spec 015 (events-ipc §0) — the user-input handler is the spike-verified prerequisite:
-// both managed-session factories MUST register `onUserInputRequest` (so the runtime
+// the managed-session factory MUST register `onUserInputRequest` (so the runtime
 // advertises ask_user and the model can call it), and handlePendingUserInput must
 // resolve the stored late promise idempotently.
 
 type Captured = Record<string, unknown>;
 
 describe('managed sessions register onUserInputRequest (requestUserInput prerequisite)', () => {
-  it('ControlPlaneClient.createOrResumeSession registers the handler', async () => {
-    let captured: Captured | undefined;
-    const fakeSession = { send: vi.fn(), disconnect: vi.fn() };
-    const underlying = {
-      resumeSession: vi.fn((_id: string, config: Captured) => {
-        captured = config;
-        return Promise.resolve(fakeSession);
-      }),
-      createSession: vi.fn(() => Promise.resolve(fakeSession)),
-      setForegroundSessionId: vi.fn(() => Promise.resolve()),
-      listSessions: vi.fn(() => Promise.resolve([])),
-      stop: vi.fn(() => Promise.resolve()),
-    };
-    const cpc = new ControlPlaneClient({ status: 'ready' } as never);
-    (cpc as unknown as { client: unknown }).client = underlying;
-    (cpc as unknown as { startPromise: Promise<void> }).startPromise = Promise.resolve();
-
-    await cpc.createOrResumeSession('s1', '/cwd');
-    expect(typeof captured?.onUserInputRequest).toBe('function');
-  });
-
   it('CopilotSdkBackend.resumeOrCreateSession (forStdio) registers the handler', async () => {
     let captured: Captured | undefined;
     const fakeSession = { send: vi.fn(), disconnect: vi.fn() };

@@ -364,7 +364,7 @@ export function formatToolStatus(toolName: string, args: Record<string, unknown>
  * `question`/`prompt`, `options`/`choices` as `string[]` or `{label,value}[]`/`{text}[]`,
  * and the freeform flag under several aliases. This does NOT touch {@link formatToolStatus}
  * — the static `'Waiting for your answer'` label stays byte-for-byte (FR-016). The
- * SDK/ui-server backend does not use this; its fields arrive natively in
+ * SDK-backed sessions do not use this; their fields arrive natively in
  * `user_input.requested`.
  */
 export function normalizeAskUserArgs(args: Record<string, unknown> | undefined): {
@@ -402,7 +402,7 @@ export function normalizeAskUserArgs(args: Record<string, unknown> | undefined):
  * name, return the normalized ask_user payload to relay as `copilot-ask-user`, or
  * `null` when the event is not an ask_user surface for this backend.
  *
- * - SDK/ui-server backend: `user_input.requested` carries the payload natively
+ * - SDK-backed sessions: `user_input.requested` carries the payload natively
  *   (incl. the `requestId` single-resolution key).
  * - node-pty backend: `tool.execution_start` with `toolName === 'ask_user'`,
  *   normalized best-effort from arguments (`requestId` unavailable → '').
@@ -460,7 +460,7 @@ export interface PlanRelay {
  * backend name, return the normalized plan payload to relay as `copilot-plan`, or `null`
  * when the event is not a plan surface for this backend. Mirrors {@link buildAskUserRelay}.
  *
- * - SDK/ui-server backend: the ephemeral `exit_plan_mode.requested` event carries the
+ * - SDK-backed sessions: the ephemeral `exit_plan_mode.requested` event carries the
  *   payload natively (incl. the `requestId` used to resolve via the SDK handler).
  * - node-pty backend: `tool.execution_start` with `toolName === 'exit_plan_mode'`,
  *   from arguments (`requestId` unavailable → ''); render-only (no SDK responder).

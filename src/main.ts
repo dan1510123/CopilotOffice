@@ -638,7 +638,7 @@ function installE2eDebugHook(): void {
 
 // ── Office Tabs ─────────────────────────────────────────────────
 
-// Offices whose ui-server SDK runtime has come online (per `backend-online`).
+// Offices whose SDK control plane has come online (per `backend-online`).
 // node-pty offices never emit that event, so getOfficeIndicator() also treats
 // an office with any active agent session as online.
 const onlineOffices = new Set<string>();
@@ -777,7 +777,7 @@ function showOfficeTabContextMenu(officeId: string, x: number, y: number): void 
   refresh.type = 'button';
   refresh.textContent = 'Refresh';
   refresh.setAttribute('role', 'menuitem');
-  refresh.title = 'Retry this office through the Copilot SDK UI server';
+  refresh.title = 'Restart this office\'s Copilot SDK host';
   refresh.addEventListener('click', async () => {
     hideOfficeTabContextMenu();
     onlineOffices.delete(officeId);
@@ -786,12 +786,12 @@ function showOfficeTabContextMenu(officeId: string, x: number, y: number): void 
     try {
       const result = await window.copilotBridge.refreshOfficeBackend(officeId);
       if (!result.success) {
-        throw new Error(result.error || 'UI-server refresh failed');
+        throw new Error(result.error || 'Office refresh failed');
       }
       if (result.restartedAgentIds.length === 0) {
         showClipboardToast(`No active Copilot sessions to refresh in ${office.config.name}`, 'info');
       } else {
-        showClipboardToast(`Refreshed ${office.config.name} through Copilot SDK UI server`, 'success');
+        showClipboardToast(`Refreshed ${office.config.name} through the Copilot SDK host`, 'success');
       }
     } catch (error) {
       showClipboardToast(
@@ -2258,16 +2258,14 @@ function registerOrchestratorSpec017Resolvers(): void {
     bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
-      // session.send / bracketed-paste for node-pty), targeted by agentId. NOT raw
-      // terminalWrite: under the ui-server shared host, raw input is routed to the
-      // office's FOREGROUND session, so a background agent's prompt would land in
-      // whichever agent is currently viewed (spec 017 US5 mis-delivery fix).
+      // session.send / bracketed-paste for node-pty), targeted by agentId — never
+      // raw terminalWrite (spec 017 US5 mis-delivery fix).
       const res = await window.copilotBridge.terminalSubmitPrompt(officeId, agentId, text);
       return res?.success !== false;
     },
     submitAnswer: async (officeId, agentId, answer) => {
       // Answer a pending ask_user through the sanctioned submit-answer channel so
-      // freeform text is delivered verbatim (SDK/ui-server) instead of selecting a
+      // freeform text is delivered verbatim (SDK/native-bridge) instead of selecting a
       // choice prompt's highlighted option. Classify wasFreeform from the captured
       // options, mirroring the Teams reply path.
       const { wasFreeform, requestId } = classifyAnswer(agentId, answer);
@@ -3315,7 +3313,7 @@ if (window.copilotBridge) {
   });
 
   // Terminal backend fallback notice (013): if a requested backend (default
-  // ui-server) couldn't load and we fell back to node-pty, surface a toast.
+  // native-bridge) couldn't load and we fell back to sdk, surface a toast.
   // Pull once on init (race-free: the server is ready before the window loads)
   // and also listen for a push (covers server respawn after a crash). Dedupe so
   // the two paths never double-toast for the same startup.
@@ -3329,23 +3327,14 @@ if (window.copilotBridge) {
   window.copilotBridge.onBackendFallback?.((info) => showBackendFallbackToast(info));
   void window.copilotBridge.getBackendInfo?.().then((info) => showBackendFallbackToast(info));
 
-  // Success notice (013): when the ui-server SDK control plane comes online for
-  // an office (host up + SDK client attached), confirm it with a toast. Emitted
-  // at most once per office by the server.
+  // Success notice (013): when the SDK control plane comes online for an office
+  // (sdk host up + client attached, or native bridge connected), confirm it with
+  // a toast. Emitted at most once per office by the server.
   window.copilotBridge.onBackendOnline?.((officeId: string, _backend: string) => {
     const officeName = officeManager.getOffice(officeId)?.config.name ?? officeId;
     onlineOffices.add(officeId);
     updateOfficeTabIndicators();
     showClipboardToast(`GitHub Copilot SDK server online for ${officeName}`, 'success', 10_000);
-  });
-
-  // Per-agent fallback notice (013): a specific agent was requested on ui-server
-  // but its start failed and fell back to node-pty (T039). Surface it so a broken
-  // SDK attach is never silent.
-  window.copilotBridge.onBackendSessionFallback?.((_officeId: string, agentId: string, reason: string) => {
-    const agentName = getAgentConfig(agentId)?.name ?? agentId;
-    const detail = reason ? ` (${reason})` : '';
-    showClipboardToast(`${agentName}: UI-server unavailable — using node-pty${detail}`, 'error', 10_000);
   });
 
   // Teams Remote Agents (011): keep the dashboard tile buttons in sync with

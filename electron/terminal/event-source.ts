@@ -56,10 +56,8 @@ export function mapSdkEventToCopilotEvent(evt: unknown): CopilotEvent {
 }
 
 /**
- * Event source for SDK-backed Copilot sessions.
- *
- * TODO(T011): server wiring will construct this with the live SDK CopilotSession
- * when selecting the ui-server backend instead of the events.jsonl file watcher.
+ * Event source for SDK-backed Copilot sessions (the sdk backend), bound to the
+ * live SDK CopilotSession instead of the events.jsonl file watcher.
  */
 export class SdkEventSource implements CopilotEventSource {
   private unsubscribe: (() => void) | null = null;

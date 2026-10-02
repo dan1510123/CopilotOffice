@@ -240,7 +240,7 @@ export class TeamsService {
   /**
    * Pending `exit_plan_mode` approvals awaiting an in-thread decision, keyed by agentId.
    * At most one per online agent; transient, in-memory. Resolved via `gateway.respondPlan`.
-   * Only populated on the SDK/ui-server backend (non-empty requestId) — the node-pty
+   * Only populated on the SDK/native-bridge backend (non-empty requestId) — the node-pty
    * backend is render-only (plan approved in the local TUI).
    */
   private readonly pendingPlans = new Map<string, PendingPlan>(); // key = agentId
@@ -818,7 +818,7 @@ export class TeamsService {
     }
     // spec 015 hardening (h1): the SDK explicitly signalled that an ask_user interaction
     // resolved (user_input.completed). This is the PRECISE local-answer signal for the
-    // SDK/ui-server path — clear only the matching pending record by requestId. If a Teams
+    // SDK/native-bridge path — clear only the matching pending record by requestId. If a Teams
     // answer already resolved+deleted it, there's no record → no false notice.
     if (e.kind === 'ask-user-complete') {
       this.maybeLocalResolveByRequestId(e.agentId, e.requestId ?? '');
@@ -1248,7 +1248,7 @@ export class TeamsService {
   /**
    * Handle a `plan` AgentEvent: an agent presented a plan via `exit_plan_mode`. Post the
    * plan summary (auto-rendered as an image when long, per spec 018) then, on the
-   * SDK/ui-server backend (non-empty requestId), present the approval actions as A/B/C
+   * SDK/native-bridge backend (non-empty requestId), present the approval actions as A/B/C
    * selectors and track a {@link PendingPlan}. On the node-pty backend (empty requestId)
    * the plan is render-only — approval is resolved in the local TUI. Ignored when offline.
    */
@@ -1272,7 +1272,7 @@ export class TeamsService {
       await this.safeReply(binding, `${heading}<br><br>(no plan details provided)`);
     }
 
-    // 2. SDK/ui-server: present the approval actions and track the pending plan.
+    // 2. SDK/native-bridge: present the approval actions and track the pending plan.
     const requestId = e.plan.requestId ?? '';
     if (requestId) {
       const actions = e.plan.actions.length ? e.plan.actions : ['exit_only'];
@@ -1645,7 +1645,7 @@ export class TeamsService {
   }
 
   /**
-   * Precise local-resolution for the SDK/ui-server path (spec 015 hardening h1). Fired on
+   * Precise local-resolution for the SDK/native-bridge path (spec 015 hardening h1). Fired on
    * `user_input.completed`: clear the pending question ONLY when its requestId matches the
    * resolved interaction. A Teams answer clears the record synchronously before this fires,
    * so a matching record here means the answer came from the app → post the one-time notice.

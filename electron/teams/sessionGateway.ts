@@ -3,7 +3,7 @@
 // Bridges the Teams service to CopilotOffice's terminal infrastructure without touching
 // `activeAgentViewers` or introducing a new session lifecycle. Prompt submission goes through
 // the backend's atomic submit (`TerminalRelay.mainSubmitPrompt` → server `submit-prompt`):
-// the ui-server/SDK backend enqueues programmatically (`session.send({ mode: 'enqueue' })`),
+// the SDK/native-bridge backends enqueue programmatically (`session.send({ mode: 'enqueue' })`),
 // and the node-pty backend falls back to keystroke injection via `submitViaKeystrokes`
 // (idle-gated Ctrl+U → bracketed paste → Enter — not a bare `write(prompt + '\r')`).
 // Response capture consumes the server's structured copilot events.
@@ -152,14 +152,14 @@ export interface SessionGateway {
   runControl?(officeId: string, agentId: string, command: ControlCommandName, arg?: string): Promise<ControlCommandResult>;
   /**
    * spec 015: answer a pending `ask_user` interaction. The single transport-agnostic
-   * answer seam — resolves the pending user-input interaction (SDK/ui-server) or
+   * answer seam — resolves the pending user-input interaction (SDK/native-bridge) or
    * injects keystrokes (node-pty). NOT `submitPrompt`/enqueue. `requestId` is the
    * single-resolution key.
    */
   submitAnswer(officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void>;
   /**
    * Plan mode: approve or reject a pending `exit_plan_mode` plan (see `AgentEvent` kind
-   * `plan`). Resolves the blocked SDK handler on the SDK/ui-server backend. On the
+   * `plan`). Resolves the blocked SDK handler on the SDK/native-bridge backend. On the
    * node-pty backend this rejects (render-only — the plan is resolved in the local TUI).
    * `approved` chooses accept vs. suggest-changes; `selectedAction` is the chosen exit
    * action; `feedback` carries change requests when `approved` is false.
@@ -262,7 +262,7 @@ export class RelaySessionGateway implements SessionGateway {
     agentId: string,
     d: { requestId?: string; approved: boolean; selectedAction?: string; feedback?: string },
   ): Promise<void> {
-    // Plan mode: resolve the blocked exit_plan_mode handler (SDK/ui-server). node-pty
+    // Plan mode: resolve the blocked exit_plan_mode handler (SDK/native-bridge). node-pty
     // reports failure (render-only) → surfaced as a thrown error for the caller to notice.
     const res = await this.relay.mainSubmitPlanDecision(officeId, agentId, d);
     if (!res.success) {

@@ -517,8 +517,7 @@ export class SeriousTerminalController {
         perfMark('serious', 'switch:exists-done', perfTarget, exists ? 1 : 0);
 
         if (!exists) {
-          // Brand-new session: start it, then explicitly claim foreground (a cold
-          // ui-server start may not auto-foreground during a switch).
+          // Brand-new session: start it, then activate it as the viewed agent.
           cacheLog(`activate ${officeId}:${agentId} → COLD/new: terminalStart + foreground activate`);
           const startResult = await window.copilotBridge.terminalStart(
             officeId,

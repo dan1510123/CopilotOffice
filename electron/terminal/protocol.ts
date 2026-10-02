@@ -130,7 +130,7 @@ export interface MsgRunControlCommand {
 
 /**
  * Answer to a pending `ask_user` interaction (spec 015). Distinct from
- * `submit-prompt`: this resolves the pending user-input interaction (SDK/ui-server
+ * `submit-prompt`: this resolves the pending user-input interaction (SDK
  * → `handlePendingUserInput(requestId)`) or injects keystrokes (node-pty). Never
  * enqueues a new prompt.
  */
@@ -147,7 +147,7 @@ export interface MsgSubmitAnswer {
 
 /**
  * Decision on a pending plan-mode (`exit_plan_mode`) interaction. Resolves the blocked
- * SDK `onExitPlanModeRequest` handler (SDK/ui-server → `handlePendingPlanApproval`). The
+ * SDK `onExitPlanModeRequest` handler (SDK → `handlePendingPlanApproval`). The
  * node-pty backend has no SDK responder — plan approval there is resolved in the local
  * TUI, and this message reports failure so the caller keeps the plan open.
  */
@@ -187,13 +187,10 @@ export interface MsgAttach {
   agentId: string;
   /**
    * True only for a genuine user "I am now viewing this agent" attach (the
-   * SeriousTerminalController panel or the TerminalOverlay popup). Under the
-   * shared ui-server host this is what claims the single host foreground: the
-   * agent whose rawPty renders and whose session receives keyboard input.
-   *
-   * Background attaches (reconnect-on-focus, fleetTracker, teams) OMIT this so
-   * they only subscribe to the agent's copilot-events for badges/status and can
-   * NEVER hijack the foreground away from the agent the user is actually viewing.
+   * SeriousTerminalController panel or the TerminalOverlay popup). Background
+   * attaches (reconnect-on-focus, fleetTracker, teams) omit it. Informational:
+   * every current backend gives each agent its own terminal, so the server
+   * needs no foreground switch.
    */
   foreground?: boolean;
 }
@@ -212,8 +209,6 @@ export interface MsgDetach {
  * The handler:
  *  - ensures the terminal exists (cold-starts it, mirroring `start` bookkeeping),
  *  - registers the viewer via the dual-key `addAgentViewer` helper,
- *  - when `foreground === true`, serializes and AWAITS the ui-server foreground
- *    switch (preserving the input-target race guard — never fire-and-forget),
  *  - returns the authoritative session id + title, and
  *  - returns scrollback ONLY when `needScrollback` is set (a cold cache entry);
  *    a warm cached xterm has retained its rendered state, so replay is skipped.
@@ -456,13 +451,13 @@ export type MainToServer =
 
 /** Result of terminal-backend selection at server startup (T008). */
 export interface BackendSelectionInfo {
-  /** The backend actually loaded (e.g. 'node-pty' | 'ui-server' | 'sdk'). */
+  /** The backend actually loaded (e.g. 'native-bridge' | 'node-pty' | 'sdk'). */
   name: string;
   /** The backend that was requested via COPILOT_TERMINAL_BACKEND. */
   requested: string;
   /**
    * True when the requested backend could not load and another one was used
-   * instead (native-bridge → sdk, ui-server → node-pty).
+   * instead (native-bridge → sdk).
    */
   fellBack: boolean;
   /** Human-readable reason for the fallback, when one occurred. */
@@ -527,7 +522,7 @@ export interface SrvCopilotToolStart {
 
 /**
  * Emitted IN ADDITION to `copilot-tool-start` when an agent raises an `ask_user`
- * user-input interaction (spec 015). SDK/ui-server backend: fields come natively
+ * user-input interaction (spec 015). SDK-backed sessions: fields come natively
  * from `user_input.requested`. node-pty backend: normalized from
  * `tool.execution_start` arguments (`requestId` is ''). The server stays a dumb
  * forwarder — it does NOT assign selector labels or format HTML.
@@ -568,7 +563,7 @@ export interface SrvCopilotAskUserComplete {
 
 /**
  * Emitted IN ADDITION to `copilot-tool-start` when an agent presents a plan via
- * `exit_plan_mode`. SDK/ui-server backend: fields come natively from the ephemeral
+ * `exit_plan_mode`. SDK-backed sessions: fields come natively from the ephemeral
  * `exit_plan_mode.requested` event (incl. the `requestId` used to resolve the plan).
  * node-pty backend: extracted from `tool.execution_start` arguments (`requestId` is ''
  * → render-only). The server stays a dumb forwarder — it does not format HTML or assign
@@ -637,28 +632,16 @@ export interface SrvTerminalPreloadStatus {
 }
 
 /**
- * Emitted once per office the first time a ui-server (SDK control-plane) session
- * starts successfully for it — i.e. the `copilot --ui-server` host is online and
- * the SDK client attached. Lets the renderer surface a confirmation toast.
- * NOT emitted when a session falls back to node-pty (T039).
+ * Emitted once per office the first time an SDK control plane comes online for
+ * it — the sdk headless host is listening with its client attached, or the first
+ * native-bridge registration connected. Lets the renderer surface a
+ * confirmation toast.
  */
 export interface SrvBackendOnline {
   type: 'backend-online';
   officeId: string;
-  /** The backend that came online (always 'ui-server' for this message). */
+  /** The backend that came online ('sdk' or 'native-bridge'). */
   backend: string;
-}
-
-/**
- * Emitted when a specific agent session was requested on ui-server but its start
- * failed and it fell back to node-pty (T039). Lets the renderer surface a toast
- * so a broken SDK attach is never silent.
- */
-export interface SrvBackendSessionFallback {
-  type: 'backend-session-fallback';
-  officeId: string;
-  agentId: string;
-  reason: string;
 }
 
 export interface SrvSessionMetaUpdated {
@@ -697,6 +680,5 @@ export type ServerToMain =
   | SrvCopilotUserMessage
   | SrvTerminalPreloadStatus
   | SrvBackendOnline
-  | SrvBackendSessionFallback
   | SrvSessionMetaUpdated
   | SrvResponse;

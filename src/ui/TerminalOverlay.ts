@@ -655,10 +655,9 @@ export class TerminalOverlay {
         if (created) {
           // Cold cache entry — we need the server-side session. A truly-new
           // session goes through startNewSession() so AutoStartCoordinator
-          // bookkeeping/event emits are preserved, then we explicitly claim
-          // foreground (a cold ui-server start may not auto-foreground during a
-          // switch). An already-running server session is activated atomically
-          // with a one-time scrollback replay into the fresh xterm.
+          // bookkeeping/event emits are preserved, then we activate it as the
+          // viewed agent. An already-running server session is activated
+          // atomically with a one-time scrollback replay into the fresh xterm.
           const existsOnServer = await withTimeout(
             window.copilotBridge.terminalExists(officeId, agent.id),
             IPC_TIMEOUT, 'terminalExists',

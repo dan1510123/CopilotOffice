@@ -5,7 +5,7 @@ import { buildAskUserRelay, normalizeAskUserArgs, formatToolStatus } from '../..
 // copilot-ask-user event IN ADDITION to the unchanged copilot-tool-start (FR-016).
 // buildAskUserRelay is the pure translator the server watcherCallback uses.
 
-describe('buildAskUserRelay — SDK/ui-server (user_input.requested, native payload)', () => {
+describe('buildAskUserRelay — SDK/native-bridge (user_input.requested, native payload)', () => {
   it('normalizes the native fields incl. the requestId single-resolution key', () => {
     const relay = buildAskUserRelay(
       {
@@ -18,7 +18,7 @@ describe('buildAskUserRelay — SDK/ui-server (user_input.requested, native payl
           allowFreeform: false,
         },
       },
-      'ui-server',
+      'sdk',
     );
     expect(relay).toEqual({
       toolId: 'tool-9',
@@ -76,13 +76,13 @@ describe('buildAskUserRelay — node-pty degraded path (tool.execution_start)', 
     });
   });
 
-  it('does NOT relay ask_user tool.execution_start on the SDK/ui-server backend (avoids duplicate)', () => {
+  it('does NOT relay ask_user tool.execution_start on the SDK/native-bridge backend (avoids duplicate)', () => {
     const relay = buildAskUserRelay(
       {
         type: 'tool.execution_start',
         data: { toolName: 'ask_user', toolCallId: 'tool-4', arguments: { question: 'q', options: ['a'] } },
       },
-      'ui-server',
+      'sdk',
     );
     expect(relay).toBeNull();
   });

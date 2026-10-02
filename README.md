@@ -34,7 +34,7 @@ A 2D pixel-art RPG-style desktop game where you walk around a virtual office and
 - **esbuild** — fast bundling for both the game and Electron code
 - **xterm.js** — terminal emulator for agent conversations
 - **node-pty** — pseudo-terminal that hosts the Copilot CLI
-- **@github/copilot-sdk** — SDK used by the native-bridge CLI extension and the `sdk` / `ui-server` terminal backends
+- **@github/copilot-sdk** — SDK used by the native-bridge CLI extension and the `sdk` terminal backend
 - **ws** — WebSocket transport (SDK runtime + Teams real-time receive)
 
 ### Terminal backends
@@ -44,7 +44,6 @@ The terminal server (`electron/terminal/server.ts`) selects a backend via the `C
 - **`native-bridge`** (default) — one pinned native Copilot TUI per agent under node-pty; a bundled CLI extension bridges it to the app over an authenticated local broker for programmatic prompts, session control, ask_user answers, plan decisions and events
 - **`sdk`** — one headless Copilot CLI host per office with SDK sessions and a custom conversation renderer; used automatically (with a notice) when the native bridge is unavailable
 - **`node-pty`** — spawns the real Copilot TUI via a shell, one PTY per agent (always used for the local shell)
-- **`ui-server`** (compatibility) — node-pty hosts one `copilot --ui-server` runtime per office; falls back to `node-pty` when the CLI can't host `--ui-server`
 
 ## Getting Started
 
@@ -115,10 +114,9 @@ CopilotOffice/
 │   ├── cli-bridge.ts            # Legacy placeholder (not used at runtime)
 │   ├── terminal/                # Terminal server subsystem
 │   │   ├── server.ts            # PTY/SDK owner (forked child process)
-│   │   ├── terminal-backend.ts  # Backend selection (node-pty / ui-server / sdk)
+│   │   ├── terminal-backend.ts  # Backend implementations (node-pty / sdk)
 │   │   ├── pty-registry.ts      # Live PTY/session bookkeeping
 │   │   ├── agent-viewers.ts     # Active-viewer dual-key invariant helpers
-│   │   ├── office-foreground.ts # Foreground session selection (ui-server)
 │   │   ├── session-repair.ts    # Session recovery
 │   │   ├── ipc-relay.ts         # IPC bridge (renderer ↔ main ↔ server)
 │   │   ├── preload.ts           # Context bridge (window.copilotBridge)

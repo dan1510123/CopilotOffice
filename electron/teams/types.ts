@@ -162,7 +162,7 @@ export interface PlanOption {
 /**
  * The record that an online agent currently awaits an `exit_plan_mode` approval. At most
  * one per online agent; transient, in-memory, main-process only (never persisted). Only
- * tracked on the SDK/ui-server backend (non-empty `requestId`); the node-pty backend is
+ * tracked on the SDK/native-bridge backend (non-empty `requestId`); the node-pty backend is
  * render-only (approval resolved in the local TUI).
  */
 export interface PendingPlan {

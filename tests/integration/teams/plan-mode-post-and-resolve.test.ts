@@ -119,7 +119,7 @@ function plan(h: ReturnType<typeof makeHarness>, requestId = 'req-1') {
   } as AgentEvent);
 }
 
-describe('plan mode post + resolve (SDK/ui-server)', () => {
+describe('plan mode post + resolve (SDK/native-bridge)', () => {
   it('posts the plan summary and a decision message listing labeled actions (recommended first)', async () => {
     const h = makeHarness();
     await online(h);

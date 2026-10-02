@@ -18,7 +18,7 @@ describe('config/terminalBackend', () => {
     },
   );
 
-  it.each<TerminalBackendKind>(['native-bridge', 'node-pty', 'ui-server', 'sdk'])(
+  it.each<TerminalBackendKind>(['native-bridge', 'node-pty', 'sdk'])(
     'accepts exact backend value %s',
     (value) => {
       expect(parseTerminalBackend(value)).toBe(value);
@@ -27,7 +27,6 @@ describe('config/terminalBackend', () => {
 
   it('trims and parses case-insensitively', () => {
     expect(parseTerminalBackend('  NODE-PTY  ')).toBe('node-pty');
-    expect(parseTerminalBackend('\tUI-SERVER\n')).toBe('ui-server');
     expect(parseTerminalBackend('  SDK  ')).toBe('sdk');
     expect(parseTerminalBackend(' Native-Bridge ')).toBe('native-bridge');
   });
@@ -36,9 +35,6 @@ describe('config/terminalBackend', () => {
     expect(parseTerminalBackend('nodepty')).toBe('node-pty');
     expect(parseTerminalBackend('pty')).toBe('node-pty');
     expect(parseTerminalBackend('legacy')).toBe('node-pty');
-    expect(parseTerminalBackend('ui_server')).toBe('ui-server');
-    expect(parseTerminalBackend('ui server')).toBe('ui-server');
-    expect(parseTerminalBackend('ui')).toBe('ui-server');
     expect(parseTerminalBackend('headless')).toBe('sdk');
     expect(parseTerminalBackend('native')).toBe('native-bridge');
     expect(parseTerminalBackend('native_bridge')).toBe('native-bridge');
@@ -54,8 +50,6 @@ describe('config/terminalBackend', () => {
     expect(didTerminalBackendFallBack('native-bridge', 'native-bridge')).toBe(false);
     expect(didTerminalBackendFallBack('native-bridge', 'sdk')).toBe(true);
     expect(didTerminalBackendFallBack('native-bridge', 'none')).toBe(true);
-    expect(didTerminalBackendFallBack('ui-server', 'node-pty')).toBe(true);
-    expect(didTerminalBackendFallBack('ui-server', 'ui-server')).toBe(false);
     expect(didTerminalBackendFallBack('sdk', 'none')).toBe(false);
     expect(didTerminalBackendFallBack('node-pty', 'node-pty')).toBe(false);
   });

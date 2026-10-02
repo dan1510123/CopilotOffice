@@ -33,28 +33,27 @@ export class TerminalRelay {
   private static readonly REQUEST_TIMEOUT_MS = 10_000;
   /**
    * Longer timeout for requests whose server handler can block on a COLD
-   * ui-server host bring-up: spawn `copilot --ui-server --port 0` → discover the
-   * control port (≤15s, {@link UiServerHostRuntime} listeningTimeout) → attach
-   * the SDK `CopilotClient`. This budget must exceed that 15s window so we
-   * prioritize completing a real ui-server session over a premature 10s timeout.
-   * A genuine start failure still falls back to node-pty per session (T039), so
-   * the extra wait only applies to a slow-but-succeeding bring-up.
+   * backend bring-up — e.g. the sdk backend's per-office headless host: spawn
+   * `copilot --headless --port 0` → discover the port (≤15s, `HeadlessCliHost`
+   * listening timeout) → attach the SDK `CopilotClient`. This budget must exceed
+   * that 15s window so a slow-but-succeeding bring-up is not cut off by the
+   * default 10s timeout.
    */
-  private static readonly UI_SERVER_START_TIMEOUT_MS = 30_000;
+  private static readonly SLOW_START_TIMEOUT_MS = 30_000;
   /** Bridge prompt/interaction requests may wait for an extension reconnect. */
   private static readonly BRIDGE_COMMAND_TIMEOUT_MS = 30_000;
   /** Compaction can invoke the model and legitimately exceed normal IPC budgets. */
   private static readonly CONTROL_COMMAND_TIMEOUT_MS = 130_000;
   /**
    * Bounded wait for a background (Teams) start to become ready. Must stay below
-   * {@link UI_SERVER_START_TIMEOUT_MS} so the server's explicit readiness error
+   * {@link SLOW_START_TIMEOUT_MS} so the server's explicit readiness error
    * (not a generic relay timeout) reaches the caller.
    */
   private static readonly ENSURE_ONLINE_READY_TIMEOUT_MS = 20_000;
   /**
-   * Request types whose handler may await ui-server host startup:
-   * - `start`  → startTerminalForAgent → sessionBackend.start (spins up the host)
-   * - `attach` → foreground switch → getStartedClient → host whenListening()
+   * Request types whose handler may await a cold backend startup:
+   * - `start` / `activate` → startTerminalForAgent → sessionBackend.start
+   * - `attach` → kept on the slow budget alongside `activate`
    * - `refresh-office-backend` → restarts the office host and its live sessions
    * All other types (fast polls like `query-agent-statuses`, metadata, session
    * file ops) keep the default {@link REQUEST_TIMEOUT_MS} so a genuinely wedged
@@ -80,7 +79,7 @@ export class TerminalRelay {
       return TerminalRelay.BRIDGE_COMMAND_TIMEOUT_MS;
     }
     return TerminalRelay.SLOW_START_TYPES.has(type)
-      ? TerminalRelay.UI_SERVER_START_TIMEOUT_MS
+      ? TerminalRelay.SLOW_START_TIMEOUT_MS
       : TerminalRelay.REQUEST_TIMEOUT_MS;
   }
   /** Latest backend-selection outcome reported by the server on 'ready'. */
@@ -327,7 +326,7 @@ export class TerminalRelay {
 
   /**
    * spec 015: answer a pending `ask_user` interaction. Distinct from
-   * mainSubmitPrompt — resolves the pending user-input interaction (SDK/ui-server)
+   * mainSubmitPrompt — resolves the pending user-input interaction (SDK/native-bridge)
    * or injects keystrokes (node-pty). `requestId` is the single-resolution key.
    */
   mainSubmitAnswer(
@@ -353,7 +352,7 @@ export class TerminalRelay {
 
   /**
    * Approve/reject a pending plan-mode (`exit_plan_mode`) interaction. Resolves the
-   * blocked SDK handler (SDK/ui-server). node-pty reports failure (render-only — the
+   * blocked SDK handler (SDK/native-bridge). node-pty reports failure (render-only — the
    * plan is resolved in the local TUI). `planRequestId` is the single-resolution key.
    */
   mainSubmitPlanDecision(
@@ -504,9 +503,6 @@ export class TerminalRelay {
       case 'backend-online':
         win.webContents.send('backend-online', msg.officeId, msg.backend);
         break;
-      case 'backend-session-fallback':
-        win.webContents.send('backend-session-fallback', msg.officeId, msg.agentId, msg.reason);
-        break;
     }
   }
 
@@ -565,7 +561,7 @@ export class TerminalRelay {
     );
 
     // spec 017: answer a pending ask_user via the sanctioned submit-answer channel
-    // (resolves the SDK/ui-server interaction, or keystroke-injects for node-pty) —
+    // (resolves the SDK/native-bridge interaction, or keystroke-injects for node-pty) —
     // NOT raw `write`, which would only select a choice prompt's highlighted option.
     ipcMain.handle(
       'terminal-submit-answer',
@@ -575,9 +571,7 @@ export class TerminalRelay {
 
     // spec 017: send a follow-up prompt to a specific agent via the sanctioned
     // submit-prompt channel (SDK session.send / bracketed-paste for node-pty),
-    // targeted by agentId. NOT raw `write`, which under the ui-server shared host
-    // routes input to the office's FOREGROUND session — so a background agent's
-    // prompt would land in whichever agent is currently viewed.
+    // targeted by agentId — never raw `write`.
     ipcMain.handle(
       'terminal-submit-prompt',
       (_event, officeId: string, agentId: string, prompt: string, label?: string) =>
