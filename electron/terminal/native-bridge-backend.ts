@@ -55,6 +55,8 @@ const NATIVE_BRIDGE_CONSENT_ENV_NAMES = [
 ] as const;
 const CONSENT_BUFFER_MAX_CHARS = 64 * 1024;
 const CONSENT_REARM_AFTER_CONNECTION_MS = 3_000;
+const PERSIST_REPO_CONSENT_SELECT_INPUT = '\x1b[B';
+const PERSIST_REPO_CONSENT_CONFIRM_DELAY_MS = 50;
 
 const DEFAULT_OFFICE_KEY = '__default__';
 // Keep connect + command within the relay's 10s request budget so the caller
@@ -120,8 +122,9 @@ function stripTerminalControls(value: string): string {
 
 /**
  * Recognizes only the sensitive-environment prompt for CopilotOffice's bundled
- * extension. A match authorizes pressing Enter on the default one-session
- * "Yes"; folder trust and every other consent surface remain user-controlled.
+ * extension. A match authorizes selecting the repo-scoped approval so parallel
+ * and future agents do not each block on the same prompt. Folder trust and every
+ * other consent surface remain user-controlled.
  */
 export class NativeBridgeConsentResponder {
   private buffer = '';
@@ -280,6 +283,7 @@ export class NativeBridgeProcess implements TerminalProcess {
   private lastChange: TerminalSessionChange | null = null;
   private lastGeneration = 0;
   private consentRearmTimer: NodeJS.Timeout | null = null;
+  private consentConfirmTimer: NodeJS.Timeout | null = null;
   private readonly consentResponder = new NativeBridgeConsentResponder();
   private readonly sessionListeners = new Set<(change: TerminalSessionChange) => void>();
   private readonly unsubscribeSessionChanges: () => void;
@@ -299,7 +303,12 @@ export class NativeBridgeProcess implements TerminalProcess {
       console.log(
         `[NativeBridge] Approving scoped environment access for ${terminalKey}`,
       );
-      pty.write('\r');
+      pty.write(PERSIST_REPO_CONSENT_SELECT_INPUT);
+      this.consentConfirmTimer = setTimeout(() => {
+        this.consentConfirmTimer = null;
+        if (!this.closed) pty.write('\r');
+      }, PERSIST_REPO_CONSENT_CONFIRM_DELAY_MS);
+      this.consentConfirmTimer.unref?.();
     });
     this.unsubscribeSessionChanges = broker.onSessionChange((change) => {
       if (change.terminalKey === terminalKey) this.observeConnection(change);
@@ -462,6 +471,10 @@ export class NativeBridgeProcess implements TerminalProcess {
     if (this.consentRearmTimer) {
       clearTimeout(this.consentRearmTimer);
       this.consentRearmTimer = null;
+    }
+    if (this.consentConfirmTimer) {
+      clearTimeout(this.consentConfirmTimer);
+      this.consentConfirmTimer = null;
     }
     this.unsubscribeSessionChanges();
     this.sessionListeners.clear();

@@ -19,7 +19,7 @@ has regression coverage and the applicable smoke path passes.
 | CO-011 | Fixed | `/clear` replaced the foreground session and could leave stale broker/session mappings. | Registration generations replace stale mappings and persist the new authoritative session ID (`6a62e13`, `85f4686`). |
 | CO-012 | Fixed | Smoke failures could leave native TUI processes or temporary Copilot session directories behind. | The bounded smoke harness tracks and removes every process and session artifact in `finally` (`19a212c`, `85f4686`). |
 | CO-013 | Fixed | Teams could unnecessarily respawn a native session instead of reusing an active bridged agent. | Teams now checks live bridge readiness first and resumes persisted sessions only when disconnected (`375a011`, `85f4686`). |
-| CO-014 | Fixed | Every fresh native TUI could block on the SDK extension's sensitive-environment consent dialog, so active agents never registered with the broker without manual input. | The backend recognizes only the exact CopilotOffice extension and three-variable prompt, accepts its one-session `Yes`, rearms after a live connection for `/clear`, and retains CLI secret-variable stripping. |
+| CO-014 | Fixed | Every fresh native TUI could block on the SDK extension's sensitive-environment consent dialog, so active agents never registered with the broker without manual input. | The backend recognizes only the exact CopilotOffice extension and three-variable prompt, selects its repo-scoped approval, rearms after a live connection for `/clear`, and retains CLI secret-variable stripping. |
 
 ## Verification
 

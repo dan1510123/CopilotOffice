@@ -347,7 +347,9 @@ describe('native bridge launch contract', () => {
 
     pty.emitData(BRIDGE_CONSENT_PROMPT);
 
-    expect(pty.written).toEqual(['\r']);
+    expect(pty.written).toEqual(['\x1b[B']);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(pty.written).toEqual(['\x1b[B', '\r']);
     expect(output).toHaveBeenCalledWith(BRIDGE_CONSENT_PROMPT);
   });
 });
