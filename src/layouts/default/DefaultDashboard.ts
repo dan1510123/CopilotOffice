@@ -224,6 +224,7 @@ export const defaultDashboard: DashboardRenderer = {
     const { agents, office, selectedAgentId, cachedSessionMeta } = ctx;
     const teamsEnabled = ctx.teamsEnabled ?? false;
     const teamsOnline = ctx.teamsOnlineAgentIds ?? new Set<string>();
+    const teamsPending = ctx.teamsPendingActions ?? new Map<string, 'connecting' | 'disconnecting'>();
     const t = getDashboardTypography();
     let html = '';
 
@@ -269,6 +270,14 @@ export const defaultDashboard: DashboardRenderer = {
     for (const agent of agents) {
       const liveStatus = office?.agents.get(agent.id);
       const d = buildAgentDynamics(agent, ctx, t);
+      const isTeamsOnline = teamsOnline.has(agent.id);
+      const pendingTeamsAction = teamsPending.get(agent.id);
+      const teamsButtonLabel = pendingTeamsAction
+        ? `<span class="ui-btn__spinner" aria-hidden="true"></span>${pendingTeamsAction === 'disconnecting' ? 'Disconnecting…' : 'Connecting…'}`
+        : teamsLabel(isTeamsOnline ? 'Teams Online' : 'Teams Remote');
+      const teamsButtonTitle = pendingTeamsAction
+        ? (pendingTeamsAction === 'disconnecting' ? 'Taking this agent offline in Teams' : 'Bringing this agent online in Teams')
+        : (isTeamsOnline ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread');
 
       // ── Session Metadata Panel (right side) ──
       const meta = cachedSessionMeta[agent.id];
@@ -330,8 +339,8 @@ export const defaultDashboard: DashboardRenderer = {
               title="Start a new session for this agent">🔄 New Session</button>
             <button class="session-close-btn ui-btn ui-btn--danger" data-agent="${agent.id}"
               title="Close this agent's session (agent returns to slacking)">✖ Close Session</button>
-            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${teamsOnline.has(agent.id) ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}"
-              title="${teamsOnline.has(agent.id) ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'}">${teamsLabel(teamsOnline.has(agent.id) ? 'Teams Online' : 'Teams Remote')}</button>` : ''}
+            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${isTeamsOnline ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}"
+              title="${teamsButtonTitle}"${pendingTeamsAction ? ' disabled aria-busy="true"' : ''}>${teamsButtonLabel}</button>` : ''}
             <button class="session-edit-btn ui-btn ui-btn--ghost" data-agent="${agent.id}" style="
               padding: 5px 9px;
             " title="Edit session title">✏️</button>

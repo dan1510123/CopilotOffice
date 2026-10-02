@@ -170,16 +170,16 @@ describe('ask-user hardening h1 — precise SDK local-resolution', () => {
     expect(h.replies.join('\n')).not.toContain('Answered in the app');
   });
 
-  it('node-pty path (empty requestId) still uses the ordinary-event heuristic', async () => {
+  it('node-pty path (empty requestId) is render-only — never answerable from Teams', async () => {
     const h = makeHarness();
     await online(h);
-    askUser(h, ''); // empty requestId ⇒ node-pty degraded path
+    askUser(h, ''); // empty requestId ⇒ node-pty (no programmatic answer path)
     await tick(40);
-    h.replies.length = 0;
+    expect(h.replies.join('\n')).toContain('Answer this in the app');
 
-    h.agent()({ agentId: 'generalist', kind: 'turn-end' } as AgentEvent);
+    h.inbound()(reply('A'));
     await tick(40);
-    expect(h.replies.join('\n')).toContain('Answered in the app');
+    expect(h.answers).toHaveLength(0);
   });
 });
 

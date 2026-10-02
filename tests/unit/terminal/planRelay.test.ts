@@ -5,7 +5,7 @@ import { buildPlanRelay } from '../../../electron/terminal/events-watcher';
 // additive copilot-plan event. buildPlanRelay is the pure translator the server
 // watcherCallback uses (mirrors buildAskUserRelay).
 
-describe('buildPlanRelay — SDK/ui-server (exit_plan_mode.requested, native payload)', () => {
+describe('buildPlanRelay — SDK/native-bridge (exit_plan_mode.requested, native payload)', () => {
   it('normalizes the native fields incl. the requestId single-resolution key', () => {
     const relay = buildPlanRelay(
       {
@@ -19,7 +19,7 @@ describe('buildPlanRelay — SDK/ui-server (exit_plan_mode.requested, native pay
           recommendedAction: 'interactive',
         },
       },
-      'ui-server',
+      'sdk',
     );
     expect(relay).toEqual({
       toolId: 'tool-9',
@@ -74,13 +74,13 @@ describe('buildPlanRelay — node-pty degraded path (tool.execution_start)', () 
     });
   });
 
-  it('does NOT relay exit_plan_mode tool.execution_start on the SDK/ui-server backend (avoids duplicate)', () => {
+  it('does NOT relay exit_plan_mode tool.execution_start on the SDK/native-bridge backend (avoids duplicate)', () => {
     const relay = buildPlanRelay(
       {
         type: 'tool.execution_start',
         data: { toolName: 'exit_plan_mode', toolCallId: 'tool-4', arguments: { summary: 's' } },
       },
-      'ui-server',
+      'sdk',
     );
     expect(relay).toBeNull();
   });

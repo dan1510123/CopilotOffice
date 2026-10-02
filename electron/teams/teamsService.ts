@@ -240,7 +240,7 @@ export class TeamsService {
   /**
    * Pending `exit_plan_mode` approvals awaiting an in-thread decision, keyed by agentId.
    * At most one per online agent; transient, in-memory. Resolved via `gateway.respondPlan`.
-   * Only populated on the SDK/ui-server backend (non-empty requestId) — the node-pty
+   * Only populated on the SDK/native-bridge backend (non-empty requestId) — the node-pty
    * backend is render-only (plan approved in the local TUI).
    */
   private readonly pendingPlans = new Map<string, PendingPlan>(); // key = agentId
@@ -406,13 +406,33 @@ export class TeamsService {
     }
     tlog(`Register requested: ${ctx.displayName} (${officeId}:${agentId}) → channel ${coords.channelId}`);
 
+    const workingDir = normalizeWorkingDir(ctx.workingDir || '');
+    // Make sure the agent's session is actually up before binding a thread to it:
+    // reuse a live, ready session (an already-connected bridge), otherwise resume
+    // the persisted session in the agent's folder and wait boundedly. This runs in
+    // the main process and never claims a renderer viewer.
+    if (this.deps.gateway.ensureSessionOnline) {
+      let ensured: { success: boolean; error?: string };
+      try {
+        ensured = await this.deps.gateway.ensureSessionOnline(officeId, agentId, workingDir || undefined);
+      } catch (e) {
+        ensured = { success: false, error: (e as Error).message };
+      }
+      if (!ensured.success) {
+        twarn(`Register aborted for ${officeId}:${agentId}: ${ensured.error ?? 'session not online'}`);
+        return {
+          success: false,
+          error: `Couldn't bring the agent's Copilot session online: ${ensured.error ?? 'unknown error'}`,
+        };
+      }
+    }
+
     const sessionId = await this.deps.gateway.getSessionId(officeId, agentId);
     if (!sessionId) {
       return { success: false, error: 'No active session for this agent. Open its terminal first.' };
     }
 
     const displayName = ctx.displayName || agentId;
-    const workingDir = normalizeWorkingDir(ctx.workingDir || '');
 
     // Already online? Return existing binding.
     const existing = this.findBinding(officeId, agentId);
@@ -699,13 +719,7 @@ export class TeamsService {
             await this.safeReply(binding, `${label} ⚠️ <code>/${escapeHtml(cmd.name)}</code> couldn't run: ${escapeHtml(res.error)}`);
             return;
           }
-          if (res.via === 'sdk') {
-            await this.safeReply(binding, `${label}<br>${formatControlData(res.data)}`);
-          } else {
-            // node-pty keystroke path: no structured result — the TUI renders its own
-            // output, which streams back via forwarding. Post a lightweight ack.
-            await this.safeReply(binding, `${label} ▶️ Ran <code>/${escapeHtml(cmd.name)}</code>.`);
-          }
+          await this.safeReply(binding, `${label}<br>${formatControlData(res.data)}`);
         } catch (e) {
           twarn('slash control failed:', (e as Error).message);
           await this.safeReply(binding, `${label} ⚠️ <code>/${escapeHtml(cmd.name)}</code> failed: ${escapeHtml((e as Error).message)}`);
@@ -798,7 +812,7 @@ export class TeamsService {
     }
     // spec 015 hardening (h1): the SDK explicitly signalled that an ask_user interaction
     // resolved (user_input.completed). This is the PRECISE local-answer signal for the
-    // SDK/ui-server path — clear only the matching pending record by requestId. If a Teams
+    // SDK/native-bridge path — clear only the matching pending record by requestId. If a Teams
     // answer already resolved+deleted it, there's no record → no false notice.
     if (e.kind === 'ask-user-complete') {
       this.maybeLocalResolveByRequestId(e.agentId, e.requestId ?? '');
@@ -821,12 +835,6 @@ export class TeamsService {
       this.maybeLocalResolvePlanByRequestId(e.agentId, e.planComplete?.requestId ?? '');
       return;
     }
-    // spec 015 §C: on the node-pty degraded path there is no user_input.completed event,
-    // so fall back to the heuristic — any non-`ask-user` event for an agent with a
-    // still-pending node-pty question (empty requestId) implies a local answer. SDK records
-    // (non-empty requestId) are NOT resolved here; they wait for `ask-user-complete` above.
-    this.maybeLocalResolve(e.agentId);
-
     const rec = this.pending.get(e.agentId);
     if (!rec) {
       // No in-flight Teams dispatch → this output was driven locally (app terminal).
@@ -1166,6 +1174,9 @@ export class TeamsService {
    * binding, assigns stable selector labels (A, B, C…) to options in order, supersedes any
    * existing record for the agent, and posts one framed question message listing all
    * options (+ a freeform hint iff allowed). Ignored when the agent isn't online.
+   * On the raw node-pty backend (empty requestId) there is no programmatic session to
+   * deliver an answer to, so the question is render-only (mirrors plan mode): it is
+   * posted with an answer-in-the-app hint and NOT tracked, so thread replies stay prompts.
    */
   private async onAskUserEvent(e: AgentEvent): Promise<void> {
     if (!e.askUser) return;
@@ -1176,12 +1187,27 @@ export class TeamsService {
       label: selectorLabel(i),
       text: o.text,
     }));
+    if (!e.askUser.requestId) {
+      tlog(`ask_user → @${binding.handle}: render-only (node-pty, no requestId).`);
+      const lines: string[] = [
+        `${this.agentLabel(binding)} ❓ <b>is asking a question</b>`,
+        `<br><br>${escapeHtml(e.askUser.question)}`,
+      ];
+      for (const opt of options) {
+        lines.push(`<br><b>${escapeHtml(opt.label)}</b> — ${escapeHtml(opt.text)}`);
+      }
+      lines.push(`<br><br><i>Answer this in the app — it can't be answered from Teams for this agent.</i>`);
+      for (const chunk of chunkReply(lines.join(''), 3500)) {
+        await this.safeReply(binding, chunk);
+      }
+      return;
+    }
     const record: PendingQuestion = {
       agentId: e.agentId,
       officeId: binding.officeId,
       binding,
       toolId: e.askUser.toolId,
-      requestId: e.askUser.requestId ?? '',
+      requestId: e.askUser.requestId,
       question: e.askUser.question,
       options,
       freeform: e.askUser.freeform,
@@ -1228,7 +1254,7 @@ export class TeamsService {
   /**
    * Handle a `plan` AgentEvent: an agent presented a plan via `exit_plan_mode`. Post the
    * plan summary (auto-rendered as an image when long, per spec 018) then, on the
-   * SDK/ui-server backend (non-empty requestId), present the approval actions as A/B/C
+   * SDK/native-bridge backend (non-empty requestId), present the approval actions as A/B/C
    * selectors and track a {@link PendingPlan}. On the node-pty backend (empty requestId)
    * the plan is render-only — approval is resolved in the local TUI. Ignored when offline.
    */
@@ -1252,7 +1278,7 @@ export class TeamsService {
       await this.safeReply(binding, `${heading}<br><br>(no plan details provided)`);
     }
 
-    // 2. SDK/ui-server: present the approval actions and track the pending plan.
+    // 2. SDK/native-bridge: present the approval actions and track the pending plan.
     const requestId = e.plan.requestId ?? '';
     if (requestId) {
       const actions = e.plan.actions.length ? e.plan.actions : ['exit_only'];
@@ -1606,26 +1632,7 @@ export class TeamsService {
   }
 
   /**
-   * Local-resolution detection for the node-pty degraded path (contract §C, FR-008): if
-   * `agentId` has a still-pending, unresolved node-pty question (empty requestId) and a
-   * non-`ask-user` event arrives, the ask_user was answered in-app. Latch it, clear the
-   * record, and post a one-time "answered in the app" notice. SDK records (non-empty
-   * requestId) are ignored here — they resolve precisely via {@link maybeLocalResolveByRequestId}
-   * on the explicit `user_input.completed` signal, avoiding false positives when an agent
-   * emits events while still blocked on the question.
-   */
-  private maybeLocalResolve(agentId: string): void {
-    const record = this.pendingQuestions.get(agentId);
-    if (!record || record.resolved) return;
-    if (record.requestId) return; // SDK path: wait for the precise ask-user-complete signal.
-    record.resolved = true;
-    this.pendingQuestions.delete(agentId);
-    tlog(`ask_user answered locally (node-pty) for @${record.binding.handle} — posting in-app notice.`);
-    void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered in the app.`);
-  }
-
-  /**
-   * Precise local-resolution for the SDK/ui-server path (spec 015 hardening h1). Fired on
+   * Precise local-resolution for the SDK/native-bridge path (spec 015 hardening h1). Fired on
    * `user_input.completed`: clear the pending question ONLY when its requestId matches the
    * resolved interaction. A Teams answer clears the record synchronously before this fires,
    * so a matching record here means the answer came from the app → post the one-time notice.

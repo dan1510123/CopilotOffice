@@ -34,6 +34,17 @@ export class CompositeSessionGateway implements SessionGateway {
     return this.pick(officeId, agentId).isAgentReady(officeId, agentId);
   }
 
+  ensureSessionOnline(
+    officeId: string,
+    agentId: string,
+    workingDir?: string,
+  ): Promise<{ success: boolean; sessionId?: string; error?: string }> {
+    const g = this.pick(officeId, agentId);
+    return g.ensureSessionOnline
+      ? g.ensureSessionOnline(officeId, agentId, workingDir)
+      : Promise.resolve({ success: true });
+  }
+
   submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void> {
     return this.pick(officeId, agentId).submitPrompt(officeId, agentId, prompt, label);
   }

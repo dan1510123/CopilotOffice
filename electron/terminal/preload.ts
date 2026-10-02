@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('__copilotOfficeE2E', process.env.COPILOT_E2E ==
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
-  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
+  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode, hostWorkingDir);
   },
   terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
@@ -195,8 +195,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-tool-complete', handler);
     return () => ipcRenderer.removeListener('copilot-tool-complete', handler);
   },
-  onCopilotTurnEnd: (callback: (agentId: string) => void) => {
-    const handler = (_event: unknown, agentId: string) => callback(agentId);
+  onCopilotTurnEnd: (callback: (agentId: string, officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, officeId?: string) => callback(agentId, officeId);
     ipcRenderer.on('copilot-turn-end', handler);
     return () => ipcRenderer.removeListener('copilot-turn-end', handler);
   },
@@ -210,8 +210,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-user-message', handler);
     return () => ipcRenderer.removeListener('copilot-user-message', handler);
   },
-  onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => {
-    const handler = (_event: unknown, agentId: string, meta: { title: string }) => callback(agentId, meta);
+  onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => callback(agentId, meta, officeId);
     ipcRenderer.on('session-meta-updated', handler);
     return () => ipcRenderer.removeListener('session-meta-updated', handler);
   },
@@ -241,7 +241,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('show-native-notification', title, body);
   },
 
-  // Terminal backend selection (ui-server / node-pty / sdk).
+  // Terminal backend selection (native-bridge / node-pty / sdk).
   getBackendInfo: (): Promise<{ name: string; requested: string; fellBack: boolean; reason?: string } | null> => {
     return ipcRenderer.invoke('terminal-backend-info');
   },
@@ -250,9 +250,6 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   onBackendOnline: (callback: (officeId: string, backend: string) => void) => {
     ipcRenderer.on('backend-online', (_event, officeId, backend) => callback(officeId, backend));
-  },
-  onBackendSessionFallback: (callback: (officeId: string, agentId: string, reason: string) => void) => {
-    ipcRenderer.on('backend-session-fallback', (_event, officeId, agentId, reason) => callback(officeId, agentId, reason));
   },
 
   // Spec 003 follow-up: write to OS clipboard via Electron main process.
@@ -500,7 +497,7 @@ declare global {
     __copilotOfficeDebug?: CopilotOfficeDebugApi;
     __copilotOfficeE2E?: boolean;
     copilotBridge: {
-      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
+      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitAnswer: (officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitPrompt: (officeId: string, agentId: string, prompt: string, label?: string) => Promise<{ success: boolean; error?: string }>;
@@ -551,10 +548,10 @@ declare global {
       onCopilotToolStart: (callback: (agentId: string, toolName: string, toolId: string, status: string) => void) => () => void;
       onCopilotAskUser: (callback: (agentId: string, toolId: string, requestId: string, question: string, options: { text: string }[], freeform: boolean) => void) => () => void;
       onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => () => void;
-      onCopilotTurnEnd: (callback: (agentId: string) => void) => () => void;
+      onCopilotTurnEnd: (callback: (agentId: string, officeId?: string) => void) => () => void;
       onCopilotTurnStart: (callback: (agentId: string) => void) => () => void;
       onCopilotUserMessage: (callback: (agentId: string) => void) => () => void;
-      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string }) => void) => () => void;
+      onSessionMetaUpdated: (callback: (agentId: string, meta: { title: string; sessionId?: string }, officeId?: string) => void) => () => void;
       removeTerminalListeners: () => void;
       removeCopilotListeners: () => void;
       requestHardReload: () => Promise<{ success: boolean }>;
@@ -562,7 +559,6 @@ declare global {
       getBackendInfo: () => Promise<{ name: string; requested: string; fellBack: boolean; reason?: string } | null>;
       onBackendFallback: (callback: (info: { name: string; requested: string; fellBack: boolean; reason?: string }) => void) => void;
       onBackendOnline: (callback: (officeId: string, backend: string) => void) => void;
-      onBackendSessionFallback: (callback: (officeId: string, agentId: string, reason: string) => void) => void;
       clipboardWriteText: (text: string) => Promise<{ success: boolean; verified?: boolean; error?: string }>;
       clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;

@@ -9,23 +9,26 @@ import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay, buildPlanRelay } from './events-watcher';
-import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult } from './protocol';
+import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
-import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
+import type { TerminalSessionChange } from './terminal-backend';
+import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEND_NAME } from './native-bridge-backend';
+import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
+import { applyBridgeSessionChange } from './bridge-session-change';
+import { ReadyWaiters } from './ready-waiters';
+import { deliverPreseededPrompt, PreseededPromptQueue } from './preseeded-prompt';
+import { terminalOffices } from './terminal-aliases';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
   removeAgentViewer,
   type ViewerMaps,
 } from './agent-viewers';
-import {
-  shouldForwardSharedHostData,
-  foregroundAfterStart,
-  shouldReassertForeground,
-} from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 import { resolveAccessibleWorkingDir } from './working-dir';
+import { didTerminalBackendFallBack, parseTerminalBackend } from '../../src/config/terminalBackend';
 
 // Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
 // Copilot runtime inheriting this process's env, so setting COPILOT_AUTO_UPDATE
@@ -33,6 +36,13 @@ import { resolveAccessibleWorkingDir } from './working-dir';
 // build its own env object. Belt-and-suspenders with the per-spawn --no-auto-update
 // flag and per-backend env; keeps the self-updating SEA on the npm-locked version.
 process.env.COPILOT_AUTO_UPDATE = 'false';
+
+// Native-bridge credentials are minted per TUI and handed ONLY to that TUI's
+// child env. Drop any inherited from a parent (e.g. this app started from inside
+// an agent's own TUI) so they can never leak into our other children.
+for (const name of Object.keys(process.env)) {
+  if (isNativeBridgeEnvName(name)) delete process.env[name];
+}
 
 // ── State ───────────────────────────────────────────────────────
 
@@ -84,39 +94,16 @@ const activeAgentViewers: Set<string> = new Set();
 // Composite keys whose copilot-events must be mirrored to main-process consumers
 // (e.g. the Teams service) even when no renderer is viewing the agent.
 const agentForwardKeys: Set<string> = new Set();
-// Last time (ms epoch) each composite key's PTY produced output. Used by the
-// programmatic-submit path to detect when the Ink TUI has settled (output idle)
-// before injecting Enter, so a second queued prompt isn't submitted mid-render.
-const lastPtyDataAt: Map<string, number> = new Map();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
-// ui-server shared-host foreground tracking. Under the ui-server backend every
-// agent in an office shares ONE host TUI (`runtime.rawPty`); its output only
-// ever renders the *foreground* session, yet all agents' onData callbacks fire.
-// This maps officeId → the composite key of the agent that currently owns the
-// shared stream, so rendered output is attributed to exactly one agent and can't
-// leak into another session's scrollback/live view. Only meaningful for
-// ui-server (node-pty agents own a private PTY each).
-const officeForegroundCk: Map<string, string> = new Map();
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
-// Lazily-created node-pty backend used as a start-time fallback when the
-// ui-server backend fails to bring an office runtime online (FR-010 / T039):
-// selection-time probe success is necessary but not sufficient (the resolved
-// CLI may not actually host --ui-server), so a failed start must never leave an
-// agent unstarted — we transparently retry once with node-pty.
-let nodePtyFallbackBackend: TerminalBackend | null = null;
-function getNodePtyFallbackBackend(): TerminalBackend | null {
-  if (terminalBackend && terminalBackend.name === 'node-pty') return terminalBackend;
-  if (!nodePtyFallbackBackend) {
-    nodePtyFallbackBackend = NodePtyBackend.tryCreate();
-  }
-  return nodePtyFallbackBackend;
-}
+// Shared authenticated broker for the native-bridge backend (one per server).
+// Every native TUI gets its own credentials on it; closed on shutdown.
+let nativeBridgeBroker: NativeBridgeBroker | null = null;
 // Dedicated node-pty backend for the PC Terminal / local shell. A local shell
 // (powershell/bash) is a plain OS process with nothing to do with Copilot, so it
 // always runs on node-pty regardless of the office's control-plane backend. This
-// is its normal, expected backend — NOT a ui-server failure fallback — so it has
-// its own accessor to keep the two concerns from being conflated.
+// is its normal, expected backend, so it has its own accessor.
 let shellBackend: TerminalBackend | null = null;
 function getShellBackend(): TerminalBackend | null {
   if (terminalBackend && terminalBackend.name === 'node-pty') return terminalBackend;
@@ -130,22 +117,22 @@ const eventSourceFactory = new FileWatcherEventSourceFactory();
 // Track per-agent ready state so it can be queried by the renderer
 const agentReadyState: Map<string, boolean> = new Map();
 
+// Callers awaiting an agent's ready signal (bounded) — e.g. the Teams
+// ensure-session-online seam. Settled by signalReady, or failed when the
+// session exits first. Keyed by terminal key.
+const agentReadyWaiters = new ReadyWaiters((key) => agentReadyState.get(key) === true);
+
+function waitForAgentReady(key: string, timeoutMs: number): Promise<void> {
+  return agentReadyWaiters.wait(key, timeoutMs, (waitedKey, waitedMs) =>
+    `Copilot session for ${waitedKey} did not become ready within ${Math.round(waitedMs / 1000)}s` +
+    (terminalBackend?.name === NATIVE_BRIDGE_BACKEND_NAME
+      ? ' — its bridge extension has not connected (the TUI may be waiting for input such as folder trust)'
+      : ''),
+  );
+}
+
 // Track per-agent turn activity (between turn_start and turn_end)
 const agentInTurn: Map<string, boolean> = new Map();
-
-// Monotonic count of `user.message` events seen per terminal key, plus the text of
-// the most recent one. Together they let the programmatic-submit path confirm that
-// the CLI accepted OUR specific prompt: it snapshots the count, presses Enter, and
-// re-presses until the count advances AND the latest user.message text matches the
-// prompt we pasted — a closed-loop confirm that beats guessing render timing, and
-// won't false-positive on a human typing concurrently in the same session.
-const userMessageSeq: Map<string, number> = new Map();
-const lastUserMessageText: Map<string, string> = new Map();
-
-/** Normalize prompt/user-message text for tolerant equality (collapse whitespace). */
-function normalizePromptText(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
 
 // Per-agent raw scrollback buffer (preserves ANSI escape sequences)
 const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB
@@ -183,13 +170,6 @@ function getOfficeSession(officeId: string): OfficeSessionData {
 // Composite key for PTY/runtime maps: `${officeId}:${agentId}`
 function compositeKey(officeId: string, agentId: string): string {
   return `${officeId}:${agentId}`;
-}
-
-// Clear an office's shared-host foreground pointer only when it currently points
-// at `ck` (i.e. the foreground agent's PTY is being destroyed). A later start or
-// attach re-establishes the foreground. See `officeForegroundCk`.
-function clearForegroundIf(officeId: string, ck: string): void {
-  if (officeForegroundCk.get(officeId) === ck) officeForegroundCk.delete(officeId);
 }
 
 /**
@@ -380,86 +360,62 @@ function getTerminalKey(officeId: string, agentId: string): string | null {
   return null;
 }
 
-/**
- * Inject a full prompt into the interactive Copilot CLI (Ink/React TUI) running
- * under node-pty, and submit it. There is no programmatic submit for a raw PTY,
- * so we simulate a paste + Enter the way a human would:
- *
- *   1. Ctrl+U clears any half-typed input.
- *   2. Bracketed paste (`ESC[200~ … ESC[201~`) inserts the text as one unit —
- *      this stops `@`/`/` from triggering the TUI's file/command menus and stops
- *      the re-render storm from dropping characters.
- *   3. Closed-loop Enter. Ink detaches stdin while it re-renders, so an Enter sent
- *      mid-render is silently dropped — the failure mode where the prompt is pasted
- *      but never submitted (a second queued turn, or a stale/unviewed session after
- *      an office switch). Blind timed Enters can't reliably tell when the TUI is
- *      ready. Instead we snapshot the `user.message` counter (which the CLI bumps
- *      only when it actually accepts a prompt), press Enter, and re-press on an
- *      interval until that counter advances — positive confirmation the prompt was
- *      accepted — capped so we never wedge. Extra Enters on an empty input are no-ops.
- *
- * Response capture is unaffected — it comes from the EventsWatcher tailing
- * events.jsonl (assistant.message → turn_end), not from this input path.
- */
-function submitViaKeystrokes(proc: TerminalProcess, prompt: string, ck: string): void {
-  const text = prompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const safeWrite = (data: string) => {
-    try { proc.write(data); } catch { /* pty may have exited */ }
-    // Count our own writes as PTY activity so the idle clock resets here. Without
-    // this, a stale session (e.g. after an office switch left it idle) has a very
-    // old `lastPtyDataAt`, so the pre-Enter `waitForIdle` reads it, resolves
-    // instantly, and fires Enter before the bracketed paste has finished rendering
-    // — Ink drops the Enter mid-render and the text sits typed-but-unsubmitted.
-    // Resetting on write forces `waitForIdle` to wait for the paste's echo/render
-    // to settle (or at least a full `quietMs` floor) before Enter.
-    lastPtyDataAt.set(ck, Date.now());
-  };
-  // Resolve once the PTY has produced no output for `quietMs`, or `capMs` elapses.
-  const waitForIdle = (quietMs: number, capMs: number): Promise<void> =>
-    new Promise((resolve) => {
-      const start = Date.now();
-      const tick = () => {
-        const last = lastPtyDataAt.get(ck) ?? 0;
-        if (Date.now() - last >= quietMs || Date.now() - start >= capMs) resolve();
-        else setTimeout(tick, 50);
-      };
-      tick();
-    });
-  void (async () => {
-    // Let any prior turn's final render settle before touching the input line.
-    await waitForIdle(300, 3000);
-    safeWrite('\x15'); // Ctrl+U — clear the input line
-    safeWrite(`\x1b[200~${text}\x1b[201~`); // bracketed paste
-    // Let the paste's echo/re-render settle so the Enter isn't dropped mid-render.
-    await waitForIdle(250, 2000);
+/** Owning office plus every transferred-office alias for this live terminal. */
+function officesForTerminal(
+  owningOfficeId: string,
+  agentId: string,
+  terminalKey: string,
+): string[] {
+  return terminalOffices(agentToTerminal, owningOfficeId, agentId, terminalKey);
+}
 
-    // Closed-loop submit. Blind timed Enters are unreliable: if the Ink TUI is
-    // still re-rendering (e.g. a stale/unviewed session after an office switch, or
-    // the tail end of a prior turn), an Enter is silently dropped and the pasted
-    // text sits unsubmitted. Instead, press Enter and wait for the CLI to write a
-    // `user.message` event whose text matches this prompt (proof OUR prompt was
-    // accepted — a bare counter could be advanced by a human typing concurrently in
-    // the same session). If not yet accepted, press Enter again. Requiring the count
-    // to advance too means an identical re-send still submits. Extra Enters on an
-    // already-empty input are harmless no-ops.
-    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const want = normalizePromptText(text);
-    const baseline = userMessageSeq.get(ck) ?? 0;
-    const accepted = () =>
-      (userMessageSeq.get(ck) ?? 0) > baseline && lastUserMessageText.get(ck) === want;
-    const MAX_ATTEMPTS = 12; // ~6s worst case at 500ms spacing
-    const POLL_MS = 500;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS && !accepted(); attempt++) {
-      safeWrite('\r'); // submit
-      // Poll in small slices so we react quickly once the event lands.
-      for (let waited = 0; waited < POLL_MS && !accepted(); waited += 50) {
-        await delay(50);
-      }
+/**
+ * Native bridge: a registration reported the session the TUI is actually on.
+ * It is authoritative — after `/clear` (or a session replacement inside the
+ * TUI) the same PTY keeps running on a NEW session. Update the live process and
+ * the persisted current session (archiving the prior one once), reset per-turn
+ * tracking, and notify the session-metadata path so renderers rebind their
+ * terminal generation token instead of dropping the live native output.
+ */
+function applyNativeBridgeSessionChange(
+  officeId: string,
+  agentId: string,
+  terminalKey: string,
+  change: TerminalSessionChange,
+): void {
+  const entry = ptyProcesses.get(terminalKey);
+  if (!entry || !change.sessionId) return;
+  const ck = compositeKey(officeId, agentId);
+  const previousLiveSessionId = entry.sessionId;
+  if (previousLiveSessionId !== change.sessionId) {
+    entry.sessionId = change.sessionId;
+    // Interactions pending on the replaced session can never be answered now.
+    clearPendingUserInputForSession(previousLiveSessionId);
+    clearPendingPlanApprovalForSession(previousLiveSessionId);
+  }
+
+  for (const office of officesForTerminal(officeId, agentId, terminalKey)) {
+    const result = applyBridgeSessionChange(getOfficeSession(office), agentId, change.sessionId);
+    if (!result.changed) continue;
+    const officeCk = compositeKey(office, agentId);
+    if (result.title) hasAutoTitled.add(officeCk);
+    else hasAutoTitled.delete(officeCk);
+    agentInTurn.set(officeCk, false);
+    void saveOfficeSessionFile(office);
+    console.log(
+      `[lifecycle] native bridge session for ${officeCk}: ${result.previousSessionId ?? '(none)'} -> ${result.sessionId}` +
+      `${result.restoredFromHistory ? ' (restored from history)' : ''}`,
+    );
+    if (result.collidesWithAgentId) {
+      console.warn(`[TermServer] ${officeCk} is now on session ${result.sessionId}, which ${result.collidesWithAgentId} in ${office} also claims`);
     }
-    if (!accepted()) {
-      console.warn(`[TermServer] submitViaKeystrokes: prompt not confirmed accepted after ${MAX_ATTEMPTS} Enter attempts for ${ck} — it may not have submitted.`);
-    }
-  })();
+    send({
+      type: 'session-meta-updated',
+      agentId,
+      officeId: office,
+      meta: { title: result.title, sessionId: result.sessionId },
+    });
+  }
 }
 
 function killAllPtyProcesses(): void {
@@ -469,6 +425,7 @@ function killAllPtyProcesses(): void {
   agentToTerminal.clear();
   agentWatchers.forEach((w) => w.stop());
   agentWatchers.clear();
+  pendingPreseededPrompts.clear();
   // Note: each killPtyProcess() already unregistered its own PID from the
   // registry, so no blanket reset is needed here (a reset would also wipe a
   // co-running instance's live entries).
@@ -495,25 +452,32 @@ let yoloEnabled = false;
  *  non-empty (e.g. "--model gpt-5.4"). Applies to the next launch. */
 let additionalParams = '';
 
-/** Offices for which a ui-server SDK control plane has come online, so the
- *  `backend-online` confirmation is emitted at most once per office. */
-const uiServerOnlineOffices = new Set<string>();
+/** Offices for which an SDK control plane (sdk host or native bridge) has come
+ *  online, so the `backend-online` confirmation is emitted at most once per office. */
+const backendOnlineOffices = new Set<string>();
 
-/** Stores pre-seeded prompts to send once the agent signals ready. */
-const pendingPreseededPrompts = new Map<string, string>();
+/** Stores every pre-seeded prompt to send once the agent signals ready. */
+const pendingPreseededPrompts = new PreseededPromptQueue();
 
-type StartTerminalResult = { success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string };
+function queuePreseededPrompt(ck: string, prompt: string | undefined): void {
+  pendingPreseededPrompts.push(ck, prompt);
+}
+
+function takePreseededPrompts(ck: string): string[] {
+  return pendingPreseededPrompts.take(ck);
+}
+
+type StartTerminalResult = StartResult;
 
 /**
  * In-flight start coalescing (R-DBL): `startTerminalForAgentImpl` awaits the
  * backend before it registers the process in `ptyProcesses`/`agentToTerminal`.
  * Two concurrent starts for the SAME agent (e.g. auto-warm racing a user click)
  * both pass the "already running" dedup check, both spawn a backend process, and
- * — under the shared ui-server host — EACH registers a `rawPty.onData` listener.
- * The second overwrites the maps, orphaning the first process whose onData
- * listener is never disposed, so the foreground agent's output (and echoed
- * keystrokes) render twice. Coalescing concurrent starts per composite key so a
- * single backend process is ever created closes that race.
+ * EACH registers an `onData` listener. The second overwrites the maps, orphaning
+ * the first process whose onData listener is never disposed, so the agent's
+ * output (and echoed keystrokes) render twice. Coalescing concurrent starts per
+ * composite key so a single backend process is ever created closes that race.
  */
 const inFlightStarts = new Map<string, Promise<StartTerminalResult>>();
 
@@ -530,22 +494,28 @@ function startTerminalForAgent(
   const ck = compositeKey(officeId, agentId);
   const pending = inFlightStarts.get(ck);
   if (pending) {
+    queuePreseededPrompt(ck, preseededPrompt);
     // A start for this agent is already in flight — reuse its result rather than
-    // spawning a second backend process (and a second shared-host onData listener).
+    // spawning a second backend process (and a second onData listener).
     return pending.then((r) => (r.success ? { ...r, reused: true } : r));
   }
+  queuePreseededPrompt(ck, preseededPrompt);
   const started = startTerminalForAgentImpl(
     officeId,
     agentId,
     workingDir,
     cols,
     rows,
-    preseededPrompt,
+    undefined,
     launchMode,
     hostWorkingDir,
   );
-  inFlightStarts.set(ck, started);
-  return started.finally(() => {
+  const tracked = started.then((result) => {
+    if (!result.success) pendingPreseededPrompts.delete(ck);
+    return result;
+  });
+  inFlightStarts.set(ck, tracked);
+  return tracked.finally(() => {
     inFlightStarts.delete(ck);
   });
 }
@@ -559,29 +529,28 @@ async function startTerminalForAgentImpl(
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
   hostWorkingDir?: string,
-): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; error?: string }> {
+): Promise<StartTerminalResult> {
   // Spec 008-smoke: force shell mode end-to-end when the e2e harness is driving
   // the app. Avoids depending on a real copilot CLI binary on the test runner
   // while still exercising the full IPC + PTY + xterm pipeline.
   if (process.env.COPILOT_E2E === '1') {
     launchMode = 'shell';
   }
-  if (!terminalBackend || !terminalBackend.isAvailable()) {
-    return { success: false, error: 'terminal backend not available' };
-  }
   const shellOnlyMode = launchMode === 'shell';
   // The PC Terminal / local shell is a plain OS shell (powershell/bash), not a
   // Copilot process — it always runs on its dedicated node-pty shell backend
-  // regardless of the office's control-plane backend (ui-server/sdk). This is the
-  // expected, normal path for shell mode (regression: shell mode broke once
-  // ui-server became the default backend).
-  let sessionBackend: TerminalBackend = terminalBackend;
-  if (shellOnlyMode && terminalBackend.name !== 'node-pty') {
+  // regardless of the office's control-plane backend (native-bridge/sdk). This is
+  // the expected, normal path for shell mode.
+  let sessionBackend: TerminalBackend | null = terminalBackend;
+  if (shellOnlyMode && terminalBackend?.name !== 'node-pty') {
     const shell = getShellBackend();
     if (!shell || !shell.isAvailable()) {
       return { success: false, error: 'shell mode requires node-pty backend' };
     }
     sessionBackend = shell;
+  }
+  if (!sessionBackend || !sessionBackend.isAvailable()) {
+    return { success: false, error: 'terminal backend not available' };
   }
 
   const ck = compositeKey(officeId, agentId);
@@ -589,7 +558,26 @@ async function startTerminalForAgentImpl(
   const existingTerminalKey = agentToTerminal.get(ck);
   if (existingTerminalKey && ptyProcesses.has(existingTerminalKey)) {
     const existing = ptyProcesses.get(existingTerminalKey)!;
-    return { success: true, pid: existing.pid, sessionId: existing.sessionId, reused: true };
+    try {
+      for (const prompt of takePreseededPrompts(ck)) {
+        await deliverPreseededPrompt(existing.process, prompt);
+      }
+    } catch (error) {
+      return {
+        success: false,
+        pid: existing.pid,
+        sessionId: existing.sessionId,
+        reused: true,
+        error: `Failed to deliver pre-seeded prompt to reused session: ${String((error as Error)?.message ?? error)}`,
+      };
+    }
+    return {
+      success: true,
+      pid: existing.pid,
+      sessionId: existing.sessionId,
+      reused: true,
+      ready: agentReadyState.get(ck) === true,
+    };
   }
 
   const officeData = getOfficeSession(officeId);
@@ -659,6 +647,7 @@ async function startTerminalForAgentImpl(
   try {
     const startOptions = {
       sessionId,
+      terminalKey,
       shell,
       cols: cols ?? 120,
       rows: rows ?? 30,
@@ -667,37 +656,15 @@ async function startTerminalForAgentImpl(
       env: taggedEnv,
       officeId,
       yolo: yoloEnabled,
-      // Live getter so toggling YOLO in the app takes effect on already-running
-      // ui-server sessions (the permission handler evaluates this per request).
-      isYoloEnabled: () => yoloEnabled,
       // Additional-parameters setting (e.g. "--model gpt-5.4"). node-pty appends
-      // these to its `copilot --session-id` launch below; the ui-server backend
-      // appends them to the per-office host launch (once per office).
+      // these to its `copilot --session-id` launch below; the sdk backend
+      // appends them to the per-office headless host launch (once per office).
       extraArgs: additionalParams ? additionalParams.split(/\s+/).filter(Boolean) : [],
     };
 
-    // Backend used for THIS session — may differ from the selected backend if the
-    // ui-server start fails and we fall back to node-pty (T039).
-    let activeBackend: TerminalBackend = sessionBackend;
-    let sessionFallbackReason: string | undefined;
-    let proc: TerminalProcess;
-    try {
-      proc = await sessionBackend.start(startOptions);
-    } catch (startError) {
-      if (sessionBackend.name === 'ui-server' && !shellOnlyMode) {
-        const fallback = getNodePtyFallbackBackend();
-        if (fallback && fallback.isAvailable()) {
-          console.warn(`[lifecycle] ui-server start failed for ${ck} (${String(startError)}); falling back to node-pty for this session`);
-          activeBackend = fallback;
-          sessionFallbackReason = String((startError as Error)?.message ?? startError);
-          proc = await fallback.start(startOptions);
-        } else {
-          throw startError;
-        }
-      } else {
-        throw startError;
-      }
-    }
+    // Backend used for THIS session (the shell backend in shell mode).
+    const activeBackend: TerminalBackend = sessionBackend;
+    const proc: TerminalProcess = await sessionBackend.start(startOptions);
 
     ptyProcesses.set(terminalKey, {
       pid: proc.pid,
@@ -711,47 +678,20 @@ async function startTerminalForAgentImpl(
 
     agentToTerminal.set(ck, terminalKey);
 
-    // Foreground hijack guard (R-FG): under the shared ui-server host, EVERY
-    // newly started agent calls setForeground() on the host (UiServerBackend.start),
-    // and the host routes ALL rawPty input to its foreground session. A background
-    // warm/start of a non-viewed agent therefore steals input away from the agent
-    // the user is actually viewing — their keystrokes silently route into the
-    // just-started session. `officeForegroundCk` records who the viewer attached
-    // to; if this start is for a DIFFERENT agent than the intended foreground,
-    // re-assert the intended foreground so the viewer keeps input ownership.
-    if (activeBackend.name === 'ui-server') {
-      const intendedCk = officeForegroundCk.get(officeId);
-      if (shouldReassertForeground(intendedCk, ck)) {
-        const fgKey = agentToTerminal.get(intendedCk!);
-        const fgProc = fgKey ? ptyProcesses.get(fgKey) : null;
-        if (fgProc && typeof fgProc.process.setForeground === 'function') {
-          void Promise.resolve(fgProc.process.setForeground()).catch((err: unknown) => {
-            console.warn(`[lifecycle] re-assert foreground failed for ${intendedCk}: ${String(err)}`);
-          });
-        }
-      }
-    }
-
-    // Per-agent ui-server → node-pty fallback (T039). Surface it so a broken SDK
-    // attach is never silent (a stale/incompatible SDK once masked itself this way).
-    if (sessionFallbackReason) {
-      send({ type: 'backend-session-fallback', officeId, agentId, reason: sessionFallbackReason });
-    }
-
-    // Announce (once per office) that the ui-server SDK control plane is online
-    // for this office — i.e. the `copilot --ui-server` host is up and the SDK
-    // client attached. Only when the session actually runs on ui-server (not a
-    // T039 node-pty fallback), so the renderer's confirmation toast is accurate.
-    if (activeBackend.name === 'ui-server' && !uiServerOnlineOffices.has(officeId)) {
-      uiServerOnlineOffices.add(officeId);
+    // Announce once per office when an SDK control plane is online. For the sdk
+    // backend this means the headless host is listening and its client attached
+    // (the native bridge announces on its first bridge registration below).
+    if (activeBackend.name === 'sdk' && !backendOnlineOffices.has(officeId)) {
+      backendOnlineOffices.add(officeId);
       send({ type: 'backend-online', officeId, backend: activeBackend.name });
     }
 
     // Persist the PTY root PID so a crashed/ungracefully-killed session can be
     // reaped on the next launch (see electron/terminal/pty-registry.ts). Only
-    // real OS PIDs from node-pty are tracked — the SDK backend hands out
+    // real OS PIDs are tracked — node-pty shells and native-bridge TUIs (the
+    // pinned CLI spawned directly under node-pty). The SDK backends hand out
     // synthetic PIDs (1_000_000+) that must never be force-killed.
-    if (activeBackend.name === 'node-pty') {
+    if (activeBackend.name === 'node-pty' || activeBackend.name === NATIVE_BRIDGE_BACKEND_NAME) {
       registerPty({ pid: proc.pid, agentId, sessionId, startedAt: Date.now() });
     }
 
@@ -764,37 +704,66 @@ async function startTerminalForAgentImpl(
     let skippedEventCount = 0;
     agentReadyState.set(ck, shellOnlyMode);
 
-    // Store pre-seeded prompt before signalReady is defined so it's available on first ready
-    if (!shellOnlyMode && preseededPrompt) {
-      pendingPreseededPrompts.set(ck, preseededPrompt);
-    }
-
     const signalReady = () => {
       if (shellOnlyMode || hasSignalledReady) return;
       hasSignalledReady = true;
       agentReadyState.set(ck, true);
       console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
       send({ type: 'terminal-preload-status', agentId, status: 'ready', officeId });
+      agentReadyWaiters.settle(ck);
 
-      // Write pre-seeded prompt to PTY once CLI is ready
-      const prompt = pendingPreseededPrompts.get(ck);
-      if (prompt) {
-        pendingPreseededPrompts.delete(ck);
-        console.log(`[TermServer] Writing pre-seeded prompt for ${ck}`);
-        proc.write(prompt + '\r');
+      // Deliver the pre-seeded prompt once the CLI is ready through the backend's
+      // programmatic submit (SDK session.send — for the native bridge, through
+      // the authenticated extension so it renders in the native TUI). A backend
+      // without one (raw node-pty) fails explicitly; prompts are never typed.
+      const prompts = takePreseededPrompts(ck);
+      if (prompts.length > 0) {
+        console.log(`[TermServer] Delivering ${prompts.length} pre-seeded prompt(s) for ${ck}`);
+        void prompts.reduce(
+          (chain, prompt) => chain.then(() => deliverPreseededPrompt(proc, prompt)).then(() => undefined),
+          Promise.resolve(),
+        ).catch((error: unknown) => {
+          console.error(`[TermServer] Pre-seeded prompt for ${ck} was not delivered: ${String((error as Error)?.message ?? error)}`);
+          send({ type: 'terminal-preload-status', agentId, status: 'failed', officeId });
+        });
       }
     };
+
+    if (!shellOnlyMode && typeof proc.onSessionChange === 'function') {
+      // Native bridge: the extension's authenticated registration is the ready
+      // signal, and every registration carries the session the TUI is really
+      // on. Apply it BEFORE signalling ready so a pre-seeded prompt and the
+      // persisted mapping already point at the authoritative session (/clear
+      // re-registers on a new session through this same path).
+      const unsubscribeSessionChanges = proc.onSessionChange((change) => {
+        if (ptyProcesses.get(terminalKey)?.process !== proc) return;
+        applyNativeBridgeSessionChange(officeId, agentId, terminalKey, change);
+        if (!hasSignalledReady) {
+          if (!backendOnlineOffices.has(officeId)) {
+            backendOnlineOffices.add(officeId);
+            send({ type: 'backend-online', officeId, backend: activeBackend.name });
+          }
+          signalReady();
+        }
+      });
+      proc.onExit(() => unsubscribeSessionChanges());
+      setTimeout(() => {
+        if (!hasSignalledReady && ptyProcesses.get(terminalKey)?.process === proc) {
+          console.warn(`[lifecycle] native bridge for ${ck} has not connected after 60s — programmatic prompts will fail until it does (the TUI may be waiting for input such as folder trust)`);
+        }
+      }, 60_000).unref?.();
+    }
 
     if (!shellOnlyMode) {
       // EventsWatcher — defer start so the preloading signal has time to reach
       // the renderer and render 'starting' before the watcher processes historical
       // events and potentially fires signalReady() (which sends 'ready').
-      // T011: SDK-backed processes (ui-server) supply their own event source
+      // T011: SDK-backed processes (sdk) supply their own event source
       // (session.on → normalized CopilotEvent); others use the file watcher.
       const watcher = proc.createEventSource ? proc.createEventSource() : eventSourceFactory.create(sessionId);
       agentWatchers.set(ck, watcher);
 
-      if (activeBackend.name === 'copilot-sdk' || activeBackend.name === 'ui-server') {
+      if (activeBackend.name === 'sdk' || activeBackend.name === 'copilot-sdk') {
         setTimeout(signalReady, 50);
       }
 
@@ -830,7 +799,7 @@ async function startTerminalForAgentImpl(
           // event, so surface the ask_user payload best-effort from the tool arguments
           // IN ADDITION to the unchanged copilot-tool-start above (requestId unavailable).
           // buildAskUserRelay returns null unless this is an ask_user on the node-pty
-          // backend, so SDK/ui-server never double-emits copilot-ask-user here.
+          // backend, so SDK-backed sessions never double-emit copilot-ask-user here.
           const askRelay = buildAskUserRelay(event, activeBackend.name);
           if (askRelay) {
             send({ type: 'copilot-ask-user', agentId, toolId: askRelay.toolId, requestId: askRelay.requestId, question: askRelay.question, options: askRelay.options, freeform: askRelay.freeform });
@@ -843,7 +812,7 @@ async function startTerminalForAgentImpl(
             send({ type: 'copilot-plan', agentId, toolId: planRelayTool.toolId, requestId: planRelayTool.requestId, summary: planRelayTool.summary, planContent: planRelayTool.planContent, actions: planRelayTool.actions, recommendedAction: planRelayTool.recommendedAction });
           }
         } else if (event.type === 'user_input.requested') {
-          // spec 015: SDK/ui-server backend — `ask_user` is the SDK user-input
+          // spec 015: SDK-backed session — `ask_user` is the SDK user-input
           // interaction. The payload arrives natively. Emit copilot-tool-start with
           // the same static status the node-pty path uses (FR-016) PLUS the dedicated
           // copilot-ask-user carrying the requestId single-resolution key.
@@ -863,7 +832,7 @@ async function startTerminalForAgentImpl(
           console.log(`[TermServer] Forwarding ask_user complete (user_input.completed) for ${ck}: requestId=${completedRequestId}`);
           send({ type: 'copilot-ask-user-complete', agentId, requestId: completedRequestId });
         } else if (event.type === 'exit_plan_mode.requested') {
-          // Plan mode (SDK/ui-server): the ephemeral request carries the plan payload
+          // Plan mode (SDK-backed): the ephemeral request carries the plan payload
           // natively (incl. the requestId single-resolution key). Emit copilot-tool-start
           // for status parity plus the dedicated copilot-plan carrying the plan content
           // and available actions so the Teams consumer can relay + resolve it.
@@ -874,7 +843,7 @@ async function startTerminalForAgentImpl(
             send({ type: 'copilot-plan', agentId, toolId: planRelay.toolId, requestId: planRelay.requestId, summary: planRelay.summary, planContent: planRelay.planContent, actions: planRelay.actions, recommendedAction: planRelay.recommendedAction });
           }
         } else if (event.type === 'exit_plan_mode.completed') {
-          // Plan mode resolved (SDK/ui-server) — mirrors user_input.completed. Forward
+          // Plan mode resolved (SDK-backed) — mirrors user_input.completed. Forward
           // ALWAYS (outside the viewer gate) so the Teams consumer can PRECISELY clear a
           // locally-approved plan by requestId (first-resolver-wins).
           const d = (event.data ?? {}) as { requestId?: unknown; approved?: unknown; selectedAction?: unknown; feedback?: unknown };
@@ -888,45 +857,47 @@ async function startTerminalForAgentImpl(
         }
 
         if (event.type === 'assistant.turn_end') {
-          agentInTurn.set(ck, false);
           console.log(`[TermServer] Forwarding turn_end for ${ck}`);
-          send({ type: 'copilot-turn-end', agentId });
+          for (const targetOfficeId of officesForTerminal(officeId, agentId, terminalKey)) {
+            agentInTurn.set(compositeKey(targetOfficeId, agentId), false);
+            send({ type: 'copilot-turn-end', agentId, officeId: targetOfficeId });
+          }
         } else if (event.type === 'assistant.turn_start') {
           agentInTurn.set(ck, true);
           console.log(`[TermServer] Forwarding turn_start for ${ck}`);
           send({ type: 'copilot-turn-start', agentId });
         } else if (event.type === 'user.message') {
-          userMessageSeq.set(ck, (userMessageSeq.get(ck) ?? 0) + 1);
           let rawUserText = '';
           {
             const d = (event.data ?? {}) as Record<string, unknown>;
             const raw = d.content || d.message || d.text || d.input || d.prompt || d.body || '';
             rawUserText = String(raw);
-            lastUserMessageText.set(ck, normalizePromptText(rawUserText));
           }
           console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
           send({ type: 'copilot-user-message', agentId, text: rawUserText });
 
-          // Auto-set session title from first non-empty user message while title is empty.
-          const existing = officeData.sessionMeta.get(agentId);
-          const existingTitle = typeof existing?.title === 'string' ? existing.title.trim() : '';
-          if (existingTitle) {
-            hasAutoTitled.add(ck);
-          } else {
-            const d = event.data as Record<string, unknown>;
-            const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
-            const raw = String(msgText).trim();
-            if (raw) {
+          // Auto-set the title in the owning office and every transferred alias.
+          const d = event.data as Record<string, unknown>;
+          const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
+          const raw = String(msgText).trim();
+          for (const targetOfficeId of officesForTerminal(officeId, agentId, terminalKey)) {
+            const targetCk = compositeKey(targetOfficeId, agentId);
+            const targetData = getOfficeSession(targetOfficeId);
+            const existing = targetData.sessionMeta.get(agentId);
+            const existingTitle = typeof existing?.title === 'string' ? existing.title.trim() : '';
+            if (existingTitle) {
+              hasAutoTitled.add(targetCk);
+            } else if (raw) {
               const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
               const meta = existing || { title: '' };
               meta.title = title;
-              officeData.sessionMeta.set(agentId, meta);
-              saveOfficeSessionFile(officeId);
-              hasAutoTitled.add(ck);
-              console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
-              send({ type: 'session-meta-updated', agentId, meta: { ...meta } });
+              targetData.sessionMeta.set(agentId, meta);
+              void saveOfficeSessionFile(targetOfficeId);
+              hasAutoTitled.add(targetCk);
+              console.log(`[TermServer] Auto-titled ${targetCk}: "${title}"`);
+              send({ type: 'session-meta-updated', agentId, officeId: targetOfficeId, meta: { ...meta } });
             } else {
-              hasAutoTitled.delete(ck);
+              hasAutoTitled.delete(targetCk);
             }
           }
         } else if (event.type === 'subagent.started') {
@@ -987,28 +958,7 @@ async function startTerminalForAgentImpl(
       pendingData = '';
     };
 
-    // ui-server: every agent in an office shares ONE host TUI (rawPty). Its bytes
-    // only ever render the *foreground* session, yet all agents' onData callbacks
-    // fire. Attribute the shared stream to exactly one agent (the office
-    // foreground) so a session's rendered output cannot leak into another's
-    // scrollback or live view. Default the first started agent to foreground;
-    // the `attach` handler updates it on every agent switch.
-    const isSharedHostBackend = activeBackend.name === 'ui-server';
-    if (isSharedHostBackend) {
-      // An existing foreground is never overwritten by a starting agent, so a
-      // background warm/start of a non-viewed agent can't hijack the viewer's
-      // input ownership (see foregroundAfterStart).
-      officeForegroundCk.set(officeId, foregroundAfterStart(officeForegroundCk.get(officeId), ck));
-    }
-
     proc.onData((data: string) => {
-      if (isSharedHostBackend && !shouldForwardSharedHostData(ck, officeForegroundCk.get(officeId))) {
-        // Not the office foreground — this is another session's rendered output
-        // arriving on the shared host TUI stream. Ignore it so it can't leak into
-        // this agent's scrollback or live view.
-        return;
-      }
-      lastPtyDataAt.set(ck, Date.now());
       appendToScrollback(ck, data);
       // Ready signal from PTY output. Newer CLI builds do not always emit the old
       // "Environment loaded" marker, so accept either the legacy marker or the
@@ -1033,6 +983,12 @@ async function startTerminalForAgentImpl(
 
     proc.onExit(({ exitCode }: { exitCode: number }) => {
       unregisterPty(proc.pid);
+      // Fail any caller still waiting for this session to become ready — unless
+      // a newer process already took over this terminal key (kill-then-relaunch).
+      const currentEntry = ptyProcesses.get(terminalKey);
+      if (!currentEntry || currentEntry.process === proc) {
+        agentReadyWaiters.settle(ck, new Error(`Copilot session for ${ck} exited before it was ready (code ${exitCode})`));
+      }
       // Identity guard: only tear down the shared per-agent (ck / terminalKey) state
       // if THIS process is still the registered one. A kill-then-relaunch under the
       // same composite key (e.g. spec 020 restore-session) can start a new PTY before
@@ -1048,14 +1004,11 @@ async function startTerminalForAgentImpl(
         });
         ptyProcesses.delete(terminalKey);
         activeAgentViewers.delete(ck);
-        clearForegroundIf(officeId, ck);
         agentScrollbackBuffers.delete(ck);
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
-        lastPtyDataAt.delete(ck);
-        userMessageSeq.delete(ck);
-        lastUserMessageText.delete(ck);
+        pendingPreseededPrompts.delete(ck);
         const w = agentWatchers.get(ck);
         if (w) { w.stop(); agentWatchers.delete(ck); }
       }
@@ -1096,8 +1049,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
   switch (msg.type) {
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
-      activeAgentViewers.add(ck);
-      const result = await startTerminalForAgent(
+      // A main-process (background) start — the Teams ensure-online seam — must
+      // never claim a renderer viewer. Renderer starts register through the
+      // dual-key helper (R-002).
+      if (!msg.background) addAgentViewer(ck, viewerMaps);
+      let result: StartTerminalResult = await startTerminalForAgent(
         msg.officeId,
         msg.agentId,
         msg.workingDir,
@@ -1107,6 +1063,27 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         msg.launchMode,
         msg.hostWorkingDir,
       );
+      if (result.success && msg.readyTimeoutMs && msg.readyTimeoutMs > 0) {
+        const readyKey = getTerminalKey(msg.officeId, msg.agentId) ?? ck;
+        const readyProc = ptyProcesses.get(readyKey);
+        try {
+          if (readyProc && typeof readyProc.process.whenReady === 'function') {
+            // Native bridge readiness is live, not latched: a PTY can remain
+            // alive while its extension reconnects after /clear or a socket loss.
+            await readyProc.process.whenReady(msg.readyTimeoutMs);
+            result = {
+              ...result,
+              sessionId: readyProc.process.getSessionId?.() ?? readyProc.sessionId,
+              ready: true,
+            };
+          } else {
+            await waitForAgentReady(readyKey, msg.readyTimeoutMs);
+            result = { ...result, ready: true };
+          }
+        } catch (error) {
+          result = { ...result, success: false, ready: false, error: String((error as Error)?.message ?? error) };
+        }
+      }
       send({ type: 'response', requestId: msg.requestId, result });
       break;
     }
@@ -1127,10 +1104,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     }
 
     case 'submit-prompt': {
-      // Programmatic prompt submission (e.g. Teams remote). Prefer the backend's
-      // atomic submit (SDK: session.send enqueue). Fall back to a bracketed-paste
-      // write for raw PTY backends so multi-line prompts aren't submitted early
-      // and TUI re-render storms don't drop characters.
+      // Programmatic prompt submission (e.g. Teams remote) through the backend's
+      // atomic submit (SDK: session.send enqueue; native bridge: authenticated
+      // extension). The raw node-pty backend has no programmatic session, so the
+      // request fails explicitly — prompts are never injected as keystrokes.
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
@@ -1141,19 +1118,22 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // a terminal-server reconnect); this rides the reliable request path.
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
-        if (typeof backendProc.submitPrompt === 'function') {
-          // SDK backend: atomic programmatic submit (session.send enqueue).
-          backendProc.submitPrompt(msg.prompt, msg.label);
-        } else {
-          // node-pty backend: the real Copilot CLI is an Ink/React TUI. It has no
-          // programmatic submit — inject keystrokes. Bracketed paste avoids @ / //
-          // triggering TUI menus and re-render char drops; but Ink detaches stdin
-          // during re-renders, so a single Enter is unreliable. Use the idle-gated
-          // sequence: Ctrl+U (clear) → paste → wait-for-render-idle → Enter. Key
-          // idle tracking by the resolved terminal `key` (not the office composite
-          // key) so it stays correct for transferred/aliased sessions where the
-          // PTY's onData writes timestamps under its original terminal key.
-          submitViaKeystrokes(backendProc, msg.prompt, key!);
+        if (typeof backendProc.submitPrompt !== 'function') {
+          const error = programmaticInputUnsupportedError('prompt');
+          console.warn(`[TermServer] SUBMIT-PROMPT REJECTED for ${compositeKey(msg.officeId, msg.agentId)}: ${error}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error } });
+          break;
+        }
+        // Await the submit so the caller learns whether the agent actually
+        // accepted the prompt.
+        try {
+          await backendProc.submitPrompt(msg.prompt, msg.label);
+        } catch (error) {
+          const ck = compositeKey(msg.officeId, msg.agentId);
+          const message = String((error as Error)?.message ?? error);
+          console.warn(`[TermServer] SUBMIT-PROMPT FAILED for ${ck}: ${message}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          break;
         }
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } else {
@@ -1166,10 +1146,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'run-control-command': {
       // Teams slash-command interception (`/compact`, `/usage`, `/model`). SDK-backed
-      // backends execute the command through `session.rpc.*` and return structured,
-      // postable data. The raw node-pty backend has no SDK session, so we keystroke-
-      // inject the literal slash command into the real TUI (best-effort; the TUI
-      // renders its own output, captured downstream via forwarding).
+      // and native-bridge backends execute the command through `session.rpc.*` and
+      // return structured, postable data. The raw node-pty backend has no SDK
+      // session, so the command is reported as unsupported (never typed).
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (!proc) {
@@ -1190,10 +1169,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           send({ type: 'response', requestId: msg.requestId, result: { executed: false, error: String((error as Error)?.message ?? error) } });
         }
       } else {
-        // node-pty fallback: type the raw slash command into the TUI input line.
-        const raw = msg.arg ? `/${msg.command} ${msg.arg}` : `/${msg.command}`;
-        submitViaKeystrokes(backendProc, raw, key!);
-        send({ type: 'response', requestId: msg.requestId, result: { executed: true, via: 'keystroke' } });
+        send({ type: 'response', requestId: msg.requestId, result: { executed: false, error: programmaticInputUnsupportedError('control') } });
       }
       break;
     }
@@ -1201,9 +1177,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'submit-answer': {
       // spec 015: answer a pending ask_user interaction. Distinct from submit-prompt —
       // this resolves the pending user-input interaction, it does NOT enqueue a new
-      // prompt. SDK/ui-server backend → handlePendingUserInput(requestId) (resolves the
-      // late onUserInputRequest promise). node-pty backend → keystroke injection onto
-      // the interaction input line (idle-gated type + Enter), exactly like a local answer.
+      // prompt. Native bridge → its extension over the broker. SDK backend →
+      // handlePendingUserInput(requestId) (resolves the late onUserInputRequest
+      // promise). node-pty backend → explicit failure (answers are never typed).
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
@@ -1211,8 +1187,25 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // main-process Teams consumer even without a renderer viewer.
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
-        if (answerTransport(backendProc) === 'sdk') {
-          // SDK/ui-server backend: resolve the session's single pending interaction.
+        const transport = answerTransport(backendProc);
+        if (transport === 'bridge') {
+          // Native bridge: the pending interaction lives in the TUI's extension —
+          // resolve it there over the authenticated broker and report the REAL
+          // outcome (e.g. "No pending user-input request") to the caller.
+          try {
+            await backendProc.submitAnswer!({
+              requestId: msg.answerRequestId,
+              answer: msg.answer,
+              wasFreeform: msg.wasFreeform,
+            });
+            send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          } catch (error) {
+            const message = String((error as Error)?.message ?? error);
+            console.warn(`[TermServer] submit-answer via bridge failed for ${compositeKey(msg.officeId, msg.agentId)} (answerRequestId="${msg.answerRequestId ?? ''}"): ${message}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          }
+        } else if (transport === 'sdk') {
+          // SDK backend: resolve the session's single pending interaction.
           // The resolver is correlated by sessionId (the onUserInputRequest callback
           // carries no requestId — see terminal-backend module header); answerRequestId
           // is the event-derived id, kept for diagnostics only.
@@ -1225,11 +1218,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // reply when the resolver was missing (transient/ownership mismatch).
           send({ type: 'response', requestId: msg.requestId, result: { success: resolved, error: resolved ? undefined : 'no pending user-input to resolve' } });
         } else {
-          // node-pty backend: no SDK session — type the answer into the real TUI's
-          // interaction input line and submit (idle-gated). Best-effort/degraded:
-          // there is no requestId to key on; the local input line is the answer surface.
-          submitViaKeystrokes(backendProc, msg.answer, key!);
-          send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          // node-pty backend: no programmatic session to resolve the interaction.
+          const error = programmaticInputUnsupportedError('answer');
+          console.warn(`[TermServer] SUBMIT-ANSWER REJECTED for ${compositeKey(msg.officeId, msg.agentId)}: ${error}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error } });
         }
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
@@ -1241,7 +1233,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'submit-plan-decision': {
       // Plan mode: approve/reject a pending exit_plan_mode interaction from Teams.
-      // SDK/ui-server backend → handlePendingPlanApproval(sessionId) resolves the blocked
+      // SDK backend → handlePendingPlanApproval(sessionId) resolves the blocked
       // onExitPlanModeRequest handler. node-pty backend → render-only: there is no SDK
       // responder, so report failure so the Teams consumer keeps the plan resolvable in-app.
       const key = getTerminalKey(msg.officeId, msg.agentId);
@@ -1251,7 +1243,23 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // main-process Teams consumer even without a renderer viewer.
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
-        if (answerTransport(backendProc) === 'sdk') {
+        if (typeof backendProc.submitPlanDecision === 'function') {
+          // Native bridge: resolve the extension's blocked plan decision over the
+          // authenticated broker and report the real outcome.
+          try {
+            await backendProc.submitPlanDecision({
+              requestId: msg.planRequestId,
+              approved: msg.approved,
+              selectedAction: msg.selectedAction,
+              feedback: msg.feedback,
+            });
+            send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          } catch (error) {
+            const message = String((error as Error)?.message ?? error);
+            console.warn(`[TermServer] submit-plan-decision via bridge failed for ${compositeKey(msg.officeId, msg.agentId)}: ${message}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          }
+        } else if (answerTransport(backendProc) === 'sdk') {
           const resolved = handlePendingPlanApproval(proc.sessionId, {
             approved: msg.approved,
             selectedAction: msg.selectedAction,
@@ -1310,7 +1318,6 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           killPtyProcess(proc);
           ptyProcesses.delete(key!);
           agentToTerminal.delete(ck);
-          clearForegroundIf(msg.officeId, ck);
           // Archive old session ID and clear it so next start generates a fresh one
           archiveSessionId(msg.officeId, msg.agentId);
           const officeData = getOfficeSession(msg.officeId);
@@ -1321,6 +1328,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           if (w) { w.stop(); agentWatchers.delete(ck); }
           agentReadyState.delete(ck);
           agentInTurn.delete(ck);
+          pendingPreseededPrompts.delete(ck);
           send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         } catch (error) {
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
@@ -1342,44 +1350,6 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
       }
 
-      // T024: bring this agent's session to the foreground of its office's hosted
-      // TUI runtime so the real terminal renders the selected agent. Only the
-      // ui-server backend implements setForeground; other backends own a PTY per
-      // agent and need no switch. Best-effort — a foreground failure must not fail
-      // the attach.
-      const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
-      const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
-      const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
-      // Split foreground from event-subscription. addAgentViewer above already
-      // subscribed this agent to its copilot-events (badges/status/fleet/teams) —
-      // that is safe for MANY agents at once. The host FOREGROUND (rawPty render +
-      // keyboard input target) can belong to EXACTLY ONE agent, so we only claim
-      // it for a genuine user-view attach (msg.foreground === true). Background
-      // attaches (reconnect-on-focus, fleetTracker, teams) leave foreground alone
-      // and therefore can no longer steal the input target from the agent the user
-      // is actually looking at — the "keystrokes land in the wrong agent" bug.
-      if (isSharedHost && msg.foreground === true) {
-        // This agent is now the office foreground: the shared TUI stream is
-        // attributed to it and its session receives keyboard input. We do NOT
-        // deactivate other viewers here — they stay subscribed for events; the
-        // rawPty foreground gate (shouldForwardSharedHostData) already ensures only
-        // this agent's terminal bytes render. The renderer detaches the previously
-        // viewed agent on switch, so exactly one agent stays foreground.
-        officeForegroundCk.set(msg.officeId, ck);
-        // Await the foreground switch before responding: under the shared
-        // ui-server host, ALL input funnels to the host rawPty and is routed to
-        // whichever session is foreground. If we respond (and the viewer focuses
-        // the xterm) before the switch completes, keystrokes race to the PREVIOUS
-        // foreground agent — the "I can't see what I type until I switch back to
-        // my last active terminal" bug. Awaiting closes that race for the common
-        // switch path. Failure is non-fatal (attach still succeeds).
-        try {
-          await attachedProc!.process.setForeground?.();
-        } catch (err: unknown) {
-          console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
-        }
-      }
-
       const chunks = agentScrollbackBuffers.get(ck) || [];
       const rawScrollback = chunks.join('');
       send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback: rawScrollback } });
@@ -1396,9 +1366,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'activate': {
       // Spec 021 Phase 2 — atomic activation. One round-trip that ensures the
-      // terminal exists, registers the viewer, awaits the foreground switch, and
-      // returns the authoritative session payload. Faithfully composed from the
-      // same primitives as the `start` + `attach` cases so behavior is identical.
+      // terminal exists, registers the viewer, and returns the authoritative
+      // session payload. Faithfully composed from the same primitives as the
+      // `start` + `attach` cases so behavior is identical.
       const ck = compositeKey(msg.officeId, msg.agentId);
       const existed = getTerminalKey(msg.officeId, msg.agentId) !== null;
 
@@ -1426,21 +1396,6 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const { aliasKey } = addAgentViewer(ck, viewerMaps);
       if (aliasKey) {
         console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
-      }
-
-      // Foreground switch — mirror the `attach` case. Only claim the single host
-      // foreground for a genuine user-view activation, and AWAIT it so keystrokes
-      // never race to the previously foregrounded agent (input-target race guard).
-      const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
-      const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
-      const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
-      if (isSharedHost && msg.foreground === true) {
-        officeForegroundCk.set(msg.officeId, ck);
-        try {
-          await attachedProc!.process.setForeground?.();
-        } catch (err: unknown) {
-          console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
-        }
       }
 
       const officeData = getOfficeSession(msg.officeId);
@@ -1561,7 +1516,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (restoredTitle) officeData.sessionMeta.set(msg.agentId, { title: restoredTitle });
       else officeData.sessionMeta.delete(msg.agentId);
       hasAutoTitled.delete(ck);
-      send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: restoredTitle } });
+      send({ type: 'session-meta-updated', agentId: msg.agentId, officeId: msg.officeId, meta: { title: restoredTitle } });
 
       // (8) Kill the existing PTY (if any) + clean up so the renderer's normal
       // attach/start flow relaunches `copilot --session-id=<target>`. Reuse the
@@ -1573,12 +1528,12 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         killPtyProcess(restoreProc);
         ptyProcesses.delete(restoreKey!);
         agentToTerminal.delete(ck);
-        clearForegroundIf(msg.officeId, ck);
       }
       const restoreWatcher = agentWatchers.get(ck);
       if (restoreWatcher) { restoreWatcher.stop(); agentWatchers.delete(ck); }
       agentReadyState.delete(ck);
       agentInTurn.delete(ck);
+      pendingPreseededPrompts.delete(ck);
       // Clear the outgoing session's scrollback so the restored session starts clean.
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
@@ -1635,11 +1590,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(ck); }
       agentReadyState.delete(ck);
       agentInTurn.delete(ck);
+      pendingPreseededPrompts.delete(ck);
       // Clear scrollback
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
       activeAgentViewers.delete(ck);
-      clearForegroundIf(msg.officeId, ck);
       const officeDataReset = getOfficeSession(msg.officeId);
       // Archive old session ID (snapshots the current title) BEFORE clearing
       // metadata, otherwise the archived entry loses its title (spec 019).
@@ -1647,7 +1602,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // Clear session metadata
       officeDataReset.sessionMeta.delete(msg.agentId);
       hasAutoTitled.delete(ck);
-      send({ type: 'session-meta-updated', agentId: msg.agentId, meta: { title: '' } });
+      send({ type: 'session-meta-updated', agentId: msg.agentId, officeId: msg.officeId, meta: { title: '' } });
       // Generate new session ID (but don't start PTY)
       const newSessionId = crypto.randomUUID();
       officeDataReset.sessionIds.set(msg.agentId, newSessionId);
@@ -1695,10 +1650,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
+        pendingPreseededPrompts.delete(ck);
         activeAgentViewers.delete(ck);
-        clearForegroundIf(officeId, ck);
         hasAutoTitled.delete(ck);
-        send({ type: 'session-meta-updated', agentId, meta: { title: '' } });
+        send({ type: 'session-meta-updated', agentId, officeId, meta: { title: '' } });
       }
       officeData.sessionMeta.clear();
       // Regenerate fresh GUIDs
@@ -1714,14 +1669,14 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'refresh-office-backend': {
       const { officeId } = msg;
       const restartedAgentIds: string[] = [];
-      if (terminalBackend?.name !== 'ui-server' || typeof terminalBackend.restartOffice !== 'function') {
+      if (terminalBackend?.name !== 'sdk' || typeof terminalBackend.restartOffice !== 'function') {
         send({
           type: 'response',
           requestId: msg.requestId,
           result: {
             success: false,
             restartedAgentIds,
-            error: 'The active terminal backend is not ui-server',
+            error: 'The active terminal backend does not support office refresh (sdk only)',
           },
         });
         break;
@@ -1748,7 +1703,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         });
       }
 
-      console.log(`[lifecycle] refreshing ui-server office=${officeId} agents=${restartTargets.map((target) => target.agentId).join(',') || '(none)'}`);
+      console.log(`[lifecycle] refreshing sdk office=${officeId} agents=${restartTargets.map((target) => target.agentId).join(',') || '(none)'}`);
 
       for (const target of restartTargets) {
         const ck = compositeKey(officeId, target.agentId);
@@ -1767,16 +1722,14 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
-        lastPtyDataAt.delete(ck);
-        clearForegroundIf(officeId, ck);
       }
 
-      uiServerOnlineOffices.delete(officeId);
+      backendOnlineOffices.delete(officeId);
       try {
         await terminalBackend.restartOffice(officeId);
         for (const target of restartTargets) {
           const ck = compositeKey(officeId, target.agentId);
-          if (target.viewed) activeAgentViewers.add(ck);
+          if (target.viewed) addAgentViewer(ck, viewerMaps);
           if (target.forwarded) agentForwardKeys.add(ck);
           const result = await startTerminalForAgent(
             officeId,
@@ -1794,8 +1747,8 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           restartedAgentIds.push(target.agentId);
         }
 
-        if (restartTargets.length > 0 && !uiServerOnlineOffices.has(officeId)) {
-          throw new Error('UI-server retry failed; sessions remain on node-pty fallback');
+        if (restartTargets.length > 0 && !backendOnlineOffices.has(officeId)) {
+          throw new Error(`${terminalBackend.name} backend restart did not come online`);
         }
 
         send({
@@ -1943,8 +1896,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // watcher via the shared object reference. The destination creates its own watcher
         // when startTerminalForAgent is called for a new session.
         // Carry over active viewer registration so PTY output is forwarded under the new key
+        // (dual-key helper: toCk now aliases existingTermKey — R-002).
         if (activeAgentViewers.has(fromCk)) {
-          activeAgentViewers.add(toCk);
+          addAgentViewer(toCk, viewerMaps);
         }
       }
 
@@ -1961,8 +1915,24 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'shutdown': {
       console.log('[TermServer] Shutdown requested');
       killAllPtyProcesses();
-      process.exit(0);
+      try {
+        await terminalBackend?.stop?.();
+      } finally {
+        await closeNativeBridgeBroker();
+        process.exit(0);
+      }
     }
+  }
+}
+
+/** Close the shared bridge broker (revokes every credential/connection). Never throws. */
+async function closeNativeBridgeBroker(): Promise<void> {
+  const broker = nativeBridgeBroker;
+  nativeBridgeBroker = null;
+  try {
+    await broker?.close();
+  } catch (error) {
+    console.warn(`[TermServer] Failed to close native bridge broker: ${String((error as Error)?.message ?? error)}`);
   }
 }
 
@@ -1973,31 +1943,38 @@ async function main(): Promise<void> {
 
   const resolvedCopilotCliPath = resolveCopilotCliPath(process.cwd(), process.env.PATH);
   // Backend selection (T008). Values mirror src/config/terminalBackend.ts
-  // ('node-pty' | 'ui-server' | 'sdk'); the renderer decides and passes the choice
-  // via COPILOT_TERMINAL_BACKEND. Default is ui-server (auto-probes and falls back
-  // to node-pty when the CLI can't host --ui-server); node-pty remains the
-  // permanent fallback.
-  const preferredBackend = (process.env.COPILOT_TERMINAL_BACKEND || 'ui-server').toLowerCase();
+  // ('native-bridge' | 'node-pty' | 'sdk'); the renderer decides and passes the
+  // choice via COPILOT_TERMINAL_BACKEND. Default is native-bridge (one pinned
+  // native TUI per agent under node-pty, driven through the authenticated SDK
+  // extension bridge). When its startup capability check fails we report the
+  // reason and fall back GLOBALLY to sdk (headless host + custom renderer) —
+  // never to an unauthenticated raw-PTY programmatic path. node-pty is used only
+  // when explicitly selected or for shell mode.
+  const preferredBackend = parseTerminalBackend(process.env.COPILOT_TERMINAL_BACKEND);
   let backendFallbackReason: string | undefined;
-  if (preferredBackend === 'ui-server') {
-    const candidate = UiServerBackend.tryCreate(resolvedCopilotCliPath);
-    // isAvailable() runs the --ui-server capability probe (undocumented flag);
-    // on any failure we fall back to node-pty rather than surfacing an error.
-    if (candidate && candidate.isAvailable()) {
-      terminalBackend = candidate;
+  if (preferredBackend === 'native-bridge') {
+    const selection = await selectNativeBridgeBackend({
+      initialize: () => initializeNativeBridge({ repoRoot: process.cwd() }),
+      createSdkFallback: () => CopilotSdkBackend.tryCreate(resolvedCopilotCliPath),
+    });
+    terminalBackend = selection.backend;
+    nativeBridgeBroker = selection.broker;
+    backendFallbackReason = selection.fallbackReason;
+    if (selection.ready) {
+      console.log(
+        `[TermServer] Native bridge ready: cli=${selection.ready.capability.cliPath} ` +
+        `extensionSdk=${selection.ready.capability.extensionSdkPath} extension=${selection.ready.extensionPath}`,
+      );
     } else {
-      backendFallbackReason = 'UI-server is unavailable on this Copilot CLI';
-      console.warn('[lifecycle] backend=ui-server requested but --ui-server is unavailable on this CLI; falling back to node-pty');
+      console.error(`[TermServer] ${backendFallbackReason}; using ${terminalBackend?.name ?? 'no backend'} (never a raw-PTY programmatic fallback)`);
     }
   } else if (preferredBackend === 'sdk') {
     terminalBackend = await CopilotSdkBackend.tryCreate(resolvedCopilotCliPath);
     if (!terminalBackend) {
       backendFallbackReason = 'SDK backend could not initialize';
-      console.warn('[TermServer] COPILOT_TERMINAL_BACKEND=sdk requested but the SDK backend could not initialize; falling back to node-pty');
+      console.error('[TermServer] SDK backend could not initialize; not falling back to node-pty');
     }
-  }
-
-  if (!terminalBackend) {
+  } else if (preferredBackend === 'node-pty') {
     terminalBackend = NodePtyBackend.tryCreate();
   }
 
@@ -2025,15 +2002,16 @@ async function main(): Promise<void> {
   // Clean up on unexpected exit
   process.on('SIGTERM', () => {
     killAllPtyProcesses();
-    process.exit(0);
+    void Promise.resolve(terminalBackend?.stop?.())
+      .catch(() => undefined)
+      .then(() => closeNativeBridgeBroker())
+      .finally(() => process.exit(0));
   });
 
   // Signal ready, including the backend-selection outcome so the renderer can
-  // surface a toast when a requested backend (e.g. ui-server) fell back to node-pty.
+  // surface a toast when a requested backend fell back (native-bridge → sdk).
   const loadedBackendName = terminalBackend?.name ?? 'none';
-  const fellBack =
-    (preferredBackend === 'ui-server' || preferredBackend === 'sdk') &&
-    loadedBackendName === 'node-pty';
+  const fellBack = didTerminalBackendFallBack(preferredBackend, loadedBackendName);
   send({
     type: 'ready',
     backend: {

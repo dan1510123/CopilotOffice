@@ -56,10 +56,8 @@ export function mapSdkEventToCopilotEvent(evt: unknown): CopilotEvent {
 }
 
 /**
- * Event source for SDK-backed Copilot sessions.
- *
- * TODO(T011): server wiring will construct this with the live SDK CopilotSession
- * when selecting the ui-server backend instead of the events.jsonl file watcher.
+ * Event source for SDK-backed Copilot sessions (the sdk backend), bound to the
+ * live SDK CopilotSession instead of the events.jsonl file watcher.
  */
 export class SdkEventSource implements CopilotEventSource {
   private unsubscribe: (() => void) | null = null;
@@ -74,6 +72,59 @@ export class SdkEventSource implements CopilotEventSource {
     this.unsubscribe = this.session.on((evt: unknown) => {
       onEvent(mapSdkEventToCopilotEvent(evt), false);
     });
+  }
+
+  stop(): void {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+}
+
+/** Minimal broker surface the bridge event source needs (see native-bridge-broker.ts). */
+export interface BridgeEventSubscriber {
+  subscribe(
+    terminalKey: string,
+    listener: (event: unknown, connection: { sessionId: string }) => void,
+  ): () => void;
+}
+
+/**
+ * Event source for a native TUI driven through the SDK extension bridge.
+ *
+ * Events arrive from the extension's `session.on(...)` over the broker and are
+ * normalized with {@link mapSdkEventToCopilotEvent}, so the server's watcher
+ * callback (fleet-critical forwarding, Teams mirroring, ask_user/plan relays)
+ * sees exactly the same `CopilotEvent` contract as the other backends. The
+ * subscription is keyed by the TUI's terminal key rather than a session id, so
+ * it keeps flowing when `/clear` replaces the session; `getSessionId()` tracks
+ * the session of the latest delivered event.
+ */
+export class BrokerEventSource implements CopilotEventSource {
+  private unsubscribe: (() => void) | null = null;
+
+  constructor(
+    private sessionId: string,
+    private readonly terminalKey: string,
+    private readonly broker: BridgeEventSubscriber,
+  ) {}
+
+  start(onEvent: EventCallback): void {
+    this.stop();
+    try {
+      this.unsubscribe = this.broker.subscribe(this.terminalKey, (evt, connection) => {
+        if (connection?.sessionId) this.sessionId = connection.sessionId;
+        onEvent(mapSdkEventToCopilotEvent(evt), false);
+      });
+    } catch (error) {
+      // The broker only refuses subscriptions once it is closed (server shutdown).
+      console.warn(`[BrokerEventSource] Cannot subscribe to ${this.terminalKey}: ${String((error as Error)?.message ?? error)}`);
+    }
   }
 
   stop(): void {

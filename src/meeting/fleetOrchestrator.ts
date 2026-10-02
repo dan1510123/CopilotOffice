@@ -68,6 +68,8 @@ export class FleetOrchestrator {
   };
   private cancelled = false;
   private detached = false;
+  /** Office whose agents this fleet execution drives (set by executePlan). */
+  private officeId = '';
 
   private get bridge(): any {
     return (window as any).copilotBridge;
@@ -99,9 +101,10 @@ export class FleetOrchestrator {
     }
   }
 
-  async executePlan(plan: MeetingPlan, workingDir: string): Promise<void> {
+  async executePlan(plan: MeetingPlan, workingDir: string, officeId: string): Promise<void> {
     this.reset();
     this.cancelled = false;
+    this.officeId = officeId;
 
     // Initialize all agents as pending
     plan.tasks.forEach((task) => {
@@ -135,7 +138,7 @@ export class FleetOrchestrator {
     const bridge = this.bridge;
     this.agents.forEach((agentState, agentId) => {
       if (agentState.state === 'starting' || agentState.state === 'working') {
-        bridge.terminalKill(agentId).catch(() => {});
+        bridge.terminalKill(this.officeId, agentId).catch(() => {});
         this.updateAgentState(agentId, 'failed', 'Cancelled');
       }
     });
@@ -158,8 +161,8 @@ export class FleetOrchestrator {
     this.detached = false;
 
     // Track terminal readiness — agent is working once ready
-    const onPreloadStatus = (agentId: string, status: string) => {
-      if (this.detached || !this.agents.has(agentId)) return;
+    const onPreloadStatus = (agentId: string, status: string, eventOfficeId?: string) => {
+      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
       if (status === 'ready') {
         this.updateAgentState(agentId, 'working');
         const agentState = this.agents.get(agentId)!;
@@ -173,8 +176,8 @@ export class FleetOrchestrator {
     };
 
     // Track unexpected exits
-    const onExit = (agentId: string, exitCode: number) => {
-      if (this.detached || !this.agents.has(agentId)) return;
+    const onExit = (agentId: string, exitCode: number, eventOfficeId?: string) => {
+      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
       const current = this.agents.get(agentId)!;
       if (current.state === 'done' || current.state === 'failed') return;
 
@@ -191,8 +194,8 @@ export class FleetOrchestrator {
     };
 
     // Copilot turn end signals task completion
-    const onTurnEnd = (agentId: string) => {
-      if (this.detached || !this.agents.has(agentId)) return;
+    const onTurnEnd = (agentId: string, eventOfficeId?: string) => {
+      if (this.detached || !this.agents.has(agentId) || !this.isOwnOffice(eventOfficeId)) return;
       const current = this.agents.get(agentId)!;
       if (current.state !== 'working') return;
 
@@ -215,20 +218,33 @@ export class FleetOrchestrator {
     this.detached = true;
   }
 
+  /** Bridge events that carry an office id must belong to this fleet's office. */
+  private isOwnOffice(eventOfficeId?: string): boolean {
+    return !eventOfficeId || eventOfficeId === this.officeId;
+  }
+
   private async spawnAgent(task: TaskAssignment, workingDir: string): Promise<void> {
     const { agentId } = task;
     this.updateAgentState(agentId, 'starting');
     const agentState = this.agents.get(agentId)!;
     this.emit('fleet:agent:started', agentId, { ...agentState });
 
+    // The task prompt rides the atomic start as its pre-seeded prompt: the server
+    // submits it programmatically (SDK session.send — through the native bridge it
+    // renders in the agent's own TUI) once the session is ready. Never inject it
+    // as raw terminal keystrokes.
     const bridge = this.bridge;
-    let result = await bridge.terminalStart(agentId, workingDir).catch(() => ({ success: false }));
+    const start = () =>
+      bridge
+        .terminalStart(this.officeId, agentId, workingDir, undefined, undefined, task.prompt)
+        .catch(() => ({ success: false }));
+    let result = await start();
 
     // Retry once on failure
     if (!result.success) {
       await delay(RETRY_DELAY_MS);
       if (this.cancelled) return;
-      result = await bridge.terminalStart(agentId, workingDir).catch(() => ({ success: false }));
+      result = await start();
     }
 
     if (!result.success) {
@@ -239,10 +255,18 @@ export class FleetOrchestrator {
       return;
     }
 
-    // Wait briefly for the terminal to initialize, then send the prompt.
-    // The preload status listener will transition state to 'working' when ready.
-    bridge.terminalWrite(agentId, task.prompt + '\r');
-    bridge.setSessionMeta(agentId, { title: task.title });
+    // A warm session does not emit a second preload-ready event. The server
+    // reports whether the reused session is already ready after atomically
+    // submitting this task's prompt; transition it here so turn_end is tracked.
+    if (result.reused && result.ready) {
+      this.updateAgentState(agentId, 'working');
+      const workingState = this.agents.get(agentId)!;
+      this.emit('fleet:agent:working', agentId, { ...workingState });
+    }
+
+    // Explicit task title wins over auto-titling from the first prompt. The
+    // preload status listener transitions the agent to 'working' once ready.
+    bridge.setSessionMeta(this.officeId, agentId, { title: task.title });
   }
 
   private updateAgentState(agentId: string, state: FleetAgentState['state'], error?: string): void {

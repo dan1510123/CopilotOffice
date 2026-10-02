@@ -128,7 +128,8 @@ export interface PendingQuestion {
   binding: OnlineAgentBinding;
   /** The ask_user tool-call id (toolCallId); informational / diagnostics. */
   toolId: string;
-  /** SDK `user_input.requested` request id — the single-resolution key. '' on the node-pty degraded path. */
+  /** SDK `user_input.requested` request id — the single-resolution key. Always non-empty:
+   *  node-pty questions (no requestId) are render-only and never tracked. */
   requestId: string;
   /** The question text (preserved from payload, FR-015). */
   question: string;
@@ -162,7 +163,7 @@ export interface PlanOption {
 /**
  * The record that an online agent currently awaits an `exit_plan_mode` approval. At most
  * one per online agent; transient, in-memory, main-process only (never persisted). Only
- * tracked on the SDK/ui-server backend (non-empty `requestId`); the node-pty backend is
+ * tracked on the SDK/native-bridge backend (non-empty `requestId`); the node-pty backend is
  * render-only (approval resolved in the local TUI).
  */
 export interface PendingPlan {

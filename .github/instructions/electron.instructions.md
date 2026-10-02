@@ -79,6 +79,14 @@ Set `COPILOT_OFFICE_DEBUG_COLD_START=1` (server side) or `window.__COPILOT_OFFIC
 
 **Not used at runtime.** Contains hardcoded mock responses. Do not extend or rely on this file. All real terminal spawning is handled by `server.ts` via `ipc-relay.ts`.
 
+## Native bridge backend (default)
+
+- `native-bridge-backend.ts` — `NativeBridgeBackend` spawns the pinned native CLI (resolved by `native-bridge-capability.ts`, never PATH) directly under one node-pty per agent with per-launch broker credentials in the child env only, bound to the TUI pid. `NativeBridgeProcess` keeps raw write/resize/data on the PTY and routes `submitPrompt` / `runControl` / `submitAnswer` / `submitPlanDecision` through awaited broker commands with explicit errors (no keystroke fallback). `initializeNativeBridge()` runs at server startup (capability check → materialize extension → open the shared broker); on failure `server.ts` reports the reason and falls back globally to the `sdk` backend.
+- `native-bridge-broker.ts` — one authenticated local broker per server (Windows named pipe / Unix socket). Registrations must present the TUI's token and parent pid; a newer registration on the same terminal key (e.g. after `/clear`) replaces the old one, which is told to stand down.
+- `native-bridge-extension.ts` — the bundled user-level extension source. It exits immediately when the bridge env is absent (unrelated `copilot --experimental` sessions), registers with the broker before joining the session, and never writes to stdout (stdio is the CLI's JSON-RPC channel).
+- `bridge-session-change.ts` — pure helper applying a registration's authoritative session id to office session data (archive once, promote from history, clear title). `server.ts` then updates the live `PtyProcess`, persists, and emits `session-meta-updated` with `officeId` + `meta.sessionId` so renderers rebind their terminal generation token.
+- `ready-waiters.ts` — bounded readiness waits for background (`start` with `background: true` + `readyTimeoutMs`) starts used by the Teams ensure-session-online seam; background starts never claim a renderer viewer.
+
 ## Key Rules
 
 - All renderer ↔ main communication **must** go through `preload.ts` context bridge.

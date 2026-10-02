@@ -172,7 +172,7 @@ describe('integration/main bootstrap and wiring', () => {
     expect(subtitle?.textContent).toContain('Main Office');
   });
 
-  it('refreshes an office UI server from the tab context menu', async () => {
+  it('refreshes an office SDK host from the tab context menu', async () => {
     const { bridge } = await bootstrapMain();
     const tab = findOfficeTab('Main Office');
     expect(tab).toBeTruthy();

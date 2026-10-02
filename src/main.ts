@@ -638,7 +638,7 @@ function installE2eDebugHook(): void {
 
 // ── Office Tabs ─────────────────────────────────────────────────
 
-// Offices whose ui-server SDK runtime has come online (per `backend-online`).
+// Offices whose SDK control plane has come online (per `backend-online`).
 // node-pty offices never emit that event, so getOfficeIndicator() also treats
 // an office with any active agent session as online.
 const onlineOffices = new Set<string>();
@@ -777,7 +777,7 @@ function showOfficeTabContextMenu(officeId: string, x: number, y: number): void 
   refresh.type = 'button';
   refresh.textContent = 'Refresh';
   refresh.setAttribute('role', 'menuitem');
-  refresh.title = 'Retry this office through the Copilot SDK UI server';
+  refresh.title = 'Restart this office\'s Copilot SDK host';
   refresh.addEventListener('click', async () => {
     hideOfficeTabContextMenu();
     onlineOffices.delete(officeId);
@@ -786,12 +786,12 @@ function showOfficeTabContextMenu(officeId: string, x: number, y: number): void 
     try {
       const result = await window.copilotBridge.refreshOfficeBackend(officeId);
       if (!result.success) {
-        throw new Error(result.error || 'UI-server refresh failed');
+        throw new Error(result.error || 'Office refresh failed');
       }
       if (result.restartedAgentIds.length === 0) {
         showClipboardToast(`No active Copilot sessions to refresh in ${office.config.name}`, 'info');
       } else {
-        showClipboardToast(`Refreshed ${office.config.name} through Copilot SDK UI server`, 'success');
+        showClipboardToast(`Refreshed ${office.config.name} through the Copilot SDK host`, 'success');
       }
     } catch (error) {
       showClipboardToast(
@@ -1883,6 +1883,60 @@ async function warmAllTeamsBoundAgents(): Promise<void> {
   }
 }
 
+/** Flagged-agent cold-warm one-shot state — mirrors the Teams cold warm, but the
+ *  "Flagged / Needs attention" markers live in locally-loaded office config
+ *  (OfficeConfig.flaggedAgents), not an async service, so no retry budget is
+ *  needed. The one-shot is committed only after a non-empty pass so an early
+ *  onOfficesUpdated that fires before the durable office load can't lock it out. */
+let flaggedColdWarmDone = false;
+let flaggedColdWarmInFlight = false;
+
+/**
+ * Cold-launch: warm the terminal session for EVERY user-flagged agent across
+ * ALL offices (not just the one in view), so "Flagged / Needs attention" agents
+ * come online at launch exactly like persisted Teams-bound agents. Flagged
+ * markers are persisted in OfficeConfig.flaggedAgents and loaded synchronously
+ * into OfficeManager, so unlike warmAllTeamsBoundAgents this needs no bounded
+ * retry. Runs at most once successfully per app session. Server-side dedup
+ * guarantees no second PTY if an agent was already warmed by auto-start, the
+ * Teams cold warm, or a prior pass.
+ */
+async function warmAllFlaggedAgents(): Promise<void> {
+  if (flaggedColdWarmDone || flaggedColdWarmInFlight) return;
+  if (!window.copilotBridge) return;
+  flaggedColdWarmInFlight = true;
+  try {
+    const targets: Array<{ officeId: string; agentId: string }> = [];
+    for (const office of officeManager.getAllOffices()) {
+      for (const agentId of officeManager.getFlaggedAgentIds(office.id)) {
+        targets.push({ officeId: office.id, agentId });
+      }
+    }
+    if (targets.length === 0) {
+      // Nothing flagged yet (or offices still loading) — leave the one-shot
+      // unarmed so a later office update retries once markers are present.
+      return;
+    }
+    await Promise.all(
+      targets.map(async ({ officeId, agentId }) => {
+        try {
+          await warmAgentSession(officeId, agentId);
+        } catch (err) {
+          console.warn(
+            `[Flagged] cold-launch warm failed for ${officeId}/${agentId}:`,
+            err,
+          );
+        }
+      }),
+    );
+    // At least one flagged agent was attempted — commit the one-shot so a later
+    // office update can't re-warm the same set this session.
+    flaggedColdWarmDone = true;
+  } finally {
+    flaggedColdWarmInFlight = false;
+  }
+}
+
 function buildCanonicalAgentIdsForOffice(officeId: string): string[] {
   // For the current office the synced roster is the source of truth (it
   // reflects swapActiveAgents + customAgents + customReserveAgents). For
@@ -2204,16 +2258,14 @@ function registerOrchestratorSpec017Resolvers(): void {
     bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
-      // session.send / bracketed-paste for node-pty), targeted by agentId. NOT raw
-      // terminalWrite: under the ui-server shared host, raw input is routed to the
-      // office's FOREGROUND session, so a background agent's prompt would land in
-      // whichever agent is currently viewed (spec 017 US5 mis-delivery fix).
+      // session.send / native bridge), targeted by agentId — never raw
+      // terminalWrite (spec 017 US5 mis-delivery fix).
       const res = await window.copilotBridge.terminalSubmitPrompt(officeId, agentId, text);
       return res?.success !== false;
     },
     submitAnswer: async (officeId, agentId, answer) => {
       // Answer a pending ask_user through the sanctioned submit-answer channel so
-      // freeform text is delivered verbatim (SDK/ui-server) instead of selecting a
+      // freeform text is delivered verbatim (SDK/native-bridge) instead of selecting a
       // choice prompt's highlighted option. Classify wasFreeform from the captured
       // options, mirroring the Teams reply path.
       const { wasFreeform, requestId } = classifyAnswer(agentId, answer);
@@ -2358,6 +2410,7 @@ let activeSessionTitleEditAgentId: string | null = null;
 // "Teams Remote" button on the feature flag + per-agent online state.
 let teamsFeatureEnabled = false;
 const teamsOnlineAgentIds = new Set<string>();
+const teamsPendingActions = new Map<string, 'connecting' | 'disconnecting'>();
 /** All agent ids with a Teams binding (online or pending reconnect) for the current office. */
 const teamsBoundAgentIds = new Set<string>();
 
@@ -2402,35 +2455,41 @@ function scheduleTeamsReconcile(): void {
 /** Toggle an agent online/offline in Teams from an overview dashboard tile. */
 async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
   if (!window.copilotBridge?.teamsRegister) return;
+  if (teamsPendingActions.has(agentId)) return;
   const officeId = officeManager.currentOfficeId || 'office-0';
-  if (teamsOnlineAgentIds.has(agentId)) {
-    await window.copilotBridge.teamsStop({ officeId, agentId });
-    teamsOnlineAgentIds.delete(agentId);
+  teamsPendingActions.set(agentId, teamsOnlineAgentIds.has(agentId) ? 'disconnecting' : 'connecting');
+  updateTerminalContent();
+  try {
+    if (teamsOnlineAgentIds.has(agentId)) {
+      await window.copilotBridge.teamsStop({ officeId, agentId });
+      teamsOnlineAgentIds.delete(agentId);
+      return;
+    }
+    const agent = getSeriousLaunchConfig(agentId);
+    if (!agent) return;
+    const launch = resolveAgentLaunchConfig(officeId, agentId);
+    if (!launch) return;
+    const office = officeManager.getOffice(officeId)?.config;
+    const officeChannelUrl = office?.teamsChannelUrl;
+    const res = await window.copilotBridge.teamsRegister({
+      officeId,
+      agentId,
+      displayName: agent.name,
+      workingDir: launch.workingDir,
+      officeChannelUrl,
+      officeMentionType: office?.teamsMentionType,
+      officeMentionValue: office?.teamsMentionValue,
+    });
+    if (res?.success) {
+      teamsOnlineAgentIds.add(agentId);
+    } else if (res?.error === 'no-channel') {
+      void teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
+    } else if (res?.error) {
+      showClipboardToast(`Teams: ${res.error}`, 'error');
+    }
+  } finally {
+    teamsPendingActions.delete(agentId);
     updateTerminalContent();
-    return;
-  }
-  const agent = getSeriousLaunchConfig(agentId);
-  if (!agent) return;
-  const launch = resolveAgentLaunchConfig(officeId, agentId);
-  if (!launch) return;
-  const office = officeManager.getOffice(officeId)?.config;
-  const officeChannelUrl = office?.teamsChannelUrl;
-  const res = await window.copilotBridge.teamsRegister({
-    officeId,
-    agentId,
-    displayName: agent.name,
-    workingDir: launch.workingDir,
-    officeChannelUrl,
-    officeMentionType: office?.teamsMentionType,
-    officeMentionValue: office?.teamsMentionValue,
-  });
-  if (res?.success) {
-    teamsOnlineAgentIds.add(agentId);
-    updateTerminalContent();
-  } else if (res?.error === 'no-channel') {
-    void teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
-  } else if (res?.error) {
-    showClipboardToast(`Teams: ${res.error}`, 'error');
   }
 }
 
@@ -2491,6 +2550,7 @@ function updateTerminalContentNow() {
     formatRelativeTime,
     teamsEnabled: teamsFeatureEnabled,
     teamsOnlineAgentIds,
+    teamsPendingActions,
     flaggedAgentIds,
   });
 
@@ -2516,6 +2576,7 @@ function updateTerminalContentNow() {
         formatRelativeTime,
         teamsEnabled: teamsFeatureEnabled,
         teamsOnlineAgentIds,
+        teamsPendingActions,
         flaggedAgentIds,
       });
       if (regions) {
@@ -3135,9 +3196,9 @@ if (window.copilotBridge) {
     }
   });
 
-  window.copilotBridge.onCopilotTurnEnd((agentId) => {
+  window.copilotBridge.onCopilotTurnEnd((agentId, eventOfficeId) => {
     console.log(`[Office] Turn end: ${agentId}`);
-    const officeId = officeManager.currentOfficeId;
+    const officeId = eventOfficeId ?? officeManager.currentOfficeId;
     if (officeId) {
       // FR-002 guard: a stray turn_end while the agent is still initializing must
       // not settle it to "done" — it hasn't produced a response yet. Startup
@@ -3206,9 +3267,17 @@ if (window.copilotBridge) {
     updateTerminalContent();
   });
 
-  window.copilotBridge.onSessionMetaUpdated((agentId, meta) => {
-    console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"`);
+  window.copilotBridge.onSessionMetaUpdated((agentId, meta, eventOfficeId) => {
+    console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"${meta.sessionId ? ` (session ${meta.sessionId})` : ''}`);
     const officeId = officeManager.currentOfficeId || 'office-0';
+    if (eventOfficeId && eventOfficeId !== officeId) {
+      // Another office's agent (e.g. native bridge /clear in a background office):
+      // update that office's persisted cache without touching the current view.
+      const otherOfficeMeta = getSessionMetaCacheForOffice(eventOfficeId);
+      otherOfficeMeta[agentId] = meta;
+      setSessionMetaCacheForOffice(eventOfficeId, otherOfficeMeta);
+      return;
+    }
     cachedSessionMeta[agentId] = meta;
     setSessionMetaCacheForOffice(officeId, cachedSessionMeta);
     updateTerminalContent();
@@ -3244,7 +3313,7 @@ if (window.copilotBridge) {
   });
 
   // Terminal backend fallback notice (013): if a requested backend (default
-  // ui-server) couldn't load and we fell back to node-pty, surface a toast.
+  // native-bridge) couldn't load and we fell back to sdk, surface a toast.
   // Pull once on init (race-free: the server is ready before the window loads)
   // and also listen for a push (covers server respawn after a crash). Dedupe so
   // the two paths never double-toast for the same startup.
@@ -3258,23 +3327,14 @@ if (window.copilotBridge) {
   window.copilotBridge.onBackendFallback?.((info) => showBackendFallbackToast(info));
   void window.copilotBridge.getBackendInfo?.().then((info) => showBackendFallbackToast(info));
 
-  // Success notice (013): when the ui-server SDK control plane comes online for
-  // an office (host up + SDK client attached), confirm it with a toast. Emitted
-  // at most once per office by the server.
+  // Success notice (013): when the SDK control plane comes online for an office
+  // (sdk host up + client attached, or native bridge connected), confirm it with
+  // a toast. Emitted at most once per office by the server.
   window.copilotBridge.onBackendOnline?.((officeId: string, _backend: string) => {
     const officeName = officeManager.getOffice(officeId)?.config.name ?? officeId;
     onlineOffices.add(officeId);
     updateOfficeTabIndicators();
     showClipboardToast(`GitHub Copilot SDK server online for ${officeName}`, 'success', 10_000);
-  });
-
-  // Per-agent fallback notice (013): a specific agent was requested on ui-server
-  // but its start failed and fell back to node-pty (T039). Surface it so a broken
-  // SDK attach is never silent.
-  window.copilotBridge.onBackendSessionFallback?.((_officeId: string, agentId: string, reason: string) => {
-    const agentName = getAgentConfig(agentId)?.name ?? agentId;
-    const detail = reason ? ` (${reason})` : '';
-    showClipboardToast(`${agentName}: UI-server unavailable — using node-pty${detail}`, 'error', 10_000);
   });
 
   // Teams Remote Agents (011): keep the dashboard tile buttons in sync with
@@ -3884,6 +3944,9 @@ officeManager.onOfficesUpdated = () => {
   // session), so bound agents in non-current offices come online at launch
   // instead of only when their tab is visited.
   void warmAllTeamsBoundAgents();
+  // Likewise warm every user-flagged ("Needs attention") agent across ALL
+  // offices so flagged sessions are preloaded at launch, not just when visited.
+  void warmAllFlaggedAgents();
 };
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
