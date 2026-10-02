@@ -223,6 +223,8 @@ export interface TerminalPlanDecision {
 
 export interface TerminalProcess {
   readonly pid: number;
+  /** Current authoritative session id for reconnecting backends (native bridge). */
+  getSessionId?(): string;
   write(data: string): void;
   resize(cols: number, rows: number): void;
   onData(callback: (data: string) => void): void;

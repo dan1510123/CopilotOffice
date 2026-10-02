@@ -25,7 +25,7 @@ export class NativeBridgeCapabilityError extends Error {
 
 export interface NativeBridgeHelpCapability {
   supported: boolean;
-  missingFlags: Array<'--experimental' | '--extension-sdk-path'>;
+  missingFlags: Array<'--experimental' | '--extension-sdk-path' | '--secret-env-vars'>;
 }
 
 export interface NativeBridgeCapability {
@@ -56,6 +56,9 @@ export function interpretNativeBridgeHelp(helpText: string): NativeBridgeHelpCap
   if (!/(?:^|\s)--experimental(?:\s|$)/m.test(helpText)) missingFlags.push('--experimental');
   if (!/(?:^|\s)--extension-sdk-path(?:\s|$)/m.test(helpText)) {
     missingFlags.push('--extension-sdk-path');
+  }
+  if (!/(?:^|\s)--secret-env-vars(?:\s|$)/m.test(helpText)) {
+    missingFlags.push('--secret-env-vars');
   }
   return { supported: missingFlags.length === 0, missingFlags };
 }

@@ -39,6 +39,11 @@ import {
 } from './terminal-backend';
 
 export const NATIVE_BRIDGE_BACKEND_NAME = 'native-bridge';
+const NATIVE_BRIDGE_SECRET_ENV_NAMES = [
+  'COPILOT_OFFICE_BRIDGE_ENDPOINT',
+  'COPILOT_OFFICE_BRIDGE_TERMINAL_KEY',
+  'COPILOT_OFFICE_BRIDGE_NONCE',
+].join(',');
 
 const DEFAULT_OFFICE_KEY = '__default__';
 // Keep connect + command within the relay's 10s request budget so the caller
@@ -107,6 +112,7 @@ export function buildNativeBridgeArgs(
     '--experimental',
     '--extension-sdk-path',
     extensionSdkPath,
+    `--secret-env-vars=${NATIVE_BRIDGE_SECRET_ENV_NAMES}`,
     '--no-auto-update',
     ...(options.yolo ? ['--yolo'] : []),
     ...extraArgs,

@@ -51,6 +51,13 @@ function eventContent(event) {
     .join('');
 }
 
+function terminalTail(value, maxChars = 4000) {
+  const plain = String(value ?? '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+  return plain.slice(-maxChars);
+}
+
 function processAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -220,6 +227,8 @@ async function main() {
       }, START_TIMEOUT_MS)
       .then((result) => {
         if (result?.success && result?.ready) readyAgents.add(agentId);
+        if (result?.pid) startedPids.push(result.pid);
+        if (result?.sessionId) createdSessionIds.add(result.sessionId);
         return result;
       }));
 
@@ -229,11 +238,10 @@ async function main() {
     for (const [index, result] of startResults.entries()) {
       if (!result?.success || !result?.ready || !result?.sessionId || !result?.pid) {
         throw new Error(
-          `Agent ${AGENTS[index]} failed to start: ${result?.error ?? JSON.stringify(result)}`,
+          `Agent ${AGENTS[index]} failed to start: ${result?.error ?? JSON.stringify(result)}\n` +
+          `Terminal tail:\n${terminalTail(terminalOutput.get(AGENTS[index]))}`,
         );
       }
-      startedPids.push(result.pid);
-      createdSessionIds.add(result.sessionId);
     }
     if (startResults[0].sessionId === startResults[1].sessionId) {
       throw new Error('Concurrent agents registered the same session id');
@@ -281,19 +289,27 @@ async function main() {
     }
 
     const previousASession = startResults[0].sessionId;
-    await request({
-      type: 'write',
-      officeId: OFFICE_ID,
-      agentId: 'smoke-a',
-      data: '/clear\r',
-    });
-    const replacement = await waitUntil(
-      () => sessionChanges.find(
-        (change) => change.agentId === 'smoke-a' && change.sessionId !== previousASession,
-      ),
-      CLEAR_TIMEOUT_MS,
-      'smoke-a bridge reconnect after /clear',
-    );
+    let replacement;
+    const clearDeadline = Date.now() + CLEAR_TIMEOUT_MS;
+    while (!replacement && Date.now() < clearDeadline) {
+      // Ink can briefly detach stdin during a final render. Clear the current
+      // input line, submit /clear, and retry only if no replacement registration
+      // appears within the bounded slice.
+      await request({
+        type: 'write',
+        officeId: OFFICE_ID,
+        agentId: 'smoke-a',
+        data: '\x15/clear\r',
+      });
+      replacement = await waitUntil(
+        () => sessionChanges.find(
+          (change) => change.agentId === 'smoke-a' && change.sessionId !== previousASession,
+        ),
+        Math.min(12_000, Math.max(100, clearDeadline - Date.now())),
+        'smoke-a bridge reconnect after /clear',
+      ).catch(() => undefined);
+    }
+    if (!replacement) throw new Error('Timed out waiting for smoke-a bridge reconnect after /clear');
     createdSessionIds.add(replacement.sessionId);
 
     const postClearPrompt = `OFFICE_BRIDGE_POST_CLEAR_PROMPT_${RUN_ID}`;

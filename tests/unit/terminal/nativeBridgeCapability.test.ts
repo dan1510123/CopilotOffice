@@ -21,20 +21,25 @@ describe('native bridge capability', () => {
     expect(interpretNativeBridgeHelp(`
       --experimental
       --extension-sdk-path <directory>
+      --secret-env-vars <vars>
     `)).toEqual({ supported: true, missingFlags: [] });
-    expect(interpretNativeBridgeHelp('--experimental')).toEqual({
+    expect(interpretNativeBridgeHelp('--experimental --secret-env-vars <vars>')).toEqual({
       supported: false,
       missingFlags: ['--extension-sdk-path'],
     });
-    expect(interpretNativeBridgeHelp('--extension-sdk-path <directory>')).toEqual({
+    expect(interpretNativeBridgeHelp('--extension-sdk-path <directory> --secret-env-vars <vars>')).toEqual({
       supported: false,
       missingFlags: ['--experimental'],
+    });
+    expect(interpretNativeBridgeHelp('--experimental --extension-sdk-path <directory>')).toEqual({
+      supported: false,
+      missingFlags: ['--secret-env-vars'],
     });
   });
 
   it('resolves the SDK package and pinned CLI without launching Copilot', async () => {
     const capability = await resolveNativeBridgeCapability({
-      runHelp: () => '--experimental\n--extension-sdk-path <directory>\n',
+      runHelp: () => '--experimental\n--extension-sdk-path <directory>\n--secret-env-vars <vars>\n',
     });
 
     expect(capability.sdkPackageDir).toMatch(/[\\/]@github[\\/]copilot-sdk$/);
@@ -70,7 +75,7 @@ describe('native bridge capability', () => {
 
   it('returns an explicit error when required CLI flags are absent', async () => {
     await expect(resolveNativeBridgeCapability({
-      runHelp: () => '--experimental\n',
+      runHelp: () => '--experimental\n--secret-env-vars <vars>\n',
     })).rejects.toMatchObject<Partial<NativeBridgeCapabilityError>>({
       name: 'NativeBridgeCapabilityError',
       code: 'CLI_FLAGS_MISSING',

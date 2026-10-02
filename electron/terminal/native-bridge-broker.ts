@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 export const NATIVE_BRIDGE_ENV = {
+  enabled: 'COPILOT_OFFICE_BRIDGE_ENABLED',
   endpoint: 'COPILOT_OFFICE_BRIDGE_ENDPOINT',
   terminalKey: 'COPILOT_OFFICE_BRIDGE_TERMINAL_KEY',
   // Avoid names such as TOKEN/SECRET/KEY: the CLI deliberately strips common
@@ -66,9 +67,9 @@ interface CredentialRecord {
   lastSessionId?: string;
   /**
    * PID of the native TUI process these credentials were minted for. When set,
-   * only an extension whose parent process is that TUI may register, so a
-   * nested `copilot` launched from the agent's own shell (which inherits the
-   * TUI's environment, including these credentials) cannot hijack the bridge.
+   * only an extension claiming that direct parent may register. This is
+   * defense-in-depth; the primary boundary is the random token plus the CLI's
+   * `--secret-env-vars`, which strips bridge credentials from shell/MCP tools.
    */
   expectedParentPid?: number;
 }
@@ -230,6 +231,7 @@ export class NativeBridgeBroker {
       terminalKey,
       token,
       env: {
+        [NATIVE_BRIDGE_ENV.enabled]: '1',
         [NATIVE_BRIDGE_ENV.endpoint]: this.endpoint,
         [NATIVE_BRIDGE_ENV.terminalKey]: terminalKey,
         [NATIVE_BRIDGE_ENV.nonce]: token,

@@ -17,7 +17,8 @@ import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEN
 import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
 import { applyBridgeSessionChange } from './bridge-session-change';
 import { ReadyWaiters } from './ready-waiters';
-import { deliverPreseededPrompt } from './preseeded-prompt';
+import { deliverPreseededPrompt, PreseededPromptQueue } from './preseeded-prompt';
+import { terminalOffices } from './terminal-aliases';
 import {
   addAgentViewer,
   hasActiveViewer as hasActiveViewerForMaps,
@@ -411,6 +412,15 @@ function getTerminalKey(officeId: string, agentId: string): string | null {
   return null;
 }
 
+/** Owning office plus every transferred-office alias for this live terminal. */
+function officesForTerminal(
+  owningOfficeId: string,
+  agentId: string,
+  terminalKey: string,
+): string[] {
+  return terminalOffices(agentToTerminal, owningOfficeId, agentId, terminalKey);
+}
+
 /**
  * Native bridge: a registration reported the session the TUI is actually on.
  * It is authoritative — after `/clear` (or a session replacement inside the
@@ -436,14 +446,7 @@ function applyNativeBridgeSessionChange(
     clearPendingPlanApprovalForSession(previousLiveSessionId);
   }
 
-  // The owning office plus any office this PTY was transferred into.
-  const offices = [officeId];
-  for (const [aliasCk, key] of agentToTerminal) {
-    if (key !== terminalKey || aliasCk === ck || !aliasCk.endsWith(`:${agentId}`)) continue;
-    offices.push(aliasCk.slice(0, aliasCk.length - agentId.length - 1));
-  }
-
-  for (const office of offices) {
+  for (const office of officesForTerminal(officeId, agentId, terminalKey)) {
     const result = applyBridgeSessionChange(getOfficeSession(office), agentId, change.sessionId);
     if (!result.changed) continue;
     const officeCk = compositeKey(office, agentId);
@@ -558,6 +561,7 @@ function killAllPtyProcesses(): void {
   agentToTerminal.clear();
   agentWatchers.forEach((w) => w.stop());
   agentWatchers.clear();
+  pendingPreseededPrompts.clear();
   // Note: each killPtyProcess() already unregistered its own PID from the
   // registry, so no blanket reset is needed here (a reset would also wipe a
   // co-running instance's live entries).
@@ -588,8 +592,16 @@ let additionalParams = '';
  *  `backend-online` confirmation is emitted at most once per office. */
 const backendOnlineOffices = new Set<string>();
 
-/** Stores pre-seeded prompts to send once the agent signals ready. */
-const pendingPreseededPrompts = new Map<string, string>();
+/** Stores every pre-seeded prompt to send once the agent signals ready. */
+const pendingPreseededPrompts = new PreseededPromptQueue();
+
+function queuePreseededPrompt(ck: string, prompt: string | undefined): void {
+  pendingPreseededPrompts.push(ck, prompt);
+}
+
+function takePreseededPrompts(ck: string): string[] {
+  return pendingPreseededPrompts.take(ck);
+}
 
 type StartTerminalResult = StartResult;
 
@@ -619,22 +631,28 @@ function startTerminalForAgent(
   const ck = compositeKey(officeId, agentId);
   const pending = inFlightStarts.get(ck);
   if (pending) {
+    queuePreseededPrompt(ck, preseededPrompt);
     // A start for this agent is already in flight — reuse its result rather than
     // spawning a second backend process (and a second shared-host onData listener).
     return pending.then((r) => (r.success ? { ...r, reused: true } : r));
   }
+  queuePreseededPrompt(ck, preseededPrompt);
   const started = startTerminalForAgentImpl(
     officeId,
     agentId,
     workingDir,
     cols,
     rows,
-    preseededPrompt,
+    undefined,
     launchMode,
     hostWorkingDir,
   );
-  inFlightStarts.set(ck, started);
-  return started.finally(() => {
+  const tracked = started.then((result) => {
+    if (!result.success) pendingPreseededPrompts.delete(ck);
+    return result;
+  });
+  inFlightStarts.set(ck, tracked);
+  return tracked.finally(() => {
     inFlightStarts.delete(ck);
   });
 }
@@ -679,7 +697,9 @@ async function startTerminalForAgentImpl(
   if (existingTerminalKey && ptyProcesses.has(existingTerminalKey)) {
     const existing = ptyProcesses.get(existingTerminalKey)!;
     try {
-      await deliverPreseededPrompt(existing.process, preseededPrompt);
+      for (const prompt of takePreseededPrompts(ck)) {
+        await deliverPreseededPrompt(existing.process, prompt);
+      }
     } catch (error) {
       return {
         success: false,
@@ -689,7 +709,13 @@ async function startTerminalForAgentImpl(
         error: `Failed to deliver pre-seeded prompt to reused session: ${String((error as Error)?.message ?? error)}`,
       };
     }
-    return { success: true, pid: existing.pid, sessionId: existing.sessionId, reused: true };
+    return {
+      success: true,
+      pid: existing.pid,
+      sessionId: existing.sessionId,
+      reused: true,
+      ready: agentReadyState.get(ck) === true,
+    };
   }
 
   const officeData = getOfficeSession(officeId);
@@ -865,11 +891,6 @@ async function startTerminalForAgentImpl(
     let skippedEventCount = 0;
     agentReadyState.set(ck, shellOnlyMode);
 
-    // Store pre-seeded prompt before signalReady is defined so it's available on first ready
-    if (!shellOnlyMode && preseededPrompt) {
-      pendingPreseededPrompts.set(ck, preseededPrompt);
-    }
-
     const signalReady = () => {
       if (shellOnlyMode || hasSignalledReady) return;
       hasSignalledReady = true;
@@ -882,11 +903,13 @@ async function startTerminalForAgentImpl(
       // programmatic submit (SDK session.send — for the native bridge, through
       // the authenticated extension so it renders in the native TUI) never get
       // raw keystrokes; only the raw PTY backend falls back to a typed line.
-      const prompt = pendingPreseededPrompts.get(ck);
-      if (prompt) {
-        pendingPreseededPrompts.delete(ck);
-        console.log(`[TermServer] Delivering pre-seeded prompt for ${ck}`);
-        void deliverPreseededPrompt(proc, prompt).catch((error: unknown) => {
+      const prompts = takePreseededPrompts(ck);
+      if (prompts.length > 0) {
+        console.log(`[TermServer] Delivering ${prompts.length} pre-seeded prompt(s) for ${ck}`);
+        void prompts.reduce(
+          (chain, prompt) => chain.then(() => deliverPreseededPrompt(proc, prompt)).then(() => undefined),
+          Promise.resolve(),
+        ).catch((error: unknown) => {
           console.error(`[TermServer] Pre-seeded prompt for ${ck} was not delivered: ${String((error as Error)?.message ?? error)}`);
           send({ type: 'terminal-preload-status', agentId, status: 'failed', officeId });
         });
@@ -1021,9 +1044,11 @@ async function startTerminalForAgentImpl(
         }
 
         if (event.type === 'assistant.turn_end') {
-          agentInTurn.set(ck, false);
           console.log(`[TermServer] Forwarding turn_end for ${ck}`);
-          send({ type: 'copilot-turn-end', agentId, officeId });
+          for (const targetOfficeId of officesForTerminal(officeId, agentId, terminalKey)) {
+            agentInTurn.set(compositeKey(targetOfficeId, agentId), false);
+            send({ type: 'copilot-turn-end', agentId, officeId: targetOfficeId });
+          }
         } else if (event.type === 'assistant.turn_start') {
           agentInTurn.set(ck, true);
           console.log(`[TermServer] Forwarding turn_start for ${ck}`);
@@ -1040,26 +1065,28 @@ async function startTerminalForAgentImpl(
           console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
           send({ type: 'copilot-user-message', agentId, text: rawUserText });
 
-          // Auto-set session title from first non-empty user message while title is empty.
-          const existing = officeData.sessionMeta.get(agentId);
-          const existingTitle = typeof existing?.title === 'string' ? existing.title.trim() : '';
-          if (existingTitle) {
-            hasAutoTitled.add(ck);
-          } else {
-            const d = event.data as Record<string, unknown>;
-            const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
-            const raw = String(msgText).trim();
-            if (raw) {
+          // Auto-set the title in the owning office and every transferred alias.
+          const d = event.data as Record<string, unknown>;
+          const msgText = d?.content || d?.message || d?.text || d?.input || d?.prompt || d?.body || '';
+          const raw = String(msgText).trim();
+          for (const targetOfficeId of officesForTerminal(officeId, agentId, terminalKey)) {
+            const targetCk = compositeKey(targetOfficeId, agentId);
+            const targetData = getOfficeSession(targetOfficeId);
+            const existing = targetData.sessionMeta.get(agentId);
+            const existingTitle = typeof existing?.title === 'string' ? existing.title.trim() : '';
+            if (existingTitle) {
+              hasAutoTitled.add(targetCk);
+            } else if (raw) {
               const title = raw.length > 80 ? raw.slice(0, 77) + '...' : raw;
               const meta = existing || { title: '' };
               meta.title = title;
-              officeData.sessionMeta.set(agentId, meta);
-              saveOfficeSessionFile(officeId);
-              hasAutoTitled.add(ck);
-              console.log(`[TermServer] Auto-titled ${ck}: "${title}"`);
-              send({ type: 'session-meta-updated', agentId, officeId, meta: { ...meta } });
+              targetData.sessionMeta.set(agentId, meta);
+              void saveOfficeSessionFile(targetOfficeId);
+              hasAutoTitled.add(targetCk);
+              console.log(`[TermServer] Auto-titled ${targetCk}: "${title}"`);
+              send({ type: 'session-meta-updated', agentId, officeId: targetOfficeId, meta: { ...meta } });
             } else {
-              hasAutoTitled.delete(ck);
+              hasAutoTitled.delete(targetCk);
             }
           }
         } else if (event.type === 'subagent.started') {
@@ -1195,6 +1222,7 @@ async function startTerminalForAgentImpl(
         lastPtyDataAt.delete(ck);
         userMessageSeq.delete(ck);
         lastUserMessageText.delete(ck);
+        pendingPreseededPrompts.delete(ck);
         const w = agentWatchers.get(ck);
         if (w) { w.stop(); agentWatchers.delete(ck); }
       }
@@ -1251,9 +1279,21 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       );
       if (result.success && msg.readyTimeoutMs && msg.readyTimeoutMs > 0) {
         const readyKey = getTerminalKey(msg.officeId, msg.agentId) ?? ck;
+        const readyProc = ptyProcesses.get(readyKey);
         try {
-          await waitForAgentReady(readyKey, msg.readyTimeoutMs);
-          result = { ...result, ready: true };
+          if (readyProc && typeof readyProc.process.whenReady === 'function') {
+            // Native bridge readiness is live, not latched: a PTY can remain
+            // alive while its extension reconnects after /clear or a socket loss.
+            await readyProc.process.whenReady(msg.readyTimeoutMs);
+            result = {
+              ...result,
+              sessionId: readyProc.process.getSessionId?.() ?? readyProc.sessionId,
+              ready: true,
+            };
+          } else {
+            await waitForAgentReady(readyKey, msg.readyTimeoutMs);
+            result = { ...result, ready: true };
+          }
         } catch (error) {
           result = { ...result, success: false, ready: false, error: String((error as Error)?.message ?? error) };
         }
@@ -1515,6 +1555,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           if (w) { w.stop(); agentWatchers.delete(ck); }
           agentReadyState.delete(ck);
           agentInTurn.delete(ck);
+          pendingPreseededPrompts.delete(ck);
           send({ type: 'response', requestId: msg.requestId, result: { success: true } });
         } catch (error) {
           send({ type: 'response', requestId: msg.requestId, result: { success: false, error: String(error) } });
@@ -1773,6 +1814,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (restoreWatcher) { restoreWatcher.stop(); agentWatchers.delete(ck); }
       agentReadyState.delete(ck);
       agentInTurn.delete(ck);
+      pendingPreseededPrompts.delete(ck);
       // Clear the outgoing session's scrollback so the restored session starts clean.
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
@@ -1829,6 +1871,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       if (resetWatcher) { resetWatcher.stop(); agentWatchers.delete(ck); }
       agentReadyState.delete(ck);
       agentInTurn.delete(ck);
+      pendingPreseededPrompts.delete(ck);
       // Clear scrollback
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
@@ -1889,6 +1932,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
+        pendingPreseededPrompts.delete(ck);
         activeAgentViewers.delete(ck);
         clearForegroundIf(officeId, ck);
         hasAutoTitled.delete(ck);

@@ -255,6 +255,15 @@ export class FleetOrchestrator {
       return;
     }
 
+    // A warm session does not emit a second preload-ready event. The server
+    // reports whether the reused session is already ready after atomically
+    // submitting this task's prompt; transition it here so turn_end is tracked.
+    if (result.reused && result.ready) {
+      this.updateAgentState(agentId, 'working');
+      const workingState = this.agents.get(agentId)!;
+      this.emit('fleet:agent:working', agentId, { ...workingState });
+    }
+
     // Explicit task title wins over auto-titling from the first prompt. The
     // preload status listener transitions the agent to 'working' once ready.
     bridge.setSessionMeta(this.officeId, agentId, { title: task.title });

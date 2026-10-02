@@ -11,23 +11,21 @@ const MAX_MESSAGE_BYTES = 256 * 1024;
 const INITIAL_RECONNECT_DELAY_MS = 100;
 const MAX_RECONNECT_DELAY_MS = 5000;
 const MAX_UNREGISTERED_CONNECT_ATTEMPTS = 8;
+const MAX_EVENT_BACKLOG = 32;
 
-const endpoint = process.env.COPILOT_OFFICE_BRIDGE_ENDPOINT;
-const terminalKey = process.env.COPILOT_OFFICE_BRIDGE_TERMINAL_KEY;
-const token = process.env.COPILOT_OFFICE_BRIDGE_NONCE;
+const enabled = process.env.COPILOT_OFFICE_BRIDGE_ENABLED === "1";
 const sessionId = process.env.SESSION_ID;
-
-// Never hand the bridge credentials to anything this process might start.
-for (const name of Object.keys(process.env)) {
-  if (name.toUpperCase().startsWith("COPILOT_OFFICE_BRIDGE_")) delete process.env[name];
-}
+let endpoint;
+let terminalKey;
+let token;
 
 // This user-level extension loads in every experimental Copilot session. Only
-// TUIs launched by Copilot Office carry bridge credentials; anywhere else, exit
-// before joining so unrelated sessions are left untouched.
-if (!endpoint || !terminalKey || !token || !sessionId) {
+// TUIs launched by Copilot Office carry the non-secret enable marker; anywhere
+// else, exit before joining so unrelated sessions are left untouched.
+if (!enabled || !sessionId) {
   process.exit(0);
 }
+delete process.env.COPILOT_OFFICE_BRIDGE_ENABLED;
 
 let socket;
 let registered = false;
@@ -41,8 +39,7 @@ let sessionPromise;
 let joinedSession;
 let pendingUserInput;
 let pendingPlanDecision;
-let latestUserInputRequestId;
-let latestPlanRequestId;
+let eventBacklog = [];
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -141,14 +138,10 @@ async function handleBrokerMessage(candidate, message) {
     everRegistered = true;
     failedConnectAttempts = 0;
     reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS;
-    if (!sessionPromise) {
-      // Join only once the broker has authenticated this TUI, so a rejected or
-      // orphaned extension never attaches handlers to the session.
-      sessionPromise = joinBridgeSession();
-      sessionPromise.catch(() => void shutdown(1));
-    } else {
-      void sessionPromise.then((session) => announceReady(session, candidate));
-    }
+    void sessionPromise.then((session) => {
+      announceReady(session, candidate);
+      flushEventBacklog();
+    });
     return;
   }
   if (message.type === "registration-error" || message.type === "replaced") {
@@ -317,6 +310,11 @@ function requireSession() {
 
 async function joinBridgeSession() {
   const session = await joinSession({
+    requestedEnvironmentVariables: [
+      "COPILOT_OFFICE_BRIDGE_ENDPOINT",
+      "COPILOT_OFFICE_BRIDGE_TERMINAL_KEY",
+      "COPILOT_OFFICE_BRIDGE_NONCE",
+    ],
     onUserInputRequest(request) {
       if (pendingUserInput) {
         // A local TUI answer can settle the runtime before this extension sees
@@ -330,7 +328,7 @@ async function joinBridgeSession() {
           requestId:
             typeof request?.requestId === "string"
               ? request.requestId
-              : latestUserInputRequestId,
+              : undefined,
           resolve,
         };
       });
@@ -348,13 +346,22 @@ async function joinBridgeSession() {
           requestId:
             typeof request?.requestId === "string"
               ? request.requestId
-              : latestPlanRequestId,
+              : undefined,
           resolve,
         };
       });
     },
   });
   if (terminated) return session;
+  endpoint = process.env.COPILOT_OFFICE_BRIDGE_ENDPOINT;
+  terminalKey = process.env.COPILOT_OFFICE_BRIDGE_TERMINAL_KEY;
+  token = process.env.COPILOT_OFFICE_BRIDGE_NONCE;
+  for (const name of Object.keys(process.env)) {
+    if (name.toUpperCase().startsWith("COPILOT_OFFICE_BRIDGE_")) delete process.env[name];
+  }
+  if (!endpoint || !terminalKey || !token) {
+    throw new Error("Copilot Office bridge credentials were not granted to the extension");
+  }
   joinedSession = session;
   unsubscribeEvents = session.on((event) => {
     const requestId =
@@ -362,32 +369,53 @@ async function joinBridgeSession() {
         ? event.data.requestId
         : undefined;
     if (event?.type === "user_input.requested") {
-      latestUserInputRequestId = requestId;
-      if (pendingUserInput) pendingUserInput.requestId = requestId;
+      const pendingQuestion = pendingUserInput?.request?.question;
+      const eventQuestion = event?.data?.question;
+      if (
+        pendingUserInput
+        && !pendingUserInput.requestId
+        && (
+          typeof pendingQuestion !== "string"
+          || (
+            typeof eventQuestion === "string"
+            && pendingQuestion === eventQuestion
+          )
+        )
+      ) {
+        pendingUserInput.requestId = requestId;
+      }
     } else if (event?.type === "user_input.completed") {
-      if (!pendingUserInput?.requestId || pendingUserInput.requestId === requestId) {
+      if (pendingUserInput?.requestId && pendingUserInput.requestId === requestId) {
         pendingUserInput = undefined;
       }
-      if (!requestId || latestUserInputRequestId === requestId) {
-        latestUserInputRequestId = undefined;
-      }
     } else if (event?.type === "exit_plan_mode.requested") {
-      latestPlanRequestId = requestId;
-      if (pendingPlanDecision) pendingPlanDecision.requestId = requestId;
+      const pendingSummary = pendingPlanDecision?.request?.summary;
+      const eventSummary = event?.data?.summary;
+      if (
+        pendingPlanDecision
+        && !pendingPlanDecision.requestId
+        && (
+          typeof pendingSummary !== "string"
+          || (
+            typeof eventSummary === "string"
+            && pendingSummary === eventSummary
+          )
+        )
+      ) {
+        pendingPlanDecision.requestId = requestId;
+      }
     } else if (event?.type === "exit_plan_mode.completed") {
-      if (!pendingPlanDecision?.requestId || pendingPlanDecision.requestId === requestId) {
+      if (pendingPlanDecision?.requestId && pendingPlanDecision.requestId === requestId) {
         pendingPlanDecision = undefined;
       }
-      if (!requestId || latestPlanRequestId === requestId) {
-        latestPlanRequestId = undefined;
-      }
     }
-    if (!registered) return;
-    try {
-      sendEventFrame(event);
-    } catch {
-      // Event delivery is best-effort; never tear down the command channel.
+    const bridgeEvent = prepareEventForBridge(event);
+    if (!registered) {
+      eventBacklog.push(bridgeEvent);
+      if (eventBacklog.length > MAX_EVENT_BACKLOG) eventBacklog.shift();
+      return;
     }
+    sendEventFrame(bridgeEvent);
   });
   announceReady(session, socket);
   return session;
@@ -443,6 +471,28 @@ function compactEvent(event) {
       compactData[key] = truncateUtf8(data[key], 192 * 1024);
       break;
     }
+    if (event?.type === "user_input.requested") {
+      compactData.question = truncateUtf8(data.question ?? "", 64 * 1024);
+      compactData.allowFreeform = data.allowFreeform === true;
+      compactData.choices = compactStringArray(data.choices, 32, 4096);
+    } else if (event?.type === "exit_plan_mode.requested") {
+      compactData.summary = truncateUtf8(data.summary ?? "", 32 * 1024);
+      compactData.planContent = truncateUtf8(data.planContent ?? "", 128 * 1024);
+      compactData.actions = compactStringArray(data.actions, 32, 2048);
+      compactData.recommendedAction = truncateUtf8(data.recommendedAction ?? "", 4096);
+    }
+  }
+
+  function compactStringArray(value, maxItems, maxItemBytes) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, maxItems).map((item) => {
+      if (typeof item === "string") return truncateUtf8(item, maxItemBytes);
+      if (item && typeof item === "object") {
+        const text = item.text ?? item.label ?? item.value ?? "";
+        return { text: truncateUtf8(text, maxItemBytes) };
+      }
+      return truncateUtf8(item ?? "", maxItemBytes);
+    });
   }
   return {
     type: event?.type ?? "unknown",
@@ -457,23 +507,38 @@ function compactEvent(event) {
   };
 }
 
+function prepareEventForBridge(event) {
+  try {
+    const line = JSON.stringify({ type: "event", event }) + "\n";
+    if (Buffer.byteLength(line) <= MAX_MESSAGE_BYTES) return event;
+  } catch (error) {
+    return {
+      type: event?.type ?? "unknown",
+      data: { bridgeTruncated: true, content: "[unserializable event omitted]" },
+    };
+  }
+  const compacted = compactEvent(event);
+  const compactedLine = JSON.stringify({ type: "event", event: compacted }) + "\n";
+  if (Buffer.byteLength(compactedLine) <= MAX_MESSAGE_BYTES) return compacted;
+  return {
+    type: event?.type ?? "unknown",
+    data: { bridgeTruncated: true, content: "[oversized event omitted]" },
+  };
+}
+
 function sendEventFrame(event) {
   try {
     sendFrame({ type: "event", event });
-  } catch (error) {
-    if (!errorMessage(error).includes("maximum size")) throw error;
-    try {
-      sendFrame({ type: "event", event: compactEvent(event) });
-    } catch {
-      sendFrame({
-        type: "event",
-        event: {
-          type: event?.type ?? "unknown",
-          data: { bridgeTruncated: true, content: "[oversized event omitted]" },
-        },
-      });
-    }
+  } catch {
+    // Event delivery is best-effort; never tear down the command channel.
   }
+}
+
+function flushEventBacklog() {
+  if (!registered || eventBacklog.length === 0) return;
+  const backlog = eventBacklog;
+  eventBacklog = [];
+  for (const event of backlog) sendEventFrame(event);
 }
 
 async function shutdown(exitCode = 0) {
@@ -484,8 +549,7 @@ async function shutdown(exitCode = 0) {
   unsubscribeEvents?.();
   unsubscribeEvents = undefined;
   joinedSession = undefined;
-  latestUserInputRequestId = undefined;
-  latestPlanRequestId = undefined;
+  eventBacklog = [];
   if (pendingUserInput) {
     pendingUserInput.resolve({ answer: "", wasFreeform: true });
     pendingUserInput = undefined;
@@ -504,7 +568,8 @@ async function shutdown(exitCode = 0) {
 
 process.once("SIGTERM", () => void shutdown(0));
 process.once("SIGINT", () => void shutdown(0));
-connect();
+sessionPromise = joinBridgeSession();
+sessionPromise.then(() => connect()).catch(() => void shutdown(1));
 `;
 
 export interface MaterializeNativeBridgeExtensionOptions {

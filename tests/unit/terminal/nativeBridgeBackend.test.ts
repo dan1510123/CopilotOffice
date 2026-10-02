@@ -216,6 +216,7 @@ describe('native bridge launch contract', () => {
       '--experimental',
       '--extension-sdk-path',
       EXTENSION_SDK_PATH,
+      '--secret-env-vars=COPILOT_OFFICE_BRIDGE_ENDPOINT,COPILOT_OFFICE_BRIDGE_TERMINAL_KEY,COPILOT_OFFICE_BRIDGE_NONCE',
       '--no-auto-update',
       '--yolo',
       '--model',
@@ -234,7 +235,12 @@ describe('native bridge launch contract', () => {
         COPILOT_AUTO_UPDATE: 'true',
         KEEP: 'me',
       },
-      { [NATIVE_BRIDGE_ENV.endpoint]: 'pipe', [NATIVE_BRIDGE_ENV.terminalKey]: 'key', [NATIVE_BRIDGE_ENV.nonce]: 'token' },
+      {
+        [NATIVE_BRIDGE_ENV.enabled]: '1',
+        [NATIVE_BRIDGE_ENV.endpoint]: 'pipe',
+        [NATIVE_BRIDGE_ENV.terminalKey]: 'key',
+        [NATIVE_BRIDGE_ENV.nonce]: 'token',
+      },
       REPO_ROOT,
       'win32',
     );
@@ -244,6 +250,7 @@ describe('native bridge launch contract', () => {
       PATH: TOOLS_DIR,
       Path: TOOLS_DIR,
       COPILOT_AUTO_UPDATE: 'false',
+      [NATIVE_BRIDGE_ENV.enabled]: '1',
       [NATIVE_BRIDGE_ENV.endpoint]: 'pipe',
       [NATIVE_BRIDGE_ENV.terminalKey]: 'key',
       [NATIVE_BRIDGE_ENV.nonce]: 'token',
@@ -265,6 +272,7 @@ describe('native bridge launch contract', () => {
     }));
     expect(call.options).toMatchObject({ name: 'xterm-256color', cols: 120, rows: 30, cwd: AGENT_CWD });
     expect(call.options.env.COPILOT_AUTO_UPDATE).toBe('false');
+    expect(call.options.env[NATIVE_BRIDGE_ENV.enabled]).toBe('1');
     expect(call.options.env.COPILOT_OFFICE_AGENT).toBe('generalist');
     expect(call.options.env.PATH).toBe(TOOLS_DIR);
     expect(call.options.env[NATIVE_BRIDGE_ENV.endpoint]).toBe(broker.endpoint);
@@ -425,6 +433,23 @@ describe('native bridge programmatic routing', () => {
 });
 
 describe('native bridge session lifecycle', () => {
+  it('treats readiness as a live bridge connection, not a latched PTY state', async () => {
+    const { backend, spawnCalls, connect } = await createHarness();
+    const proc = await backend.start(startOptions());
+    const first = connect(spawnCalls[0], 'session-a');
+    await first.registered;
+    await expect(proc.whenReady!(100)).resolves.toBeUndefined();
+
+    first.close();
+    await first.closed;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await expect(proc.whenReady!(30)).rejects.toThrow(/Timed out/);
+
+    const reconnected = connect(spawnCalls[0], 'session-a');
+    await reconnected.registered;
+    await expect(proc.whenReady!(100)).resolves.toBeUndefined();
+  });
+
   it('reports the authoritative session on connect and on /clear replacement, routing only to the new generation', async () => {
     const { backend, spawnCalls, connect } = await createHarness();
     const proc = await backend.start(startOptions());

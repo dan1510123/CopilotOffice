@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('__copilotOfficeE2E', process.env.COPILOT_E2E ==
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
   // Terminal management
-  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }> => {
+  terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode, hostWorkingDir);
   },
   terminalWrite: (officeId: string, agentId: string, data: string): Promise<{ success: boolean; error?: string }> => {
@@ -500,7 +500,7 @@ declare global {
     __copilotOfficeDebug?: CopilotOfficeDebugApi;
     __copilotOfficeE2E?: boolean;
     copilotBridge: {
-      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; error?: string }>;
+      terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitAnswer: (officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitPrompt: (officeId: string, agentId: string, prompt: string, label?: string) => Promise<{ success: boolean; error?: string }>;

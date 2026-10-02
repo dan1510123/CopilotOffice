@@ -55,10 +55,10 @@ export async function joinSession(config) {
       if (process.env.STUB_SCENARIO === "local-user-input") {
         setTimeout(() => {
           void config.onUserInputRequest({ question: "Q1" });
-          listener({ type: "user_input.requested", data: { requestId: "req-1" } });
-          listener({ type: "user_input.completed", data: { requestId: "req-1" } });
+          listener({ type: "user_input.requested", data: { requestId: "req-1", question: "Q1" } });
           const second = config.onUserInputRequest({ question: "Q2" });
-          listener({ type: "user_input.requested", data: { requestId: "req-2" } });
+          listener({ type: "user_input.requested", data: { requestId: "req-2", question: "Q2" } });
+          listener({ type: "user_input.completed", data: { requestId: "req-1" } });
           second.then((answer) => record({ type: "user-answer", requestId: "req-2", answer }));
         }, 0);
       }
@@ -74,11 +74,36 @@ export async function joinSession(config) {
       if (process.env.STUB_SCENARIO === "local-plan") {
         setTimeout(() => {
           void config.onExitPlanModeRequest({ summary: "Plan 1" });
-          listener({ type: "exit_plan_mode.requested", data: { requestId: "plan-1" } });
-          listener({ type: "exit_plan_mode.completed", data: { requestId: "plan-1" } });
+          listener({ type: "exit_plan_mode.requested", data: { requestId: "plan-1", summary: "Plan 1" } });
           const second = config.onExitPlanModeRequest({ summary: "Plan 2" });
-          listener({ type: "exit_plan_mode.requested", data: { requestId: "plan-2" } });
+          listener({ type: "exit_plan_mode.requested", data: { requestId: "plan-2", summary: "Plan 2" } });
+          listener({ type: "exit_plan_mode.completed", data: { requestId: "plan-1" } });
           second.then((decision) => record({ type: "plan-decision", requestId: "plan-2", decision }));
+        }, 0);
+      }
+      if (process.env.STUB_SCENARIO === "oversized-interactions") {
+        setTimeout(() => {
+          listener({
+            type: "user_input.requested",
+            data: {
+              requestId: "ask-large",
+              toolCallId: "ask-tool",
+              question: "q".repeat(300 * 1024),
+              choices: ["Alpha", "Beta"],
+              allowFreeform: true,
+            },
+          });
+          listener({
+            type: "exit_plan_mode.requested",
+            data: {
+              requestId: "plan-large",
+              toolCallId: "plan-tool",
+              summary: "Large plan",
+              planContent: "p".repeat(300 * 1024),
+              actions: ["interactive", "autopilot"],
+              recommendedAction: "interactive",
+            },
+          });
         }, 0);
       }
       return () => listeners.delete(listener);
@@ -202,7 +227,7 @@ describe('bundled native bridge extension runtime', () => {
     expect(await readStubLog(fixture.logPath)).toEqual([]);
   });
 
-  it('authenticates with its parent pid before joining, then serves prompts, control and events', async () => {
+  it('joins with granted secret env, authenticates its parent pid, then serves commands and events', async () => {
     const fixture = await writeExtensionFixture();
     const broker = await createBroker();
     const credentials = broker.allocateCredentials('office-a:generalist#runtime');
@@ -228,19 +253,17 @@ describe('bundled native bridge extension runtime', () => {
     ]);
   }, 20_000);
 
-  it('stands down without joining when a nested CLI presents inherited credentials', async () => {
+  it('cannot connect from a descendant environment after secret bridge vars are stripped', async () => {
     const fixture = await writeExtensionFixture();
-    const broker = await createBroker();
-    const credentials = broker.allocateCredentials('office-a:generalist#nested');
-    broker.bindProcess(credentials.terminalKey, process.pid + 1);
-    const changes = vi.fn();
-    broker.onSessionChange(changes);
+    const { exited } = runExtension(fixture, {
+      COPILOT_OFFICE_BRIDGE_ENABLED: '1',
+      SESSION_ID: 'nested-session',
+    });
 
-    const { exited } = runExtension(fixture, { ...credentials.env, SESSION_ID: 'nested-session' });
-
-    await expect(exited).resolves.toBe(0);
-    expect(changes).not.toHaveBeenCalled();
-    expect(await readStubLog(fixture.logPath)).toEqual([]);
+    await expect(exited).resolves.toBe(1);
+    expect(await readStubLog(fixture.logPath)).toEqual([
+      { type: 'join', sessionId: 'nested-session', handlers: ['function', 'function'] },
+    ]);
   }, 20_000);
 
   it('lets a /clear replacement take over and retires the superseded instance', async () => {
@@ -280,7 +303,7 @@ describe('bundled native bridge extension runtime', () => {
     await broker.waitForConnection(credentials.terminalKey, 10_000);
     await vi.waitFor(() => expect(events).toContainEqual({
       type: 'user_input.requested',
-      data: { requestId: 'req-2' },
+      data: { requestId: 'req-2', question: 'Q2' },
     }));
 
     await expect(broker.request(credentials.terminalKey, 'submit-answer', {
@@ -343,7 +366,7 @@ describe('bundled native bridge extension runtime', () => {
     await broker.waitForConnection(credentials.terminalKey, 10_000);
     await vi.waitFor(() => expect(events).toContainEqual({
       type: 'exit_plan_mode.requested',
-      data: { requestId: 'plan-2' },
+      data: { requestId: 'plan-2', summary: 'Plan 2' },
     }));
 
     await expect(broker.request(credentials.terminalKey, 'submit-plan-decision', {
@@ -362,5 +385,45 @@ describe('bundled native bridge extension runtime', () => {
         decision: { approved: false, feedback: 'revise' },
       });
     });
+  }, 20_000);
+
+  it('preserves ask_user and plan fields when oversized interaction events are compacted', async () => {
+    const fixture = await writeExtensionFixture();
+    const broker = await createBroker();
+    const credentials = broker.allocateCredentials('office-a:generalist#large-interactions');
+    broker.bindProcess(credentials.terminalKey, process.pid);
+    const events: Array<{ type?: string; data?: Record<string, unknown> }> = [];
+    broker.subscribe(credentials.terminalKey, (event) => {
+      events.push(event as { type?: string; data?: Record<string, unknown> });
+    });
+
+    runExtension(fixture, {
+      ...credentials.env,
+      SESSION_ID: 'session-large-interactions',
+      STUB_SCENARIO: 'oversized-interactions',
+    });
+    await broker.waitForConnection(credentials.terminalKey, 10_000);
+    await vi.waitFor(() => expect(events).toHaveLength(2));
+
+    const ask = events.find((event) => event.type === 'user_input.requested');
+    expect(ask?.data).toMatchObject({
+      bridgeTruncated: true,
+      requestId: 'ask-large',
+      toolCallId: 'ask-tool',
+      choices: ['Alpha', 'Beta'],
+      allowFreeform: true,
+    });
+    expect(String(ask?.data?.question)).toContain('[bridge content truncated]');
+
+    const plan = events.find((event) => event.type === 'exit_plan_mode.requested');
+    expect(plan?.data).toMatchObject({
+      bridgeTruncated: true,
+      requestId: 'plan-large',
+      toolCallId: 'plan-tool',
+      summary: 'Large plan',
+      actions: ['interactive', 'autopilot'],
+      recommendedAction: 'interactive',
+    });
+    expect(String(plan?.data?.planContent)).toContain('[bridge content truncated]');
   }, 20_000);
 });

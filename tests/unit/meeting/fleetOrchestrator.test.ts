@@ -98,6 +98,28 @@ describe('meeting/fleetOrchestrator — spawn/track/teardown contract', () => {
     expect(bridge.setSessionMeta).toHaveBeenCalledWith(OFFICE_ID, 'debugger', { title: 'fix y' });
   });
 
+  it('treats an already-ready reused terminal as working without another preload event', async () => {
+    const { bridge, captured } = setupBridge();
+    (bridge.terminalStart as any).mockResolvedValue({
+      success: true,
+      reused: true,
+      ready: true,
+      sessionId: 'warm-session',
+    });
+    const orch = new FleetOrchestrator();
+    const working: string[] = [];
+    const done: string[] = [];
+    orch.on('fleet:agent:working', (agentId) => working.push(agentId));
+    orch.on('fleet:agent:done', (agentId) => done.push(agentId));
+
+    void orch.executePlan({ plan: 'p', tasks: [PLAN.tasks[0]] }, '.', OFFICE_ID);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(working).toEqual(['generalist']);
+    captured.turnEnd?.('generalist', OFFICE_ID);
+    expect(done).toEqual(['generalist']);
+  });
+
   it('ignores lifecycle events that belong to another office', async () => {
     const { captured } = setupBridge();
     const orch = new FleetOrchestrator();
