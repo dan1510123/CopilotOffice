@@ -11,6 +11,7 @@ import type { MainToServer, ServerToMain } from '../../../electron/terminal/prot
 interface RelayInternals {
   server: { connected: boolean; send: (msg: MainToServer) => void } | null;
   handleServerMessage(msg: ServerToMain, readyTimeout: unknown, onReady: () => void): void;
+  timeoutFor(type: MainToServer['type']): number;
 }
 
 function connectedRelay(window: unknown = null) {
@@ -23,6 +24,68 @@ function connectedRelay(window: unknown = null) {
 }
 
 describe('TerminalRelay native-bridge seams', () => {
+  it('gives transient disposal a cleanup-sized timeout budget', () => {
+    const { relay } = connectedRelay();
+    const internals = relay as unknown as RelayInternals;
+
+    expect(internals.timeoutFor('dispose-transient-session')).toBe(60_000);
+    expect(internals.timeoutFor('get-session-id')).toBe(10_000);
+  });
+
+  it('sends typed transient begin/dispose requests through the server relay', async () => {
+    const { relay, sent, deliver } = connectedRelay();
+
+    const begin = (relay as any).request({
+      type: 'begin-transient-session',
+      requestId: 'begin-1',
+      officeId: 'office-0',
+      agentId: 'generalist',
+      lifecycleId: 'fleet-run-1',
+      title: 'Fleet task',
+      workingDir: 'C:\\work\\repo',
+      preseededPrompt: 'Do the task',
+    });
+    expect(sent[0]).toMatchObject({
+      type: 'begin-transient-session',
+      lifecycleId: 'fleet-run-1',
+      title: 'Fleet task',
+      preseededPrompt: 'Do the task',
+    });
+    deliver({
+      type: 'response',
+      requestId: 'begin-1',
+      result: {
+        success: true,
+        sessionId: 'transient-1',
+        previousSessionId: 'persistent-1',
+      },
+    });
+    await expect(begin).resolves.toMatchObject({ sessionId: 'transient-1' });
+
+    const dispose = (relay as any).request({
+      type: 'dispose-transient-session',
+      requestId: 'dispose-1',
+      officeId: 'office-0',
+      agentId: 'generalist',
+      lifecycleId: 'fleet-run-1',
+    });
+    expect(sent[1]).toMatchObject({
+      type: 'dispose-transient-session',
+      lifecycleId: 'fleet-run-1',
+    });
+    deliver({
+      type: 'response',
+      requestId: 'dispose-1',
+      result: {
+        success: true,
+        disposed: true,
+        restoredSessionId: 'persistent-1',
+        removedSessionIds: ['transient-1'],
+      },
+    });
+    await expect(dispose).resolves.toMatchObject({ disposed: true });
+  });
+
   it('ensures a session online with a background start that waits for readiness', async () => {
     const { relay, sent, deliver } = connectedRelay();
 
@@ -80,13 +143,22 @@ describe('TerminalRelay native-bridge seams', () => {
       type: 'copilot-turn-end',
       agentId: 'generalist',
       officeId: 'office-0',
+      sessionId: 'session-1',
+      lifecycleId: 'fleet-run-1',
     });
 
-    expect(mainListener).toHaveBeenCalledWith('generalist', 'office-0');
+    expect(mainListener).toHaveBeenCalledWith(
+      'generalist',
+      'office-0',
+      'session-1',
+      'fleet-run-1',
+    );
     expect(webContentsSend).toHaveBeenCalledWith(
       'copilot-turn-end',
       'generalist',
       'office-0',
+      'session-1',
+      'fleet-run-1',
     );
   });
 });

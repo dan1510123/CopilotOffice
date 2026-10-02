@@ -7,7 +7,18 @@ import { fork, ChildProcess, execSync } from 'child_process';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo, SessionHistoryEntry, ControlCommandName, ControlCommandResult, StartResult } from './protocol';
+import type {
+  BeginTransientSessionResult,
+  DisposeTransientSessionResult,
+  MainToServer,
+  ServerToMain,
+  MsgQueryAgentStatuses,
+  BackendSelectionInfo,
+  SessionHistoryEntry,
+  ControlCommandName,
+  ControlCommandResult,
+  StartResult,
+} from './protocol';
 import { reapRegisteredPtys } from './pty-registry';
 
 export class TerminalRelay {
@@ -45,6 +56,8 @@ export class TerminalRelay {
   private static readonly BRIDGE_COMMAND_TIMEOUT_MS = 30_000;
   /** Compaction can invoke the model and legitimately exceed normal IPC budgets. */
   private static readonly CONTROL_COMMAND_TIMEOUT_MS = 130_000;
+  /** Recursive transient session-state deletion can exceed the normal metadata budget. */
+  private static readonly TRANSIENT_CLEANUP_TIMEOUT_MS = 60_000;
   /**
    * Bounded wait for a background (Teams) start to become ready. Must stay below
    * {@link UI_SERVER_START_TIMEOUT_MS} so the server's explicit readiness error
@@ -62,6 +75,7 @@ export class TerminalRelay {
    */
   private static readonly SLOW_START_TYPES: ReadonlySet<MainToServer['type']> = new Set([
     'start',
+    'begin-transient-session',
     'attach',
     'activate',
     'refresh-office-backend',
@@ -71,6 +85,9 @@ export class TerminalRelay {
   private timeoutFor(type: MainToServer['type']): number {
     if (type === 'run-control-command') {
       return TerminalRelay.CONTROL_COMMAND_TIMEOUT_MS;
+    }
+    if (type === 'dispose-transient-session') {
+      return TerminalRelay.TRANSIENT_CLEANUP_TIMEOUT_MS;
     }
     if (
       type === 'submit-prompt'
@@ -431,7 +448,13 @@ export class TerminalRelay {
         this.mainEvents.emit('copilot-turn-start', msg.agentId);
         break;
       case 'copilot-turn-end':
-        this.mainEvents.emit('copilot-turn-end', msg.agentId, msg.officeId);
+        this.mainEvents.emit(
+          'copilot-turn-end',
+          msg.agentId,
+          msg.officeId,
+          msg.sessionId,
+          msg.lifecycleId,
+        );
         break;
       case 'copilot-user-message':
         // Mirror to main-process consumers (the Teams service streams locally-typed
@@ -457,7 +480,14 @@ export class TerminalRelay {
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta, msg.officeId);
         break;
       case 'terminal-exit':
-        this.mainEvents.emit('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
+        this.mainEvents.emit(
+          'terminal-exit',
+          msg.agentId,
+          msg.exitCode,
+          msg.officeId,
+          msg.sessionId,
+          msg.lifecycleId,
+        );
         break;
     }
 
@@ -469,7 +499,14 @@ export class TerminalRelay {
         win.webContents.send('terminal-data', msg.agentId, msg.data, msg.officeId, msg.sessionId);
         break;
       case 'terminal-exit':
-        win.webContents.send('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
+        win.webContents.send(
+          'terminal-exit',
+          msg.agentId,
+          msg.exitCode,
+          msg.officeId,
+          msg.sessionId,
+          msg.lifecycleId,
+        );
         break;
       case 'copilot-event':
         if (!msg.mainOnly) win.webContents.send('copilot-event', msg.agentId, msg.event);
@@ -487,7 +524,13 @@ export class TerminalRelay {
         win.webContents.send('copilot-tool-complete', msg.agentId, msg.toolId, msg.success);
         break;
       case 'copilot-turn-end':
-        win.webContents.send('copilot-turn-end', msg.agentId, msg.officeId);
+        win.webContents.send(
+          'copilot-turn-end',
+          msg.agentId,
+          msg.officeId,
+          msg.sessionId,
+          msg.lifecycleId,
+        );
         break;
       case 'copilot-turn-start':
         win.webContents.send('copilot-turn-start', msg.agentId);
@@ -499,7 +542,14 @@ export class TerminalRelay {
         win.webContents.send('session-meta-updated', msg.agentId, msg.meta, msg.officeId);
         break;
       case 'terminal-preload-status':
-        win.webContents.send('terminal-preload-status', msg.agentId, msg.status, msg.officeId);
+        win.webContents.send(
+          'terminal-preload-status',
+          msg.agentId,
+          msg.status,
+          msg.officeId,
+          msg.sessionId,
+          msg.lifecycleId,
+        );
         break;
       case 'backend-online':
         win.webContents.send('backend-online', msg.officeId, msg.backend);
@@ -517,6 +567,43 @@ export class TerminalRelay {
 
     ipcMain.handle('terminal-start', (_event, officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) =>
       this.request({ type: 'start', requestId: this.id(), officeId, agentId, workingDir, hostWorkingDir, cols, rows, preseededPrompt, launchMode })
+    );
+
+    ipcMain.handle(
+      'terminal-begin-transient-session',
+      (
+        _event,
+        officeId: string,
+        agentId: string,
+        options: {
+          lifecycleId: string;
+          title: string;
+          workingDir?: string;
+          hostWorkingDir?: string;
+          cols?: number;
+          rows?: number;
+          preseededPrompt: string;
+        },
+      ) =>
+        this.request({
+          type: 'begin-transient-session',
+          requestId: this.id(),
+          officeId,
+          agentId,
+          ...options,
+        }) as Promise<BeginTransientSessionResult>,
+    );
+
+    ipcMain.handle(
+      'terminal-dispose-transient-session',
+      (_event, officeId: string, agentId: string, lifecycleId: string) =>
+        this.request({
+          type: 'dispose-transient-session',
+          requestId: this.id(),
+          officeId,
+          agentId,
+          lifecycleId,
+        }) as Promise<DisposeTransientSessionResult>,
     );
 
     ipcMain.handle('terminal-attach', (_event, officeId: string, agentId: string, foreground?: boolean) =>

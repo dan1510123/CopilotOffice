@@ -9,7 +9,18 @@ import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
 import { formatToolStatus, buildAskUserRelay, buildPlanRelay } from './events-watcher';
-import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
+import type {
+  ActivateResult,
+  BeginTransientSessionResult,
+  DisposeTransientSessionResult,
+  MainToServer,
+  MsgGetSessionMeta,
+  MsgQueryAgentStatuses,
+  MsgSetSessionMeta,
+  ServerToMain,
+  SessionHistoryEntry,
+  StartResult,
+} from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
 import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
 import type { TerminalSessionChange } from './terminal-backend';
@@ -33,6 +44,15 @@ import {
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 import { resolveAccessibleWorkingDir } from './working-dir';
+import {
+  beginTransientSessionState,
+  classifyExistingTransientBegin,
+  coerceTransientSessionRecord,
+  removeTransientSessionStateDirectories,
+  restoreTransientSessionState,
+  trackTransientSessionId,
+  type TransientSessionRecord,
+} from './transient-session';
 import { didTerminalBackendFallBack, parseTerminalBackend } from '../../src/config/terminalBackend';
 
 // Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
@@ -89,11 +109,8 @@ const DEBUG_COLD_START = process.env.COPILOT_OFFICE_DEBUG_COLD_START === '1';
 // to the PTY's original terminal key for transferred fleet sessions;
 // `activeAgentViewers` tracks every key with a live viewer attached.
 //
-// MUTATIONS THAT MAY INVOLVE TRANSFERRED SESSIONS MUST GO THROUGH
-// addAgentViewer / removeAgentViewer / hasActiveViewer so both the alias
-// key and the original PTY key stay in sync. Direct `Set.add` / `Set.delete`
-// calls are intentionally allowed in non-transfer cleanup paths (PTY exit,
-// reset-session, shutdown) where the dual-key contract does not apply.
+// ALL mutations go through addAgentViewer / removeAgentViewer so both the alias
+// key and the original PTY key stay in sync. Reads go through hasActiveViewer.
 const agentToTerminal: Map<string, string> = new Map();
 const activeAgentViewers: Set<string> = new Set();
 // Composite keys whose copilot-events must be mirrored to main-process consumers
@@ -194,6 +211,7 @@ interface OfficeSessionData {
   sessionIds: Map<string, string>;          // agentId → current sessionId
   sessionHistory: Map<string, SessionHistoryEntry[]>; // agentId → past sessions (spec 019)
   sessionMeta: Map<string, { title: string }>; // agentId → metadata
+  transientSessions: Map<string, TransientSessionRecord>; // agentId → active fleet-only lease
 }
 
 const officeSessions: Map<string, OfficeSessionData> = new Map();
@@ -206,7 +224,12 @@ function getSessionFile(officeId: string): string {
 function getOfficeSession(officeId: string): OfficeSessionData {
   let data = officeSessions.get(officeId);
   if (!data) {
-    data = { sessionIds: new Map(), sessionHistory: new Map(), sessionMeta: new Map() };
+    data = {
+      sessionIds: new Map(),
+      sessionHistory: new Map(),
+      sessionMeta: new Map(),
+      transientSessions: new Map(),
+    };
     officeSessions.set(officeId, data);
   }
   return data;
@@ -274,11 +297,17 @@ async function loadOfficeSessionFile(officeId: string): Promise<void> {
         data.sessionMeta = new Map(
           Object.entries(parsed.metadata || {}).map(([k, v]) => [k, v as { title: string }])
         );
+        data.transientSessions = new Map(
+          Object.entries(parsed.transient || {})
+            .map(([agentId, value]) => [agentId, coerceTransientSessionRecord(value)] as const)
+            .filter((entry): entry is readonly [string, TransientSessionRecord] => entry[1] !== null),
+        );
       } else {
         // Legacy flat format: { agentId: sessionId }
         data.sessionIds = new Map(Object.entries(parsed));
         data.sessionHistory = new Map();
         data.sessionMeta = new Map();
+        data.transientSessions = new Map();
         await saveOfficeSessionFile(officeId);
       }
       // V3 (spec 002): repair duplicate sessionIds across agents in this office.
@@ -286,6 +315,9 @@ async function loadOfficeSessionFile(officeId: string): Promise<void> {
       const repaired = repairDuplicateSessionIds(officeId, data);
       if (repaired) {
         await saveOfficeSessionFile(officeId);
+      }
+      if (data.transientSessions.size > 0) {
+        await recoverStaleTransientSessions(officeId, data);
       }
       console.log(`[TermServer] Loaded sessions for ${officeId}: ${data.sessionIds.size} current, ${data.sessionHistory.size} history`);
     }
@@ -302,6 +334,7 @@ async function saveOfficeSessionFile(officeId: string): Promise<void> {
       current: Object.fromEntries(data.sessionIds),
       history: Object.fromEntries(data.sessionHistory),
       metadata: Object.fromEntries(data.sessionMeta),
+      transient: Object.fromEntries(data.transientSessions),
     };
     await fs.promises.writeFile(getSessionFile(officeId), JSON.stringify(json, null, 2));
   } catch (e) {
@@ -318,11 +351,40 @@ async function createEmptySessionFile(officeId: string): Promise<void> {
     await loadOfficeSessionFile(officeId);
   } catch {
     // File doesn't exist — create empty
-    const empty = { current: {}, history: {}, metadata: {} };
+    const empty = { current: {}, history: {}, metadata: {}, transient: {} };
     await fs.promises.writeFile(filePath, JSON.stringify(empty, null, 2));
     getOfficeSession(officeId); // ensure in-memory entry
     console.log(`[TermServer] Created empty session file for ${officeId}: ${filePath}`);
   }
+}
+
+/**
+ * Crash recovery: a persisted transient lease means the previous server exited
+ * before fleet disposal completed. Restore the prior pointer first, then delete
+ * only the leased Copilot session-state directories. A failed disk deletion
+ * leaves the lease persisted so the next startup retries it.
+ */
+async function recoverStaleTransientSessions(
+  officeId: string,
+  data: OfficeSessionData,
+): Promise<void> {
+  for (const [agentId, record] of [...data.transientSessions]) {
+    record.phase = 'disposing';
+    restoreTransientSessionState(data, agentId, record);
+    try {
+      await removeTransientSessionStateDirectories(record);
+      data.transientSessions.delete(agentId);
+      console.log(
+        `[lifecycle] recovered stale transient fleet session for ${compositeKey(officeId, agentId)} ` +
+        `(lifecycle=${record.lifecycleId})`,
+      );
+    } catch (error) {
+      console.warn(
+        `[lifecycle] failed to delete stale transient fleet session state for ${compositeKey(officeId, agentId)}: ${String(error)}`,
+      );
+    }
+  }
+  await saveOfficeSessionFile(officeId);
 }
 
 function archiveSessionId(officeId: string, agentId: string): void {
@@ -447,8 +509,16 @@ function applyNativeBridgeSessionChange(
   }
 
   for (const office of officesForTerminal(officeId, agentId, terminalKey)) {
-    const result = applyBridgeSessionChange(getOfficeSession(office), agentId, change.sessionId);
+    const officeData = getOfficeSession(office);
+    const transientRecord = officeData.transientSessions.get(agentId);
+    const previousCurrent = officeData.sessionIds.get(agentId);
+    const result = applyBridgeSessionChange(officeData, agentId, change.sessionId);
     if (!result.changed) continue;
+    if (transientRecord) {
+      if (previousCurrent) trackTransientSessionId(transientRecord, previousCurrent);
+      trackTransientSessionId(transientRecord, change.sessionId);
+      officeData.transientSessions.set(agentId, transientRecord);
+    }
     const officeCk = compositeKey(office, agentId);
     if (result.title) hasAutoTitled.add(officeCk);
     else hasAutoTitled.delete(officeCk);
@@ -627,6 +697,8 @@ function startTerminalForAgent(
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
   hostWorkingDir?: string,
+  forcedSessionId?: string,
+  transientLifecycleId?: string,
 ): Promise<StartTerminalResult> {
   const ck = compositeKey(officeId, agentId);
   const pending = inFlightStarts.get(ck);
@@ -646,6 +718,8 @@ function startTerminalForAgent(
     undefined,
     launchMode,
     hostWorkingDir,
+    forcedSessionId,
+    transientLifecycleId,
   );
   const tracked = started.then((result) => {
     if (!result.success) pendingPreseededPrompts.delete(ck);
@@ -666,6 +740,8 @@ async function startTerminalForAgentImpl(
   preseededPrompt?: string,
   launchMode: 'copilot' | 'shell' = 'copilot',
   hostWorkingDir?: string,
+  forcedSessionId?: string,
+  transientLifecycleId?: string,
 ): Promise<StartTerminalResult> {
   // Spec 008-smoke: force shell mode end-to-end when the e2e harness is driving
   // the app. Avoids depending on a real copilot CLI binary on the test runner
@@ -720,7 +796,9 @@ async function startTerminalForAgentImpl(
 
   const officeData = getOfficeSession(officeId);
   let sessionId: string;
-  if (shellOnlyMode) {
+  if (forcedSessionId) {
+    sessionId = forcedSessionId;
+  } else if (shellOnlyMode) {
     // The PC Terminal / local shell is not a Copilot session — node-pty shell
     // mode never resumes a session GUID. Use an ephemeral id so we don't mint or
     // persist a bogus entry into copilot-office-sessions.json. Live reuse is
@@ -884,7 +962,14 @@ async function startTerminalForAgentImpl(
 
     if (!shellOnlyMode) {
       // Signal that the PTY is spawned and copilot CLI is starting
-      send({ type: 'terminal-preload-status', agentId, status: 'preloading', officeId });
+      send({
+        type: 'terminal-preload-status',
+        agentId,
+        status: 'preloading',
+        officeId,
+        sessionId,
+        lifecycleId: transientLifecycleId,
+      });
     }
 
     let hasSignalledReady = shellOnlyMode;
@@ -896,7 +981,15 @@ async function startTerminalForAgentImpl(
       hasSignalledReady = true;
       agentReadyState.set(ck, true);
       console.log(`[TermServer] Agent ${ck} signalled READY at ${Date.now()} (skipped ${skippedEventCount} startup events)`);
-      send({ type: 'terminal-preload-status', agentId, status: 'ready', officeId });
+      const readySessionId = ptyProcesses.get(terminalKey)?.sessionId ?? sessionId;
+      send({
+        type: 'terminal-preload-status',
+        agentId,
+        status: 'ready',
+        officeId,
+        sessionId: readySessionId,
+        lifecycleId: transientLifecycleId,
+      });
       agentReadyWaiters.settle(ck);
 
       // Deliver the pre-seeded prompt once the CLI is ready. Backends with a
@@ -911,7 +1004,15 @@ async function startTerminalForAgentImpl(
           Promise.resolve(),
         ).catch((error: unknown) => {
           console.error(`[TermServer] Pre-seeded prompt for ${ck} was not delivered: ${String((error as Error)?.message ?? error)}`);
-          send({ type: 'terminal-preload-status', agentId, status: 'failed', officeId });
+          const failedSessionId = ptyProcesses.get(terminalKey)?.sessionId ?? sessionId;
+          send({
+            type: 'terminal-preload-status',
+            agentId,
+            status: 'failed',
+            officeId,
+            sessionId: failedSessionId,
+            lifecycleId: transientLifecycleId,
+          });
         });
       }
     };
@@ -1047,7 +1148,14 @@ async function startTerminalForAgentImpl(
           console.log(`[TermServer] Forwarding turn_end for ${ck}`);
           for (const targetOfficeId of officesForTerminal(officeId, agentId, terminalKey)) {
             agentInTurn.set(compositeKey(targetOfficeId, agentId), false);
-            send({ type: 'copilot-turn-end', agentId, officeId: targetOfficeId });
+            const turnSessionId = ptyProcesses.get(terminalKey)?.sessionId ?? sessionId;
+            send({
+              type: 'copilot-turn-end',
+              agentId,
+              officeId: targetOfficeId,
+              sessionId: turnSessionId,
+              lifecycleId: transientLifecycleId,
+            });
           }
         } else if (event.type === 'assistant.turn_start') {
           agentInTurn.set(ck, true);
@@ -1141,7 +1249,8 @@ async function startTerminalForAgentImpl(
           agentId,
           data: pendingData,
           officeId,
-          sessionId: getOfficeSession(officeId).sessionIds.get(agentId),
+          sessionId: ptyProcesses.get(terminalKey)?.sessionId
+            ?? getOfficeSession(officeId).sessionIds.get(agentId),
         });
       }
       pendingData = '';
@@ -1210,10 +1319,11 @@ async function startTerminalForAgentImpl(
           agentId,
           exitCode,
           officeId,
-          sessionId: getOfficeSession(officeId).sessionIds.get(agentId),
+          sessionId: currentEntry!.sessionId,
+          lifecycleId: transientLifecycleId,
         });
         ptyProcesses.delete(terminalKey);
-        activeAgentViewers.delete(ck);
+        removeAgentViewer(ck, viewerMaps);
         clearForegroundIf(officeId, ck);
         agentScrollbackBuffers.delete(ck);
         agentScrollbackBytes.delete(ck);
@@ -1257,10 +1367,288 @@ async function startTerminalForAgentImpl(
   }
 }
 
+// ── Fleet transient-session lifecycle ───────────────────────────
+
+/** Serializes begin/dispose for one office + agent without blocking other agents. */
+const transientOperations = new Map<string, Promise<unknown>>();
+
+function withTransientOperation<T>(ck: string, operation: () => Promise<T>): Promise<T> {
+  const previous = transientOperations.get(ck) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  transientOperations.set(ck, current);
+  return current.finally(() => {
+    if (transientOperations.get(ck) === current) transientOperations.delete(ck);
+  });
+}
+
+function clearRuntimeStateForKey(officeId: string, ck: string): void {
+  const watcher = agentWatchers.get(ck);
+  if (watcher) {
+    watcher.stop();
+    agentWatchers.delete(ck);
+  }
+  agentScrollbackBuffers.delete(ck);
+  agentScrollbackBytes.delete(ck);
+  agentReadyState.delete(ck);
+  agentInTurn.delete(ck);
+  lastPtyDataAt.delete(ck);
+  userMessageSeq.delete(ck);
+  lastUserMessageText.delete(ck);
+  pendingPreseededPrompts.delete(ck);
+  hasAutoTitled.delete(ck);
+  clearForegroundIf(officeId, ck);
+}
+
+/**
+ * Kill the live process for an agent without touching persisted session maps.
+ * Every alias/viewer mutation routes through agent-viewers.ts.
+ */
+function teardownAgentRuntime(
+  officeId: string,
+  agentId: string,
+  allowedSessionIds?: ReadonlySet<string>,
+): void {
+  const ck = compositeKey(officeId, agentId);
+  const terminalKey = getTerminalKey(officeId, agentId);
+  const proc = terminalKey ? ptyProcesses.get(terminalKey) : null;
+  if (proc && allowedSessionIds && !allowedSessionIds.has(proc.sessionId)) {
+    return;
+  }
+
+  const aliases = terminalKey
+    ? [...agentToTerminal.entries()]
+        .filter(([, key]) => key === terminalKey)
+        .map(([alias]) => alias)
+    : [ck];
+
+  // Delete the process registration before kill so its asynchronous onExit
+  // identity guard cannot tear down a replacement process or emit a stale exit.
+  if (terminalKey && proc) ptyProcesses.delete(terminalKey);
+  for (const alias of aliases) {
+    const aliasOfficeId = alias.slice(0, alias.lastIndexOf(':'));
+    removeAgentViewer(alias, viewerMaps);
+    agentToTerminal.delete(alias);
+    clearRuntimeStateForKey(aliasOfficeId, alias);
+  }
+  if (!aliases.includes(ck)) {
+    removeAgentViewer(ck, viewerMaps);
+    agentToTerminal.delete(ck);
+    clearRuntimeStateForKey(officeId, ck);
+  }
+
+  if (proc) killPtyProcess(proc);
+}
+
+async function beginTransientSession(
+  msg: Extract<MainToServer, { type: 'begin-transient-session' }>,
+): Promise<BeginTransientSessionResult> {
+  const ck = compositeKey(msg.officeId, msg.agentId);
+  return withTransientOperation(ck, async () => {
+    const officeData = getOfficeSession(msg.officeId);
+    const existing = officeData.transientSessions.get(msg.agentId);
+    if (existing) {
+      const action = classifyExistingTransientBegin(existing, msg.lifecycleId);
+      if (action === 'cleanup-first') {
+        const disposed = await disposeTransientSessionUnlocked(
+          msg.officeId,
+          msg.agentId,
+          existing.lifecycleId,
+        );
+        if (!disposed.success) return disposed;
+      } else if (action === 'reject') {
+        return {
+          success: false,
+          error: `Another transient fleet lifecycle is already active for ${ck}`,
+        };
+      } else {
+        const key = getTerminalKey(msg.officeId, msg.agentId);
+        const proc = key ? ptyProcesses.get(key) : null;
+        if (proc) {
+          return {
+            success: true,
+            sessionId: existing.sessionId,
+            previousSessionId: existing.previousSessionId,
+            pid: proc.pid,
+            reused: true,
+          };
+        }
+        return {
+          success: false,
+          error: `Transient fleet lifecycle ${msg.lifecycleId} has no live terminal`,
+        };
+      }
+    }
+
+    // If auto-start or a viewer start is still resolving, let it register first
+    // so this atomic transition can reliably stop it and preserve its pointer.
+    await inFlightStarts.get(ck)?.catch(() => undefined);
+    teardownAgentRuntime(msg.officeId, msg.agentId);
+
+    const record = beginTransientSessionState(
+      officeData,
+      msg.agentId,
+      msg.lifecycleId,
+      msg.title,
+    );
+    officeData.transientSessions.set(msg.agentId, record);
+    hasAutoTitled.add(ck);
+    agentScrollbackBuffers.delete(ck);
+    agentScrollbackBytes.delete(ck);
+    await saveOfficeSessionFile(msg.officeId);
+    send({
+      type: 'session-meta-updated',
+      agentId: msg.agentId,
+      officeId: msg.officeId,
+      meta: { title: msg.title, sessionId: record.sessionId },
+    });
+
+    // Preserve the existing visible-native-TUI behavior while the task is active.
+    addAgentViewer(ck, viewerMaps);
+    const started = await startTerminalForAgent(
+      msg.officeId,
+      msg.agentId,
+      msg.workingDir,
+      msg.cols,
+      msg.rows,
+      msg.preseededPrompt,
+      'copilot',
+      msg.hostWorkingDir,
+      record.sessionId,
+      msg.lifecycleId,
+    );
+    if (!started.success) {
+      const cleanup = await disposeTransientSessionUnlocked(
+        msg.officeId,
+        msg.agentId,
+        msg.lifecycleId,
+      );
+      return {
+        success: false,
+        error:
+          `Failed to start transient fleet terminal: ${started.error ?? 'unknown error'}` +
+          (!cleanup.success ? `; cleanup failed: ${cleanup.error}` : ''),
+      };
+    }
+
+    return {
+      success: true,
+      sessionId: started.sessionId ?? record.sessionId,
+      previousSessionId: record.previousSessionId,
+      pid: started.pid,
+    };
+  });
+}
+
+async function disposeTransientSession(
+  officeId: string,
+  agentId: string,
+  lifecycleId: string,
+): Promise<DisposeTransientSessionResult> {
+  const ck = compositeKey(officeId, agentId);
+  return withTransientOperation(
+    ck,
+    () => disposeTransientSessionUnlocked(officeId, agentId, lifecycleId),
+  );
+}
+
+async function disposeTransientSessionUnlocked(
+  officeId: string,
+  agentId: string,
+  lifecycleId: string,
+): Promise<DisposeTransientSessionResult> {
+  const officeData = getOfficeSession(officeId);
+  const record = officeData.transientSessions.get(agentId);
+  if (!record || record.lifecycleId !== lifecycleId) {
+    return {
+      success: true,
+      disposed: false,
+      restoredSessionId: officeData.sessionIds.get(agentId) ?? null,
+      removedSessionIds: [],
+    };
+  }
+
+  record.phase = 'disposing';
+  officeData.transientSessions.set(agentId, record);
+  await saveOfficeSessionFile(officeId);
+
+  const allowedIds = new Set([record.sessionId, ...record.sessionIds]);
+  teardownAgentRuntime(officeId, agentId, allowedIds);
+  const restored = restoreTransientSessionState(officeData, agentId, record);
+  const restoredTitle = officeData.sessionMeta.get(agentId)?.title ?? '';
+  const restoredSessionId = officeData.sessionIds.get(agentId);
+  const ck = compositeKey(officeId, agentId);
+  if (restoredTitle) hasAutoTitled.add(ck);
+  else hasAutoTitled.delete(ck);
+  send({
+    type: 'session-meta-updated',
+    agentId,
+    officeId,
+    meta: restoredSessionId
+      ? { title: restoredTitle, sessionId: restoredSessionId }
+      : { title: restoredTitle },
+  });
+  await saveOfficeSessionFile(officeId);
+
+  try {
+    const removedSessionIds = await removeTransientSessionStateDirectories(record);
+    officeData.transientSessions.delete(agentId);
+    await saveOfficeSessionFile(officeId);
+    console.log(
+      `[lifecycle] disposed transient fleet session for ${ck} ` +
+      `(lifecycle=${lifecycleId}, restored=${restored.restoredSessionId ?? '(none)'})`,
+    );
+    return {
+      success: true,
+      disposed: true,
+      restoredSessionId: restored.restoredSessionId,
+      removedSessionIds,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to remove transient Copilot session state for ${ck}: ${String(error)}`,
+    };
+  }
+}
+
+async function disposeAllTransientSessions(): Promise<void> {
+  const leases = [...officeSessions.entries()].flatMap(([officeId, data]) =>
+    [...data.transientSessions.entries()].map(([agentId, record]) => ({
+      officeId,
+      agentId,
+      lifecycleId: record.lifecycleId,
+    })),
+  );
+  await Promise.all(
+    leases.map(async ({ officeId, agentId, lifecycleId }) => {
+      const result = await disposeTransientSession(officeId, agentId, lifecycleId);
+      if (!result.success) {
+        console.warn(`[lifecycle] transient shutdown cleanup failed: ${result.error}`);
+      }
+    }),
+  );
+}
+
 // ── Message Handler ─────────────────────────────────────────────
 
 async function handleMessage(msg: MainToServer): Promise<void> {
   switch (msg.type) {
+    case 'begin-transient-session': {
+      const result = await beginTransientSession(msg);
+      send({ type: 'response', requestId: msg.requestId, result });
+      break;
+    }
+
+    case 'dispose-transient-session': {
+      const result = await disposeTransientSession(
+        msg.officeId,
+        msg.agentId,
+        msg.lifecycleId,
+      );
+      send({ type: 'response', requestId: msg.requestId, result });
+      break;
+    }
+
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
       // A main-process (background) start — the Teams ensure-online seam — must
@@ -1638,7 +2026,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const existed = getTerminalKey(msg.officeId, msg.agentId) !== null;
 
       if (!existed) {
-        // Cold path — mirror the `start` case bookkeeping (activeAgentViewers.add
+        // Cold path — mirror the `start` case bookkeeping (viewer registration
         // happens via addAgentViewer below; startTerminalForAgent owns the rest).
         const startResult = await startTerminalForAgent(
           msg.officeId,
@@ -1875,7 +2263,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // Clear scrollback
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
-      activeAgentViewers.delete(ck);
+      removeAgentViewer(ck, viewerMaps);
       clearForegroundIf(msg.officeId, ck);
       const officeDataReset = getOfficeSession(msg.officeId);
       // Archive old session ID (snapshots the current title) BEFORE clearing
@@ -1933,7 +2321,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
         pendingPreseededPrompts.delete(ck);
-        activeAgentViewers.delete(ck);
+        removeAgentViewer(ck, viewerMaps);
         clearForegroundIf(officeId, ck);
         hasAutoTitled.delete(ck);
         send({ type: 'session-meta-updated', agentId, officeId, meta: { title: '' } });
@@ -2136,6 +2524,23 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     }
 
     case 'delete-office-session': {
+      const transientLeases = [...getOfficeSession(msg.officeId).transientSessions.entries()];
+      let cleanupFailure: DisposeTransientSessionResult | null = null;
+      for (const [agentId, record] of transientLeases) {
+        const disposed = await disposeTransientSession(
+          msg.officeId,
+          agentId,
+          record.lifecycleId,
+        );
+        if (!disposed.success) {
+          cleanupFailure = disposed;
+          break;
+        }
+      }
+      if (cleanupFailure) {
+        send({ type: 'response', requestId: msg.requestId, result: cleanupFailure });
+        break;
+      }
       const filePath = getSessionFile(msg.officeId);
       try {
         await fs.promises.unlink(filePath);
@@ -2202,6 +2607,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'shutdown': {
       console.log('[TermServer] Shutdown requested');
+      await disposeAllTransientSessions();
       killAllPtyProcesses();
       try {
         await terminalBackend?.stop?.();

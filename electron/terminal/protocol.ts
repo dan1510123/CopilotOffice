@@ -40,6 +40,57 @@ export interface StartResult {
   error?: string;
 }
 
+/**
+ * Atomic fleet-only start. The server snapshots the prior persistent session,
+ * installs a freshly-minted transient current pointer, starts the native TUI,
+ * and rolls the transient state back if startup fails.
+ */
+export interface MsgBeginTransientSession {
+  type: 'begin-transient-session';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  lifecycleId: string;
+  title: string;
+  workingDir?: string;
+  hostWorkingDir?: string;
+  cols?: number;
+  rows?: number;
+  preseededPrompt: string;
+}
+
+export type BeginTransientSessionResult =
+  | {
+      success: true;
+      sessionId: string;
+      previousSessionId: string | null;
+      pid?: number;
+      /** True only when a duplicate request reused the same active lifecycle lease. */
+      reused?: boolean;
+    }
+  | { success: false; error: string };
+
+/**
+ * Idempotently dispose one fleet-only lifecycle lease. `lifecycleId` prevents a
+ * late completion/exit from deleting a newer run for the same office + agent.
+ */
+export interface MsgDisposeTransientSession {
+  type: 'dispose-transient-session';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  lifecycleId: string;
+}
+
+export type DisposeTransientSessionResult =
+  | {
+      success: true;
+      disposed: boolean;
+      restoredSessionId: string | null;
+      removedSessionIds: string[];
+    }
+  | { success: false; error: string };
+
 export interface MsgWrite {
   type: 'write';
   requestId: string;
@@ -419,6 +470,8 @@ export interface MsgTransferSession {
 
 export type MainToServer =
   | MsgStart
+  | MsgBeginTransientSession
+  | MsgDisposeTransientSession
   | MsgWrite
   | MsgSubmitPrompt
   | MsgSubmitAnswer
@@ -502,6 +555,8 @@ export interface SrvTerminalExit {
   officeId: string;
   /** Session generation token (spec 021 Phase 3) — see {@link SrvTerminalData.sessionId}. */
   sessionId?: string;
+  /** Fleet lifecycle token captured by the process at start; absent for normal sessions. */
+  lifecycleId?: string;
 }
 
 export interface SrvCopilotEvent {
@@ -611,6 +666,10 @@ export interface SrvCopilotTurnEnd {
   agentId: string;
   /** Owning office so concurrent agents with the same id cannot cross streams. */
   officeId?: string;
+  /** Session generation token so late terminal events cannot settle a newer fleet run. */
+  sessionId?: string;
+  /** Fleet lifecycle token captured by the process at start; absent for normal sessions. */
+  lifecycleId?: string;
 }
 
 export interface SrvCopilotTurnStart {
@@ -634,6 +693,10 @@ export interface SrvTerminalPreloadStatus {
   agentId: string;
   status: 'preloading' | 'ready' | 'failed';
   officeId?: string;
+  /** Session generation token so readiness/failure is scoped to the active fleet lease. */
+  sessionId?: string;
+  /** Fleet lifecycle token captured by the process at start; absent for normal sessions. */
+  lifecycleId?: string;
 }
 
 /**
