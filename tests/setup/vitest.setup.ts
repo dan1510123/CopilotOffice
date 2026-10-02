@@ -62,8 +62,13 @@ vi.mock('phaser', () => {
     on = vi.fn(() => this);
   }
 
+  class MockScene {
+    constructor(_config?: unknown) {}
+  }
+
   const phaser = {
     AUTO: 0,
+    Scene: MockScene,
     Math: {
       Clamp: (value: number, min: number, max: number) => Math.max(min, Math.min(max, value)),
     },
@@ -88,6 +93,7 @@ vi.mock('phaser', () => {
   return {
     default: phaser,
     AUTO: phaser.AUTO,
+    Scene: phaser.Scene,
     Math: phaser.Math,
     Input: phaser.Input,
     Physics: phaser.Physics,
@@ -107,4 +113,3 @@ afterEach(() => {
   vi.clearAllMocks();
   document.body.innerHTML = '';
 });
-

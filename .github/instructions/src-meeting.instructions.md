@@ -78,6 +78,9 @@ Read `MeetingMode.md` at the repo root for the full design.
 - Fleet execution MUST use the typed transient begin/dispose bridge APIs. Never use `terminalStart`, `terminalKill`, `resetSession`, or history-wide clearing to choreograph fleet cleanup in the renderer.
 - A fleet lifecycle ID is the idempotency/race token. Late events from an older run must not dispose a newer run for the same office + agent.
 - Normal non-fleet sessions remain persistent; fleet cleanup may remove only IDs owned by the transient lease.
+- Reject duplicate `agentId` assignments before transferring sessions or starting leases. `FleetOrchestrator` state is agent-scoped, not task-scoped.
+- Include `officeId` on fleet status/completion events so a background fleet cannot mutate the visible office's status UI.
+- Office deletion/close MUST await the owning orchestrator's cancellation before `OfficeManager.deleteOffice`; otherwise staggered starts can recreate the deleted session file.
 
 ## Common Pitfalls
 
@@ -98,4 +101,4 @@ The three fleet modules now carry header docblocks naming each module's pipeline
 
 `FleetTracker`'s silent `terminalAttach` + 10s periodic re-attach is preserved as **defense in depth** alongside the server-side dual-key invariant in `electron/terminal/agent-viewers.ts`. Do NOT remove without coordinating with that module.
 
-Parser + approval are covered by their focused suites. Orchestrator lifecycle coverage lives in `tests/unit/meeting/fleetOrchestrator.test.ts`; terminal state restoration/selective deletion coverage lives in `tests/unit/terminal/transientSession.test.ts`; `npm run smoke:transient-fleet` exercises the compiled server protocol and node-pty cleanup. The vitest scope guard in `vitest.config.ts` allows imports from `src/meeting/**` only for meeting tests + `src/main.ts` + `tests/integration/main/**`.
+Parser + approval are covered by their focused suites. Orchestrator lifecycle coverage lives in `tests/unit/meeting/fleetOrchestrator.test.ts`; OfficeScene runtime wiring is covered by `tests/unit/meeting/officeSceneFleetExecution.test.ts`; terminal state restoration/selective deletion coverage lives in `tests/unit/terminal/transientSession.test.ts`; `npm run smoke:transient-fleet` exercises the compiled server protocol and node-pty cleanup. The vitest scope guard in `vitest.config.ts` allows imports from `src/meeting/**` only for meeting tests, the OfficeScene fleet coordinator, `src/main.ts`, and `tests/integration/main/**`.

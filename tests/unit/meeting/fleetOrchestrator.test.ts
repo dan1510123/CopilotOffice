@@ -121,6 +121,23 @@ describe('meeting/fleetOrchestrator — transient lifecycle contract', () => {
     ]);
   });
 
+  it('rejects duplicate agent assignments before starting any transient lease', async () => {
+    const { bridge } = setupBridge();
+    const orch = new FleetOrchestrator();
+    const duplicatePlan: MeetingPlan = {
+      plan: 'bad',
+      tasks: [
+        PLAN.tasks[0],
+        { ...PLAN.tasks[0], title: 'second task', prompt: 'p2' },
+      ],
+    };
+
+    await expect(orch.executePlan(duplicatePlan, '.', OFFICE_ID)).rejects.toThrow(
+      'multiple tasks to the same agent',
+    );
+    expect(bridge.terminalBeginTransientSession).not.toHaveBeenCalled();
+  });
+
   it('disposes on turn end and waits for restoration before all-complete', async () => {
     const { bridge, captured } = setupBridge();
     const dispose = deferred<{

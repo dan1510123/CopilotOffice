@@ -15,6 +15,7 @@ import { resolveOfficeAgentWorkingDir } from '../office/launchWorkingDir';
 import { MeetingPlan } from '../meeting/types';
 import { FleetTracker } from '../meeting/fleetTracker';
 import { FleetVisualizer } from '../meeting/fleetVisualizer';
+import { FleetOrchestrator, getDuplicateFleetAgentIds } from '../meeting/fleetOrchestrator';
 import { Direction } from '../sprites/DirectionalSprite';
 import { CameraDragController } from '../ui/CameraDragController';
 import { shouldAutoStart } from '../config/agentAutoStart';
@@ -96,6 +97,16 @@ export class OfficeScene extends Phaser.Scene {
   public getTerminalOverlay(): TerminalOverlay {
     return this.terminalOverlay;
   }
+
+  public async cancelFleetExecution(officeId: string): Promise<void> {
+    this.cancelledFleetOfficeIds.add(officeId);
+    const orchestrator = this.fleetOrchestrators.get(officeId);
+    if (!orchestrator) return;
+    await orchestrator.dispose();
+    if (this.fleetOrchestrators.get(officeId) === orchestrator) {
+      this.fleetOrchestrators.delete(officeId);
+    }
+  }
   private basketballGame!: BasketballGame;
   private galaxianGame!: GalaxianGame;
   private pongGame!: PongGame;
@@ -138,6 +149,8 @@ export class OfficeScene extends Phaser.Scene {
   private onAllWalkInsComplete?: () => void;
   private fleetTracker: FleetTracker | null = null;
   private fleetVisualizer: FleetVisualizer | null = null;
+  private fleetOrchestrators = new Map<string, FleetOrchestrator>();
+  private cancelledFleetOfficeIds = new Set<string>();
   private fleetSourceOfficeId: string | null = null;
   private fleetPrompt: string | null = null;
   private pendingLayoutSwitch: OfficeLayout | null = null;
@@ -146,6 +159,7 @@ export class OfficeScene extends Phaser.Scene {
   private walkInAgents: { npc: NPC; finalX: number; finalY: number; agentId: string }[] = [];
   private skipButton: HTMLButtonElement | null = null;
   private isPortraitDashboardMode: boolean = false;
+  private sceneLifecycleGeneration = 0;
 
   constructor() {
     super({ key: 'OfficeScene' });
@@ -180,6 +194,7 @@ export class OfficeScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.sceneLifecycleGeneration++;
     // Calculate tile size based on screen
     const screenWidth = this.cameras.main.width;
     const screenHeight = this.cameras.main.height;
@@ -262,6 +277,20 @@ export class OfficeScene extends Phaser.Scene {
 
         // Emit event so main.ts can update tabs, transfer Arthur's session, and switch
         this.game.events.emit('fleet:office:created', fleetOffice.config.id, sourceOfficeId);
+
+        // Transfer each assigned agent's persistent mapping into the fleet office,
+        // then run the approved tasks through fresh transient leases. The source
+        // office mapping remains untouched; the fleet copy is restored after each
+        // task's terminal cleanup settles.
+        void this.executeApprovedFleetPlan(
+          data.plan,
+          sourceOfficeId,
+          fleetOffice.config.id,
+          currentDir,
+          this.sceneLifecycleGeneration,
+        ).catch((error) => {
+          console.error('[OfficeScene] Approved fleet execution failed:', error);
+        });
 
         // Hide player — they enter via Space/Enter after agents are seated
         this.player.setVisible(false);
@@ -724,7 +753,9 @@ export class OfficeScene extends Phaser.Scene {
       this.game.events.off('bgm:volume');
       this.game.events.off('bgm:mute');
       this.game.events.off('layout:change', this.handleLayoutChange, this);
+      this.sceneLifecycleGeneration++;
       this.disposeFleetPipeline();
+      void this.disposeFleetOrchestrators();
       this.game.events.off('zoom:change');
       this.cameraDrag?.destroy();
       this.inputManager.destroy();
@@ -2171,6 +2202,126 @@ export class OfficeScene extends Phaser.Scene {
     } catch (e) {
       console.error('[OfficeScene] Failed to init fleet pipeline:', e);
     }
+  }
+
+  private async executeApprovedFleetPlan(
+    plan: MeetingPlan,
+    sourceOfficeId: string,
+    fleetOfficeId: string,
+    workingDir: string,
+    sceneGeneration: number,
+  ): Promise<void> {
+    if (!window.copilotBridge) {
+      console.error('[OfficeScene] Cannot execute approved fleet plan — copilotBridge unavailable');
+      return;
+    }
+
+    const duplicateAgentIds = getDuplicateFleetAgentIds(plan);
+    if (duplicateAgentIds.length > 0) {
+      throw new Error(
+        `Approved fleet plan assigns duplicate agents: ${duplicateAgentIds.join(', ')}`,
+      );
+    }
+
+    this.cancelledFleetOfficeIds.delete(fleetOfficeId);
+    const assignedAgentIds = [...new Set(plan.tasks.map((task) => task.agentId))];
+    await Promise.allSettled(
+      assignedAgentIds.map(async (agentId) => {
+        const result = await window.copilotBridge.transferSession(
+          sourceOfficeId,
+          fleetOfficeId,
+          agentId,
+        );
+        if (!result.success && result.error !== 'No session to transfer') {
+          console.warn(
+            `[OfficeScene] Failed to preserve ${sourceOfficeId}:${agentId} in ${fleetOfficeId}: ${result.error ?? 'unknown error'}`,
+          );
+        }
+      }),
+    );
+    if (
+      sceneGeneration !== this.sceneLifecycleGeneration
+      || this.cancelledFleetOfficeIds.has(fleetOfficeId)
+    ) return;
+
+    let orchestrator = this.fleetOrchestrators.get(fleetOfficeId);
+    if (!orchestrator) {
+      orchestrator = new FleetOrchestrator();
+      this.fleetOrchestrators.set(fleetOfficeId, orchestrator);
+      this.bindFleetOrchestrator(fleetOfficeId, orchestrator);
+    }
+
+    if (
+      sceneGeneration !== this.sceneLifecycleGeneration
+      || this.cancelledFleetOfficeIds.has(fleetOfficeId)
+    ) {
+      await orchestrator.dispose();
+      if (this.fleetOrchestrators.get(fleetOfficeId) === orchestrator) {
+        this.fleetOrchestrators.delete(fleetOfficeId);
+      }
+      return;
+    }
+    await orchestrator.executePlan(plan, workingDir, fleetOfficeId);
+  }
+
+  private bindFleetOrchestrator(
+    officeId: string,
+    orchestrator: FleetOrchestrator,
+  ): void {
+    const notify = (agentId: string) => {
+      this.game.events.emit('agent:status:changed', agentId);
+      const states = orchestrator.getFleetState();
+      const completed = states.filter((state) => state.state === 'done').length;
+      const failed = states.filter((state) => state.state === 'failed').length;
+      const active = states.length - completed - failed;
+      this.game.events.emit('fleet:status', {
+        officeId,
+        total: states.length,
+        completed,
+        failed,
+        active,
+      });
+    };
+
+    orchestrator.on('fleet:agent:started', (agentId) => {
+      officeManager.setAgentStarting(officeId, agentId, 'fleet_transient_start');
+      notify(agentId);
+    });
+    orchestrator.on('fleet:agent:working', (agentId, state) => {
+      officeManager.setAgentThinking(
+        officeId,
+        agentId,
+        state.taskTitle,
+        'fleet_transient_working',
+      );
+      notify(agentId);
+    });
+    orchestrator.on('fleet:agent:done', (agentId) => {
+      officeManager.setAgentReady(officeId, agentId, 'fleet_transient_done');
+      notify(agentId);
+    });
+    orchestrator.on('fleet:agent:failed', (agentId, state) => {
+      officeManager.setAgentError(
+        officeId,
+        agentId,
+        state.error,
+        'fleet_transient_failed',
+      );
+      notify(agentId);
+    });
+    orchestrator.on('fleet:all:complete', () => {
+      if (this.fleetOrchestrators.get(officeId) === orchestrator) {
+        this.fleetOrchestrators.delete(officeId);
+      }
+      this.game.events.emit('fleet:complete', { officeId });
+    });
+  }
+
+  private async disposeFleetOrchestrators(): Promise<void> {
+    const entries = [...this.fleetOrchestrators.entries()];
+    for (const [officeId] of entries) this.cancelledFleetOfficeIds.add(officeId);
+    this.fleetOrchestrators.clear();
+    await Promise.allSettled(entries.map(([, orchestrator]) => orchestrator.dispose()));
   }
 
   private disposeFleetPipeline(): void {

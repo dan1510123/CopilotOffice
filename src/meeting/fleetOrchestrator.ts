@@ -36,6 +36,16 @@ interface FleetEventListeners {
   'fleet:all:complete': FleetCompleteCallback[];
 }
 
+export function getDuplicateFleetAgentIds(plan: MeetingPlan): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const task of plan.tasks) {
+    if (seen.has(task.agentId)) duplicates.add(task.agentId);
+    else seen.add(task.agentId);
+  }
+  return [...duplicates];
+}
+
 export class FleetOrchestrator {
   private agents = new Map<string, FleetAgentState>();
   private lifecycleIds = new Map<string, string>();
@@ -73,6 +83,12 @@ export class FleetOrchestrator {
   }
 
   async executePlan(plan: MeetingPlan, workingDir: string, officeId: string): Promise<void> {
+    const duplicateAgentIds = getDuplicateFleetAgentIds(plan);
+    if (duplicateAgentIds.length > 0) {
+      throw new Error(
+        `Fleet plan assigns multiple tasks to the same agent: ${duplicateAgentIds.join(', ')}`,
+      );
+    }
     if (this.agents.size > 0) await this.cancel('Superseded by a new fleet run');
     this.resetState();
 

@@ -1368,9 +1368,10 @@ function showOfficeSettingsPopover(officeId: string, anchorEl: HTMLElement) {
     closeOfficePopover();
   });
 
-  popover.querySelector('.osp-delete')?.addEventListener('click', () => {
+  popover.querySelector('.osp-delete')?.addEventListener('click', async () => {
     if (!canDelete) return;
     if (confirm(`Delete office "${office.config.name}"? This cannot be undone.`)) {
+      await cancelFleetExecutionForOffice(officeId);
       officeManager.deleteOffice(officeId);
       closeOfficePopover();
       switchToOffice('office-0');
@@ -1441,15 +1442,27 @@ document.getElementById('agent-sort-btn')!.addEventListener('click', () => {
 });
 
 // Close Office button handler
-document.getElementById('close-office-btn')!.addEventListener('click', () => {
+document.getElementById('close-office-btn')!.addEventListener('click', async () => {
   const currentId = officeManager.currentOfficeId;
   const office = officeManager.currentOffice;
   if (!currentId || !office) return;
   if (confirm(`Close office "${office.config.name}"? This cannot be undone.`)) {
+    await cancelFleetExecutionForOffice(currentId);
     officeManager.deleteOffice(currentId);
     switchToOffice('office-0');
   }
 });
+
+async function cancelFleetExecutionForOffice(officeId: string): Promise<void> {
+  try {
+    const scene = phaserGameRef?.scene.getScene('OfficeScene') as
+      | { cancelFleetExecution?: (targetOfficeId: string) => Promise<void> }
+      | undefined;
+    await scene?.cancelFleetExecution?.(officeId);
+  } catch (error) {
+    console.warn(`[main] Failed to cancel fleet execution for ${officeId}:`, error);
+  }
+}
 
 // Overview content area
 const overviewContent = document.createElement('div');
@@ -3689,7 +3702,7 @@ function updateStatusBarNow() {
 setupTerminalClickHandler();
 
 type FleetDeployRequest = { officeName: string; prompt: string; sourceOfficeId: string; resolve?: () => void };
-type FleetStatusSummary = { total: number; completed: number; failed: number; active: number };
+type FleetStatusSummary = { officeId?: string; total: number; completed: number; failed: number; active: number };
 
 function onAgentSessionClosed(agentId: string): void {
   const officeId = officeManager.currentOfficeId;
@@ -3764,6 +3777,7 @@ async function onFleetDeployRequested(data: FleetDeployRequest): Promise<void> {
 }
 
 function onFleetStatus(status: FleetStatusSummary): void {
+  if (status.officeId && status.officeId !== officeManager.currentOfficeId) return;
   const subtitle = document.getElementById('terminal-subtitle');
   if (subtitle && officeManager.currentOffice?.config.layout === 'fleet-vteam') {
     subtitle.textContent = `Fleet: ${status.active} active · ${status.completed} done · ${status.failed} failed / ${status.total} total`;
@@ -3771,7 +3785,8 @@ function onFleetStatus(status: FleetStatusSummary): void {
   updateTerminalContent();
 }
 
-function onFleetComplete(): void {
+function onFleetComplete(data?: { officeId?: string }): void {
+  if (data?.officeId && data.officeId !== officeManager.currentOfficeId) return;
   console.log('[Fleet] All sub-agents complete');
   const subtitle = document.getElementById('terminal-subtitle');
   if (subtitle) {

@@ -270,9 +270,11 @@ OfficeScene receives plan data via `scene.wake()` event:
 
 ---
 
-## Phase 4: Parallel Agent Spawning (Code Exists — Wiring Incomplete)
+## Phase 4: Parallel Agent Spawning (Implemented)
 
-Fleet orchestration code has been built but the full pipeline is not yet connected end-to-end.
+Approved structured plans are wired end-to-end. `OfficeScene` creates the fleet
+office, copies each assigned agent's persistent session mapping from the source
+office, and executes the tasks through `FleetOrchestrator` transient leases.
 
 ### 4.1 Fleet Orchestrator (Built)
 **File**: `src/meeting/fleetOrchestrator.ts`
@@ -310,10 +312,13 @@ The `FleetVisualizer` bridges `FleetTracker` data to Phaser game events:
 - Emits `fleet:assign`, `fleet:dismiss-unassigned`, `fleet:agent:badge`, `fleet:agent:exit`, `fleet:agent:late-spawn`, `fleet:status`, `fleet:complete`
 - Handles walk-out scheduling for completed/failed agents
 
-### Remaining gaps
-- **Pipeline wiring**: FleetTracker and FleetVisualizer are never instantiated — need to be connected in OfficeScene
-- **Meeting→Fleet transition**: OfficeScene wake handler has a stub for fleet orchestration
-- **FleetDashboard integration**: Dashboard exists but not wired to FleetTracker updates
+### Parallel fleet paths
+- **Approved structured plan**: `OfficeScene.executeApprovedFleetPlan()` transfers
+  assigned-agent mappings and starts one transient native TUI per task.
+- **Manual `/fleet` deployment**: Arthur's session uses `FleetTracker` +
+  `FleetVisualizer` to display Copilot CLI sub-agent fan-out.
+- Both paths share the fleet office and status events, but only the approved-plan
+  path owns per-agent transient terminal leases.
 
 ### 4.2 Agent Walk-to-Desk Animation (Built)
 Fleet V-Team uses a dedicated layout (`fleet-vteam`) with a 9×3 conference table and 14 seats
@@ -385,7 +390,7 @@ When all agents finish:
 | Plan parsing | JSON in fenced code blocks + ANSI stripping | Robust enough with manual fallback button |
 | Agent isolation | Same working directory | Simpler to start; git worktrees can be added later |
 | Multi-agent backend | Hybrid (Arthur plans → app spawns independent sessions) | Best of both worlds: visible planning + visible execution |
-| Implementation scope | Phases 1-3 done, Phase 4 code built (wiring incomplete) | Meeting room + planning + animations done; fleet code exists but pipeline not connected |
+| Implementation scope | Phases 1-4 implemented | Approved plans execute via transient per-agent TUIs; manual `/fleet` remains the sub-agent visualization path |
 
 ---
 
@@ -418,6 +423,10 @@ Sequential:
 The fleet pipeline contract is now codified in module headers — read them before modifying:
 
 - **`src/meeting/fleetOrchestrator.ts`** — SPAWN phase. Owns N parallel transient leases through `terminalBeginTransientSession` / `terminalDisposeTransientSession`; watches session-scoped readiness, turn-end, and exit events; emits `fleet:agent:*` only after per-agent cleanup, and `fleet:all:complete` only after every cleanup settles. Does NOT track sub-agent fan-out and NEVER mutates Phaser state directly.
+- **`src/scenes/OfficeScene.ts`** — runtime coordinator for approved plans. Copies each assigned agent's persistent mapping into the fleet office, binds orchestrator status to office/game events, and keeps orchestrators alive across office switches. Scene shutdown awaits cancellation through each orchestrator's disposal path.
+- Approved plans reject duplicate assignments to the same agent before any transfer/start, because one native TUI lease is owned per agent.
+- Fleet status/completion events carry their `officeId`; background fleets cannot overwrite the currently viewed office's subtitle.
+- Closing/deleting a fleet office awaits `cancelFleetExecution(officeId)` before office/session deletion, including plans still waiting on session transfers or staggered starts.
 - **`src/meeting/fleetTracker.ts`** — TRACK phase. Renderer-side state machine for sub-agent activity (`task` tool calls). Uses ONLY existing `copilotBridge` APIs. `startTracking()` calls `terminalAttach` even when the overlay is hidden — this is the **defense-in-depth** companion to the server-side dual-key invariant in `electron/terminal/agent-viewers.ts` (R-002). Do NOT remove the silent attach without coordinating with the server module.
 - **`src/meeting/fleetVisualizer.ts`** — VISUALIZE phase. Read-only consumer of `FleetTracker` state. Emits `fleet:*` Phaser events (`fleet:assign`, `fleet:agent:badge`, `fleet:agent:exit`, `fleet:status`, `fleet:complete`). NEVER mutates tracker state and NEVER talks to `copilotBridge` directly.
 
@@ -431,6 +440,7 @@ The fleet pipeline contract is now codified in module headers — read them befo
 - `tests/unit/meeting/planParser.test.ts` (18 cases) — parse, validate, malformed fallbacks.
 - `tests/unit/meeting/planApproval.test.ts` (7 cases) — approve / revise / cancel paths.
 - `tests/unit/meeting/fleetOrchestrator.test.ts` — fresh transient starts, done/failure/cancel cleanup, duplicate-event idempotence, start retry, office isolation, and all-complete cleanup ordering.
+- `tests/unit/meeting/officeSceneFleetExecution.test.ts` — source mapping transfer and runtime transient execution wiring.
 - `tests/unit/terminal/transientSession.test.ts` — prior pointer/title/history restoration and selective disk cleanup.
 - `npm run smoke:transient-fleet` — bounded compiled-server/node-pty smoke proving the transient directory is absent and the prior mapping is restored.
 - `tests/e2e/meeting-fleet.e2e.ts` — end-to-end Playwright spec (env-blocked on headless CLI runners).
