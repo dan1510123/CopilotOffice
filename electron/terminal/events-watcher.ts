@@ -41,11 +41,17 @@ export interface SessionStart {
 
 export type EventCallback = (event: CopilotEvent, isHistorical: boolean) => void;
 
+export interface EventsWatcherOptions {
+  filePath?: string;
+  maxReadChunkBytes?: number;
+  yieldToEventLoop?: () => Promise<void>;
+}
+
 export class EventsWatcher {
   private sessionId: string;
   private filePath: string;
   private fileOffset: number = 0;
-  private lineBuffer: string = '';
+  private lineBuffer = Buffer.alloc(0);
   private watcher: fs.FSWatcher | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
   private fileExistsTimer: NodeJS.Timeout | null = null;
@@ -54,20 +60,32 @@ export class EventsWatcher {
   private stopped: boolean = false;
   private watchingFile: boolean = false;
   private initialReadComplete: boolean = false;
+  private reading: boolean = false;
+  private readRequested: boolean = false;
+  private readonly maxReadChunkBytes: number;
+  private readonly yieldToEventLoop: () => Promise<void>;
 
   private static readonly POLL_INTERVAL_MS = 500;
   private static readonly FILE_CHECK_INTERVAL_MS = 200;
   private static readonly MAX_FILE_WAIT_MS = 60_000;
+  private static readonly DEFAULT_MAX_READ_CHUNK_BYTES = 256 * 1024;
 
-  constructor(sessionId: string) {
+  constructor(sessionId: string, options: EventsWatcherOptions = {}) {
     this.sessionId = sessionId;
-    this.filePath = path.join(
+    this.filePath = options.filePath ?? path.join(
       os.homedir(),
       '.copilot',
       'session-state',
       sessionId,
       'events.jsonl'
     );
+    this.maxReadChunkBytes = options.maxReadChunkBytes
+      ?? EventsWatcher.DEFAULT_MAX_READ_CHUNK_BYTES;
+    if (!Number.isSafeInteger(this.maxReadChunkBytes) || this.maxReadChunkBytes <= 0) {
+      throw new Error('EventsWatcher maxReadChunkBytes must be a positive integer');
+    }
+    this.yieldToEventLoop = options.yieldToEventLoop
+      ?? (() => new Promise<void>((resolve) => setImmediate(resolve)));
   }
 
   getSessionId(): string {
@@ -79,8 +97,11 @@ export class EventsWatcher {
   }
 
   start(onEvent: EventCallback): void {
+    this.stop();
     this.callback = onEvent;
     this.stopped = false;
+    this.initialReadComplete = false;
+    this.readRequested = false;
 
     // Check if file exists (sync for immediate startup)
     try {
@@ -113,10 +134,8 @@ export class EventsWatcher {
   }
 
   private startWatching(): void {
+    if (this.stopped || this.watcher || this.watchingFile || this.pollTimer) return;
     console.log(`[EventsWatcher] Started watching: ${this.filePath}`);
-    // Read any existing content first (these events are marked as historical)
-    this.readNewLines();
-    this.initialReadComplete = true;
 
     // Primary: fs.watch (event-driven, fast but unreliable on some platforms)
     try {
@@ -148,44 +167,132 @@ export class EventsWatcher {
         console.log(`[EventsWatcher] Heartbeat — alive, watching ${this.filePath} (offset: ${this.fileOffset})`);
       }
     }, 60000);
+
+    // Snapshot and replay existing history asynchronously. Watchers are already
+    // installed so appends during replay are coalesced into a follow-up read.
+    void this.readInitialHistory();
   }
 
-  /** Synchronous read — no reading guard needed, every trigger processes immediately. */
+  /** Coalesce watch/poll triggers behind one bounded asynchronous reader. */
   readNewLines(): void {
+    if (this.stopped) return;
+    this.readRequested = true;
+    if (this.initialReadComplete && !this.reading) {
+      void this.drainRequestedReads();
+    }
+  }
+
+  private async readInitialHistory(): Promise<void> {
+    if (this.reading || this.stopped) return;
+    this.reading = true;
     try {
-      const stat = fs.statSync(this.filePath);
-      if (stat.size <= this.fileOffset) return;
+      const stat = await fs.promises.stat(this.filePath);
+      await this.readThroughOffset(stat.size, true);
+    } catch {
+      // File may not exist or be locked — next poll will retry
+    } finally {
+      this.initialReadComplete = true;
+      this.reading = false;
+      if (!this.stopped) {
+        // Always perform one follow-up pass. The file can grow after the initial
+        // stat but before fs.watch begins delivering reliably.
+        this.readRequested = true;
+        void this.drainRequestedReads();
+      }
+    }
+  }
 
-      const bytesToRead = stat.size - this.fileOffset;
-      const buf = Buffer.alloc(bytesToRead);
-      const fd = fs.openSync(this.filePath, 'r');
-      fs.readSync(fd, buf, 0, buf.length, this.fileOffset);
-      fs.closeSync(fd);
-      this.fileOffset = stat.size;
-
-      const text = this.lineBuffer + buf.toString('utf-8');
-      const lines = text.split('\n');
-      this.lineBuffer = lines.pop() || '';
-
-      let eventCount = 0;
-      for (const line of lines) {
-        if (!line.trim()) continue;
+  private async drainRequestedReads(): Promise<void> {
+    if (this.reading || this.stopped || !this.initialReadComplete) return;
+    this.reading = true;
+    try {
+      while (this.readRequested && !this.stopped) {
+        this.readRequested = false;
         try {
-          const event = JSON.parse(line) as CopilotEvent;
-          eventCount++;
-          if (this.callback) {
-            this.callback(event, !this.initialReadComplete);
-          }
-        } catch (e) {
-          console.log(`[EventsWatcher] Failed to parse line: ${e}`);
+          const stat = await fs.promises.stat(this.filePath);
+          await this.readThroughOffset(stat.size, false);
+        } catch {
+          // File may be rotating or locked. A watcher/poll trigger retries.
         }
       }
-      if (eventCount > 0) {
-        console.log(`[EventsWatcher] Read ${eventCount} event(s), +${bytesToRead}B, offset now ${this.fileOffset}`);
+    } finally {
+      this.reading = false;
+      if (this.readRequested && !this.stopped) {
+        void this.drainRequestedReads();
       }
-    } catch (e) {
-      // File may not exist or be locked — next poll will retry
     }
+  }
+
+  private async readThroughOffset(targetOffset: number, isHistorical: boolean): Promise<void> {
+    if (targetOffset < this.fileOffset) {
+      this.fileOffset = 0;
+      this.lineBuffer = Buffer.alloc(0);
+    }
+    if (targetOffset <= this.fileOffset || this.stopped) return;
+
+    const handle = await fs.promises.open(this.filePath, 'r');
+    let bytesReadTotal = 0;
+    let eventCount = 0;
+    try {
+      while (this.fileOffset < targetOffset && !this.stopped) {
+        const bytesToRead = Math.min(
+          this.maxReadChunkBytes,
+          targetOffset - this.fileOffset,
+        );
+        const chunk = Buffer.allocUnsafe(bytesToRead);
+        const { bytesRead } = await handle.read(chunk, 0, bytesToRead, this.fileOffset);
+        if (bytesRead === 0) break;
+
+        this.fileOffset += bytesRead;
+        bytesReadTotal += bytesRead;
+        eventCount += this.processChunk(chunk.subarray(0, bytesRead), isHistorical);
+
+        if (this.fileOffset < targetOffset && !this.stopped) {
+          await this.yieldToEventLoop();
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+
+    if (eventCount > 0) {
+      console.log(
+        `[EventsWatcher] Read ${eventCount} event(s), +${bytesReadTotal}B, offset now ${this.fileOffset}`,
+      );
+    }
+  }
+
+  private processChunk(chunk: Buffer, isHistorical: boolean): number {
+    const data = this.lineBuffer.length > 0
+      ? Buffer.concat([this.lineBuffer, chunk])
+      : chunk;
+    let lineStart = 0;
+    let eventCount = 0;
+
+    while (lineStart < data.length) {
+      const newlineIndex = data.indexOf(0x0a, lineStart);
+      if (newlineIndex === -1) break;
+      const line = data.subarray(lineStart, newlineIndex).toString('utf8').trim();
+      lineStart = newlineIndex + 1;
+      if (!line) continue;
+
+      try {
+        const event = JSON.parse(line) as CopilotEvent;
+        eventCount++;
+        try {
+          this.callback?.(event, isHistorical);
+        } catch (error) {
+          console.error(`[EventsWatcher] Event callback failed: ${String(error)}`);
+        }
+      } catch (error) {
+        console.warn(`[EventsWatcher] Failed to parse line: ${String(error)}`);
+      }
+    }
+
+    this.lineBuffer = lineStart < data.length
+      ? Buffer.from(data.subarray(lineStart))
+      : Buffer.alloc(0);
+    return eventCount;
   }
 
   stop(): void {
@@ -214,6 +321,7 @@ export class EventsWatcher {
     if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
     
     this.callback = null;
+    this.readRequested = false;
   }
 }
 
