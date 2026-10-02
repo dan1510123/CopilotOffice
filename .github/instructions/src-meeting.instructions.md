@@ -34,13 +34,14 @@ DOM-based overlay (`z-index: 10002`) that displays the parsed plan for player re
 ### `fleetOrchestrator.ts` — Fleet Task Orchestration
 Manages parallel agent spawning and task execution after a plan is approved:
 - **`FleetOrchestrator`** class with event-driven architecture (`on`/`off`/`emit` pattern).
-- **`FleetAgentState`** — per-agent state: `pending` → `starting` → `working` → `done`/`failed`, with timestamps and error tracking.
+- **`FleetAgentState`** — per-agent state: `pending` → `starting` → `working` → `done`/`failed`, with timestamps, transient session ID, cleanup barrier, and error tracking.
 - **`executePlan(plan, workingDir, officeId)`** — initializes all agents as pending, attaches IPC listeners (ignoring lifecycle events from other offices), then spawns agents with staggered starts (`STAGGER_DELAY_MS` = 1500 ms).
-- **`spawnAgent()`** — calls `terminalStart(officeId, agentId, workingDir, …, task.prompt)` so the task prompt is the atomic pre-seeded start input (the server submits it programmatically once the session is ready — through the native bridge it renders in the agent's own TUI), retries once on failure (`RETRY_DELAY_MS` = 2000 ms), then sets the explicit task title as session metadata. It never writes the prompt as raw terminal input.
+- **`spawnAgent()`** — calls `terminalBeginTransientSession(...)`, which atomically snapshots the prior persistent pointer/title, mints a fresh fleet-only session, starts the native TUI, and carries the task prompt as pre-seeded input. It retries once on start failure and never writes the prompt as raw terminal input.
 - Tracks readiness via `onTerminalPreloadStatus` (→ `working`), completion via `onCopilotTurnEnd` (→ `done`), and unexpected exits via `onTerminalExit`.
-- **`cancel()`** — kills all active agents and marks them as failed.
+- **Terminal settlement** — done/failure/cancel/start failure/teardown call `terminalDisposeTransientSession(...)`; duplicate events share one cleanup promise. Disposal kills the TUI, removes only transient metadata/history/scrollback/disk state, and restores the prior persistent current pointer.
+- **`cancel()` / `dispose()`** — async cleanup barriers that also cover cancel during stagger or an in-flight start.
 - Events: `fleet:agent:started`, `fleet:agent:working`, `fleet:agent:done`, `fleet:agent:failed`, `fleet:all:complete`.
-- Uses a `detached` flag pattern to disable listeners without calling `removeListeners()` (which would nuke all IPC listeners including main.ts's).
+- Uses listener epochs instead of global listener removal. `fleet:all:complete` is emitted only after every terminal-state agent's disposal/restoration settles.
 
 ### `fleetTracker.ts` — Renderer-Side Fleet State Machine
 Tracks sub-agent lifecycle from the parent agent's (Arthur's) Copilot CLI event stream:
@@ -74,6 +75,9 @@ Read `MeetingMode.md` at the repo root for the full design.
 - Task assignments must reference valid agent IDs from `src/config/agents.ts`. Invalid IDs are skipped with a warning.
 - The plan approval overlay sits at `z-index: 10002` (above terminal overlay at 10000).
 - Always read `MeetingMode.md` before making changes to understand the current implementation state.
+- Fleet execution MUST use the typed transient begin/dispose bridge APIs. Never use `terminalStart`, `terminalKill`, `resetSession`, or history-wide clearing to choreograph fleet cleanup in the renderer.
+- A fleet lifecycle ID is the idempotency/race token. Late events from an older run must not dispose a newer run for the same office + agent.
+- Normal non-fleet sessions remain persistent; fleet cleanup may remove only IDs owned by the transient lease.
 
 ## Common Pitfalls
 
@@ -94,4 +98,4 @@ The three fleet modules now carry header docblocks naming each module's pipeline
 
 `FleetTracker`'s silent `terminalAttach` + 10s periodic re-attach is preserved as **defense in depth** alongside the server-side dual-key invariant in `electron/terminal/agent-viewers.ts`. Do NOT remove without coordinating with that module.
 
-Parser + approval are now covered by `tests/unit/meeting/planParser.test.ts` (18 cases) and `tests/unit/meeting/planApproval.test.ts` (7 cases). Orchestrator covered by `tests/unit/meeting/fleetOrchestrator.test.ts` (7 cases). The vitest scope guard in `vitest.config.ts` allows imports from `src/meeting/**` only for these test paths + `src/main.ts` + `tests/integration/main/**`.
+Parser + approval are covered by their focused suites. Orchestrator lifecycle coverage lives in `tests/unit/meeting/fleetOrchestrator.test.ts`; terminal state restoration/selective deletion coverage lives in `tests/unit/terminal/transientSession.test.ts`; `npm run smoke:transient-fleet` exercises the compiled server protocol and node-pty cleanup. The vitest scope guard in `vitest.config.ts` allows imports from `src/meeting/**` only for meeting tests + `src/main.ts` + `tests/integration/main/**`.

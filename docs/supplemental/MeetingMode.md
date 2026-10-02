@@ -40,7 +40,7 @@ Meeting Mode is a collaborative planning workflow where the player meets with **
 │  ◀──[walk out + scene return]─────────┘                      │
 │       │                                                      │
 │  Fleet Orchestrator                                          │
-│       ├─ Spawn Agent 1 Terminal (copilotBridge.terminalStart)│
+│       ├─ Begin Agent 1 transient terminal lease              │
 │       ├─ Spawn Agent 2 Terminal                              │
 │       └─ Spawn Agent N Terminal                              │
 │       │                                                      │
@@ -62,8 +62,8 @@ Meeting Mode is a collaborative planning workflow where the player meets with **
 - Best for: internal planning decomposition within Arthur's session
 
 ### Option 2: Multiple Independent CLI Sessions (via node-pty)
-- Spawn N separate `copilot --resume {sessionId}` PTY processes
-- Each agent gets a **visible terminal**, full session persistence
+- Spawn N separate native Copilot TUI/node-pty processes
+- Each fleet task gets a **visible terminal** on a fresh transient session
 - Already fully supported by our `TerminalRelay` infrastructure
 - Best for: the visible "agents working at desks" experience
 
@@ -71,8 +71,9 @@ Meeting Mode is a collaborative planning workflow where the player meets with **
 1. Arthur plans using his terminal (standard single-agent session with meeting prompt)
 2. Arthur's system prompt instructs structured JSON output with task assignments
 3. Our app **parses Arthur's plan** to extract task assignments
-4. App spawns **independent Copilot CLI sessions** for each assigned agent
+4. App spawns **independent transient Copilot CLI sessions** for each assigned agent
 5. Each agent's terminal receives their specific task prompt
+6. On done/failure/cancel, the app destroys only the transient session and restores the agent's prior persistent current-session pointer
 
 **Why hybrid?**
 - Visible planning in Arthur's terminal (player watches/participates)
@@ -277,12 +278,19 @@ Fleet orchestration code has been built but the full pipeline is not yet connect
 **File**: `src/meeting/fleetOrchestrator.ts`
 
 The `FleetOrchestrator` class exists and handles:
-- Staggered agent spawning via `copilotBridge.terminalStart()`
+- Staggered agent spawning via the atomic `copilotBridge.terminalBeginTransientSession()` API
 - Per-agent state tracking (pending → starting → working → done/failed)
-- Event listeners for terminal preload status, exit, and copilot turn end
+- Session-generation-scoped listeners for terminal preload status, exit, and copilot turn end
 - Retry logic (one retry on spawn failure)
-- Cancel support with process-tree kill
+- Awaited, idempotent disposal on done, failure, cancellation, start failure, and orchestrator teardown
+- Prior current session ID/title/history restoration without archiving or overwriting it
+- Selective cleanup of the transient process, metadata, history entries, scrollback, and `~/.copilot/session-state/<transient-id>`
 - Event emission: `fleet:agent:started`, `fleet:agent:working`, `fleet:agent:done`, `fleet:agent:failed`, `fleet:all:complete`
+
+`fleet:all:complete` is a cleanup barrier: it is not emitted until every terminal-state
+agent's server-side transient lease has settled. Duplicate `turn_end`/terminal-exit events,
+late starts after cancel, office switches, and repeated disposal requests are safe no-ops.
+Normal non-fleet sessions continue to use persistent `terminalStart`/`terminalActivate`.
 
 ### 4.1b Fleet Tracker (Built)
 **File**: `src/meeting/fleetTracker.ts`
@@ -409,7 +417,7 @@ Sequential:
 
 The fleet pipeline contract is now codified in module headers — read them before modifying:
 
-- **`src/meeting/fleetOrchestrator.ts`** — SPAWN phase. Owns N parallel `terminalStart` lifecycles; watches per-agent readiness via `onPreloadStatus` + `onCopilotEvent`; emits aggregated `fleet:agent:*` and `fleet:all:complete` events. Does NOT track sub-agent fan-out, NEVER mutates Phaser state directly.
+- **`src/meeting/fleetOrchestrator.ts`** — SPAWN phase. Owns N parallel transient leases through `terminalBeginTransientSession` / `terminalDisposeTransientSession`; watches session-scoped readiness, turn-end, and exit events; emits `fleet:agent:*` only after per-agent cleanup, and `fleet:all:complete` only after every cleanup settles. Does NOT track sub-agent fan-out and NEVER mutates Phaser state directly.
 - **`src/meeting/fleetTracker.ts`** — TRACK phase. Renderer-side state machine for sub-agent activity (`task` tool calls). Uses ONLY existing `copilotBridge` APIs. `startTracking()` calls `terminalAttach` even when the overlay is hidden — this is the **defense-in-depth** companion to the server-side dual-key invariant in `electron/terminal/agent-viewers.ts` (R-002). Do NOT remove the silent attach without coordinating with the server module.
 - **`src/meeting/fleetVisualizer.ts`** — VISUALIZE phase. Read-only consumer of `FleetTracker` state. Emits `fleet:*` Phaser events (`fleet:assign`, `fleet:agent:badge`, `fleet:agent:exit`, `fleet:status`, `fleet:complete`). NEVER mutates tracker state and NEVER talks to `copilotBridge` directly.
 
@@ -422,6 +430,8 @@ The fleet pipeline contract is now codified in module headers — read them befo
 
 - `tests/unit/meeting/planParser.test.ts` (18 cases) — parse, validate, malformed fallbacks.
 - `tests/unit/meeting/planApproval.test.ts` (7 cases) — approve / revise / cancel paths.
-- `tests/unit/meeting/fleetOrchestrator.test.ts` (7 cases) — spawn → working → done lifecycle, retry, cancel.
+- `tests/unit/meeting/fleetOrchestrator.test.ts` — fresh transient starts, done/failure/cancel cleanup, duplicate-event idempotence, start retry, office isolation, and all-complete cleanup ordering.
+- `tests/unit/terminal/transientSession.test.ts` — prior pointer/title/history restoration and selective disk cleanup.
+- `npm run smoke:transient-fleet` — bounded compiled-server/node-pty smoke proving the transient directory is absent and the prior mapping is restored.
 - `tests/e2e/meeting-fleet.e2e.ts` — end-to-end Playwright spec (env-blocked on headless CLI runners).
 - `vitest.config.ts` allows `src/meeting/**` imports only from `tests/{unit,integration}/meeting/**`, `src/main.ts`, and `tests/integration/main/**`. New tests must live under those paths.
