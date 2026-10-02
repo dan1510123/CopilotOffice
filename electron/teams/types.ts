@@ -128,7 +128,8 @@ export interface PendingQuestion {
   binding: OnlineAgentBinding;
   /** The ask_user tool-call id (toolCallId); informational / diagnostics. */
   toolId: string;
-  /** SDK `user_input.requested` request id — the single-resolution key. '' on the node-pty degraded path. */
+  /** SDK `user_input.requested` request id — the single-resolution key. Always non-empty:
+   *  node-pty questions (no requestId) are render-only and never tracked. */
   requestId: string;
   /** The question text (preserved from payload, FR-015). */
   question: string;

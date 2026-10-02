@@ -3,9 +3,9 @@
 // Bridges the Teams service to CopilotOffice's terminal infrastructure without touching
 // `activeAgentViewers` or introducing a new session lifecycle. Prompt submission goes through
 // the backend's atomic submit (`TerminalRelay.mainSubmitPrompt` → server `submit-prompt`):
-// the SDK/native-bridge backends enqueue programmatically (`session.send({ mode: 'enqueue' })`),
-// and the node-pty backend falls back to keystroke injection via `submitViaKeystrokes`
-// (idle-gated Ctrl+U → bracketed paste → Enter — not a bare `write(prompt + '\r')`).
+// the SDK/native-bridge backends enqueue programmatically (`session.send({ mode: 'enqueue' })`);
+// the raw node-pty backend has no programmatic session, so the server rejects the submit
+// with an explicit error (prompts are never injected as keystrokes).
 // Response capture consumes the server's structured copilot events.
 //
 // NOTE: server→main events carry only `agentId` (not officeId). The Teams service maps an
@@ -145,15 +145,16 @@ export interface SessionGateway {
   resetSession?(officeId: string, agentId: string): Promise<string | null>;
   /**
    * Run a session control command (`/compact`, `/usage`, `/model`) — used by Teams
-   * slash-command interception. Returns the structured result (SDK path), a keystroke
-   * acknowledgement (node-pty path), or a failure the caller posts as a graceful notice.
+   * slash-command interception. Returns the structured result (SDK/native-bridge path)
+   * or a failure (including raw node-pty, which has no control plane) the caller posts
+   * as a graceful notice.
    * Optional: gateways without SDK control support may omit it.
    */
   runControl?(officeId: string, agentId: string, command: ControlCommandName, arg?: string): Promise<ControlCommandResult>;
   /**
    * spec 015: answer a pending `ask_user` interaction. The single transport-agnostic
-   * answer seam — resolves the pending user-input interaction (SDK/native-bridge) or
-   * injects keystrokes (node-pty). NOT `submitPrompt`/enqueue. `requestId` is the
+   * answer seam — resolves the pending user-input interaction (SDK/native-bridge);
+   * rejects on raw node-pty. NOT `submitPrompt`/enqueue. `requestId` is the
    * single-resolution key.
    */
   submitAnswer(officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void>;
@@ -217,8 +218,8 @@ export class RelaySessionGateway implements SessionGateway {
   }
 
   async submitPrompt(officeId: string, agentId: string, prompt: string, label?: string): Promise<void> {
-    // Use the backend's atomic submit (SDK enqueue) rather than simulating
-    // keystrokes; the server falls back to bracketed-paste for raw PTY backends.
+    // Use the backend's atomic submit (SDK enqueue / native bridge); the server
+    // rejects raw node-pty terminals explicitly (never simulated keystrokes).
     // `label` is a display-only tag echoed in the terminal (never sent to the agent).
     const res = await this.relay.mainSubmitPrompt(officeId, agentId, prompt, label);
     if (!res.success) {
@@ -249,8 +250,8 @@ export class RelaySessionGateway implements SessionGateway {
     agentId: string,
     a: { requestId?: string; answer: string; wasFreeform: boolean },
   ): Promise<void> {
-    // spec 015: resolve the pending user-input interaction (SDK) or inject keystrokes
-    // (node-pty) via the dedicated submit-answer IPC — never submitPrompt/enqueue.
+    // spec 015: resolve the pending user-input interaction (SDK/native-bridge) via the
+    // dedicated submit-answer IPC — never submitPrompt/enqueue. Rejects on raw node-pty.
     const res = await this.relay.mainSubmitAnswer(officeId, agentId, a);
     if (!res.success) {
       throw new Error(res.error || `Failed to submit answer to ${officeId}:${agentId}`);
@@ -298,7 +299,7 @@ export class RelaySessionGateway implements SessionGateway {
     };
     // spec 015 hardening (h1): the SDK resolved an ask_user interaction. Carries the
     // requestId so TeamsService can PRECISELY clear a locally-answered pending question
-    // (SDK path) instead of the "any subsequent event" heuristic (node-pty only).
+    // (node-pty questions carry no requestId and are render-only in Teams).
     const onAskUserComplete = (...args: unknown[]) => {
       const agentId = args[0] as string;
       const requestId = (args[1] as string) ?? '';

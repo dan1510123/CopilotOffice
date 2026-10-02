@@ -2258,8 +2258,8 @@ function registerOrchestratorSpec017Resolvers(): void {
     bringOnline: (officeId, agentId) => bringAgentFullyOnline(officeId, agentId),
     deliverText: async (officeId, agentId, text) => {
       // Send a follow-up prompt via the sanctioned submit-prompt channel (SDK
-      // session.send / bracketed-paste for node-pty), targeted by agentId — never
-      // raw terminalWrite (spec 017 US5 mis-delivery fix).
+      // session.send / native bridge), targeted by agentId — never raw
+      // terminalWrite (spec 017 US5 mis-delivery fix).
       const res = await window.copilotBridge.terminalSubmitPrompt(officeId, agentId, text);
       return res?.success !== false;
     },

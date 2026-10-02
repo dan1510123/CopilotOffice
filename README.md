@@ -43,7 +43,7 @@ The terminal server (`electron/terminal/server.ts`) selects a backend via the `C
 
 - **`native-bridge`** (default) — one pinned native Copilot TUI per agent under node-pty; a bundled CLI extension bridges it to the app over an authenticated local broker for programmatic prompts, session control, ask_user answers, plan decisions and events
 - **`sdk`** — one headless Copilot CLI host per office with SDK sessions and a custom conversation renderer; used automatically (with a notice) when the native bridge is unavailable
-- **`node-pty`** — spawns the real Copilot TUI via a shell, one PTY per agent (always used for the local shell)
+- **`node-pty`** — spawns the real Copilot TUI via a shell, one PTY per agent (always used for the local shell); human typing only — programmatic prompts (Teams, fleet, pre-seeded) require `native-bridge` or `sdk`
 
 ## Getting Started
 

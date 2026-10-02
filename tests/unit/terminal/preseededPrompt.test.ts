@@ -42,11 +42,13 @@ describe('deliverPreseededPrompt', () => {
     });
   });
 
-  it('falls back to raw input only for processes without a programmatic transport', async () => {
+  it('rejects explicitly when the process has no programmatic transport (never types keystrokes)', async () => {
     const process = { write: vi.fn() };
 
-    await expect(deliverPreseededPrompt(process, 'legacy task')).resolves.toBe(true);
-    expect(process.write).toHaveBeenCalledWith('legacy task\r');
+    await expect(deliverPreseededPrompt(process as never, 'legacy task')).rejects.toThrow(
+      'programmatic prompts require the SDK/native-bridge backend',
+    );
+    expect(process.write).not.toHaveBeenCalled();
   });
 
   it('does nothing when no prompt was supplied', async () => {

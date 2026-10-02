@@ -11,7 +11,7 @@ import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from 
 import { formatToolStatus, buildAskUserRelay, buildPlanRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
-import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
 import type { TerminalSessionChange } from './terminal-backend';
 import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEND_NAME } from './native-bridge-backend';
 import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
@@ -94,10 +94,6 @@ const activeAgentViewers: Set<string> = new Set();
 // Composite keys whose copilot-events must be mirrored to main-process consumers
 // (e.g. the Teams service) even when no renderer is viewing the agent.
 const agentForwardKeys: Set<string> = new Set();
-// Last time (ms epoch) each composite key's PTY produced output. Used by the
-// programmatic-submit path to detect when the Ink TUI has settled (output idle)
-// before injecting Enter, so a second queued prompt isn't submitted mid-render.
-const lastPtyDataAt: Map<string, number> = new Map();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
@@ -137,20 +133,6 @@ function waitForAgentReady(key: string, timeoutMs: number): Promise<void> {
 
 // Track per-agent turn activity (between turn_start and turn_end)
 const agentInTurn: Map<string, boolean> = new Map();
-
-// Monotonic count of `user.message` events seen per terminal key, plus the text of
-// the most recent one. Together they let the programmatic-submit path confirm that
-// the CLI accepted OUR specific prompt: it snapshots the count, presses Enter, and
-// re-presses until the count advances AND the latest user.message text matches the
-// prompt we pasted — a closed-loop confirm that beats guessing render timing, and
-// won't false-positive on a human typing concurrently in the same session.
-const userMessageSeq: Map<string, number> = new Map();
-const lastUserMessageText: Map<string, string> = new Map();
-
-/** Normalize prompt/user-message text for tolerant equality (collapse whitespace). */
-function normalizePromptText(s: string): string {
-  return s.replace(/\s+/g, ' ').trim();
-}
 
 // Per-agent raw scrollback buffer (preserves ANSI escape sequences)
 const MAX_BUFFER_BYTES = 512 * 1024; // 512 KB
@@ -419,8 +401,6 @@ function applyNativeBridgeSessionChange(
     if (result.title) hasAutoTitled.add(officeCk);
     else hasAutoTitled.delete(officeCk);
     agentInTurn.set(officeCk, false);
-    userMessageSeq.delete(officeCk);
-    lastUserMessageText.delete(officeCk);
     void saveOfficeSessionFile(office);
     console.log(
       `[lifecycle] native bridge session for ${officeCk}: ${result.previousSessionId ?? '(none)'} -> ${result.sessionId}` +
@@ -436,88 +416,6 @@ function applyNativeBridgeSessionChange(
       meta: { title: result.title, sessionId: result.sessionId },
     });
   }
-}
-
-/**
- * Inject a full prompt into the interactive Copilot CLI (Ink/React TUI) running
- * under node-pty, and submit it. There is no programmatic submit for a raw PTY,
- * so we simulate a paste + Enter the way a human would:
- *
- *   1. Ctrl+U clears any half-typed input.
- *   2. Bracketed paste (`ESC[200~ … ESC[201~`) inserts the text as one unit —
- *      this stops `@`/`/` from triggering the TUI's file/command menus and stops
- *      the re-render storm from dropping characters.
- *   3. Closed-loop Enter. Ink detaches stdin while it re-renders, so an Enter sent
- *      mid-render is silently dropped — the failure mode where the prompt is pasted
- *      but never submitted (a second queued turn, or a stale/unviewed session after
- *      an office switch). Blind timed Enters can't reliably tell when the TUI is
- *      ready. Instead we snapshot the `user.message` counter (which the CLI bumps
- *      only when it actually accepts a prompt), press Enter, and re-press on an
- *      interval until that counter advances — positive confirmation the prompt was
- *      accepted — capped so we never wedge. Extra Enters on an empty input are no-ops.
- *
- * Response capture is unaffected — it comes from the EventsWatcher tailing
- * events.jsonl (assistant.message → turn_end), not from this input path.
- */
-function submitViaKeystrokes(proc: TerminalProcess, prompt: string, ck: string): void {
-  const text = prompt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const safeWrite = (data: string) => {
-    try { proc.write(data); } catch { /* pty may have exited */ }
-    // Count our own writes as PTY activity so the idle clock resets here. Without
-    // this, a stale session (e.g. after an office switch left it idle) has a very
-    // old `lastPtyDataAt`, so the pre-Enter `waitForIdle` reads it, resolves
-    // instantly, and fires Enter before the bracketed paste has finished rendering
-    // — Ink drops the Enter mid-render and the text sits typed-but-unsubmitted.
-    // Resetting on write forces `waitForIdle` to wait for the paste's echo/render
-    // to settle (or at least a full `quietMs` floor) before Enter.
-    lastPtyDataAt.set(ck, Date.now());
-  };
-  // Resolve once the PTY has produced no output for `quietMs`, or `capMs` elapses.
-  const waitForIdle = (quietMs: number, capMs: number): Promise<void> =>
-    new Promise((resolve) => {
-      const start = Date.now();
-      const tick = () => {
-        const last = lastPtyDataAt.get(ck) ?? 0;
-        if (Date.now() - last >= quietMs || Date.now() - start >= capMs) resolve();
-        else setTimeout(tick, 50);
-      };
-      tick();
-    });
-  void (async () => {
-    // Let any prior turn's final render settle before touching the input line.
-    await waitForIdle(300, 3000);
-    safeWrite('\x15'); // Ctrl+U — clear the input line
-    safeWrite(`\x1b[200~${text}\x1b[201~`); // bracketed paste
-    // Let the paste's echo/re-render settle so the Enter isn't dropped mid-render.
-    await waitForIdle(250, 2000);
-
-    // Closed-loop submit. Blind timed Enters are unreliable: if the Ink TUI is
-    // still re-rendering (e.g. a stale/unviewed session after an office switch, or
-    // the tail end of a prior turn), an Enter is silently dropped and the pasted
-    // text sits unsubmitted. Instead, press Enter and wait for the CLI to write a
-    // `user.message` event whose text matches this prompt (proof OUR prompt was
-    // accepted — a bare counter could be advanced by a human typing concurrently in
-    // the same session). If not yet accepted, press Enter again. Requiring the count
-    // to advance too means an identical re-send still submits. Extra Enters on an
-    // already-empty input are harmless no-ops.
-    const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const want = normalizePromptText(text);
-    const baseline = userMessageSeq.get(ck) ?? 0;
-    const accepted = () =>
-      (userMessageSeq.get(ck) ?? 0) > baseline && lastUserMessageText.get(ck) === want;
-    const MAX_ATTEMPTS = 12; // ~6s worst case at 500ms spacing
-    const POLL_MS = 500;
-    for (let attempt = 0; attempt < MAX_ATTEMPTS && !accepted(); attempt++) {
-      safeWrite('\r'); // submit
-      // Poll in small slices so we react quickly once the event lands.
-      for (let waited = 0; waited < POLL_MS && !accepted(); waited += 50) {
-        await delay(50);
-      }
-    }
-    if (!accepted()) {
-      console.warn(`[TermServer] submitViaKeystrokes: prompt not confirmed accepted after ${MAX_ATTEMPTS} Enter attempts for ${ck} — it may not have submitted.`);
-    }
-  })();
 }
 
 function killAllPtyProcesses(): void {
@@ -814,10 +712,10 @@ async function startTerminalForAgentImpl(
       send({ type: 'terminal-preload-status', agentId, status: 'ready', officeId });
       agentReadyWaiters.settle(ck);
 
-      // Deliver the pre-seeded prompt once the CLI is ready. Backends with a
+      // Deliver the pre-seeded prompt once the CLI is ready through the backend's
       // programmatic submit (SDK session.send — for the native bridge, through
-      // the authenticated extension so it renders in the native TUI) never get
-      // raw keystrokes; only the raw PTY backend falls back to a typed line.
+      // the authenticated extension so it renders in the native TUI). A backend
+      // without one (raw node-pty) fails explicitly; prompts are never typed.
       const prompts = takePreseededPrompts(ck);
       if (prompts.length > 0) {
         console.log(`[TermServer] Delivering ${prompts.length} pre-seeded prompt(s) for ${ck}`);
@@ -969,13 +867,11 @@ async function startTerminalForAgentImpl(
           console.log(`[TermServer] Forwarding turn_start for ${ck}`);
           send({ type: 'copilot-turn-start', agentId });
         } else if (event.type === 'user.message') {
-          userMessageSeq.set(ck, (userMessageSeq.get(ck) ?? 0) + 1);
           let rawUserText = '';
           {
             const d = (event.data ?? {}) as Record<string, unknown>;
             const raw = d.content || d.message || d.text || d.input || d.prompt || d.body || '';
             rawUserText = String(raw);
-            lastUserMessageText.set(ck, normalizePromptText(rawUserText));
           }
           console.log(`[TermServer] Forwarding user_message for ${ck}, data keys: ${JSON.stringify(Object.keys(event.data || {}))}`);
           send({ type: 'copilot-user-message', agentId, text: rawUserText });
@@ -1063,7 +959,6 @@ async function startTerminalForAgentImpl(
     };
 
     proc.onData((data: string) => {
-      lastPtyDataAt.set(ck, Date.now());
       appendToScrollback(ck, data);
       // Ready signal from PTY output. Newer CLI builds do not always emit the old
       // "Environment loaded" marker, so accept either the legacy marker or the
@@ -1113,9 +1008,6 @@ async function startTerminalForAgentImpl(
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
-        lastPtyDataAt.delete(ck);
-        userMessageSeq.delete(ck);
-        lastUserMessageText.delete(ck);
         pendingPreseededPrompts.delete(ck);
         const w = agentWatchers.get(ck);
         if (w) { w.stop(); agentWatchers.delete(ck); }
@@ -1212,10 +1104,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     }
 
     case 'submit-prompt': {
-      // Programmatic prompt submission (e.g. Teams remote). Prefer the backend's
-      // atomic submit (SDK: session.send enqueue). Fall back to a bracketed-paste
-      // write for raw PTY backends so multi-line prompts aren't submitted early
-      // and TUI re-render storms don't drop characters.
+      // Programmatic prompt submission (e.g. Teams remote) through the backend's
+      // atomic submit (SDK: session.send enqueue; native bridge: authenticated
+      // extension). The raw node-pty backend has no programmatic session, so the
+      // request fails explicitly — prompts are never injected as keystrokes.
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
@@ -1226,29 +1118,22 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         // a terminal-server reconnect); this rides the reliable request path.
         agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
         const backendProc = proc.process;
-        if (typeof backendProc.submitPrompt === 'function') {
-          // Programmatic submit (SDK session.send enqueue; the native bridge routes
-          // it through the TUI's authenticated extension). Await it so the caller
-          // learns whether the agent actually accepted the prompt.
-          try {
-            await backendProc.submitPrompt(msg.prompt, msg.label);
-          } catch (error) {
-            const ck = compositeKey(msg.officeId, msg.agentId);
-            const message = String((error as Error)?.message ?? error);
-            console.warn(`[TermServer] SUBMIT-PROMPT FAILED for ${ck}: ${message}`);
-            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
-            break;
-          }
-        } else {
-          // node-pty backend: the real Copilot CLI is an Ink/React TUI. It has no
-          // programmatic submit — inject keystrokes. Bracketed paste avoids @ / //
-          // triggering TUI menus and re-render char drops; but Ink detaches stdin
-          // during re-renders, so a single Enter is unreliable. Use the idle-gated
-          // sequence: Ctrl+U (clear) → paste → wait-for-render-idle → Enter. Key
-          // idle tracking by the resolved terminal `key` (not the office composite
-          // key) so it stays correct for transferred/aliased sessions where the
-          // PTY's onData writes timestamps under its original terminal key.
-          submitViaKeystrokes(backendProc, msg.prompt, key!);
+        if (typeof backendProc.submitPrompt !== 'function') {
+          const error = programmaticInputUnsupportedError('prompt');
+          console.warn(`[TermServer] SUBMIT-PROMPT REJECTED for ${compositeKey(msg.officeId, msg.agentId)}: ${error}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error } });
+          break;
+        }
+        // Await the submit so the caller learns whether the agent actually
+        // accepted the prompt.
+        try {
+          await backendProc.submitPrompt(msg.prompt, msg.label);
+        } catch (error) {
+          const ck = compositeKey(msg.officeId, msg.agentId);
+          const message = String((error as Error)?.message ?? error);
+          console.warn(`[TermServer] SUBMIT-PROMPT FAILED for ${ck}: ${message}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          break;
         }
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } else {
@@ -1261,10 +1146,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'run-control-command': {
       // Teams slash-command interception (`/compact`, `/usage`, `/model`). SDK-backed
-      // backends execute the command through `session.rpc.*` and return structured,
-      // postable data. The raw node-pty backend has no SDK session, so we keystroke-
-      // inject the literal slash command into the real TUI (best-effort; the TUI
-      // renders its own output, captured downstream via forwarding).
+      // and native-bridge backends execute the command through `session.rpc.*` and
+      // return structured, postable data. The raw node-pty backend has no SDK
+      // session, so the command is reported as unsupported (never typed).
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (!proc) {
@@ -1285,10 +1169,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           send({ type: 'response', requestId: msg.requestId, result: { executed: false, error: String((error as Error)?.message ?? error) } });
         }
       } else {
-        // node-pty fallback: type the raw slash command into the TUI input line.
-        const raw = msg.arg ? `/${msg.command} ${msg.arg}` : `/${msg.command}`;
-        submitViaKeystrokes(backendProc, raw, key!);
-        send({ type: 'response', requestId: msg.requestId, result: { executed: true, via: 'keystroke' } });
+        send({ type: 'response', requestId: msg.requestId, result: { executed: false, error: programmaticInputUnsupportedError('control') } });
       }
       break;
     }
@@ -1296,9 +1177,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'submit-answer': {
       // spec 015: answer a pending ask_user interaction. Distinct from submit-prompt —
       // this resolves the pending user-input interaction, it does NOT enqueue a new
-      // prompt. SDK backend → handlePendingUserInput(requestId) (resolves the
-      // late onUserInputRequest promise). node-pty backend → keystroke injection onto
-      // the interaction input line (idle-gated type + Enter), exactly like a local answer.
+      // prompt. Native bridge → its extension over the broker. SDK backend →
+      // handlePendingUserInput(requestId) (resolves the late onUserInputRequest
+      // promise). node-pty backend → explicit failure (answers are never typed).
       const key = getTerminalKey(msg.officeId, msg.agentId);
       const proc = key ? ptyProcesses.get(key) : null;
       if (proc) {
@@ -1337,11 +1218,10 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // reply when the resolver was missing (transient/ownership mismatch).
           send({ type: 'response', requestId: msg.requestId, result: { success: resolved, error: resolved ? undefined : 'no pending user-input to resolve' } });
         } else {
-          // node-pty backend: no SDK session — type the answer into the real TUI's
-          // interaction input line and submit (idle-gated). Best-effort/degraded:
-          // there is no requestId to key on; the local input line is the answer surface.
-          submitViaKeystrokes(backendProc, msg.answer, key!);
-          send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          // node-pty backend: no programmatic session to resolve the interaction.
+          const error = programmaticInputUnsupportedError('answer');
+          console.warn(`[TermServer] SUBMIT-ANSWER REJECTED for ${compositeKey(msg.officeId, msg.agentId)}: ${error}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error } });
         }
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
@@ -1842,7 +1722,6 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
         agentInTurn.delete(ck);
-        lastPtyDataAt.delete(ck);
       }
 
       backendOnlineOffices.delete(officeId);

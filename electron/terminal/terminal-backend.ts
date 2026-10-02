@@ -106,21 +106,42 @@ export function pendingUserInputCount(): number {
   return pendingUserInput.size;
 }
 
+/** Programmatic transport that can resolve an `ask_user` answer. */
+export type AnswerTransport = 'bridge' | 'sdk';
+
 /**
  * Decide how an `ask_user` answer is delivered for a backend process (spec 015).
  * Native-bridge processes expose `submitAnswer`: the pending interaction lives in the
  * TUI's bridge extension, so the answer is routed over the authenticated broker.
  * SDK backends expose `submitPrompt` (a real programmatic session) and resolve
  * the pending interaction by `requestId` via {@link handlePendingUserInput}. The raw
- * node-pty backend omits both; there is no SDK session, so the answer is typed
- * onto the TUI's interaction input line via keystroke injection (best-effort/degraded,
- * no requestId). This is the single source of truth for the server's submit-answer routing.
+ * node-pty backend omits both and has no programmatic session: returns `null`, and
+ * the caller must report an explicit failure (answers are never typed as keystrokes).
+ * This is the single source of truth for the server's submit-answer routing.
  */
 export function answerTransport(
   proc: Pick<TerminalProcess, 'submitPrompt' | 'submitAnswer'>,
-): 'bridge' | 'sdk' | 'keystroke' {
+): AnswerTransport | null {
   if (typeof proc.submitAnswer === 'function') return 'bridge';
-  return typeof proc.submitPrompt === 'function' ? 'sdk' : 'keystroke';
+  return typeof proc.submitPrompt === 'function' ? 'sdk' : null;
+}
+
+/** Kinds of programmatic input the server may route to an agent's session. */
+export type ProgrammaticInputKind = 'prompt' | 'control' | 'answer';
+
+const PROGRAMMATIC_INPUT_NOUN: Record<ProgrammaticInputKind, string> = {
+  prompt: 'programmatic prompts',
+  control: 'control commands',
+  answer: 'ask_user answers',
+};
+
+/**
+ * Explicit error for programmatic input sent to a process without a programmatic
+ * session (the raw node-pty backend). Programmatic input is never synthesized as
+ * keystrokes; raw `write()` stays reserved for human typing and shell input.
+ */
+export function programmaticInputUnsupportedError(kind: ProgrammaticInputKind): string {
+  return `${PROGRAMMATIC_INPUT_NOUN[kind]} require the SDK/native-bridge backend`;
 }
 
 // ── plan mode (SDK exit_plan_mode interaction) approval channel ─────────────────
@@ -234,9 +255,10 @@ export interface TerminalProcess {
    * Optional: submit a full prompt to the underlying agent atomically, bypassing
    * the character-by-character line editor. Implemented by SDK-backed processes
    * (calls `session.send({ prompt, mode: 'enqueue' })` directly). Backends that
-   * omit it (raw PTY) are driven via bracketed-paste `write()` instead. May
-   * return a promise (native bridge) that settles once the agent accepted the
-   * prompt or rejects with an explicit error; callers must await it.
+   * omit it (raw node-pty) do not accept programmatic prompts — callers report an
+   * explicit failure instead of typing keystrokes. May return a promise (native
+   * bridge) that settles once the agent accepted the prompt or rejects with an
+   * explicit error; callers must await it.
    *
    * `label`, when provided, is rendered as a display-only tag in front of the
    * echoed prompt (e.g. "[Teams · Alice]"). It is NEVER included in the text
@@ -275,9 +297,9 @@ export interface TerminalProcess {
   /**
    * Optional: run a session control command (`/compact`, `/usage`, `/model`) via the
    * SDK control plane (`session.rpc.*`) and return structured, postable data. Implemented
-   * by SDK-backed processes only; the raw node-pty backend omits it (the server falls
-   * back to keystroke-injecting the raw slash command into the TUI). Rejects if the
-   * session's RPC surface does not support the requested command.
+   * by SDK-backed and native-bridge processes; the raw node-pty backend omits it (the
+   * server reports the command as unsupported). Rejects if the session's RPC surface
+   * does not support the requested command.
    */
   runControl?(cmd: ControlCommand): Promise<ControlData>;
 

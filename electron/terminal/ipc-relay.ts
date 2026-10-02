@@ -313,7 +313,7 @@ export class TerminalRelay {
 
   /**
    * Run a session control command (`/compact`, `/usage`, `/model`) via the SDK control
-   * plane (or node-pty keystroke fallback). Used by Teams slash-command interception.
+   * plane (unsupported on raw node-pty). Used by Teams slash-command interception.
    */
   mainRunControl(
     officeId: string,
@@ -326,8 +326,8 @@ export class TerminalRelay {
 
   /**
    * spec 015: answer a pending `ask_user` interaction. Distinct from
-   * mainSubmitPrompt — resolves the pending user-input interaction (SDK/native-bridge)
-   * or injects keystrokes (node-pty). `requestId` is the single-resolution key.
+   * mainSubmitPrompt — resolves the pending user-input interaction (SDK/native-bridge);
+   * raw node-pty reports failure. `requestId` is the single-resolution key.
    */
   mainSubmitAnswer(
     officeId: string,
@@ -561,7 +561,7 @@ export class TerminalRelay {
     );
 
     // spec 017: answer a pending ask_user via the sanctioned submit-answer channel
-    // (resolves the SDK/native-bridge interaction, or keystroke-injects for node-pty) —
+    // (resolves the SDK/native-bridge interaction; unsupported on raw node-pty) —
     // NOT raw `write`, which would only select a choice prompt's highlighted option.
     ipcMain.handle(
       'terminal-submit-answer',
@@ -570,8 +570,8 @@ export class TerminalRelay {
     );
 
     // spec 017: send a follow-up prompt to a specific agent via the sanctioned
-    // submit-prompt channel (SDK session.send / bracketed-paste for node-pty),
-    // targeted by agentId — never raw `write`.
+    // submit-prompt channel (SDK session.send / native bridge; unsupported on
+    // raw node-pty), targeted by agentId — never raw `write`.
     ipcMain.handle(
       'terminal-submit-prompt',
       (_event, officeId: string, agentId: string, prompt: string, label?: string) =>

@@ -70,9 +70,9 @@ export interface MsgSetAgentForwarding {
 //
 // A small allow-list of Copilot CLI slash commands (`/compact`, `/usage`, `/model`)
 // that Teams intercepts and executes via the SDK control plane instead of enqueueing
-// them as model prompts. The SDK-backed backends run them through `session.rpc.*`
-// and return structured, postable content; the node-pty fallback keystroke-injects the
-// raw command into the real TUI (best-effort, no structured result).
+// them as model prompts. The SDK-backed and native-bridge backends run them through
+// `session.rpc.*` and return structured, postable content; the raw node-pty backend
+// has no programmatic session and reports the command as not executed.
 
 /** Control commands that map to SDK `session.rpc.*` calls. */
 export type ControlCommandName = 'compact' | 'usage' | 'model';
@@ -116,7 +116,6 @@ export type ControlData = ControlCompactData | ControlUsageData | ControlModelDa
 /** Response payload of `run-control-command` (carried in `SrvResponse.result`). */
 export type ControlCommandResult =
   | { executed: true; via: 'sdk'; data: ControlData }
-  | { executed: true; via: 'keystroke' }
   | { executed: false; error: string };
 
 export interface MsgRunControlCommand {
@@ -131,7 +130,8 @@ export interface MsgRunControlCommand {
 /**
  * Answer to a pending `ask_user` interaction (spec 015). Distinct from
  * `submit-prompt`: this resolves the pending user-input interaction (SDK
- * → `handlePendingUserInput(requestId)`) or injects keystrokes (node-pty). Never
+ * → `handlePendingUserInput(requestId)`; native bridge → its extension). The raw
+ * node-pty backend has no programmatic session and reports failure. Never
  * enqueues a new prompt.
  */
 export interface MsgSubmitAnswer {
@@ -139,7 +139,7 @@ export interface MsgSubmitAnswer {
   requestId: string;
   officeId: string;
   agentId: string;
-  /** SDK single-resolution key; empty/undefined on the node-pty degraded path. */
+  /** SDK single-resolution key; empty/undefined when the relay carried no requestId. */
   answerRequestId?: string;
   answer: string;
   wasFreeform: boolean;

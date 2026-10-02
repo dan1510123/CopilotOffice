@@ -36,7 +36,7 @@ export interface ActOnDeps {
   deliverText: (officeId: string, agentId: string, text: string) => Promise<boolean>;
   /**
    * Answer a pending `ask_user` via the sanctioned submit-answer channel (resolves
-   * the SDK/native-bridge interaction or keystroke-injects for node-pty). Distinct from
+   * the SDK/native-bridge interaction; unsupported on raw node-pty). Distinct from
    * `deliverText`: raw typing would only select a choice prompt's highlighted option.
    */
   submitAnswer: (officeId: string, agentId: string, answer: string) => Promise<boolean>;

@@ -1,4 +1,4 @@
-import type { TerminalProcess } from './terminal-backend';
+import { programmaticInputUnsupportedError, type TerminalProcess } from './terminal-backend';
 
 export class PreseededPromptQueue {
   private readonly prompts = new Map<string, string[]>();
@@ -26,21 +26,21 @@ export class PreseededPromptQueue {
 }
 
 /**
- * Deliver a start-time prompt through the strongest transport the process owns.
+ * Deliver a start-time prompt through the process's programmatic transport.
  *
  * SDK/native-bridge processes use session.send so warm/reused terminals receive
- * the prompt atomically and visibly in their own session. Only the explicit raw
- * node-pty fallback types the line into the TUI.
+ * the prompt atomically and visibly in their own session. A process without a
+ * programmatic submit (raw node-pty) rejects with an explicit error — the prompt
+ * is never typed into the TUI as keystrokes.
  */
 export async function deliverPreseededPrompt(
-  process: Pick<TerminalProcess, 'submitPrompt' | 'write'>,
+  process: Pick<TerminalProcess, 'submitPrompt'>,
   prompt: string | undefined,
 ): Promise<boolean> {
   if (!prompt) return false;
-  if (typeof process.submitPrompt === 'function') {
-    await process.submitPrompt(prompt);
-  } else {
-    process.write(`${prompt}\r`);
+  if (typeof process.submitPrompt !== 'function') {
+    throw new Error(programmaticInputUnsupportedError('prompt'));
   }
+  await process.submitPrompt(prompt);
   return true;
 }
