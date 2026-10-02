@@ -1439,6 +1439,21 @@ function teardownAgentRuntime(
   if (proc) killPtyProcess(proc);
 }
 
+/**
+ * Remove a transferred-office alias without touching the source office's live
+ * process or runtime state. Returns true when the composite key was an alias.
+ */
+function detachAgentRuntimeAlias(officeId: string, agentId: string): boolean {
+  const ck = compositeKey(officeId, agentId);
+  const terminalKey = getTerminalKey(officeId, agentId);
+  if (!terminalKey || terminalKey === ck) return false;
+
+  removeAgentViewer(ck, viewerMaps);
+  agentToTerminal.delete(ck);
+  clearRuntimeStateForKey(officeId, ck);
+  return true;
+}
+
 async function beginTransientSession(
   msg: Extract<MainToServer, { type: 'begin-transient-session' }>,
 ): Promise<BeginTransientSessionResult> {
@@ -1482,7 +1497,12 @@ async function beginTransientSession(
     // If auto-start or a viewer start is still resolving, let it register first
     // so this atomic transition can reliably stop it and preserve its pointer.
     await inFlightStarts.get(ck)?.catch(() => undefined);
-    teardownAgentRuntime(msg.officeId, msg.agentId);
+    // A transferred fleet office may currently alias the source office's live
+    // persistent TUI. Drop only that destination alias; killing the resolved
+    // process would disrupt the source office and clear its watcher/viewer state.
+    if (!detachAgentRuntimeAlias(msg.officeId, msg.agentId)) {
+      teardownAgentRuntime(msg.officeId, msg.agentId);
+    }
 
     const record = beginTransientSessionState(
       officeData,

@@ -17,6 +17,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const SERVER_PATH = path.join(REPO_ROOT, 'dist', 'electron', 'terminal', 'server.js');
 const RUN_ID = crypto.randomBytes(5).toString('hex');
 const OFFICE_ID = `fleet-transient-smoke-${RUN_ID}`;
+const SOURCE_OFFICE_ID = `fleet-source-smoke-${RUN_ID}`;
 const AGENT_ID = 'generalist';
 const LIFECYCLE_ID = `fleet-smoke-${RUN_ID}`;
 const PRIOR_SESSION_ID = `persistent-${RUN_ID}`;
@@ -24,13 +25,18 @@ const UNRELATED_SESSION_ID = `unrelated-${RUN_ID}`;
 const SMOKE_ROOT = path.join(os.tmpdir(), `copilot-office-fleet-${RUN_ID}`);
 const COPILOT_HOME = path.join(SMOKE_ROOT, 'copilot-home');
 const SESSION_FILE = path.join(SMOKE_ROOT, '.data', `${OFFICE_ID}.sessions.json`);
+const SOURCE_SESSION_FILE = path.join(
+  SMOKE_ROOT,
+  '.data',
+  `${SOURCE_OFFICE_ID}.sessions.json`,
+);
 
 async function main() {
   await fs.mkdir(path.dirname(SESSION_FILE), { recursive: true });
   await fs.mkdir(path.join(COPILOT_HOME, 'session-state', PRIOR_SESSION_ID), { recursive: true });
   await fs.mkdir(path.join(COPILOT_HOME, 'session-state', UNRELATED_SESSION_ID), { recursive: true });
   await fs.writeFile(
-    SESSION_FILE,
+    SOURCE_SESSION_FILE,
     JSON.stringify(
       {
         current: { [AGENT_ID]: PRIOR_SESSION_ID },
@@ -43,6 +49,10 @@ async function main() {
       null,
       2,
     ),
+  );
+  await fs.writeFile(
+    SESSION_FILE,
+    JSON.stringify({ current: {}, history: {}, metadata: {}, transient: {} }, null, 2),
   );
 
   const server = fork(SERVER_PATH, [], {
@@ -122,8 +132,32 @@ async function main() {
   };
 
   let transientSessionId;
+  let sourceStarted = false;
   try {
     await ready;
+    const sourceStart = await request({
+      type: 'start',
+      officeId: SOURCE_OFFICE_ID,
+      agentId: AGENT_ID,
+      workingDir: REPO_ROOT,
+      launchMode: 'shell',
+      background: true,
+    });
+    if (!sourceStart?.success || !sourceStart.pid) {
+      throw new Error(`Source terminal start failed: ${sourceStart?.error ?? 'unknown'}`);
+    }
+    sourceStarted = true;
+
+    const transfer = await request({
+      type: 'transfer-session',
+      fromOfficeId: SOURCE_OFFICE_ID,
+      toOfficeId: OFFICE_ID,
+      agentId: AGENT_ID,
+    });
+    if (!transfer?.success || transfer.sessionId !== PRIOR_SESSION_ID) {
+      throw new Error(`Source session transfer failed: ${transfer?.error ?? 'unknown'}`);
+    }
+
     const begin = await request({
       type: 'begin-transient-session',
       officeId: OFFICE_ID,
@@ -137,6 +171,14 @@ async function main() {
     transientSessionId = begin.sessionId;
     if (!transientSessionId || transientSessionId === PRIOR_SESSION_ID) {
       throw new Error('Transient begin did not mint a fresh session id');
+    }
+    const sourceExistsAfterBegin = await request({
+      type: 'exists',
+      officeId: SOURCE_OFFICE_ID,
+      agentId: AGENT_ID,
+    });
+    if (!sourceExistsAfterBegin || begin.pid === sourceStart.pid) {
+      throw new Error('Transient begin disrupted or reused the source office terminal');
     }
 
     const transientDir = path.join(COPILOT_HOME, 'session-state', transientSessionId);
@@ -209,6 +251,7 @@ async function main() {
       priorDiskStatePreserved: priorExists,
       unrelatedDiskStatePreserved: unrelatedExists,
       terminalStopped: !statuses?.[AGENT_ID]?.alive,
+      sourceTerminalPreserved: sourceExistsAfterBegin === true,
       duplicateDisposeNoOp:
         duplicateDispose?.success === true && duplicateDispose.disposed === false,
       startFailureRolledBack:
@@ -228,6 +271,13 @@ async function main() {
       checks,
     }, null, 2));
   } finally {
+    if (sourceStarted && server.connected) {
+      await request({
+        type: 'kill',
+        officeId: SOURCE_OFFICE_ID,
+        agentId: AGENT_ID,
+      }, 10_000).catch(() => undefined);
+    }
     if (server.connected) server.send({ type: 'shutdown' });
     await new Promise((resolve) => {
       if (server.exitCode !== null) {
