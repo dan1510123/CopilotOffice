@@ -322,7 +322,7 @@ tabsBar.style.cssText = `
   height: 60px;
   flex-shrink: 0;
   overflow: hidden;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: var(--co-font-ui);
   box-shadow: 0 2px 12px rgba(0,0,0,.28);
 `;
 container.appendChild(tabsBar);

@@ -55,17 +55,21 @@ export function injectUiKit(): void {
   const style = document.createElement('style');
   style.id = 'ui-kit-styles';
   style.textContent = `
+    /* Friendlier UI font — single source for all DOM chrome. Terminal/xterm and
+       any explicitly-monospace surface keep their own font-family. */
+    :root { --co-font-ui: 'Trebuchet MS', 'Segoe UI', system-ui, -apple-system, sans-serif; }
+    body { font-family: var(--co-font-ui); }
     .ui-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      font-family: 'Cascadia Code', Consolas, monospace;
+      font-family: var(--co-font-ui);
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 600;
       line-height: 1;
       padding: 7px 13px;
-      border-radius: 8px;
+      border-radius: 9px;
       border: 1px solid var(--co-border);
       background: var(--co-bg-raised);
       color: var(--co-text);
