@@ -317,7 +317,7 @@ export const defaultDashboard: DashboardRenderer = {
           background: var(--co-bg-badge-inset); border: 1px solid var(--co-border-subtle);
           padding: 4px 11px; border-radius: 8px; cursor: text; overflow: hidden;
           ${metaTitle ? '' : 'font-style: italic;'}
-        ">📝 <span style="min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere;">${metaTitle || 'Untitled session'}</span></span>` : '';
+        "><span style="min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere;">${metaTitle || 'Untitled session'}</span></span>` : '';
 
       const sessionPanelHtml = hasSession ? `
         <div class="session-meta-panel" data-agent="${agent.id}" style="

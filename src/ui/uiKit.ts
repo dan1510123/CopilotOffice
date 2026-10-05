@@ -123,6 +123,25 @@ export function injectUiKit(): void {
     @keyframes copilot-attn-bar { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
     @keyframes copilot-pill-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
     @keyframes copilot-btn-spin { to { transform: rotate(360deg); } }
+
+    /* Editable session-title affordance. A muted pencil that brightens on hover /
+       focus so it's clear the title is click-to-edit. Shared by the dashboard card
+       title chip and the game-mode terminal card title. Implemented as ::after so
+       it survives textContent updates on the title element. */
+    .session-title-display::after {
+      content: '✏️';
+      flex-shrink: 0;
+      margin-left: 6px;
+      font-size: .82em;
+      opacity: .6;
+      filter: grayscale(.2);
+      transition: opacity .15s ease, filter .15s ease;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .session-title-display:hover::after { opacity: 1; filter: none; }
+    }
+    .session-title-display:focus-visible::after { opacity: 1; filter: none; }
+
     @media (prefers-reduced-motion: reduce) {
       [data-ring-agent], [data-attn-banner-agent] > *, [data-status-panel-agent] span, .ui-btn__spinner { animation: none !important; }
     }

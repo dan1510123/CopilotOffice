@@ -702,8 +702,9 @@ function injectTopBarStyles() {
     #office-tabs .tb-divider {
       width: 1px; height: 26px; background: var(--co-border); margin: 0 4px; flex-shrink: 0;
     }
-    #office-tabs .office-tab { transition: background .15s, border-color .15s, color .15s; }
+    #office-tabs .office-tab { transition: background .15s ease, border-color .15s ease, color .15s ease, transform .06s ease; }
     #office-tabs .office-tab:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
+    #office-tabs .office-tab:active { transform: translateY(1px); }
     #office-tabs .office-tab .edit-office-btn {
       opacity: .85;
       display: inline-flex;
@@ -723,8 +724,9 @@ function injectTopBarStyles() {
       0%, 100% { box-shadow: 0 0 4px #46d17f88; opacity: .85; }
       50%      { box-shadow: 0 0 11px #46d17f, 0 0 3px #46d17f; opacity: 1; }
     }
-    #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s, border-color .15s, color .15s; }
+    #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s ease, border-color .15s ease, color .15s ease, transform .06s ease; }
     #office-tabs .tb-pill:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
+    #office-tabs .tb-pill:active { transform: translateY(1px); }
     #office-tabs #new-office-btn:hover { background: var(--co-bg-raised-hover); }
     .office-tab-context-menu {
       position: fixed;
