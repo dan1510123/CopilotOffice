@@ -2944,6 +2944,18 @@ function setupTerminalClickHandler() {
       return;
     }
 
+    // Teams Remote toggle can appear in both the active-session meta panel and
+    // the no-session status row (which is not a .session-meta-panel), so route it
+    // at the top level before the card-open handler. Works for slacking agents —
+    // bringing an agent online in Teams registers it (no live session required).
+    const teamsBtn = target.closest('.session-teams-btn');
+    if (teamsBtn) {
+      e.stopPropagation();
+      const agentId = (teamsBtn as HTMLElement).dataset.agent;
+      if (agentId) void toggleTeamsRemoteFromOverview(agentId);
+      return;
+    }
+
     // Handle session meta panel interactions (prevent card open)
     const metaPanel = target.closest('.session-meta-panel');
     if (metaPanel) {

@@ -360,7 +360,9 @@ export const defaultDashboard: DashboardRenderer = {
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             " title="${d.activityDetailEsc}">${d.activityDetail || 'No active session'}</div>
           </div>
-          <div style="display: flex; align-items: center; flex-shrink: 0;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${isTeamsOnline ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}"
+              title="${teamsButtonTitle}"${pendingTeamsAction ? ' disabled aria-busy="true"' : ''}>${teamsButtonLabel}</button>` : ''}
             ${flagBtnHtml}
           </div>
         </div>
