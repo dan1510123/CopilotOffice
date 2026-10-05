@@ -369,7 +369,9 @@ function clampSplitPct(pct: number): number {
 }
 
 function loadSeriousSplitPct(): number {
-  const raw = Number(localStorage.getItem(SERIOUS_SPLIT_KEY));
+  const stored = localStorage.getItem(SERIOUS_SPLIT_KEY);
+  if (stored === null || stored.trim() === '') return SERIOUS_SPLIT_DEFAULT;
+  const raw = Number(stored);
   return Number.isFinite(raw) ? clampSplitPct(raw) : SERIOUS_SPLIT_DEFAULT;
 }
 
