@@ -14,6 +14,7 @@ import { resolveOfficeAgentWorkingDir } from '../office/launchWorkingDir';
 import { perfMark } from './terminalPerf';
 import { injectUiKit, uiButtonClass } from './uiKit';
 import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
+import { canReuseLivePtyForNewSession, reuseLivePtyForNewSession } from './newSessionReuse';
 import {
   TerminalInstanceCache,
   type TerminalCacheFactoryContext,
@@ -100,6 +101,9 @@ export class SeriousTerminalController {
   private openedAt = 0;
   private sessionId: string | null = null;
   private activeOptions: SeriousTerminalOpenOptions | null = null;
+  /** Synchronous single-flight latch so a rapid double-click sends `/new` to a
+   *  live TUI only once (and never falls through to a full reset mid-attempt). */
+  private newSessionReuseInFlight = false;
   private customRenderedMode = false;
   /** Spec 020: single-flight latch so a rapid double-confirm can't launch overlapping switches (FR-010). */
   private restoreInFlight = false;
@@ -618,6 +622,34 @@ export class SeriousTerminalController {
 
   async startNewSession(options: SeriousTerminalOpenOptions): Promise<void> {
     if (!window.copilotBridge) return;
+
+    // Ignore re-entry while a `/new` reuse is already in flight so a double-click
+    // can't send `/new` twice or fall through to a full reset mid-attempt.
+    if (this.newSessionReuseInFlight) return;
+
+    // Fast path: reuse the agent's already-running native TUI via `/new` instead
+    // of killing + respawning the PTY. The live PTY keeps rendering into the SAME
+    // cached xterm, so the cache is NOT invalidated; onSessionMetaUpdated rebinds
+    // the generation token + id when the fresh session registers.
+    const launchMode = options.launchMode === 'shell' ? 'shell' : 'copilot';
+    if (launchMode !== 'shell') {
+      const bridge = window.copilotBridge;
+      this.newSessionReuseInFlight = true;
+      try {
+        if (await canReuseLivePtyForNewSession(bridge, options.officeId, options.agentId, launchMode)) {
+          // Accept output during the in-place reset window: null the generation
+          // token so new-session output isn't dropped before session-meta-updated
+          // rebinds it to the fresh id.
+          this.terminalCache?.setSessionId(options.officeId, options.agentId, null);
+          if (await reuseLivePtyForNewSession(bridge, options.officeId, options.agentId)) {
+            return;
+          }
+          // Write failed — fall through to the full close+respawn reset below.
+        }
+      } finally {
+        this.newSessionReuseInFlight = false;
+      }
+    }
 
     // T504: when the coordinator is wired (production path), delegate the
     // close+restart chain to it so a rapid double-click coalesces to a
