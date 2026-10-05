@@ -16,6 +16,7 @@ import { TeamsSettingsOverlay } from './TeamsSettingsOverlay';
 import { injectUiKit, uiButtonClass } from './uiKit';
 import { renderSessionHistoryList, type SessionHistoryEntry } from './sessionHistoryRender';
 import { perfMark } from './terminalPerf';
+import { canReuseLivePtyForNewSession, reuseLivePtyForNewSession } from './newSessionReuse';
 import {
   TerminalInstanceCache,
   type TerminalCacheFactoryContext,
@@ -99,6 +100,10 @@ export class TerminalOverlay {
   /** Spec 020: single-flight latch so a rapid double-confirm can't launch overlapping switches (FR-010). */
   private restoreInFlight: boolean = false;
   private launchMode: TerminalLaunchMode = 'copilot';
+  /** Synchronous single-flight latch so a rapid double-click / Ctrl+Shift+N sends
+   *  `/new` to a live TUI only once (and never falls through to a full reset while
+   *  a reuse attempt is already in flight). */
+  private newSessionReuseInFlight = false;
   private pendingInputLine: string = '';
   // Spec 007: awaitingSessionIdRefresh / sessionRefresh*Timer fields removed
   // along with the parseSessionId / scheduleSessionIdRefresh helpers.
@@ -1268,6 +1273,37 @@ export class TerminalOverlay {
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
     const agentId = this.currentAgentId;
     console.log(`[TerminalOverlay] handleNewSession: agent=${agentId}, office=${officeId}`);
+
+    // Ignore re-entry while a `/new` reuse is already in flight so a double-click
+    // can't send `/new` twice or fall through to a full reset mid-attempt.
+    if (this.newSessionReuseInFlight) return;
+
+    // Fast path: when the agent's native Copilot TUI is already running, reuse
+    // that live process by sending `/new` instead of killing + respawning the
+    // PTY. The bridge re-forks the session on the SAME PTY and emits
+    // `session-meta-updated`, which onSessionMetaUpdated rebinds to resync the
+    // id + cache generation token. Falls through to the full reset otherwise.
+    if (this.launchMode !== 'shell' && window.copilotBridge) {
+      const bridge = window.copilotBridge;
+      this.newSessionReuseInFlight = true;
+      try {
+        if (await canReuseLivePtyForNewSession(bridge, officeId, agentId, this.launchMode)) {
+          this.pendingInputLine = '';
+          // Accept output during the in-place reset window (the native TUI
+          // redraws and the new session id arrives via session-meta-updated).
+          this.terminalCache?.setSessionId(officeId, agentId, null);
+          perfMark('overlay', 'session:new-request', `${officeId}:${agentId}`);
+          if (await reuseLivePtyForNewSession(bridge, officeId, agentId)) {
+            perfMark('overlay', 'session:new-done', `${officeId}:${agentId}`);
+            return;
+          }
+          // Write failed — fall through to the full close+respawn reset below.
+        }
+      } finally {
+        this.newSessionReuseInFlight = false;
+      }
+    }
+
     this.clearRefitTimers();
     this.refitGeneration += 1;
 
