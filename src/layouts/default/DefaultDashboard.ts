@@ -237,7 +237,7 @@ export const defaultDashboard: DashboardRenderer = {
         padding: 14px 16px;
         margin-bottom: 10px;
         cursor: pointer;
-        transition: border-color 0.15s;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
         display: flex;
         align-items: center;
         gap: 12px;
@@ -373,7 +373,7 @@ export const defaultDashboard: DashboardRenderer = {
           border-radius: 13px;
           margin-bottom: 10px;
           cursor: pointer;
-          transition: border-color 0.15s;
+          transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
           position: relative;
           overflow: hidden;
           height: 208px;

@@ -119,6 +119,9 @@ export function injectUiKit(): void {
 
     /* Dashboard agent-card motion (default layout). Kept here in the UI layer so
        the pure string-producing renderers in src/layouts can reference them. */
+    @media (hover: hover) and (pointer: fine) {
+      .agent-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,.24); }
+    }
     @keyframes copilot-ring-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
     @keyframes copilot-attn-bar { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
     @keyframes copilot-pill-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
