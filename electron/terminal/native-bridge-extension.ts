@@ -39,6 +39,7 @@ let sessionPromise;
 let joinedSession;
 let pendingUserInput;
 let pendingPlanDecision;
+let pendingElicitation;
 let eventBacklog = [];
 
 function errorMessage(error) {
@@ -226,6 +227,31 @@ async function executeCommand(command, params) {
       });
       return { resolved: true };
     }
+    case "submit-elicitation": {
+      if (!pendingElicitation) throw new Error("No pending elicitation request");
+      const action = params?.action;
+      if (action !== "accept" && action !== "decline" && action !== "cancel") {
+        throw new Error("submit-elicitation requires action accept|decline|cancel");
+      }
+      if (
+        typeof params?.requestId === "string"
+        && params.requestId.length > 0
+        && pendingElicitation.requestId !== params.requestId
+      ) {
+        throw new Error(
+          "Pending elicitation request does not match " + params.requestId,
+        );
+      }
+      const pending = pendingElicitation;
+      pendingElicitation = undefined;
+      pending.resolve({
+        action,
+        ...(action === "accept" && params?.content && typeof params.content === "object"
+          ? { content: params.content }
+          : {}),
+      });
+      return { resolved: true };
+    }
     default:
       throw new Error("Unsupported bridge command: " + String(command));
   }
@@ -351,6 +377,23 @@ async function joinBridgeSession() {
         };
       });
     },
+    onElicitationRequest(context) {
+      // The structured, multi-field ask_user form (or an MCP server's elicitation). Mirrors
+      // onUserInputRequest: a local TUI answer can settle the runtime before this extension
+      // sees the matching completed event, so a new request proves the old slot is stale —
+      // cancel it rather than blocking every future elicitation. The ElicitationContext
+      // carries no requestId; it is correlated from the elicitation.requested event by message.
+      if (pendingElicitation) {
+        pendingElicitation.resolve({ action: "cancel" });
+      }
+      return new Promise((resolve) => {
+        pendingElicitation = {
+          context,
+          requestId: undefined,
+          resolve,
+        };
+      });
+    },
   });
   if (terminated) return session;
   endpoint = process.env.COPILOT_OFFICE_BRIDGE_ENDPOINT;
@@ -407,6 +450,26 @@ async function joinBridgeSession() {
     } else if (event?.type === "exit_plan_mode.completed") {
       if (pendingPlanDecision?.requestId && pendingPlanDecision.requestId === requestId) {
         pendingPlanDecision = undefined;
+      }
+    } else if (event?.type === "elicitation.requested") {
+      const pendingMessage = pendingElicitation?.context?.message;
+      const eventMessage = event?.data?.message;
+      if (
+        pendingElicitation
+        && !pendingElicitation.requestId
+        && (
+          typeof pendingMessage !== "string"
+          || (
+            typeof eventMessage === "string"
+            && pendingMessage === eventMessage
+          )
+        )
+      ) {
+        pendingElicitation.requestId = requestId;
+      }
+    } else if (event?.type === "elicitation.completed") {
+      if (pendingElicitation?.requestId && pendingElicitation.requestId === requestId) {
+        pendingElicitation = undefined;
       }
     }
     const bridgeEvent = prepareEventForBridge(event);
@@ -557,6 +620,10 @@ async function shutdown(exitCode = 0) {
   if (pendingPlanDecision) {
     pendingPlanDecision.resolve({ approved: false, feedback: "Bridge terminated" });
     pendingPlanDecision = undefined;
+  }
+  if (pendingElicitation) {
+    pendingElicitation.resolve({ action: "cancel" });
+    pendingElicitation = undefined;
   }
   const activeSocket = socket;
   socket = undefined;

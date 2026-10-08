@@ -188,6 +188,59 @@ export interface PendingPlan {
   createdAt: number;
 }
 
+/** Interpreted shape of one `ask_user` elicitation field (drives presentation + parsing). */
+export type ElicitationFieldKind = 'select' | 'multiselect' | 'boolean' | 'string' | 'number';
+
+/** One selectable option within a {@link ElicitationFieldView}. */
+export interface ElicitationFieldOptionView {
+  /** Generated per-field selector shown in Teams (e.g. `A`, `B`). Case-insensitive match key. */
+  label: string;
+  /** Submitted value for this option (goes into the answer `content` map). */
+  value: string;
+  /** Human-readable display text. */
+  text: string;
+}
+
+/** A single field of a {@link PendingElicitation}, with Teams selector labels assigned. */
+export interface ElicitationFieldView {
+  /** Schema property key — the key used in the answer `content` map. */
+  name: string;
+  /** Human-readable label. */
+  title: string;
+  /** Help text ('' when absent). */
+  description: string;
+  kind: ElicitationFieldKind;
+  /** Options with assigned selector labels (empty for free-text/boolean/number). */
+  options: ElicitationFieldOptionView[];
+  required: boolean;
+}
+
+/**
+ * The record that an online agent currently awaits an `ask_user` **elicitation** (structured,
+ * multi-field form) answer for. At most one per online agent; transient, in-memory, main-process
+ * only (never persisted). Only tracked on the SDK/native-bridge backend (non-empty `requestId`);
+ * node-pty / url-mode / field-less forms are render-only (answered in the local TUI).
+ */
+export interface PendingElicitation {
+  agentId: string;
+  officeId: string;
+  binding: OnlineAgentBinding;
+  /** The ask_user tool-call id; informational / diagnostics. */
+  toolId: string;
+  /** SDK `elicitation.requested` request id — the single-resolution key. */
+  requestId: string;
+  /** Message describing what information is needed. */
+  message: string;
+  /** Ordered form fields (order = presentation and answer-line order). */
+  fields: ElicitationFieldView[];
+  /** Single-resolution latch. Set true by the first resolver (Teams or local). */
+  resolved: boolean;
+  /** Message id of the posted form message (self-loop bookkeeping / reference). */
+  postedMessageId?: string;
+  /** Unix ms; diagnostics / stale-guard. */
+  createdAt: number;
+}
+
 /** Per-agent online status surfaced to the renderer. */
 export interface OnlineAgentStatus {
   agentId: string;

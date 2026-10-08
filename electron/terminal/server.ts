@@ -8,10 +8,10 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { spawn, execSync } from 'child_process';
 import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from './event-source';
-import { formatToolStatus, buildAskUserRelay, buildPlanRelay } from './events-watcher';
+import { formatToolStatus, buildAskUserRelay, buildPlanRelay, buildElicitationRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
-import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession, elicitationTransport, handlePendingElicitation, clearPendingElicitationForSession } from './terminal-backend';
 import type { TerminalSessionChange } from './terminal-backend';
 import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEND_NAME } from './native-bridge-backend';
 import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
@@ -392,6 +392,7 @@ function applyNativeBridgeSessionChange(
     // Interactions pending on the replaced session can never be answered now.
     clearPendingUserInputForSession(previousLiveSessionId);
     clearPendingPlanApprovalForSession(previousLiveSessionId);
+    clearPendingElicitationForSession(previousLiveSessionId);
   }
 
   for (const office of officesForTerminal(officeId, agentId, terminalKey)) {
@@ -850,6 +851,26 @@ async function startTerminalForAgentImpl(
           const completedRequestId = d.requestId != null ? String(d.requestId) : '';
           console.log(`[TermServer] Forwarding plan complete (exit_plan_mode.completed) for ${ck}: requestId=${completedRequestId}, approved=${d.approved}`);
           send({ type: 'copilot-plan-complete', agentId, requestId: completedRequestId, approved: Boolean(d.approved), selectedAction: d.selectedAction != null ? String(d.selectedAction) : undefined, feedback: d.feedback != null ? String(d.feedback) : undefined });
+        } else if (event.type === 'elicitation.requested') {
+          // ask_user elicitation (SDK/native-bridge): the structured multi-field form. The
+          // payload arrives natively (incl. the requestId single-resolution key). Emit
+          // copilot-tool-start for status parity (same label as ask_user) PLUS the dedicated
+          // copilot-elicitation carrying the normalized fields so the Teams consumer can
+          // relay + resolve it. url-mode elicitations relay with empty fields (render-only).
+          const elicitRelay = buildElicitationRelay(event);
+          if (elicitRelay) {
+            console.log(`[TermServer] Forwarding elicitation (elicitation.requested) for ${ck}: requestId=${elicitRelay.requestId}, mode=${elicitRelay.mode}, ${elicitRelay.fields.length} field(s)`);
+            send({ type: 'copilot-tool-start', agentId, toolName: 'ask_user', toolId: elicitRelay.toolId, status: 'Waiting for your answer' });
+            send({ type: 'copilot-elicitation', agentId, toolId: elicitRelay.toolId, requestId: elicitRelay.requestId, message: elicitRelay.message, mode: elicitRelay.mode, fields: elicitRelay.fields });
+          }
+        } else if (event.type === 'elicitation.completed') {
+          // Elicitation resolved (mirrors user_input.completed). Forward ALWAYS (outside the
+          // viewer gate) so the Teams consumer can PRECISELY clear a locally-answered form by
+          // requestId (first-resolver-wins).
+          const d = (event.data ?? {}) as { requestId?: unknown; action?: unknown };
+          const completedRequestId = d.requestId != null ? String(d.requestId) : '';
+          console.log(`[TermServer] Forwarding elicitation complete (elicitation.completed) for ${ck}: requestId=${completedRequestId}, action=${d.action}`);
+          send({ type: 'copilot-elicitation-complete', agentId, requestId: completedRequestId, action: d.action != null ? String(d.action) : '' });
         } else if (event.type === 'tool.execution_complete') {
           const d = event.data as { toolCallId: string; success: boolean };
           console.log(`[TermServer] Forwarding tool_complete for ${ck}: ${d.toolCallId}`);
@@ -1024,6 +1045,12 @@ async function startTerminalForAgentImpl(
       const droppedPlans = clearPendingPlanApprovalForSession(sessionId);
       if (droppedPlans > 0) {
         console.log(`[TermServer] Cleared ${droppedPlans} pending plan approval(s) for exited session ${sessionId} (${ck})`);
+      }
+      // Same GC for ask_user elicitations: an agent torn down mid-form must not leak an
+      // unresolved onElicitationRequest resolver.
+      const droppedElicitations = clearPendingElicitationForSession(sessionId);
+      if (droppedElicitations > 0) {
+        console.log(`[TermServer] Cleared ${droppedElicitations} pending elicitation(s) for exited session ${sessionId} (${ck})`);
       }
     });
 
@@ -1276,6 +1303,57 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       } else {
         const ck = compositeKey(msg.officeId, msg.agentId);
         console.log(`[TermServer] SUBMIT-PLAN-DECISION FAILED — no PTY for ${ck}`);
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
+      }
+      break;
+    }
+
+    case 'submit-elicitation': {
+      // ask_user elicitation: answer a pending structured form from Teams. Native bridge →
+      // its extension resolves the blocked onElicitationRequest over the broker. SDK backend
+      // → handlePendingElicitation(sessionId) resolves the blocked handler. node-pty backend
+      // → explicit failure (forms are never typed as keystrokes).
+      const key = getTerminalKey(msg.officeId, msg.agentId);
+      const proc = key ? ptyProcesses.get(key) : null;
+      if (proc) {
+        // A form answer resumes this turn; ensure its resulting events reach the
+        // main-process Teams consumer even without a renderer viewer.
+        agentForwardKeys.add(compositeKey(msg.officeId, msg.agentId));
+        const backendProc = proc.process;
+        const transport = elicitationTransport(backendProc);
+        if (transport === 'bridge') {
+          // Native bridge: resolve the extension's blocked elicitation over the broker.
+          try {
+            await backendProc.submitElicitation!({
+              requestId: msg.elicitationRequestId,
+              action: msg.action,
+              content: msg.content,
+            });
+            send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+          } catch (error) {
+            const message = String((error as Error)?.message ?? error);
+            console.warn(`[TermServer] submit-elicitation via bridge failed for ${compositeKey(msg.officeId, msg.agentId)} (elicitationRequestId="${msg.elicitationRequestId ?? ''}"): ${message}`);
+            send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+          }
+        } else if (transport === 'sdk') {
+          // SDK backend: resolve the session's single pending elicitation (keyed by sessionId).
+          const resolved = handlePendingElicitation(proc.sessionId, {
+            action: msg.action,
+            ...(msg.content ? { content: msg.content } : {}),
+          });
+          if (!resolved) {
+            console.warn(`[TermServer] submit-elicitation: no pending elicitation for session="${proc.sessionId}" (elicitationRequestId="${msg.elicitationRequestId ?? ''}", ${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
+          }
+          send({ type: 'response', requestId: msg.requestId, result: { success: resolved, error: resolved ? undefined : 'no pending elicitation to resolve' } });
+        } else {
+          // node-pty backend: no programmatic session to resolve the interaction.
+          const error = programmaticInputUnsupportedError('answer');
+          console.warn(`[TermServer] SUBMIT-ELICITATION REJECTED for ${compositeKey(msg.officeId, msg.agentId)}: ${error}`);
+          send({ type: 'response', requestId: msg.requestId, result: { success: false, error } });
+        }
+      } else {
+        const ck = compositeKey(msg.officeId, msg.agentId);
+        console.log(`[TermServer] SUBMIT-ELICITATION FAILED — no PTY for ${ck}`);
         send({ type: 'response', requestId: msg.requestId, result: { success: false, error: `No PTY for ${ck}` } });
       }
       break;

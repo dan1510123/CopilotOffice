@@ -95,6 +95,14 @@ export class CompositeSessionGateway implements SessionGateway {
     return this.pick(officeId, agentId).respondPlan(officeId, agentId, d);
   }
 
+  respondElicitation(
+    officeId: string,
+    agentId: string,
+    e: { requestId?: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> },
+  ): Promise<void> {
+    return this.pick(officeId, agentId).respondElicitation(officeId, agentId, e);
+  }
+
   onAgentEvent(cb: (e: AgentEvent) => void): () => void {
     const offOffice = this.office.onAgentEvent(cb);
     const offOrchestrator = this.orchestrator.onAgentEvent(cb);

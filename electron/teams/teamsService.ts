@@ -41,6 +41,9 @@ import type {
   AskUserOption,
   PendingPlan,
   PlanOption,
+  PendingElicitation,
+  ElicitationFieldView,
+  ElicitationFieldOptionView,
 } from './types';
 
 export interface TeamsToast {
@@ -244,6 +247,13 @@ export class TeamsService {
    * backend is render-only (plan approved in the local TUI).
    */
   private readonly pendingPlans = new Map<string, PendingPlan>(); // key = agentId
+  /**
+   * Pending `ask_user` **elicitation** (structured multi-field form) answers awaiting an
+   * in-thread reply, keyed by agentId. At most one per online agent; transient, in-memory.
+   * Resolved via `gateway.respondElicitation`. Only populated on the SDK/native-bridge
+   * backend (non-empty requestId, form mode, ≥1 field) — other cases are render-only.
+   */
+  private readonly pendingElicitations = new Map<string, PendingElicitation>(); // key = agentId
   /**
    * Pending orchestrator tool-approval gates awaiting an in-thread Approve/Deny reply
    * (spec 016 Workstream B), keyed by agentId. At most one per online agent; transient,
@@ -545,6 +555,21 @@ export class TeamsService {
         await this.safeReply(b, `${this.agentLabel(b)} ⚠️ This plan is no longer approvable (agent offline).`);
       }
     }
+    // ask_user elicitation: auto-cancel any outstanding form so the blocked handler resolves
+    // (action:'cancel') and the turn doesn't hang, then clear the record.
+    const abandonedElicit = this.pendingElicitations.get(agentId);
+    if (abandonedElicit) {
+      this.pendingElicitations.delete(agentId);
+      if (!abandonedElicit.resolved) {
+        abandonedElicit.resolved = true;
+        void this.deps.gateway
+          .respondElicitation(officeId, agentId, { requestId: abandonedElicit.requestId || undefined, action: 'cancel' })
+          .catch((err) => twarn('respondElicitation (offline) failed:', (err as Error).message));
+      }
+      if (postNotice && b.online && b.threadRootId) {
+        await this.safeReply(b, `${this.agentLabel(b)} ⚠️ This form is no longer answerable (agent offline).`);
+      }
+    }
     if (postNotice && b.online && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
@@ -640,6 +665,16 @@ export class TeamsService {
     if (pendingQ) {
       if (!pendingQ.resolved) {
         await this.resolveAnswer(pendingQ, msg.content);
+      }
+      return;
+    }
+
+    // ask_user elicitation: if this agent has a pending structured form, a thread reply is
+    // the per-field ANSWER(s), not a new prompt. Route it to the elicitation resolver.
+    const pendingElicit = this.pendingElicitations.get(binding.agentId);
+    if (pendingElicit) {
+      if (!pendingElicit.resolved) {
+        await this.resolveElicitation(pendingElicit, msg.content);
       }
       return;
     }
@@ -833,6 +868,19 @@ export class TeamsService {
     // local TUI). Precisely clear the matching pending plan by requestId (first-resolver-wins).
     if (e.kind === 'plan-complete') {
       this.maybeLocalResolvePlanByRequestId(e.agentId, e.planComplete?.requestId ?? '');
+      return;
+    }
+    // ask_user elicitation: a structured multi-field form, intercepted before the
+    // dispatch/ambient split (like ask-user/plan) so it renders + presents its fields
+    // instead of streaming as ordinary output. The blocked turn stays open until resolved.
+    if (e.kind === 'elicitation') {
+      void this.onElicitationEvent(e);
+      return;
+    }
+    // ask_user elicitation resolved (elicitation.completed) — the PRECISE local-answer
+    // signal. Clear only the matching pending form by requestId.
+    if (e.kind === 'elicitation-complete') {
+      this.maybeLocalResolveElicitationByRequestId(e.agentId, e.elicitationComplete?.requestId ?? '');
       return;
     }
     const rec = this.pending.get(e.agentId);
@@ -1423,6 +1471,287 @@ export class TeamsService {
     this.pendingPlans.delete(agentId);
     tlog(`plan resolved locally (requestId=${requestId}) for @${record.binding.handle} — posting in-app notice.`);
     void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Plan handled in the app.`);
+  }
+
+  // ── ask_user elicitation (structured multi-field form) flow ──────────────────
+
+  /** Assign per-field Teams selector labels (A/B/C…) to each field's options (transport
+   *  fields carry none). Order is preserved. */
+  private buildElicitationFieldViews(
+    fields: NonNullable<AgentEvent['elicitation']>['fields'],
+  ): ElicitationFieldView[] {
+    return fields.map((f) => ({
+      name: f.name,
+      title: f.title || f.name,
+      description: f.description || '',
+      kind: f.kind,
+      required: f.required,
+      options: f.options.map((o, i): ElicitationFieldOptionView => ({
+        label: selectorLabel(i),
+        value: o.value,
+        text: o.label,
+      })),
+    }));
+  }
+
+  /**
+   * Handle an `elicitation` AgentEvent: the structured, multi-field `ask_user` form. Posts the
+   * message + each field (with per-field selector letters) and tracks the pending form. On the
+   * degraded path (empty requestId), url mode, or a form with no parseable fields, it is
+   * render-only (posted with an answer-in-the-app hint and NOT tracked).
+   */
+  private async onElicitationEvent(e: AgentEvent): Promise<void> {
+    if (!e.elicitation) return;
+    const binding = this.bindings.find((b) => b.agentId === e.agentId && b.online);
+    if (!binding) return;
+
+    // Keep the (possibly locally-driven) form turn's events reaching this consumer.
+    this.deps.gateway.setForwarding(binding.officeId, binding.agentId, true);
+
+    const requestId = e.elicitation.requestId ?? '';
+    const message = (e.elicitation.message || '').trim();
+    const fields = this.buildElicitationFieldViews(e.elicitation.fields);
+
+    if (!requestId || e.elicitation.mode === 'url' || fields.length === 0) {
+      tlog(`elicitation → @${binding.handle}: render-only (requestId=${requestId || '∅'}, mode=${e.elicitation.mode}, ${fields.length} field(s)).`);
+      const lines: string[] = [`${this.agentLabel(binding)} ❓ <b>needs some information</b>`];
+      if (message) lines.push(`<br><br>${escapeHtml(message)}`);
+      lines.push(`<br><br><i>Answer this in the app — it can't be answered from Teams for this agent.</i>`);
+      for (const chunk of chunkReply(lines.join(''), 3500)) {
+        await this.safeReply(binding, chunk);
+      }
+      return;
+    }
+
+    const record: PendingElicitation = {
+      agentId: e.agentId,
+      officeId: binding.officeId,
+      binding,
+      toolId: e.elicitation.toolId,
+      requestId,
+      message,
+      fields,
+      resolved: false,
+      createdAt: this.now(),
+    };
+    // Supersede any prior pending form for this agent (one pending per agent).
+    this.pendingElicitations.set(e.agentId, record);
+    tlog(`elicitation → @${binding.handle}: ${fields.length} field(s), requestId=${requestId}`);
+
+    const html = this.composeElicitation(record);
+    let firstId: string | undefined;
+    for (const chunk of chunkReply(html, 3500)) {
+      const id = await this.safeReply(binding, chunk);
+      if (!firstId) firstId = id;
+    }
+    if (this.pendingElicitations.get(e.agentId) === record) {
+      record.postedMessageId = firstId;
+    }
+  }
+
+  /** Short per-kind hint shown after a field title. */
+  private elicitationFieldHint(field: ElicitationFieldView): string {
+    switch (field.kind) {
+      case 'select':
+        return 'choose a letter';
+      case 'multiselect':
+        return 'choose letters, comma-separated';
+      case 'boolean':
+        return 'yes/no';
+      case 'number':
+        return 'enter a number';
+      default:
+        return 'type your answer';
+    }
+  }
+
+  /** Compose the elicitation form message: the ask message, each numbered field with its
+   *  options + per-kind hint, and an instruction on how to reply (one line per field). */
+  private composeElicitation(record: PendingElicitation): string {
+    const multi = record.fields.length > 1;
+    const lines: string[] = [`${this.agentLabel(record.binding)} ❓ <b>needs some details</b>`];
+    if (record.message) lines.push(`<br><br>${escapeHtml(record.message)}`);
+    record.fields.forEach((field, idx) => {
+      const num = multi ? `${idx + 1}. ` : '';
+      const req = field.required ? ' <i>(required)</i>' : ' <i>(optional)</i>';
+      lines.push(`<br><br><b>${escapeHtml(num)}${escapeHtml(field.title)}</b> <i>(${this.elicitationFieldHint(field)})</i>${req}`);
+      if (field.description) lines.push(`<br>${escapeHtml(field.description)}`);
+      for (const opt of field.options) {
+        lines.push(`<br><b>${escapeHtml(opt.label)}</b> — ${escapeHtml(opt.text)}`);
+      }
+    });
+    if (multi) {
+      lines.push(`<br><br><i>Reply with one line per question, in order (question 1 on the first line). Reply "cancel" to dismiss.</i>`);
+    } else {
+      lines.push(`<br><br><i>Reply with your answer. Reply "cancel" to dismiss.</i>`);
+    }
+    return lines.join('');
+  }
+
+  /**
+   * Interpret one reply line against a single field. Returns the typed value, `undefined`
+   * (skip — an optional field left blank), or `null` (hard parse failure → nudge).
+   */
+  private interpretElicitationField(
+    field: ElicitationFieldView,
+    rawLine: string | undefined,
+  ): string | number | boolean | string[] | undefined | null {
+    const text = (rawLine ?? '').trim();
+    if (!text) return field.required ? null : undefined;
+
+    const matchOption = (token: string): string | null => {
+      const t = token.trim().replace(/[).:,]+$/, '');
+      if (!t) return null;
+      const byLabel = field.options.find((o) => o.label.toLowerCase() === t.toLowerCase());
+      if (byLabel) return byLabel.value;
+      const byValue = field.options.find(
+        (o) => o.value.toLowerCase() === t.toLowerCase() || o.text.toLowerCase() === t.toLowerCase(),
+      );
+      return byValue ? byValue.value : null;
+    };
+
+    switch (field.kind) {
+      case 'select': {
+        const token = text.split(/\s+/)[0] ?? '';
+        return matchOption(token) ?? matchOption(text);
+      }
+      case 'multiselect': {
+        const tokens = text.split(/[,\s]+/).filter((s) => s.length > 0);
+        const values: string[] = [];
+        for (const tk of tokens) {
+          const v = matchOption(tk);
+          if (v === null) return null; // an unrecognized token is a hard failure
+          if (!values.includes(v)) values.push(v);
+        }
+        if (values.length === 0) return field.required ? null : undefined;
+        return values;
+      }
+      case 'boolean': {
+        if (/^(y|yes|true|1|on)$/i.test(text)) return true;
+        if (/^(n|no|false|0|off)$/i.test(text)) return false;
+        return null;
+      }
+      case 'number': {
+        const n = Number(text);
+        return Number.isFinite(n) ? n : null;
+      }
+      default:
+        return text;
+    }
+  }
+
+  /**
+   * Resolve a thread reply against a pending elicitation form. A leading "cancel"/"dismiss"
+   * dismisses the form (action:'cancel'). Otherwise each reply line maps to the field at that
+   * index (single-field forms consume the whole reply), interpreted per field type. Any hard
+   * parse failure or missing required field posts a nudge and leaves the record pending; a
+   * clean parse submits `action:'accept'` with the per-field `content` map. Single-resolution.
+   */
+  private async resolveElicitation(record: PendingElicitation, rawText: string): Promise<void> {
+    const raw = rawText.trim();
+    if (/^(cancel|dismiss|decline)\b/i.test(raw)) {
+      if (record.resolved) return;
+      record.resolved = true;
+      tlog(`elicitation → @${record.binding.handle}: cancelled by reply`);
+      const ok = await this.submitElicitationSafe(record, { action: 'cancel' });
+      this.settleElicitationResolution(record, ok);
+      if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✖️ Form dismissed.`);
+      return;
+    }
+
+    const single = record.fields.length === 1;
+    const rawLines = raw.split(/\r?\n/).map((s) => s.trim());
+    const lines = rawLines.filter((s) => s.length > 0);
+
+    const content: Record<string, string | number | boolean | string[]> = {};
+    const problems: string[] = [];
+    record.fields.forEach((field, idx) => {
+      // Single-field forms consume the entire reply (so multi-word freeform works);
+      // multi-field forms map the i-th non-empty line to the i-th field.
+      const lineText = single ? raw : lines[idx];
+      const value = this.interpretElicitationField(field, lineText);
+      if (value === null) {
+        problems.push(`<b>${escapeHtml(single ? field.title : `${idx + 1}. ${field.title}`)}</b>`);
+      } else if (value !== undefined) {
+        content[field.name] = value;
+      }
+    });
+
+    if (problems.length > 0) {
+      // Keep the record pending so the human can simply reply again (FR-005 nudge analogue).
+      await this.safeReply(record.binding, this.composeElicitationNudge(record, problems));
+      return;
+    }
+
+    if (record.resolved) return; // latch: already claimed
+    record.resolved = true;
+    tlog(`elicitation answer → @${record.binding.handle}: ${Object.keys(content).length}/${record.fields.length} field(s) submitted`);
+    const ok = await this.submitElicitationSafe(record, { action: 'accept', content });
+    this.settleElicitationResolution(record, ok);
+    if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered.`);
+  }
+
+  /** Compose the nudge re-asking the fields that couldn't be parsed. Leaves the record pending. */
+  private composeElicitationNudge(record: PendingElicitation, problems: string[]): string {
+    const lines: string[] = [
+      `${this.agentLabel(record.binding)} 🤔 I couldn't read your answer for: ${problems.join(', ')}.`,
+    ];
+    lines.push(`<br>${record.fields.length > 1 ? 'Reply with one line per question, in order.' : 'Reply with your answer.'}`);
+    return lines.join('');
+  }
+
+  /** Submit an elicitation decision through the gateway. Returns true iff the transport
+   *  reported success; a failure returns false so the caller keeps the form open. */
+  private async submitElicitationSafe(
+    record: PendingElicitation,
+    decision: { action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> },
+  ): Promise<boolean> {
+    try {
+      await this.deps.gateway.respondElicitation(record.officeId, record.agentId, {
+        requestId: record.requestId || undefined,
+        action: decision.action,
+        content: decision.content,
+      });
+      return true;
+    } catch (e) {
+      twarn('respondElicitation failed:', (e as Error).message);
+      return false;
+    }
+  }
+
+  /**
+   * Finalize an elicitation resolution. On success, delete the record. On transport FAILURE,
+   * release the single-resolution latch and keep the record so the human can reply again, and
+   * post a thread notice — never silently drop the answer.
+   */
+  private settleElicitationResolution(record: PendingElicitation, ok: boolean): void {
+    if (ok) {
+      this.pendingElicitations.delete(record.agentId);
+      return;
+    }
+    if (this.pendingElicitations.get(record.agentId) === record) {
+      record.resolved = false;
+      void this.safeReply(
+        record.binding,
+        `${this.agentLabel(record.binding)} ⚠️ I couldn't deliver that answer — please reply again.`,
+      );
+    }
+  }
+
+  /**
+   * Precise local-resolution for an elicitation (fired on `elicitation.completed`): clear the
+   * pending form ONLY when its requestId matches the resolved interaction. A Teams answer
+   * clears the record synchronously before this fires, so a matching record here means the
+   * form was answered in the app → post the one-time notice.
+   */
+  private maybeLocalResolveElicitationByRequestId(agentId: string, requestId: string): void {
+    const record = this.pendingElicitations.get(agentId);
+    if (!record || record.resolved) return;
+    if (!requestId || record.requestId !== requestId) return;
+    record.resolved = true;
+    this.pendingElicitations.delete(agentId);
+    tlog(`elicitation answered locally (requestId=${requestId}) for @${record.binding.handle} — posting in-app notice.`);
+    void this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered in the app.`);
   }
 
   /**

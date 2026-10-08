@@ -165,6 +165,29 @@ export interface MsgSubmitPlanDecision {
   feedback?: string;
 }
 
+/**
+ * Answer to a pending `ask_user` **elicitation** interaction (the structured, multi-field
+ * `ask_user` form the Copilot CLI raises as an SDK `elicitation.requested` event — distinct
+ * from the single-question `user_input.requested` handled by {@link MsgSubmitAnswer}).
+ * Resolves the native-bridge extension's `onElicitationRequest` handler with a per-field
+ * `content` map. The raw node-pty backend has no programmatic session and reports failure.
+ */
+export interface MsgSubmitElicitation {
+  type: 'submit-elicitation';
+  requestId: string;
+  officeId: string;
+  agentId: string;
+  /** SDK `elicitation.requested` id (single-resolution key); '' when the relay carried none. */
+  elicitationRequestId?: string;
+  /** The user action: `accept` (submitted the form), `decline`, or `cancel`. */
+  action: 'accept' | 'decline' | 'cancel';
+  /**
+   * Submitted form values keyed by schema field name, present only when `action === 'accept'`.
+   * Each value is a string, number, boolean, or string[] (multi-select) per the field type.
+   */
+  content?: Record<string, string | number | boolean | string[]>;
+}
+
 export interface MsgResize {
   type: 'resize';
   officeId: string;
@@ -418,6 +441,7 @@ export type MainToServer =
   | MsgSubmitPrompt
   | MsgSubmitAnswer
   | MsgSubmitPlanDecision
+  | MsgSubmitElicitation
   | MsgSetAgentForwarding
   | MsgRunControlCommand
   | MsgResize
@@ -601,6 +625,62 @@ export interface SrvCopilotPlanComplete {
   feedback?: string;
 }
 
+/**
+ * One normalized field of an `ask_user` elicitation form (relayed with {@link SrvCopilotElicitation}).
+ * Translated best-effort from the SDK `elicitation.requested` `requestedSchema.properties`. The
+ * server stays a dumb forwarder — it does NOT assign Teams selector letters or format HTML.
+ */
+export interface ElicitationField {
+  /** Schema property key — the key used in the answer `content` map. */
+  name: string;
+  /** Human-readable label (falls back to `name`). */
+  title: string;
+  /** Help text / description ('' when absent). */
+  description: string;
+  /** Interpreted field shape driving how it is presented and parsed. */
+  kind: 'select' | 'multiselect' | 'boolean' | 'string' | 'number';
+  /** ORDERED options (value = submitted value, label = display text). Empty for free-text/boolean/number. */
+  options: { value: string; label: string }[];
+  /** Whether the schema marks this field required. */
+  required: boolean;
+}
+
+/**
+ * Emitted IN ADDITION to `copilot-tool-start` when an agent raises a structured `ask_user`
+ * **elicitation** form (SDK `elicitation.requested`) — the multi-field analogue of
+ * {@link SrvCopilotAskUser}. SDK/native-bridge sessions carry the payload natively (incl. the
+ * `requestId` single-resolution key). node-pty has no such event. `mode:'url'` elicitations
+ * relay with an empty `fields` list (render-only). The server stays a dumb forwarder.
+ */
+export interface SrvCopilotElicitation {
+  type: 'copilot-elicitation';
+  agentId: string;
+  toolId: string;
+  /** SDK `elicitation.requested` id (single-resolution key); '' when unavailable. */
+  requestId: string;
+  /** Message describing what information is needed. */
+  message: string;
+  /** Elicitation mode: `form` (structured) or `url` (browser redirect — render-only). */
+  mode: string;
+  /** ORDERED form fields (empty for `url` mode). */
+  fields: ElicitationField[];
+}
+
+/**
+ * Emitted when the SDK signals a resolved elicitation interaction (`elicitation.completed`).
+ * Always forwarded (outside the viewer gate) so the Teams consumer can PRECISELY clear a
+ * locally-answered pending elicitation by `requestId` (first-resolver-wins). Mirrors
+ * {@link SrvCopilotAskUserComplete}.
+ */
+export interface SrvCopilotElicitationComplete {
+  type: 'copilot-elicitation-complete';
+  agentId: string;
+  /** The resolved SDK `elicitation.requested` requestId; '' when unavailable. */
+  requestId: string;
+  /** The user action: `accept`, `decline`, or `cancel` ('' when unavailable). */
+  action: string;
+}
+
 export interface SrvCopilotTurnEnd {
   type: 'copilot-turn-end';
   agentId: string;
@@ -674,6 +754,8 @@ export type ServerToMain =
   | SrvCopilotAskUserComplete
   | SrvCopilotPlan
   | SrvCopilotPlanComplete
+  | SrvCopilotElicitation
+  | SrvCopilotElicitationComplete
   | SrvCopilotToolComplete
   | SrvCopilotTurnEnd
   | SrvCopilotTurnStart

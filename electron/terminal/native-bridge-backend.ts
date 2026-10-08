@@ -38,6 +38,7 @@ import {
   type TerminalBackend,
   type TerminalExitEvent,
   type TerminalPlanDecision,
+  type TerminalElicitationDecision,
   type TerminalProcess,
   type TerminalSessionChange,
 } from './terminal-backend';
@@ -396,6 +397,14 @@ export class NativeBridgeProcess implements TerminalProcess {
       approved: decision.approved,
       ...(decision.selectedAction ? { selectedAction: decision.selectedAction } : {}),
       ...(decision.feedback ? { feedback: decision.feedback } : {}),
+    });
+  }
+
+  async submitElicitation(decision: TerminalElicitationDecision): Promise<void> {
+    await this.command('submit-elicitation', {
+      ...(decision.requestId ? { requestId: decision.requestId } : {}),
+      action: decision.action,
+      ...(decision.content ? { content: decision.content } : {}),
     });
   }
 
