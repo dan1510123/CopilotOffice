@@ -204,6 +204,38 @@ describe('ask_user elicitation post + resolve (SDK/native-bridge)', () => {
     });
   });
 
+  it('keeps positional field mapping when an optional mid-field is left blank', async () => {
+    const h = makeHarness();
+    await online(h);
+    elicit(h, [
+      selectField('scope'),
+      { name: 'note', title: 'Note', description: '', kind: 'string', required: false, options: [] },
+      { name: 'count', title: 'Count', description: '', kind: 'number', required: true, options: [] },
+    ]);
+    await tick();
+
+    // blank second line skips the optional note; 5 must still bind to count, not note
+    h.inbound()(reply('A\n\n5'));
+    await tick();
+
+    expect(h.elicits).toHaveLength(1);
+    expect(h.elicits[0].e.action).toBe('accept');
+    expect(h.elicits[0].e.content).toEqual({ scope: 'alpha', count: 5 });
+  });
+
+  it('answers an option-less multiselect as comma-separated freeform values', async () => {
+    const h = makeHarness();
+    await online(h);
+    elicit(h, [{ name: 'tags', title: 'Tags', description: '', kind: 'multiselect', required: true, options: [] }]);
+    await tick();
+
+    h.inbound()(reply('alpha, beta gamma, delta'));
+    await tick();
+
+    expect(h.elicits).toHaveLength(1);
+    expect(h.elicits[0].e.content).toEqual({ tags: ['alpha', 'beta gamma', 'delta'] });
+  });
+
   it('nudges and keeps the form pending when a required field is missing or unparseable', async () => {
     const h = makeHarness();
     await online(h);

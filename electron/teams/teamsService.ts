@@ -1555,7 +1555,7 @@ export class TeamsService {
       case 'select':
         return 'choose a letter';
       case 'multiselect':
-        return 'choose letters, comma-separated';
+        return field.options.length === 0 ? 'comma-separated values' : 'choose letters, comma-separated';
       case 'boolean':
         return 'yes/no';
       case 'number':
@@ -1616,6 +1616,13 @@ export class TeamsService {
         return matchOption(token) ?? matchOption(text);
       }
       case 'multiselect': {
+        // A multiselect with no enumerated options (e.g. an MCP free-form string array) is
+        // answered as comma-separated freeform values rather than selector letters.
+        if (field.options.length === 0) {
+          const freeform = text.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+          if (freeform.length === 0) return field.required ? null : undefined;
+          return freeform;
+        }
         const tokens = text.split(/[,\s]+/).filter((s) => s.length > 0);
         const values: string[] = [];
         for (const tk of tokens) {
@@ -1660,15 +1667,16 @@ export class TeamsService {
     }
 
     const single = record.fields.length === 1;
+    // Positional mapping: the i-th reply LINE maps to the i-th field (keep blank lines so a
+    // user can skip an optional field mid-form with an empty line — filtering them out would
+    // shift every later answer onto the wrong field). Single-field forms consume the whole
+    // reply (so multi-word freeform works).
     const rawLines = raw.split(/\r?\n/).map((s) => s.trim());
-    const lines = rawLines.filter((s) => s.length > 0);
 
     const content: Record<string, string | number | boolean | string[]> = {};
     const problems: string[] = [];
     record.fields.forEach((field, idx) => {
-      // Single-field forms consume the entire reply (so multi-word freeform works);
-      // multi-field forms map the i-th non-empty line to the i-th field.
-      const lineText = single ? raw : lines[idx];
+      const lineText = single ? raw : rawLines[idx];
       const value = this.interpretElicitationField(field, lineText);
       if (value === null) {
         problems.push(`<b>${escapeHtml(single ? field.title : `${idx + 1}. ${field.title}`)}</b>`);

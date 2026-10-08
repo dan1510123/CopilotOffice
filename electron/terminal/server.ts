@@ -860,7 +860,13 @@ async function startTerminalForAgentImpl(
           const elicitRelay = buildElicitationRelay(event);
           if (elicitRelay) {
             console.log(`[TermServer] Forwarding elicitation (elicitation.requested) for ${ck}: requestId=${elicitRelay.requestId}, mode=${elicitRelay.mode}, ${elicitRelay.fields.length} field(s)`);
-            send({ type: 'copilot-tool-start', agentId, toolName: 'ask_user', toolId: elicitRelay.toolId, status: 'Waiting for your answer' });
+            // Only emit copilot-tool-start when a real tool call backs this elicitation.
+            // MCP-server-initiated elicitations carry no toolCallId; a tool-start with an
+            // empty toolId would register an active tool that never completes (no matching
+            // tool.execution_complete), pinning the agent at "Waiting for your answer".
+            if (elicitRelay.toolId) {
+              send({ type: 'copilot-tool-start', agentId, toolName: 'ask_user', toolId: elicitRelay.toolId, status: 'Waiting for your answer' });
+            }
             send({ type: 'copilot-elicitation', agentId, toolId: elicitRelay.toolId, requestId: elicitRelay.requestId, message: elicitRelay.message, mode: elicitRelay.mode, fields: elicitRelay.fields });
           }
         } else if (event.type === 'elicitation.completed') {
