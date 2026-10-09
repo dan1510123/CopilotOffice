@@ -190,6 +190,17 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.on('copilot-ask-user', handler);
     return () => ipcRenderer.removeListener('copilot-ask-user', handler);
   },
+  // ask_user elicitation (structured form) relay — renderer parity with onCopilotAskUser.
+  onCopilotElicitation: (callback: (agentId: string, toolId: string, requestId: string, message: string, mode: string, fields: unknown[]) => void) => {
+    const handler = (_event: unknown, agentId: string, toolId: string, requestId: string, message: string, mode: string, fields: unknown[]) => callback(agentId, toolId, requestId, message, mode, fields);
+    ipcRenderer.on('copilot-elicitation', handler);
+    return () => ipcRenderer.removeListener('copilot-elicitation', handler);
+  },
+  onCopilotElicitationComplete: (callback: (agentId: string, requestId: string, action: string) => void) => {
+    const handler = (_event: unknown, agentId: string, requestId: string, action: string) => callback(agentId, requestId, action);
+    ipcRenderer.on('copilot-elicitation-complete', handler);
+    return () => ipcRenderer.removeListener('copilot-elicitation-complete', handler);
+  },
   onCopilotToolComplete: (callback: (agentId: string, toolId: string, success: boolean) => void) => {
     const handler = (_event: unknown, agentId: string, toolId: string, success: boolean) => callback(agentId, toolId, success);
     ipcRenderer.on('copilot-tool-complete', handler);
@@ -224,6 +235,8 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     ipcRenderer.removeAllListeners('copilot-event');
     ipcRenderer.removeAllListeners('copilot-tool-start');
     ipcRenderer.removeAllListeners('copilot-ask-user');
+    ipcRenderer.removeAllListeners('copilot-elicitation');
+    ipcRenderer.removeAllListeners('copilot-elicitation-complete');
     ipcRenderer.removeAllListeners('copilot-tool-complete');
     ipcRenderer.removeAllListeners('copilot-turn-end');
     ipcRenderer.removeAllListeners('copilot-turn-start');

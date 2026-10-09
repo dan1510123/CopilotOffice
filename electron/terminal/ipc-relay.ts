@@ -75,6 +75,7 @@ export class TerminalRelay {
       type === 'submit-prompt'
       || type === 'submit-answer'
       || type === 'submit-plan-decision'
+      || type === 'submit-elicitation'
     ) {
       return TerminalRelay.BRIDGE_COMMAND_TIMEOUT_MS;
     }
@@ -372,6 +373,28 @@ export class TerminalRelay {
     }) as Promise<{ success: boolean; error?: string }>;
   }
 
+  /**
+   * Answer a pending `ask_user` **elicitation** (structured form) interaction. Resolves the
+   * native-bridge extension's `onElicitationRequest` handler (or the SDK backend's) with a
+   * per-field `content` map. node-pty reports failure (forms are never keystroke-injected).
+   * `elicitationRequestId` is the single-resolution key.
+   */
+  mainSubmitElicitation(
+    officeId: string,
+    agentId: string,
+    e: { requestId?: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> },
+  ): Promise<{ success: boolean; error?: string }> {
+    return this.request({
+      type: 'submit-elicitation',
+      requestId: this.id(),
+      officeId,
+      agentId,
+      elicitationRequestId: e.requestId,
+      action: e.action,
+      content: e.content,
+    }) as Promise<{ success: boolean; error?: string }>;
+  }
+
   private handleServerMessage(
     msg: ServerToMain,
     readyTimeout: ReturnType<typeof setTimeout>,
@@ -452,6 +475,12 @@ export class TerminalRelay {
       case 'copilot-plan-complete':
         this.mainEvents.emit('copilot-plan-complete', msg.agentId, msg.requestId, msg.approved, msg.selectedAction, msg.feedback);
         break;
+      case 'copilot-elicitation':
+        this.mainEvents.emit('copilot-elicitation', msg.agentId, msg.toolId, msg.requestId, msg.message, msg.mode, msg.fields);
+        break;
+      case 'copilot-elicitation-complete':
+        this.mainEvents.emit('copilot-elicitation-complete', msg.agentId, msg.requestId, msg.action);
+        break;
       case 'session-meta-updated':
         this.mainEvents.emit('session-meta-updated', msg.agentId, msg.meta, msg.officeId);
         break;
@@ -481,6 +510,12 @@ export class TerminalRelay {
         break;
       case 'copilot-ask-user-complete':
         win.webContents.send('copilot-ask-user-complete', msg.agentId, msg.requestId);
+        break;
+      case 'copilot-elicitation':
+        win.webContents.send('copilot-elicitation', msg.agentId, msg.toolId, msg.requestId, msg.message, msg.mode, msg.fields);
+        break;
+      case 'copilot-elicitation-complete':
+        win.webContents.send('copilot-elicitation-complete', msg.agentId, msg.requestId, msg.action);
         break;
       case 'copilot-tool-complete':
         win.webContents.send('copilot-tool-complete', msg.agentId, msg.toolId, msg.success);

@@ -237,7 +237,7 @@ export const defaultDashboard: DashboardRenderer = {
         padding: 14px 16px;
         margin-bottom: 10px;
         cursor: pointer;
-        transition: border-color 0.15s;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
         display: flex;
         align-items: center;
         gap: 12px;
@@ -317,7 +317,7 @@ export const defaultDashboard: DashboardRenderer = {
           background: var(--co-bg-badge-inset); border: 1px solid var(--co-border-subtle);
           padding: 4px 11px; border-radius: 8px; cursor: text; overflow: hidden;
           ${metaTitle ? '' : 'font-style: italic;'}
-        ">📝 <span style="min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere;">${metaTitle || 'Untitled session'}</span></span>` : '';
+        "><span style="min-width: 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere;">${metaTitle || 'Untitled session'}</span></span>` : '';
 
       const sessionPanelHtml = hasSession ? `
         <div class="session-meta-panel" data-agent="${agent.id}" style="
@@ -360,7 +360,9 @@ export const defaultDashboard: DashboardRenderer = {
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
             " title="${d.activityDetailEsc}">${d.activityDetail || 'No active session'}</div>
           </div>
-          <div style="display: flex; align-items: center; flex-shrink: 0;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${isTeamsOnline ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}"
+              title="${teamsButtonTitle}"${pendingTeamsAction ? ' disabled aria-busy="true"' : ''}>${teamsButtonLabel}</button>` : ''}
             ${flagBtnHtml}
           </div>
         </div>
@@ -373,7 +375,7 @@ export const defaultDashboard: DashboardRenderer = {
           border-radius: 13px;
           margin-bottom: 10px;
           cursor: pointer;
-          transition: border-color 0.15s;
+          transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
           position: relative;
           overflow: hidden;
           height: 208px;

@@ -24,52 +24,52 @@ const THEME_STYLE_ID = 'co-theme-styles';
  * everywhere as `var(--co-<key>)`.
  */
 const DARK: Record<string, string> = {
-  // Backgrounds
-  'bg-app': '#171724',
-  'bg-panel': '#1e1e2e',
-  'bg-header': '#141424',
-  'bg-card': '#13131f',
-  'bg-card-sel': '#1e1e3a',
-  'bg-raised': '#1e1e30',
-  'bg-raised-hover': '#262c40',
-  'bg-inset': '#12141f',
-  'bg-tab-active': '#232342',
-  'bg-badge-inset': '#1a2030',
-  'bg-statusbar': 'rgba(20,23,36,0.5)',
+  // Backgrounds — softer, warmer-neutral slate (less pure-black, friendlier)
+  'bg-app': '#1b1c28',
+  'bg-panel': '#20212f',
+  'bg-header': '#1c1d29',
+  'bg-card': '#272837',
+  'bg-card-sel': '#303047',
+  'bg-raised': '#303141',
+  'bg-raised-hover': '#3a3c50',
+  'bg-inset': '#212230',
+  'bg-tab-active': '#303047',
+  'bg-badge-inset': '#242636',
+  'bg-statusbar': 'rgba(28,29,41,0.72)',
   'bg-overlay-scrim': 'rgba(0,0,0,0.7)',
-  'bg-divider': '#1a1a30',
+  'bg-divider': '#2a2c3e',
 
-  // Borders
-  border: '#2c2c46',
-  'border-subtle': '#252540',
-  'border-strong': '#333333',
-  'border-header': '#2a2a4a',
-  'border-badge-inset': '#2a3550',
-  'sel-border': '#6677ff',
+  // Borders — lighter, lower-contrast edges
+  border: '#3b3d51',
+  'border-subtle': '#36384b',
+  'border-strong': '#54586f',
+  'border-header': '#34364c',
+  'border-badge-inset': '#343852',
+  'sel-border': '#a8a2ed',
 
-  // Text
-  text: '#d7defa',
-  'text-strong': '#dddeef',
-  'text-secondary': '#9a9ab8',
-  'text-muted': '#777788',
-  'text-faint': '#555566',
-  heading: '#88aaff',
+  // Text — slightly warmer off-white; brighter muted tiers for readability
+  text: '#e0e1ee',
+  'text-strong': '#f4f1fa',
+  'text-secondary': '#b5b7cf',
+  'text-muted': '#a3a7bf',
+  'text-faint': '#7b819b',
+  heading: '#c7befa',
 
-  // Accents
-  accent: '#8fb7ff',
-  'accent-strong': '#6d8bff',
-  'accent-soft': '#5da9ff',
-  'accent-link': '#8ec3ff',
-  success: '#46d17f',
-  danger: '#e0607a',
+  // Accents — calmer lavender / mint instead of hard electric blue
+  accent: '#b8b0f4',
+  'accent-strong': '#a69aec',
+  'accent-soft': '#a9b8f5',
+  'accent-link': '#b0b8f6',
+  success: '#8cd8b3',
+  danger: '#ee92a6',
   amber: '#ffb86c',
   // User "Flagged / Needs attention" marker. Deliberately distinct from every
   // status color (esp. waiting=#ffb86c) so a manual flag never reads as a status.
   flag: '#f5b93d',
 
   // Accent-tinted surfaces (fixed alpha; can't append alpha to a var())
-  'pc-sprite-bg': 'rgba(93,169,255,0.13)',
-  'pc-sprite-border': 'rgba(93,169,255,0.27)',
+  'pc-sprite-bg': 'rgba(168,162,237,0.14)',
+  'pc-sprite-border': 'rgba(168,162,237,0.30)',
 };
 
 const LIGHT: Record<string, string> = {
@@ -100,8 +100,8 @@ const LIGHT: Record<string, string> = {
   text: '#4a3f30',
   'text-strong': '#2e2416',
   'text-secondary': '#746551',
-  'text-muted': '#97876f',
-  'text-faint': '#b3a385',
+  'text-muted': '#7d6c55',
+  'text-faint': '#99886d',
   heading: '#cf7a2b',
 
   // Accents — burnt orange

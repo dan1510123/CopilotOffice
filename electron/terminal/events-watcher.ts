@@ -495,3 +495,121 @@ export function buildPlanRelay(
   }
   return null;
 }
+
+/** One normalized field of an `ask_user` elicitation form (see {@link buildElicitationRelay}). */
+export interface ElicitationRelayField {
+  name: string;
+  title: string;
+  description: string;
+  kind: 'select' | 'multiselect' | 'boolean' | 'string' | 'number';
+  options: { value: string; label: string }[];
+  required: boolean;
+}
+
+/** Normalized elicitation payload relayed as `copilot-elicitation`. */
+export interface ElicitationRelay {
+  toolId: string;
+  /** SDK `elicitation.requested` id (single-resolution key); '' when unavailable. */
+  requestId: string;
+  message: string;
+  /** `form` (structured) or `url` (browser redirect → render-only, empty fields). */
+  mode: string;
+  fields: ElicitationRelayField[];
+}
+
+function asStr(v: unknown): string {
+  return typeof v === 'string' ? v : v == null ? '' : String(v);
+}
+
+/**
+ * Extract an ordered option list from a JSON-schema field object, supporting the shapes the
+ * Copilot `ask_user` elicitation schema uses: `enum` (+ optional `enumNames`), `oneOf`/`anyOf`
+ * arrays of `{ const, title }`. Returns `[]` when the field carries no enumerated options.
+ */
+function extractElicitationOptions(o: Record<string, unknown>): { value: string; label: string }[] {
+  const out: { value: string; label: string }[] = [];
+  if (Array.isArray(o.enum)) {
+    const names = Array.isArray(o.enumNames) ? o.enumNames : [];
+    o.enum.forEach((v, i) => out.push({ value: asStr(v), label: asStr(names[i]) || asStr(v) }));
+    return out;
+  }
+  for (const key of ['oneOf', 'anyOf'] as const) {
+    const arr = o[key];
+    if (Array.isArray(arr)) {
+      for (const it of arr) {
+        if (it && typeof it === 'object' && !Array.isArray(it)) {
+          const r = it as Record<string, unknown>;
+          const value = asStr(r.const);
+          if (value) out.push({ value, label: asStr(r.title) || value });
+        }
+      }
+      if (out.length) return out;
+    }
+  }
+  return out;
+}
+
+/** Parse one `requestedSchema.properties[name]` entry into a normalized {@link ElicitationRelayField}. */
+function parseElicitationField(name: string, raw: unknown, required: boolean): ElicitationRelayField {
+  const f = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const title = asStr(f.title) || name;
+  const description = asStr(f.description);
+  const type = asStr(f.type);
+  let kind: ElicitationRelayField['kind'];
+  let options: { value: string; label: string }[] = [];
+  if (type === 'array') {
+    kind = 'multiselect';
+    const items = f.items && typeof f.items === 'object' && !Array.isArray(f.items) ? (f.items as Record<string, unknown>) : {};
+    options = extractElicitationOptions(items);
+  } else {
+    const direct = extractElicitationOptions(f);
+    if (direct.length) {
+      kind = 'select';
+      options = direct;
+    } else if (type === 'boolean') {
+      kind = 'boolean';
+    } else if (type === 'number' || type === 'integer') {
+      kind = 'number';
+    } else {
+      kind = 'string';
+    }
+  }
+  return { name, title, description, kind, options, required };
+}
+
+/**
+ * Pure relay translator for the structured `ask_user` **elicitation** form. Returns the
+ * normalized payload to relay as `copilot-elicitation`, or `null` when the event is not an
+ * `elicitation.requested`. Mirrors {@link buildAskUserRelay} / {@link buildPlanRelay}.
+ *
+ * Only the SDK/native-bridge path raises `elicitation.requested` (node-pty has no such event);
+ * `mode:'url'` elicitations relay with an empty `fields` list (render-only in Teams). Field
+ * order follows `requestedSchema.properties` key order; `required` comes from `schema.required`.
+ */
+export function buildElicitationRelay(
+  event: { type: string; data: Record<string, unknown> },
+): ElicitationRelay | null {
+  if (event.type !== 'elicitation.requested') return null;
+  const d = event.data ?? {};
+  const mode = asStr(d.mode) || 'form';
+  const schema = d.requestedSchema && typeof d.requestedSchema === 'object' && !Array.isArray(d.requestedSchema)
+    ? (d.requestedSchema as Record<string, unknown>)
+    : null;
+  const props = schema && schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
+    ? (schema.properties as Record<string, unknown>)
+    : {};
+  const requiredSet = new Set(Array.isArray(schema?.required) ? (schema!.required as unknown[]).map(asStr) : []);
+  const fields: ElicitationRelayField[] = [];
+  if (mode === 'form') {
+    for (const name of Object.keys(props)) {
+      fields.push(parseElicitationField(name, props[name], requiredSet.has(name)));
+    }
+  }
+  return {
+    toolId: asStr(d.toolCallId),
+    requestId: asStr(d.requestId),
+    message: asStr(d.message),
+    mode,
+    fields,
+  };
+}

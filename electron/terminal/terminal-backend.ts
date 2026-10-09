@@ -2,7 +2,7 @@ import { execSync, spawn, type ChildProcessWithoutNullStreams, type SpawnOptions
 import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
-import type { ExitPlanModeHandler, ExitPlanModeResult } from '@github/copilot-sdk';
+import type { ExitPlanModeHandler, ExitPlanModeResult, ElicitationHandler, ElicitationResult } from '@github/copilot-sdk';
 import type { ControlCommand, ControlData } from './protocol';
 import { loadCustomAgents } from './custom-agents';
 import { resolveSkillDirectories } from './custom-skills';
@@ -126,6 +126,23 @@ export function answerTransport(
   return typeof proc.submitPrompt === 'function' ? 'sdk' : null;
 }
 
+/** Programmatic transport that can resolve an `ask_user` **elicitation** (structured form). */
+export type ElicitationTransport = 'bridge' | 'sdk';
+
+/**
+ * Decide how an `ask_user` elicitation answer is delivered for a backend process. Mirrors
+ * {@link answerTransport}: native-bridge processes expose `submitElicitation` (resolved in the
+ * TUI's bridge extension over the broker); SDK backends expose `submitPrompt` and resolve the
+ * pending interaction by `sessionId` via {@link handlePendingElicitation}. The raw node-pty
+ * backend has neither → `null` (the caller reports an explicit failure).
+ */
+export function elicitationTransport(
+  proc: Pick<TerminalProcess, 'submitPrompt' | 'submitElicitation'>,
+): ElicitationTransport | null {
+  if (typeof proc.submitElicitation === 'function') return 'bridge';
+  return typeof proc.submitPrompt === 'function' ? 'sdk' : null;
+}
+
 /** Kinds of programmatic input the server may route to an agent's session. */
 export type ProgrammaticInputKind = 'prompt' | 'control' | 'answer';
 
@@ -222,6 +239,77 @@ export function pendingPlanApprovalCount(): number {
   return pendingPlanApproval.size;
 }
 
+// ── ask_user elicitation (SDK structured-form interaction) answer channel ────────
+//
+// Mirrors the ask_user (user_input) and plan (exit_plan_mode) machinery above. The
+// structured, multi-field `ask_user` form is raised by the runtime as an
+// `elicitation.requested` event and resolved through the SDK `onElicitationRequest`
+// handler (or an MCP server's elicitation). The callback carries the sessionId via its
+// context — the resolver is keyed by `sessionId` alone (at most one blocking elicitation
+// per session). It is fired out-of-band by {@link handlePendingElicitation} when a Teams
+// reply arrives; a local TUI answer resolves the runtime directly and surfaces as
+// `elicitation.completed`, which the Teams consumer uses to clear its pending record
+// (first-resolver-wins). node-pty has no SDK client and never registers this handler.
+
+interface PendingElicitationEntry {
+  resolve: (r: ElicitationResult) => void;
+  sessionId: string;
+}
+
+/** Pending elicitations keyed by `sessionId` (one blocking elicitation per session). */
+const pendingElicitation = new Map<string, PendingElicitationEntry>();
+
+/**
+ * Build the SDK `onElicitationRequest` handler. Registered on every managed SDK session so a
+ * Teams-online agent's structured `ask_user` form (or an MCP elicitation) can be answered from
+ * the thread. Returns a promise resolved LATE by {@link handlePendingElicitation}. The relay of
+ * the form itself rides the normal event stream (`elicitation.requested`), NOT this callback.
+ */
+export function makeElicitationHandler(sessionId: string): ElicitationHandler {
+  return (ctx) =>
+    new Promise<ElicitationResult>((resolve) => {
+      const scope = sessionId || ctx?.sessionId || '';
+      if (pendingElicitation.get(scope)) {
+        console.warn(
+          `[terminal-backend] makeElicitationHandler: replacing an UNRESOLVED pending elicitation for session="${scope}" (its promise will never resolve)`,
+        );
+      }
+      pendingElicitation.set(scope, { resolve, sessionId: scope });
+    });
+}
+
+/**
+ * Resolve the pending elicitation for `sessionId`. Idempotent: an unknown or already-resolved
+ * session is a no-op + warn (supports the single-resolution Teams/local race). Returns true
+ * only when a stored resolver actually fired.
+ */
+export function handlePendingElicitation(sessionId: string, result: ElicitationResult): boolean {
+  const entry = pendingElicitation.get(sessionId);
+  if (!entry) {
+    console.warn(
+      `[terminal-backend] handlePendingElicitation: no pending elicitation for session="${sessionId}" (already resolved or unknown) — no-op`,
+    );
+    return false;
+  }
+  pendingElicitation.delete(sessionId);
+  entry.resolve(result);
+  return true;
+}
+
+/**
+ * GC the outstanding pending elicitation owned by `sessionId`. Called when a session
+ * exits/resets/is killed so an agent torn down mid-form cannot leak an unresolved resolver.
+ * Returns the number of entries dropped (0 or 1).
+ */
+export function clearPendingElicitationForSession(sessionId: string): number {
+  return pendingElicitation.delete(sessionId) ? 1 : 0;
+}
+
+/** Test/diagnostics helper: number of outstanding pending elicitations. */
+export function pendingElicitationCount(): number {
+  return pendingElicitation.size;
+}
+
 export interface TerminalExitEvent {
   exitCode: number;
 }
@@ -242,6 +330,16 @@ export interface TerminalPlanDecision {
   feedback?: string;
 }
 
+/** Answer to a pending `ask_user` **elicitation** (structured form) interaction. */
+export interface TerminalElicitationDecision {
+  /** SDK `elicitation.requested` id (single-resolution key); optional/'' when unavailable. */
+  requestId?: string;
+  /** `accept` (submitted the form), `decline`, or `cancel`. */
+  action: 'accept' | 'decline' | 'cancel';
+  /** Submitted form values keyed by field name; present only when `action === 'accept'`. */
+  content?: Record<string, string | number | boolean | string[]>;
+}
+
 export interface TerminalProcess {
   readonly pid: number;
   /** Current authoritative session id for reconnecting backends (native bridge). */
@@ -250,7 +348,15 @@ export interface TerminalProcess {
   resize(cols: number, rows: number): void;
   onData(callback: (data: string) => void): void;
   onExit(callback: (event: TerminalExitEvent) => void): void;
-  kill(): void;
+  /**
+   * Force-kill the underlying process (tree). Returns true only when the kill
+   * command itself completed without throwing (same heuristic the pty-registry
+   * startup reaper uses) — callers that track the process in the on-disk PTY
+   * registry must not unregister it on a false return, so a failed kill is
+   * retried by the reaper on next launch instead of silently becoming an
+   * untraceable orphan.
+   */
+  kill(): boolean;
   /**
    * Optional: submit a full prompt to the underlying agent atomically, bypassing
    * the character-by-character line editor. Implemented by SDK-backed processes
@@ -279,6 +385,13 @@ export interface TerminalProcess {
    * when there is no pending plan or the channel is unavailable.
    */
   submitPlanDecision?(decision: TerminalPlanDecision): Promise<void>;
+
+  /**
+   * Optional: resolve the session's pending `ask_user` elicitation (structured form)
+   * through a dedicated control channel (native bridge). Rejects with an explicit error
+   * when there is no pending elicitation or the channel is unavailable.
+   */
+  submitElicitation?(decision: TerminalElicitationDecision): Promise<void>;
 
   /**
    * Optional: resolves once the process's programmatic control channel is
@@ -447,7 +560,7 @@ class NodePtyProcess implements TerminalProcess {
     this.proc.onExit(callback);
   }
 
-  kill(): void {
+  kill(): boolean {
     try {
       if (os.platform() === 'win32') {
         try {
@@ -458,8 +571,10 @@ class NodePtyProcess implements TerminalProcess {
       } else {
         this.proc.kill();
       }
+      return true;
     } catch {
-      // Process is already gone.
+      // Already dead, or insufficient permissions.
+      return false;
     }
   }
 }
@@ -697,8 +812,12 @@ class CopilotSdkProcess implements TerminalProcess {
     this.exitListeners.push(callback);
   }
 
-  kill(): void {
-    if (this.closed) return;
+  kill(): boolean {
+    // Synthetic PID — never tracked in the on-disk PTY registry (see
+    // registerPty call site), so there is nothing for a caller to leave
+    // behind on "failure". The async disconnect below is best-effort cleanup
+    // of the SDK session, not an OS process kill.
+    if (this.closed) return true;
     this.closed = true;
 
     this.disconnectSession()
@@ -708,6 +827,7 @@ class CopilotSdkProcess implements TerminalProcess {
       .finally(() => {
         this.emitExit({ exitCode: 0 });
       });
+    return true;
   }
 
   handleHostExit(error: Error): void {
@@ -1118,6 +1238,12 @@ export class CopilotSdkBackend implements TerminalBackend {
       // plan can be approved/rejected from the thread (resolved late via
       // handlePendingPlanApproval). The plan content itself relays over the event stream.
       onExitPlanModeRequest: makeExitPlanModeHandler(options.sessionId),
+      // ask_user elicitation: register the structured-form handler so a Teams-online agent's
+      // multi-field ask_user form (or an MCP server's elicitation) can be answered from the
+      // thread (resolved late via handlePendingElicitation). The form relays over the event
+      // stream (`elicitation.requested`). Left at the default `legacy` askUserVariant so the
+      // single-question `onUserInputRequest` path is unchanged; this only adds elicitation.
+      onElicitationRequest: makeElicitationHandler(options.sessionId),
     };
 
     try {

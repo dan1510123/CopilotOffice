@@ -79,6 +79,12 @@ export class OrchestratorSessionGateway implements SessionGateway {
     throw new Error('Orchestrator session does not support plan approvals');
   }
 
+  async respondElicitation(): Promise<void> {
+    // The orchestrator session registers no elicitation handler (it gates tool calls via
+    // onPermissionRequest), so there is no ask_user form to resolve here.
+    throw new Error('Orchestrator session does not support ask_user elicitations');
+  }
+
   setForwarding(): void {
     // No-op: the manager streams its whole session to any tap listener already;
     // there is no per-viewer forwarding toggle for the orchestrator.

@@ -319,12 +319,14 @@ export class SeriousTerminalController {
     buttonGrid.appendChild(closeSessionBtn);
 
     // Teams Remote Agents (011): mirror of TerminalOverlay's control (Principle VI).
+    // Promoted into the header (next to Detach/Close) so it's easy to reach without
+    // scanning the footer button grid. Same element + handler — visual relocation only.
     this.teamsRemoteBtn = document.createElement('button');
     this.teamsRemoteBtn.innerHTML = teamsLabel('Teams Remote');
     this.teamsRemoteBtn.className = uiButtonClass('teams');
     this.teamsRemoteBtn.style.display = 'none';
     this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
-    buttonGrid.appendChild(this.teamsRemoteBtn);
+    rightHeader.insertBefore(this.teamsRemoteBtn, detachBtn);
 
     this.fullscreenBtn = document.createElement('button');
     this.fullscreenBtn.textContent = this.isFullWidth ? 'Half Width' : 'Full Width';

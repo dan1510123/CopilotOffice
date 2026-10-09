@@ -322,7 +322,7 @@ tabsBar.style.cssText = `
   height: 60px;
   flex-shrink: 0;
   overflow: hidden;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: var(--co-font-ui);
   box-shadow: 0 2px 12px rgba(0,0,0,.28);
 `;
 container.appendChild(tabsBar);
@@ -354,6 +354,110 @@ terminalPanel.style.cssText = `
   position: relative;
 `;
 mainContent.appendChild(terminalPanel);
+
+// Draggable split divider (serious desktop only). Lets the left agent-card panel
+// grow from 1/4 to 1/2 of the window; the agent cards reflow to the new width
+// (their fixed heights never change). Visual-only: no backend/session wiring.
+const SERIOUS_SPLIT_KEY = 'agencyOffice:seriousSplitLeftPct';
+const SERIOUS_SPLIT_MIN = 25;
+const SERIOUS_SPLIT_MAX = 50;
+const SERIOUS_SPLIT_DEFAULT = 50;
+const SERIOUS_SPLIT_STEP = 2;
+
+function clampSplitPct(pct: number): number {
+  return Math.min(SERIOUS_SPLIT_MAX, Math.max(SERIOUS_SPLIT_MIN, pct));
+}
+
+function loadSeriousSplitPct(): number {
+  const stored = localStorage.getItem(SERIOUS_SPLIT_KEY);
+  if (stored === null || stored.trim() === '') return SERIOUS_SPLIT_DEFAULT;
+  const raw = Number(stored);
+  return Number.isFinite(raw) ? clampSplitPct(raw) : SERIOUS_SPLIT_DEFAULT;
+}
+
+let seriousSplitLeftPct = loadSeriousSplitPct();
+
+const splitDivider = document.createElement('div');
+splitDivider.id = 'split-divider';
+splitDivider.setAttribute('role', 'separator');
+splitDivider.setAttribute('aria-orientation', 'vertical');
+splitDivider.setAttribute('aria-label', 'Resize office and terminal panels');
+splitDivider.setAttribute('aria-valuemin', String(SERIOUS_SPLIT_MIN));
+splitDivider.setAttribute('aria-valuemax', String(SERIOUS_SPLIT_MAX));
+splitDivider.tabIndex = 0;
+splitDivider.style.display = 'none';
+mainContent.insertBefore(splitDivider, terminalPanel);
+
+function isSeriousDesktopSplit(): boolean {
+  return appMode === 'serious' && currentResponsiveLayout === 'default';
+}
+
+function applySeriousSplitSizing(): void {
+  if (isSeriousDesktopSplit()) {
+    officePanel.style.flex = `0 0 ${seriousSplitLeftPct}%`;
+    officePanel.style.width = `${seriousSplitLeftPct}%`;
+    terminalPanel.style.flex = '1 1 0%';
+    terminalPanel.style.width = 'auto';
+    splitDivider.style.display = 'block';
+    splitDivider.setAttribute('aria-valuenow', String(Math.round(seriousSplitLeftPct)));
+  } else {
+    officePanel.style.flex = '';
+    officePanel.style.width = '50%';
+    terminalPanel.style.flex = '';
+    splitDivider.style.display = 'none';
+  }
+}
+
+function setSeriousSplitPct(pct: number, persist = true): void {
+  seriousSplitLeftPct = clampSplitPct(pct);
+  applySeriousSplitSizing();
+  if (persist) {
+    try { localStorage.setItem(SERIOUS_SPLIT_KEY, String(Math.round(seriousSplitLeftPct))); } catch { /* ignore */ }
+  }
+}
+
+let splitDragPointerId: number | null = null;
+
+function onSplitPointerMove(ev: PointerEvent): void {
+  if (splitDragPointerId === null) return;
+  const rect = mainContent.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+  setSeriousSplitPct(pct, false);
+}
+
+function endSplitDrag(ev: PointerEvent): void {
+  if (splitDragPointerId === null) return;
+  splitDragPointerId = null;
+  document.body.style.userSelect = '';
+  document.body.style.cursor = '';
+  splitDivider.classList.remove('dragging');
+  try { splitDivider.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+  try { localStorage.setItem(SERIOUS_SPLIT_KEY, String(Math.round(seriousSplitLeftPct))); } catch { /* ignore */ }
+}
+
+splitDivider.addEventListener('pointerdown', (ev: PointerEvent) => {
+  if (!isSeriousDesktopSplit()) return;
+  splitDragPointerId = ev.pointerId;
+  document.body.style.userSelect = 'none';
+  document.body.style.cursor = 'col-resize';
+  splitDivider.classList.add('dragging');
+  try { splitDivider.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+  ev.preventDefault();
+});
+splitDivider.addEventListener('pointermove', onSplitPointerMove);
+splitDivider.addEventListener('pointerup', endSplitDrag);
+splitDivider.addEventListener('pointercancel', endSplitDrag);
+splitDivider.addEventListener('dblclick', () => {
+  if (isSeriousDesktopSplit()) setSeriousSplitPct(SERIOUS_SPLIT_DEFAULT);
+});
+splitDivider.addEventListener('keydown', (ev: KeyboardEvent) => {
+  if (!isSeriousDesktopSplit()) return;
+  if (ev.key === 'ArrowLeft') { setSeriousSplitPct(seriousSplitLeftPct - SERIOUS_SPLIT_STEP); ev.preventDefault(); }
+  else if (ev.key === 'ArrowRight') { setSeriousSplitPct(seriousSplitLeftPct + SERIOUS_SPLIT_STEP); ev.preventDefault(); }
+  else if (ev.key === 'Home') { setSeriousSplitPct(SERIOUS_SPLIT_MIN); ev.preventDefault(); }
+  else if (ev.key === 'End') { setSeriousSplitPct(SERIOUS_SPLIT_MAX); ev.preventDefault(); }
+});
 
 // Explicit hosts inside the right panel (mode-dependent composition)
 const overviewHost = document.createElement('div');
@@ -421,6 +525,7 @@ function syncMainPanelLayout(): void {
     officePanel.style.flexDirection = '';
     terminalPanel.style.width = '100%';
     terminalPanel.style.borderLeft = 'none';
+    applySeriousSplitSizing();
     return;
   }
 
@@ -428,6 +533,7 @@ function syncMainPanelLayout(): void {
   officePanel.style.flexDirection = appMode === 'serious' ? 'column' : '';
   terminalPanel.style.width = '50%';
   terminalPanel.style.borderLeft = '2px solid #333';
+  applySeriousSplitSizing();
 }
 
 function applyResponsiveLayout(layoutKey: ResponsiveLayoutKey): void {
@@ -702,8 +808,9 @@ function injectTopBarStyles() {
     #office-tabs .tb-divider {
       width: 1px; height: 26px; background: var(--co-border); margin: 0 4px; flex-shrink: 0;
     }
-    #office-tabs .office-tab { transition: background .15s, border-color .15s, color .15s; }
+    #office-tabs .office-tab { transition: background .15s ease, border-color .15s ease, color .15s ease, transform .06s ease; }
     #office-tabs .office-tab:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
+    #office-tabs .office-tab:active { transform: translateY(1px); }
     #office-tabs .office-tab .edit-office-btn {
       opacity: .85;
       display: inline-flex;
@@ -717,14 +824,34 @@ function injectTopBarStyles() {
     #office-tabs .office-tab.active .edit-office-btn { opacity: 1; }
     #office-tabs .office-tab .edit-office-btn:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
     #office-tabs[data-app-mode="serious"] #zoom-bar { display: none !important; }
+    #split-divider {
+      flex: 0 0 auto; width: 7px; align-self: stretch; cursor: col-resize;
+      background: var(--co-border-strong);
+      position: relative; z-index: 5;
+      transition: background .15s ease;
+    }
+    #split-divider::before {
+      content: ''; position: absolute; top: 50%; left: 50%;
+      width: 2px; height: 34px; transform: translate(-50%, -50%);
+      border-radius: 2px; background: var(--co-text-faint); opacity: .5;
+      transition: opacity .15s ease, background .15s ease;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      #split-divider:hover { background: var(--co-accent-strong); }
+      #split-divider:hover::before { opacity: 1; background: var(--co-accent); }
+    }
+    #split-divider.dragging { background: var(--co-accent-strong); }
+    #split-divider.dragging::before { opacity: 1; background: var(--co-accent); }
+    #split-divider:focus-visible { outline: 2px solid var(--co-accent); outline-offset: -2px; }
     #office-tabs .office-tab .status-dot { transition: background .2s, box-shadow .2s; }
     #office-tabs .office-tab .status-dot.working { animation: office-dot-pulse 1.15s ease-in-out infinite; }
     @keyframes office-dot-pulse {
       0%, 100% { box-shadow: 0 0 4px #46d17f88; opacity: .85; }
       50%      { box-shadow: 0 0 11px #46d17f, 0 0 3px #46d17f; opacity: 1; }
     }
-    #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s, border-color .15s, color .15s; }
+    #office-tabs .tb-pill { display: flex; align-items: center; transition: background .15s ease, border-color .15s ease, color .15s ease, transform .06s ease; }
     #office-tabs .tb-pill:hover { background: var(--co-bg-raised-hover); color: var(--co-text-strong); }
+    #office-tabs .tb-pill:active { transform: translateY(1px); }
     #office-tabs #new-office-btn:hover { background: var(--co-bg-raised-hover); }
     .office-tab-context-menu {
       position: fixed;
@@ -2816,6 +2943,18 @@ function setupTerminalClickHandler() {
       e.stopPropagation();
       const agentId = (titleDisplay as HTMLElement).dataset.agent;
       if (agentId) startSessionMetaEdit(agentId);
+      return;
+    }
+
+    // Teams Remote toggle can appear in both the active-session meta panel and
+    // the no-session status row (which is not a .session-meta-panel), so route it
+    // at the top level before the card-open handler. Works for slacking agents —
+    // bringing an agent online in Teams registers it (no live session required).
+    const teamsBtn = target.closest('.session-teams-btn');
+    if (teamsBtn) {
+      e.stopPropagation();
+      const agentId = (teamsBtn as HTMLElement).dataset.agent;
+      if (agentId) void toggleTeamsRemoteFromOverview(agentId);
       return;
     }
 

@@ -55,17 +55,21 @@ export function injectUiKit(): void {
   const style = document.createElement('style');
   style.id = 'ui-kit-styles';
   style.textContent = `
+    /* Friendlier UI font — single source for all DOM chrome. Terminal/xterm and
+       any explicitly-monospace surface keep their own font-family. */
+    :root { --co-font-ui: 'Trebuchet MS', 'Segoe UI', system-ui, -apple-system, sans-serif; }
+    body { font-family: var(--co-font-ui); }
     .ui-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      font-family: 'Cascadia Code', Consolas, monospace;
+      font-family: var(--co-font-ui);
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 600;
       line-height: 1;
       padding: 7px 13px;
-      border-radius: 8px;
+      border-radius: 9px;
       border: 1px solid var(--co-border);
       background: var(--co-bg-raised);
       color: var(--co-text);
@@ -115,10 +119,32 @@ export function injectUiKit(): void {
 
     /* Dashboard agent-card motion (default layout). Kept here in the UI layer so
        the pure string-producing renderers in src/layouts can reference them. */
+    @media (hover: hover) and (pointer: fine) {
+      .agent-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,.24); }
+    }
     @keyframes copilot-ring-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
     @keyframes copilot-attn-bar { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
     @keyframes copilot-pill-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.07); } }
     @keyframes copilot-btn-spin { to { transform: rotate(360deg); } }
+
+    /* Editable session-title affordance. A muted pencil that brightens on hover /
+       focus so it's clear the title is click-to-edit. Shared by the dashboard card
+       title chip and the game-mode terminal card title. Implemented as ::after so
+       it survives textContent updates on the title element. */
+    .session-title-display::after {
+      content: '✏️';
+      flex-shrink: 0;
+      margin-left: 6px;
+      font-size: .82em;
+      opacity: .6;
+      filter: grayscale(.2);
+      transition: opacity .15s ease, filter .15s ease;
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .session-title-display:hover::after { opacity: 1; filter: none; }
+    }
+    .session-title-display:focus-visible::after { opacity: 1; filter: none; }
+
     @media (prefers-reduced-motion: reduce) {
       [data-ring-agent], [data-attn-banner-agent] > *, [data-status-panel-agent] span, .ui-btn__spinner { animation: none !important; }
     }

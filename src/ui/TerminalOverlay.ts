@@ -1111,7 +1111,7 @@ export class TerminalOverlay {
     this.teamsRemoteBtn.style.display = 'none';
     this.teamsRemoteBtn.onclick = () => { void this.handleTeamsRemote(); };
     this.teamsRemoteBtn.title = 'Bring this agent online in a Teams channel thread';
-    buttonGrid.appendChild(this.teamsRemoteBtn);
+    buttonGrid.insertBefore(this.teamsRemoteBtn, historyBtn);
     void this.refreshTeamsButton();
 
     this.fullscreenBtn = document.createElement('button');

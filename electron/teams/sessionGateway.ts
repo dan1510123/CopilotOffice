@@ -13,7 +13,7 @@
 // across offices are out of scope for v1.
 
 import type { CopilotEvent } from '../terminal/events-watcher';
-import type { ControlCommandName, ControlCommandResult } from '../terminal/protocol';
+import type { ControlCommandName, ControlCommandResult, ElicitationField } from '../terminal/protocol';
 
 export type AgentEventKind =
   | 'message'
@@ -25,7 +25,9 @@ export type AgentEventKind =
   | 'ask-user-complete' // spec 015 hardening (h1) — precise local-resolve signal.
   | 'permission-request' // spec 016 (Workstream B) — orchestrator tool-approval gate relayed to a thread.
   | 'plan' // plan mode — an exit_plan_mode plan presented for approval.
-  | 'plan-complete'; // plan mode — the exit_plan_mode interaction resolved (precise local-resolve signal).
+  | 'plan-complete' // plan mode — the exit_plan_mode interaction resolved (precise local-resolve signal).
+  | 'elicitation' // ask_user elicitation — a structured multi-field form presented for an answer.
+  | 'elicitation-complete'; // ask_user elicitation — the interaction resolved (precise local-resolve signal).
 
 export interface AgentEvent {
   agentId: string;
@@ -88,6 +90,28 @@ export interface AgentEvent {
     selectedAction?: string;
     feedback?: string;
   };
+  /**
+   * Populated only when `kind === 'elicitation'` (the structured, multi-field `ask_user`
+   * form). `requestId` is the SDK single-resolution key (undefined/'' on the degraded path,
+   * which is render-only). Fields are the raw normalized schema fields; Teams selector
+   * labels (A/B/C…) are assigned by the consumer (TeamsService), not here.
+   */
+  elicitation?: {
+    toolId: string;
+    requestId?: string;
+    message: string;
+    mode: string;
+    fields: ElicitationField[];
+  };
+  /**
+   * Populated only when `kind === 'elicitation-complete'`. The runtime resolved an
+   * elicitation interaction (e.g. answered locally in the TUI). `requestId` lets the
+   * consumer precisely clear a locally-resolved pending form (first-resolver-wins).
+   */
+  elicitationComplete?: {
+    requestId: string;
+    action: string;
+  };
 }
 
 /** Minimal surface of TerminalRelay the gateway depends on (for testability). */
@@ -100,6 +124,7 @@ export interface TerminalRelayLike {
   mainRunControl(officeId: string, agentId: string, command: ControlCommandName, arg?: string): Promise<ControlCommandResult>;
   mainSubmitAnswer(officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<{ success: boolean; error?: string }>;
   mainSubmitPlanDecision(officeId: string, agentId: string, d: { requestId?: string; approved: boolean; selectedAction?: string; feedback?: string }): Promise<{ success: boolean; error?: string }>;
+  mainSubmitElicitation(officeId: string, agentId: string, e: { requestId?: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }): Promise<{ success: boolean; error?: string }>;
   mainSetAgentForwarding(officeId: string, agentId: string, enabled: boolean): void;
   mainIsAgentReady(officeId: string, agentId: string): Promise<boolean>;
   /**
@@ -166,6 +191,13 @@ export interface SessionGateway {
    * action; `feedback` carries change requests when `approved` is false.
    */
   respondPlan(officeId: string, agentId: string, d: { requestId?: string; approved: boolean; selectedAction?: string; feedback?: string }): Promise<void>;
+  /**
+   * ask_user elicitation: answer (or decline/cancel) a pending structured form (see
+   * `AgentEvent` kind `elicitation`). Resolves the blocked handler on the SDK/native-bridge
+   * backend; rejects on node-pty (render-only). `content` carries the per-field answers,
+   * keyed by schema field name, when `action === 'accept'`.
+   */
+  respondElicitation(officeId: string, agentId: string, e: { requestId?: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> }): Promise<void>;
   /**
    * Enable/disable mirroring of copilot-events to the main process for an agent
    * that has no active renderer viewer. Must be enabled around a Teams-driven turn
@@ -271,6 +303,20 @@ export class RelaySessionGateway implements SessionGateway {
     }
   }
 
+  async respondElicitation(
+    officeId: string,
+    agentId: string,
+    e: { requestId?: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, string | number | boolean | string[]> },
+  ): Promise<void> {
+    // ask_user elicitation: resolve the blocked onElicitationRequest handler (SDK/native-
+    // bridge) via the dedicated submit-elicitation IPC — never submitPrompt/enqueue. node-pty
+    // reports failure (render-only) → surfaced as a thrown error for the caller to notice.
+    const res = await this.relay.mainSubmitElicitation(officeId, agentId, e);
+    if (!res.success) {
+      throw new Error(res.error || `Failed to submit elicitation answer to ${officeId}:${agentId}`);
+    }
+  }
+
   onAgentEvent(cb: (e: AgentEvent) => void): () => void {
     const onCopilotEvent = (...args: unknown[]) => {
       const agentId = args[0] as string;
@@ -327,6 +373,25 @@ export class RelaySessionGateway implements SessionGateway {
       const feedback = (args[4] as string) ?? undefined;
       cb({ agentId, kind: 'plan-complete', planComplete: { requestId, approved, selectedAction, feedback } });
     };
+    // ask_user elicitation: map the copilot-elicitation relay to an 'elicitation' AgentEvent.
+    // Transport-only — selector labels and HTML formatting are assigned by TeamsService.
+    const onElicitation = (...args: unknown[]) => {
+      const agentId = args[0] as string;
+      const toolId = (args[1] as string) ?? '';
+      const requestId = (args[2] as string) ?? '';
+      const message = (args[3] as string) ?? '';
+      const mode = (args[4] as string) ?? 'form';
+      const fields = (args[5] as ElicitationField[]) ?? [];
+      cb({ agentId, kind: 'elicitation', elicitation: { toolId, requestId, message, mode, fields } });
+    };
+    // ask_user elicitation: the runtime resolved an elicitation (e.g. answered in the local
+    // TUI). Carries the requestId so TeamsService can precisely clear a pending form.
+    const onElicitationComplete = (...args: unknown[]) => {
+      const agentId = args[0] as string;
+      const requestId = (args[1] as string) ?? '';
+      const action = (args[2] as string) ?? '';
+      cb({ agentId, kind: 'elicitation-complete', elicitationComplete: { requestId, action } });
+    };
 
     this.relay.mainEvents.on('copilot-event', onCopilotEvent);
     this.relay.mainEvents.on('copilot-turn-start', onTurnStart);
@@ -337,6 +402,8 @@ export class RelaySessionGateway implements SessionGateway {
     this.relay.mainEvents.on('copilot-ask-user-complete', onAskUserComplete);
     this.relay.mainEvents.on('copilot-plan', onPlan);
     this.relay.mainEvents.on('copilot-plan-complete', onPlanComplete);
+    this.relay.mainEvents.on('copilot-elicitation', onElicitation);
+    this.relay.mainEvents.on('copilot-elicitation-complete', onElicitationComplete);
 
     return () => {
       this.relay.mainEvents.off('copilot-event', onCopilotEvent);
@@ -348,6 +415,8 @@ export class RelaySessionGateway implements SessionGateway {
       this.relay.mainEvents.off('copilot-ask-user-complete', onAskUserComplete);
       this.relay.mainEvents.off('copilot-plan', onPlan);
       this.relay.mainEvents.off('copilot-plan-complete', onPlanComplete);
+      this.relay.mainEvents.off('copilot-elicitation', onElicitation);
+      this.relay.mainEvents.off('copilot-elicitation-complete', onElicitationComplete);
     };
   }
 
