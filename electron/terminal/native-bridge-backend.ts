@@ -110,8 +110,9 @@ export interface NativeBridgeBackendOptions {
   commandTimeoutMs?: number;
   /** Timeout for `run-control` commands (compaction calls the model). */
   controlTimeoutMs?: number;
-  /** Kill the native process tree; defaults to `taskkill /T /F` on Windows. */
-  killTree?: (pty: NativePty) => void;
+  /** Kill the native process tree; defaults to `taskkill /T /F` on Windows.
+   *  Returns success (no exception thrown) — see {@link TerminalProcess.kill}. */
+  killTree?: (pty: NativePty) => boolean;
 }
 
 function stripTerminalControls(value: string): string {
@@ -261,7 +262,7 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function defaultKillTree(pty: NativePty): void {
+function defaultKillTree(pty: NativePty): boolean {
   try {
     if (os.platform() === 'win32') {
       try {
@@ -272,14 +273,21 @@ function defaultKillTree(pty: NativePty): void {
     } else {
       pty.kill();
     }
+    return true;
   } catch {
     // Process is already gone.
+    return false;
   }
 }
 
 /** One agent's native TUI plus its authenticated bridge channel. */
 export class NativeBridgeProcess implements TerminalProcess {
   private closed = false;
+  /** Result of the one OS-level kill attempt made via {@link kill}. A failed
+   *  attempt must not be masked as success by the `closed` short-circuit on a
+   *  later call — callers rely on this to decide whether to retain the PID in
+   *  the on-disk registry for the startup reaper to retry. */
+  private killSucceeded = false;
   private sessionId: string;
   private lastChange: TerminalSessionChange | null = null;
   private lastGeneration = 0;
@@ -296,7 +304,7 @@ export class NativeBridgeProcess implements TerminalProcess {
     private readonly token: string,
     initialSessionId: string,
     private readonly timeouts: { connectTimeoutMs: number; commandTimeoutMs: number; controlTimeoutMs: number },
-    private readonly killTree: (pty: NativePty) => void,
+    private readonly killTree: (pty: NativePty) => boolean,
   ) {
     this.sessionId = initialSessionId;
     pty.onData((data) => {
@@ -357,10 +365,14 @@ export class NativeBridgeProcess implements TerminalProcess {
     this.pty.onExit((event) => callback({ exitCode: event.exitCode }));
   }
 
-  kill(): void {
-    if (this.closed) return;
+  kill(): boolean {
+    if (this.closed) return this.killSucceeded;
+    // Attempt the OS-level kill BEFORE release() marks this process closed, so
+    // a failed attempt is recorded and not silently reinterpreted as success
+    // by a later call's `closed` short-circuit.
+    this.killSucceeded = this.killTree(this.pty);
     this.release();
-    this.killTree(this.pty);
+    return this.killSucceeded;
   }
 
   /**

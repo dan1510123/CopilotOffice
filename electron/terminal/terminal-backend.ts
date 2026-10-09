@@ -348,7 +348,15 @@ export interface TerminalProcess {
   resize(cols: number, rows: number): void;
   onData(callback: (data: string) => void): void;
   onExit(callback: (event: TerminalExitEvent) => void): void;
-  kill(): void;
+  /**
+   * Force-kill the underlying process (tree). Returns true only when the kill
+   * command itself completed without throwing (same heuristic the pty-registry
+   * startup reaper uses) — callers that track the process in the on-disk PTY
+   * registry must not unregister it on a false return, so a failed kill is
+   * retried by the reaper on next launch instead of silently becoming an
+   * untraceable orphan.
+   */
+  kill(): boolean;
   /**
    * Optional: submit a full prompt to the underlying agent atomically, bypassing
    * the character-by-character line editor. Implemented by SDK-backed processes
@@ -552,7 +560,7 @@ class NodePtyProcess implements TerminalProcess {
     this.proc.onExit(callback);
   }
 
-  kill(): void {
+  kill(): boolean {
     try {
       if (os.platform() === 'win32') {
         try {
@@ -563,8 +571,10 @@ class NodePtyProcess implements TerminalProcess {
       } else {
         this.proc.kill();
       }
+      return true;
     } catch {
-      // Process is already gone.
+      // Already dead, or insufficient permissions.
+      return false;
     }
   }
 }
@@ -802,8 +812,12 @@ class CopilotSdkProcess implements TerminalProcess {
     this.exitListeners.push(callback);
   }
 
-  kill(): void {
-    if (this.closed) return;
+  kill(): boolean {
+    // Synthetic PID — never tracked in the on-disk PTY registry (see
+    // registerPty call site), so there is nothing for a caller to leave
+    // behind on "failure". The async disconnect below is best-effort cleanup
+    // of the SDK session, not an OS process kill.
+    if (this.closed) return true;
     this.closed = true;
 
     this.disconnectSession()
@@ -813,6 +827,7 @@ class CopilotSdkProcess implements TerminalProcess {
       .finally(() => {
         this.emitExit({ exitCode: 0 });
       });
+    return true;
   }
 
   handleHostExit(error: Error): void {

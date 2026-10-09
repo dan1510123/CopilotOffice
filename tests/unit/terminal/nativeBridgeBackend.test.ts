@@ -189,12 +189,15 @@ function startOptions(overrides: Partial<StartTerminalOptions> = {}): StartTermi
   };
 }
 
-async function createHarness(options: { connectTimeoutMs?: number } = {}) {
+async function createHarness(options: { connectTimeoutMs?: number; killTree?: (pty: NativePty) => boolean } = {}) {
   const broker = await NativeBridgeBroker.create({ requestTimeoutMs: 2_000 });
   brokers.push(broker);
   const spawnCalls: SpawnCall[] = [];
   let nextPid = 41_000;
-  const killTree = vi.fn((pty: NativePty) => (pty as FakePty).kill());
+  const killTree = vi.fn(options.killTree ?? ((pty: NativePty) => {
+    (pty as FakePty).kill();
+    return true;
+  }));
   const backend = new NativeBridgeBackend({
     spawn: (file, args, spawnOptions) => {
       const pty = new FakePty(nextPid++);
@@ -578,7 +581,7 @@ describe('native bridge session lifecycle', () => {
     const extension = connect(spawnCalls[0], 'session-a');
     await extension.registered;
 
-    proc.kill();
+    expect(proc.kill()).toBe(true);
 
     expect(killTree).toHaveBeenCalledWith(spawnCalls[0].pty);
     await extension.closed;
@@ -586,6 +589,19 @@ describe('native bridge session lifecycle', () => {
     const late = connect(spawnCalls[0], 'session-a');
     await late.closed;
     expect(late.frames).toEqual([{ type: 'registration-error', error: 'authentication failed' }]);
+  });
+
+  it('kill() reports a failed OS-level kill and never reinterprets it as success on a later call', async () => {
+    const failingKillTree = vi.fn(() => false);
+    const { backend } = await createHarness({ connectTimeoutMs: 50, killTree: failingKillTree });
+    const proc = await backend.start(startOptions());
+
+    expect(proc.kill()).toBe(false);
+    expect(failingKillTree).toHaveBeenCalledTimes(1);
+    // A second call must not re-attempt the OS kill (already released/closed),
+    // but it must also not falsely report success for the earlier failure.
+    expect(proc.kill()).toBe(false);
+    expect(failingKillTree).toHaveBeenCalledTimes(1);
   });
 
   it('a late exit of an earlier TUI never revokes a newer launch for the same agent', async () => {

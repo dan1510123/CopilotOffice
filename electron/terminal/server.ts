@@ -434,10 +434,19 @@ function killAllPtyProcesses(): void {
 
 /** Platform-aware process-tree kill. On Windows, uses taskkill /T /F to kill
  *  the entire tree (shell + copilot CLI + children). Single canonical kill
- *  function — all PTY kill sites must use this, never bare proc.process.kill(). */
-function killPtyProcess(proc: PtyProcess): void {
-  proc.process.kill();
-  unregisterPty(proc.pid);
+ *  function — all PTY kill sites must use this, never bare proc.process.kill().
+ *  Returns success; the PID registry entry is removed only when the kill
+ *  itself reported success, so a failed kill is retried by the startup reaper
+ *  (electron/terminal/pty-registry.ts) instead of silently leaking a
+ *  registry-invisible orphan. */
+function killPtyProcess(proc: PtyProcess): boolean {
+  const killed = proc.process.kill();
+  if (killed) {
+    unregisterPty(proc.pid);
+  } else {
+    console.warn(`[TermServer] Kill failed for pid ${proc.pid} (${proc.agentId}) — leaving registry entry for startup reaper retry`);
+  }
+  return killed;
 }
 
 // ── PTY Lifecycle ───────────────────────────────────────────────
@@ -1115,6 +1124,20 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           }
         } catch (error) {
           result = { ...result, success: false, ready: false, error: String((error as Error)?.message ?? error) };
+          // Only a FRESHLY spawned PTY (never a reused, already-running one) is
+          // killed here. Each native-bridge attempt uses a unique random
+          // terminalKey, so a readiness timeout on a brand-new spawn (e.g. a
+          // Teams-register ensure-online call under resource pressure) used to
+          // leak a zombie copilot.exe with no retry/cleanup, compounding across
+          // repeated attempts. A reused session must never be killed just
+          // because this particular wait timed out — it may still be alive and
+          // in active use elsewhere.
+          if (!result.reused && readyProc && ptyProcesses.get(readyKey) === readyProc) {
+            console.warn(`[TermServer] Killing freshly-spawned PTY for ${readyKey} after bridge-readiness timeout (pid ${readyProc.pid})`);
+            killPtyProcess(readyProc);
+            ptyProcesses.delete(readyKey);
+            agentToTerminal.delete(ck);
+          }
         }
       }
       send({ type: 'response', requestId: msg.requestId, result });
