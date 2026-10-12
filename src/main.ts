@@ -134,6 +134,13 @@ let phaserGameRef: Phaser.Game | undefined;
 let debugMode = false;
 let currentZoom = parseFloat(localStorage.getItem('agencyOffice:zoomLevel') ?? '0.8');
 currentZoom = (isNaN(currentZoom) || currentZoom < 0.5 || currentZoom > 2.0) ? 0.8 : currentZoom;
+// Teams top-bar connection-pause pill state — declared here (not down by the
+// rest of the Teams dashboard-state block) because renderOfficeTabs() runs
+// synchronously at module init, before that block's `let`s would be
+// initialized (TDZ).
+let teamsFeatureEnabled = false;
+let teamsChannelConfigured = false;
+let teamsConnectionTogglePending = false;
 const RESIZE_DEBOUNCE_MS = 200;
 type AppMode = 'game' | 'serious';
 const APP_MODE_STORAGE_KEY = 'agencyOffice:appMode';
@@ -997,6 +1004,24 @@ function renderOfficeTabs() {
   `;
 
   const ctrlsHtml = `
+    ${teamsChannelConfigured ? `
+    <div id="teams-connection-toggle-btn" class="tb-pill" style="
+      height: 36px;
+      padding: 0 14px;
+      gap: 6px;
+      background: ${teamsFeatureEnabled ? 'rgba(140,216,179,0.12)' : 'rgba(255,184,108,0.14)'};
+      border: 1px solid ${teamsFeatureEnabled ? 'var(--co-success)' : 'var(--co-amber)'};
+      border-radius: 9px;
+      cursor: ${teamsConnectionTogglePending ? 'default' : 'pointer'};
+      opacity: ${teamsConnectionTogglePending ? '0.6' : '1'};
+      color: ${teamsFeatureEnabled ? 'var(--co-success)' : 'var(--co-amber)'};
+      font-size: 13px;
+      font-weight: 500;
+      user-select: none;
+    " title="${teamsFeatureEnabled ? 'Pause Teams connection (stops streaming while you are at the app)' : 'Resume Teams connection (reconnects all bound agent channels)'}"${teamsConnectionTogglePending ? ' data-pending="true"' : ''}>
+      ${teamsFeatureEnabled ? '🟢 Teams: Connection Active' : '🟠 Teams: Connection Paused'}
+    </div>
+    ` : ''}
     <div id="app-mode-toggle-btn" class="tb-pill" style="
       height: 36px;
       padding: 0 14px;
@@ -1148,6 +1173,10 @@ function renderOfficeTabs() {
   });
 
   document.getElementById('new-office-btn')?.addEventListener('click', showNewOfficeDialog);
+  document.getElementById('teams-connection-toggle-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    void toggleTeamsConnection();
+  });
   document.getElementById('app-mode-toggle-btn')?.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleAppMode();
@@ -1260,6 +1289,10 @@ function switchToOffice(officeId: string) {
   // This recovers event flow if the previous office switch detached viewers.
   void reconnectAgentStatuses();
   fetchSessionMeta();
+  // Teams channel configuration can be per-office (config.teamsChannelUrl
+  // override) — recompute the cached "configured" flag (and the top-bar
+  // pill's visibility) for the office we just switched into.
+  void refreshTeamsDashboardState();
 
   // Spec 009 (US2): trigger auto-startup for the newly-selected office.
   // Non-blocking — fire-and-forget so the office switch stays snappy.
@@ -2535,7 +2568,9 @@ let activeSessionTitleEditAgentId: string | null = null;
 // ── Teams Remote (011) dashboard state ──────────────────────────
 // Cached so the synchronous dashboard renderer can gate the per-tile
 // "Teams Remote" button on the feature flag + per-agent online state.
-let teamsFeatureEnabled = false;
+// (teamsFeatureEnabled / teamsChannelConfigured / teamsConnectionTogglePending
+// are declared earlier, near the other top-of-module render state — see the
+// comment there for why.)
 const teamsOnlineAgentIds = new Set<string>();
 const teamsPendingActions = new Map<string, 'connecting' | 'disconnecting'>();
 /** All agent ids with a Teams binding (online or pending reconnect) for the current office. */
@@ -2546,7 +2581,17 @@ async function refreshTeamsDashboardState(): Promise<void> {
   if (!window.copilotBridge?.teamsGetSettings) return;
   try {
     const settingsRes = await window.copilotBridge.teamsGetSettings();
-    teamsFeatureEnabled = !!(settingsRes?.success && (settingsRes.settings as { enabled?: boolean })?.enabled);
+    const settings = settingsRes?.success ? (settingsRes.settings as { enabled?: boolean; defaultChannelUrl?: string }) : undefined;
+    teamsFeatureEnabled = !!settings?.enabled;
+    // Effective channel = current office's override ?? the global default
+    // (mirrors electron/teams/channelResolver.ts's resolveChannel — the same
+    // precedence the backend uses to pick which channel an agent registers
+    // into). An office-only override with no global default must still show
+    // the pill.
+    const officeOverride = officeManager.currentOfficeId
+      ? officeManager.getOffice(officeManager.currentOfficeId)?.config?.teamsChannelUrl?.trim()
+      : undefined;
+    teamsChannelConfigured = !!(officeOverride || settings?.defaultChannelUrl?.trim());
     const statusRes = await window.copilotBridge.teamsStatus();
     teamsOnlineAgentIds.clear();
     teamsBoundAgentIds.clear();
@@ -2558,6 +2603,41 @@ async function refreshTeamsDashboardState(): Promise<void> {
     }
   } catch { /* leave caches as-is */ }
   updateTerminalContent();
+  renderOfficeTabs();
+}
+
+/**
+ * Flip the global Teams `enabled` flag from the top-bar quick-access pill —
+ * the exact same settings field the Teams Settings panel checkbox controls.
+ * Disabling it fully stops the shared Teams receive transport and disables
+ * per-agent forwarding (electron/main.ts's registerTeamsIpc onSettingsChanged
+ * → TeamsService.stop()); re-enabling restarts it, which event-drivenly
+ * reconnects every previously-bound agent into its EXISTING thread (posts a
+ * "🔄 Reconnected" notice — no new thread, no re-registration needed).
+ */
+async function toggleTeamsConnection(): Promise<void> {
+  if (teamsConnectionTogglePending) return;
+  if (!window.copilotBridge?.teamsGetSettings || !window.copilotBridge?.teamsSaveSettings) return;
+  teamsConnectionTogglePending = true;
+  renderOfficeTabs();
+  try {
+    const settingsRes = await window.copilotBridge.teamsGetSettings();
+    if (!settingsRes?.success || !settingsRes.settings) {
+      throw new Error('Could not read current Teams settings');
+    }
+    const current = settingsRes.settings;
+    const next: TeamsSettingsShape = { ...current, enabled: !current.enabled };
+    const saveRes = await window.copilotBridge.teamsSaveSettings(next);
+    if (!saveRes?.success) {
+      throw new Error(saveRes?.error || 'Failed to save Teams settings');
+    }
+  } catch (error) {
+    showClipboardToast(`Teams: ${(error as Error)?.message ?? 'Failed to toggle connection'}`, 'error');
+    console.error('[Teams] Failed to toggle connection:', error);
+  } finally {
+    teamsConnectionTogglePending = false;
+    await refreshTeamsDashboardState();
+  }
 }
 
 /**

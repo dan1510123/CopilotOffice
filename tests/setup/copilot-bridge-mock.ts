@@ -57,6 +57,23 @@ export function createMockCopilotBridge(
     clipboardReadText: vi.fn().mockResolvedValue({ success: true, text: '' }),
     saveOffices: vi.fn().mockResolvedValue({ success: true }),
     loadOffices: vi.fn().mockResolvedValue({ success: false, data: null }),
+    teamsStatus: vi.fn().mockResolvedValue({ success: true, connected: false, bindings: [] }),
+    teamsRegister: vi.fn().mockResolvedValue({ success: true }),
+    teamsStop: vi.fn().mockResolvedValue({ success: true }),
+    teamsReconcile: vi.fn().mockResolvedValue({ success: true }),
+    teamsGetSettings: vi.fn().mockResolvedValue({
+      success: true,
+      settings: {
+        enabled: false,
+        defaultChannelUrl: '',
+        ackEnabled: false,
+        checkInEnabled: false,
+        checkInThresholdMs: 0,
+        checkInThrottleMs: 0,
+      },
+    }),
+    teamsSaveSettings: vi.fn().mockResolvedValue({ success: true }),
+    onTeamsStatusChanged: vi.fn(),
   };
 
   return { ...bridge, ...overrides } as MockCopilotBridge;
