@@ -19,6 +19,7 @@ import type {
   BringOnlineResult,
   OfficeSummary,
   SwitchOfficeResult,
+  TeamsAgentsPauseResult,
 } from './types';
 
 export interface OrchestratorToolDeps {
@@ -41,6 +42,8 @@ export interface OrchestratorToolDeps {
   requestRestartAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
   requestTeamsPresence: (a: { agentId: string; officeId?: string; online: boolean }) => Promise<ActOnResult>;
   requestSetTitle: (a: { agentId: string; officeId?: string; title: string }) => Promise<ActOnResult>;
+  /** Pause/resume non-orchestrator agent Teams connections — never the orchestrator's own. */
+  requestTeamsAgentsPause: (paused: boolean) => Promise<TeamsAgentsPauseResult>;
 }
 
 export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] {
@@ -395,6 +398,32 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     },
   });
 
+  const setTeamsAgentsConnectionTool = defineTool('set_teams_agents_connection', {
+    description:
+      'Pause or resume Teams streaming for every OTHER agent currently online in Teams ' +
+      '(disables/re-enables their Teams forwarding and inbound replies). This NEVER ' +
+      'affects your own (the orchestrator\'s) Teams presence — your thread stays connected ' +
+      'either way, so you remain reachable from Teams even while agent connections are ' +
+      'paused. Resuming reconnects every paused agent into its SAME existing thread (no ' +
+      'new threads are created). Gated: the user must approve. If Teams is disabled, the ' +
+      'tool reports unavailable — relay that to the user.',
+    parameters: {
+      type: 'object',
+      properties: {
+        paused: {
+          type: 'boolean',
+          description: 'true to pause all other agents\' Teams connections, false to resume them.',
+        },
+      },
+      required: ['paused'],
+      additionalProperties: false,
+    },
+    handler: async (args: { paused: boolean }) => {
+      // Reached only AFTER the permission gate approves.
+      return deps.requestTeamsAgentsPause(args.paused);
+    },
+  });
+
   return [
     listTool,
     listOfficesTool,
@@ -410,5 +439,6 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     restartAgentTool,
     teamsPresenceTool,
     setAgentTitleTool,
+    setTeamsAgentsConnectionTool,
   ];
 }

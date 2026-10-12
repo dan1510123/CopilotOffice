@@ -157,6 +157,20 @@ describe('integration/teams connection toggle (top bar)', () => {
       storedSettings = next;
       return { success: true };
     });
+    // Stateful fake agentsPaused flag: teamsPauseAgents/teamsResumeAgents flip it,
+    // and teamsStatus always reflects it — mirrors the real TeamsService, where
+    // the pill's state is sourced from teamsStatus().agentsPaused (NOT from
+    // TeamsSettings.enabled, which this toggle must never touch).
+    let agentsPaused = false;
+    const teamsStatus = vi.fn(async () => ({ success: true, connected: false, bindings: [], agentsPaused }));
+    const teamsPauseAgents = vi.fn(async () => {
+      agentsPaused = true;
+      return { outcome: 'paused', count: 1, message: 'paused' };
+    });
+    const teamsResumeAgents = vi.fn(async () => {
+      agentsPaused = false;
+      return { outcome: 'resumed', count: 1, message: 'resumed' };
+    });
     const bridge = installMockCopilotBridge({
       onTerminalPreloadStatus: vi.fn(),
       queryAgentStatuses: vi.fn().mockResolvedValue({}),
@@ -169,50 +183,57 @@ describe('integration/teams connection toggle (top bar)', () => {
       getSessionMeta: vi.fn().mockResolvedValue({ title: 'A title' }),
       teamsGetSettings,
       teamsSaveSettings,
-      teamsStatus: vi.fn().mockResolvedValue({ success: true, connected: false, bindings: [] }),
+      teamsStatus,
+      teamsPauseAgents,
+      teamsResumeAgents,
     });
     await import('../../../src/main');
     await flushUi();
-    return { bridge };
+    return { bridge, teamsPauseAgents, teamsResumeAgents };
   }
 
   it('TCT-A: pill is absent when no Teams channel is configured', async () => {
-    await bootstrapMain({ enabled: false, defaultChannelUrl: '' });
+    await bootstrapMain({ enabled: true, defaultChannelUrl: '' });
     expect(getTogglePill()).toBeNull();
   }, 15000);
 
-  it('TCT-B: pill shows "Connection Active" when configured + enabled', async () => {
+  it('TCT-B: pill shows "Connection Active" when configured + enabled + not paused', async () => {
     await bootstrapMain({ enabled: true, defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x' });
     const pill = getTogglePill();
     expect(pill).toBeTruthy();
     expect(pill?.textContent).toContain('Connection Active');
   }, 15000);
 
-  it('TCT-C: pill shows "Connection Paused" when configured but disabled', async () => {
+  it('TCT-C: pill is ABSENT when the Teams feature itself is disabled, even if a channel is configured', async () => {
+    // Pausing is a sub-feature of Teams Remote; it makes no sense to show a
+    // quick-pause pill when the whole feature is off in Settings.
     await bootstrapMain({ enabled: false, defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x' });
-    const pill = getTogglePill();
-    expect(pill).toBeTruthy();
-    expect(pill?.textContent).toContain('Connection Paused');
+    expect(getTogglePill()).toBeNull();
   }, 15000);
 
-  it('TCT-D: clicking toggles enabled false->true->false via teamsSaveSettings, re-rendering each time', async () => {
-    const { bridge } = await bootstrapMain({ enabled: true, defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x' });
+  it('TCT-D: clicking calls teamsPauseAgents/teamsResumeAgents (never teamsSaveSettings), toggling the pill both ways', async () => {
+    const { bridge, teamsPauseAgents, teamsResumeAgents } = await bootstrapMain({
+      enabled: true,
+      defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x',
+    });
     expect(getTogglePill()?.textContent).toContain('Connection Active');
 
     // Click #1: Active -> Paused.
     (getTogglePill() as HTMLElement).click();
     await flushUi();
-    expect(bridge.teamsSaveSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ enabled: false, defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x' }),
-    );
+    expect(teamsPauseAgents).toHaveBeenCalledTimes(1);
+    expect(teamsResumeAgents).not.toHaveBeenCalled();
     expect(getTogglePill()?.textContent).toContain('Connection Paused');
 
     // Click #2: Paused -> Active.
     (getTogglePill() as HTMLElement).click();
     await flushUi();
-    expect(bridge.teamsSaveSettings).toHaveBeenLastCalledWith(
-      expect.objectContaining({ enabled: true, defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x' }),
-    );
+    expect(teamsResumeAgents).toHaveBeenCalledTimes(1);
     expect(getTogglePill()?.textContent).toContain('Connection Active');
+
+    // This toggle must NEVER touch TeamsSettings.enabled (that's the full
+    // feature kill switch, which would also affect the orchestrator).
+    expect(bridge.teamsSaveSettings).not.toHaveBeenCalled();
   }, 15000);
 });
+

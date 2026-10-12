@@ -9,6 +9,7 @@ export interface PermissionSummaryArgs {
   agentId?: string;
   online?: boolean;
   title?: string;
+  paused?: boolean;
 }
 
 /**
@@ -41,6 +42,10 @@ export function describeOrchestratorPermission(
       return args.title
         ? `Set ${who}'s title to "${args.title.trim()}"`
         : `Set ${who}'s title`;
+    case 'set_teams_agents_connection':
+      return args.paused === false
+        ? 'Resume all agent Teams connections (orchestrator stays online either way)'
+        : 'Pause all agent Teams connections (orchestrator stays online)';
     default:
       return `Run ${toolName} on ${who}`;
   }

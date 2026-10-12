@@ -16,6 +16,7 @@ import type {
   BringOnlineResult,
   OfficeSummary,
   SwitchOfficeResult,
+  TeamsAgentsPauseResult,
 } from './types';
 
 export interface OrchestratorIpcHooks {
@@ -45,6 +46,7 @@ export function makeOrchestratorEmitter(getWindow: () => BrowserWindow | null): 
     emitStopAgentRequest: (payload) => send('orchestrator:stop-agent:request', payload),
     emitRestartAgentRequest: (payload) => send('orchestrator:restart-agent:request', payload),
     emitTeamsPresenceRequest: (payload) => send('orchestrator:teams-presence:request', payload),
+    emitTeamsAgentsPauseRequest: (payload) => send('orchestrator:teams-agents-pause:request', payload),
     emitSetTitleRequest: (payload) => send('orchestrator:set-title:request', payload),
     emitExit: (payload) => send('orchestrator:exit', payload),
   };
@@ -165,6 +167,16 @@ export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
   ipcMain.handle('orchestrator:restart-agent:respond', respondActOn);
   ipcMain.handle('orchestrator:teams-presence:respond', respondActOn);
   ipcMain.handle('orchestrator:set-title:respond', respondActOn);
+
+  // ── Pause/resume non-orchestrator agent Teams connections (dedicated round-trip —
+  // distinct result shape from ActOnResult, so it is NOT part of the respondActOn map). ──
+  ipcMain.handle(
+    'orchestrator:teams-agents-pause:respond',
+    (_e, args: { requestId: string; result: TeamsAgentsPauseResult }) => {
+      const ok = manager.respondTeamsAgentsPause(args.requestId, args.result);
+      return { ok };
+    },
+  );
 
   // ── spec 017: transcript restore (pure read; never mutates a session) ──────
   ipcMain.handle('orchestrator:transcript:get', (_e, _args: { sessionId?: string }) => {

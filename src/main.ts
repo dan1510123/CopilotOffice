@@ -140,6 +140,12 @@ currentZoom = (isNaN(currentZoom) || currentZoom < 0.5 || currentZoom > 2.0) ? 0
 // initialized (TDZ).
 let teamsFeatureEnabled = false;
 let teamsChannelConfigured = false;
+/** True while non-orchestrator agent Teams connections are paused (the top-bar
+ *  pill's actual on/off state) — distinct from teamsFeatureEnabled (the full
+ *  feature kill switch). Sourced from teamsStatus().agentsPaused, NOT
+ *  TeamsSettings.enabled, so toggling this pill never affects the
+ *  orchestrator's separate Teams presence. */
+let teamsAgentsPaused = false;
 let teamsConnectionTogglePending = false;
 const RESIZE_DEBOUNCE_MS = 200;
 type AppMode = 'game' | 'serious';
@@ -1004,22 +1010,22 @@ function renderOfficeTabs() {
   `;
 
   const ctrlsHtml = `
-    ${teamsChannelConfigured ? `
+    ${teamsChannelConfigured && teamsFeatureEnabled ? `
     <div id="teams-connection-toggle-btn" class="tb-pill" style="
       height: 36px;
       padding: 0 14px;
       gap: 6px;
-      background: ${teamsFeatureEnabled ? 'rgba(140,216,179,0.12)' : 'rgba(255,184,108,0.14)'};
-      border: 1px solid ${teamsFeatureEnabled ? 'var(--co-success)' : 'var(--co-amber)'};
+      background: ${teamsAgentsPaused ? 'rgba(255,184,108,0.14)' : 'rgba(140,216,179,0.12)'};
+      border: 1px solid ${teamsAgentsPaused ? 'var(--co-amber)' : 'var(--co-success)'};
       border-radius: 9px;
       cursor: ${teamsConnectionTogglePending ? 'default' : 'pointer'};
       opacity: ${teamsConnectionTogglePending ? '0.6' : '1'};
-      color: ${teamsFeatureEnabled ? 'var(--co-success)' : 'var(--co-amber)'};
+      color: ${teamsAgentsPaused ? 'var(--co-amber)' : 'var(--co-success)'};
       font-size: 13px;
       font-weight: 500;
       user-select: none;
-    " title="${teamsFeatureEnabled ? 'Pause Teams connection (stops streaming while you are at the app)' : 'Resume Teams connection (reconnects all bound agent channels)'}"${teamsConnectionTogglePending ? ' data-pending="true"' : ''}>
-      ${teamsFeatureEnabled ? '🟢 Teams: Connection Active' : '🟠 Teams: Connection Paused'}
+    " title="${teamsAgentsPaused ? 'Resume Teams connection (reconnects all bound agent channels — orchestrator unaffected either way)' : 'Pause Teams connection (stops streaming while you are at the app — orchestrator stays online)'}"${teamsConnectionTogglePending ? ' data-pending="true"' : ''}>
+      ${teamsAgentsPaused ? '🟠 Teams: Connection Paused' : '🟢 Teams: Connection Active'}
     </div>
     ` : ''}
     <div id="app-mode-toggle-btn" class="tb-pill" style="
@@ -2552,6 +2558,27 @@ function registerOrchestratorSpec017Resolvers(): void {
       void bridge.orchestratorRespondSetTitle(requestId, result);
     })();
   });
+
+  // ── set_teams_agents_connection (gated) — pauses/resumes non-orchestrator
+  // agent Teams connections via the SAME mechanism the top-bar pill uses
+  // (teamsPauseAgents/teamsResumeAgents). Never touches the orchestrator's own
+  // Teams presence (teamsRegisterOrchestrator/teamsStopOrchestrator) — those are
+  // a separate round-trip entirely. Refreshes the top-bar pill afterward so it
+  // reflects the orchestrator's own action live.
+  bridge.onOrchestratorTeamsAgentsPauseRequest(({ requestId, paused }) => {
+    void (async () => {
+      let result: { outcome: string; count: number; message: string };
+      try {
+        result = paused
+          ? await window.copilotBridge.teamsPauseAgents()
+          : await window.copilotBridge.teamsResumeAgents();
+      } catch (err) {
+        result = { outcome: 'failed', count: 0, message: (err as Error)?.message ?? 'Failed to toggle Teams agent connections.' };
+      }
+      void bridge.orchestratorRespondTeamsAgentsPause(requestId, result as OrchestratorTeamsAgentsPauseResult);
+      void refreshTeamsDashboardState();
+    })();
+  });
 }
 
 
@@ -2593,6 +2620,7 @@ async function refreshTeamsDashboardState(): Promise<void> {
       : undefined;
     teamsChannelConfigured = !!(officeOverride || settings?.defaultChannelUrl?.trim());
     const statusRes = await window.copilotBridge.teamsStatus();
+    teamsAgentsPaused = !!(statusRes?.success && (statusRes as { agentsPaused?: boolean }).agentsPaused);
     teamsOnlineAgentIds.clear();
     teamsBoundAgentIds.clear();
     if (statusRes?.success) {
@@ -2607,29 +2635,25 @@ async function refreshTeamsDashboardState(): Promise<void> {
 }
 
 /**
- * Flip the global Teams `enabled` flag from the top-bar quick-access pill —
- * the exact same settings field the Teams Settings panel checkbox controls.
- * Disabling it fully stops the shared Teams receive transport and disables
- * per-agent forwarding (electron/main.ts's registerTeamsIpc onSettingsChanged
- * → TeamsService.stop()); re-enabling restarts it, which event-drivenly
- * reconnects every previously-bound agent into its EXISTING thread (posts a
- * "🔄 Reconnected" notice — no new thread, no re-registration needed).
+ * Pause/resume non-orchestrator agent Teams connections from the top-bar
+ * quick-access pill. Calls TeamsService.pauseAgentConnections() /
+ * resumeAgentConnections() — a mechanism deliberately SEPARATE from
+ * TeamsSettings.enabled (the full feature kill switch) and from the
+ * orchestrator's own Teams presence (teamsRegisterOrchestrator /
+ * teamsStopOrchestrator). The orchestrator's Teams thread is never affected
+ * by this toggle, in either direction.
  */
 async function toggleTeamsConnection(): Promise<void> {
   if (teamsConnectionTogglePending) return;
-  if (!window.copilotBridge?.teamsGetSettings || !window.copilotBridge?.teamsSaveSettings) return;
+  if (!window.copilotBridge?.teamsPauseAgents || !window.copilotBridge?.teamsResumeAgents) return;
   teamsConnectionTogglePending = true;
   renderOfficeTabs();
   try {
-    const settingsRes = await window.copilotBridge.teamsGetSettings();
-    if (!settingsRes?.success || !settingsRes.settings) {
-      throw new Error('Could not read current Teams settings');
-    }
-    const current = settingsRes.settings;
-    const next: TeamsSettingsShape = { ...current, enabled: !current.enabled };
-    const saveRes = await window.copilotBridge.teamsSaveSettings(next);
-    if (!saveRes?.success) {
-      throw new Error(saveRes?.error || 'Failed to save Teams settings');
+    const res = teamsAgentsPaused
+      ? await window.copilotBridge.teamsResumeAgents()
+      : await window.copilotBridge.teamsPauseAgents();
+    if (res?.outcome === 'failed' || res?.outcome === 'unavailable') {
+      throw new Error(res.message || 'Failed to toggle the Teams connection');
     }
   } catch (error) {
     showClipboardToast(`Teams: ${(error as Error)?.message ?? 'Failed to toggle connection'}`, 'error');

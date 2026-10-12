@@ -91,6 +91,17 @@ export interface OnlineAgentBinding {
   online: boolean;
   /** Unix ms; drives 30-day GC. */
   lastConnected: number;
+  /**
+   * True while this binding is deliberately paused by the top-bar "Teams:
+   * Connection Paused" toggle (or the orchestrator's set_teams_agents_connection
+   * tool) — distinct from a binding that went offline for any other reason
+   * (session replaced/exited). `online` is also false while paused, but this
+   * flag additionally tells `reconcile()`'s periodic auto-reconnect pass to
+   * SKIP it, so a paused agent stays paused until an explicit resume (instead
+   * of silently reconnecting on the next tick). Never set for the orchestrator's
+   * synthetic binding — pausing agent connections never touches it.
+   */
+  pausedByUser?: boolean;
 }
 
 /** A thread the app has ever created (retained beyond binding removal). */

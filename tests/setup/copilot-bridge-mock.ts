@@ -61,6 +61,8 @@ export function createMockCopilotBridge(
     teamsRegister: vi.fn().mockResolvedValue({ success: true }),
     teamsStop: vi.fn().mockResolvedValue({ success: true }),
     teamsReconcile: vi.fn().mockResolvedValue({ success: true }),
+    teamsPauseAgents: vi.fn().mockResolvedValue({ outcome: 'already-paused', count: 0, message: 'paused' }),
+    teamsResumeAgents: vi.fn().mockResolvedValue({ outcome: 'already-active', count: 0, message: 'active' }),
     teamsGetSettings: vi.fn().mockResolvedValue({
       success: true,
       settings: {

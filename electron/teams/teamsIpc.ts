@@ -25,10 +25,10 @@ export function registerTeamsIpc(hooks: TeamsIpcHooks): void {
   ipcMain.handle('teams:status', (_e, args: { officeId?: string; agentId?: string }) => {
     if (args?.officeId && args?.agentId) {
       const status = service.getStatus(args.officeId, args.agentId);
-      return { success: true, connected: !!status?.online, bindings: status ? [status] : [] };
+      return { success: true, connected: !!status?.online, bindings: status ? [status] : [], agentsPaused: service.isAgentsPaused() };
     }
     const bindings = service.getStatuses();
-    return { success: true, connected: bindings.some((b) => b.online), bindings };
+    return { success: true, connected: bindings.some((b) => b.online), bindings, agentsPaused: service.isAgentsPaused() };
   });
 
   ipcMain.handle('teams:register', (_e, ctx: RegisterContext) => service.register(ctx));
@@ -41,6 +41,12 @@ export function registerTeamsIpc(hooks: TeamsIpcHooks): void {
     await service.reconcileNow();
     return { success: true };
   });
+
+  // Pause/resume non-orchestrator agent Teams connections (top-bar pill +
+  // orchestrator set_teams_agents_connection tool) — never affects the
+  // orchestrator's own Teams presence. See TeamsService.pauseAgentConnections.
+  ipcMain.handle('teams:pauseAgents', async () => service.pauseAgentConnections());
+  ipcMain.handle('teams:resumeAgents', async () => service.resumeAgentConnections());
 
   ipcMain.handle('teams:getSettings', () => {
     return { success: true, settings: settingsStore.load() };

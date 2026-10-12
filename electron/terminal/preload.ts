@@ -279,7 +279,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
 
   // ── Teams Remote Agents (011) ────────────────────────────────
-  teamsStatus: (args?: { officeId?: string; agentId?: string }): Promise<{ success: boolean; connected: boolean; bindings: unknown[] }> => {
+  teamsStatus: (args?: { officeId?: string; agentId?: string }): Promise<{ success: boolean; connected: boolean; bindings: unknown[]; agentsPaused?: boolean }> => {
     return ipcRenderer.invoke('teams:status', args ?? {});
   },
   teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string; officeMentionType?: 'user' | 'tag' | 'none'; officeMentionValue?: string }): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> => {
@@ -296,6 +296,15 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   teamsReconcile: (): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('teams:reconcile');
+  },
+  // Pause/resume non-orchestrator agent Teams connections only — the
+  // orchestrator's own Teams presence (teamsRegisterOrchestrator/teamsStopOrchestrator)
+  // is a separate mechanism and is never affected by these.
+  teamsPauseAgents: (): Promise<{ outcome: string; count: number; message: string }> => {
+    return ipcRenderer.invoke('teams:pauseAgents');
+  },
+  teamsResumeAgents: (): Promise<{ outcome: string; count: number; message: string }> => {
+    return ipcRenderer.invoke('teams:resumeAgents');
   },
   teamsGetSettings: (): Promise<{ success: boolean; settings: unknown }> => {
     return ipcRenderer.invoke('teams:getSettings');
@@ -368,6 +377,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   orchestratorRespondSetTitle: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
     return ipcRenderer.invoke('orchestrator:set-title:respond', { requestId, result });
+  },
+  orchestratorRespondTeamsAgentsPause: (requestId: string, result: unknown): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('orchestrator:teams-agents-pause:respond', { requestId, result });
   },
   orchestratorGetTranscript: (sessionId?: string): Promise<{ transcript: OrchestratorTranscriptData | null }> => {
     return ipcRenderer.invoke('orchestrator:transcript:get', { sessionId });
@@ -452,6 +464,11 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     const handler = (_event: unknown, payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; title: string }) => callback(payload);
     ipcRenderer.on('orchestrator:set-title:request', handler);
     return () => ipcRenderer.removeListener('orchestrator:set-title:request', handler);
+  },
+  onOrchestratorTeamsAgentsPauseRequest: (callback: (payload: { sessionId: string; requestId: string; paused: boolean }) => void) => {
+    const handler = (_event: unknown, payload: { sessionId: string; requestId: string; paused: boolean }) => callback(payload);
+    ipcRenderer.on('orchestrator:teams-agents-pause:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:teams-agents-pause:request', handler);
   },
   onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => {
     const handler = (_event: unknown, payload: { sessionId: string; reason: string }) => callback(payload);
@@ -576,12 +593,14 @@ declare global {
       clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;
       loadOffices: () => Promise<{ success: boolean; data: string | null; error?: string }>;
-      teamsStatus: (args?: { officeId?: string; agentId?: string }) => Promise<{ success: boolean; connected: boolean; bindings: TeamsAgentStatus[] }>;
+      teamsStatus: (args?: { officeId?: string; agentId?: string }) => Promise<{ success: boolean; connected: boolean; bindings: TeamsAgentStatus[]; agentsPaused?: boolean }>;
       teamsRegister: (ctx: { officeId: string; agentId: string; displayName: string; workingDir: string; officeChannelUrl?: string; officeMentionType?: 'user' | 'tag' | 'none'; officeMentionValue?: string }) => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
       teamsStop: (args: { officeId: string; agentId: string }) => Promise<{ success: boolean }>;
       teamsRegisterOrchestrator: () => Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }>;
       teamsStopOrchestrator: () => Promise<{ success: boolean }>;
       teamsReconcile: () => Promise<{ success: boolean }>;
+      teamsPauseAgents: () => Promise<{ outcome: string; count: number; message: string }>;
+      teamsResumeAgents: () => Promise<{ outcome: string; count: number; message: string }>;
       teamsGetSettings: () => Promise<{ success: boolean; settings: TeamsSettingsShape }>;
       teamsSaveSettings: (settings: TeamsSettingsShape) => Promise<{ success: boolean; parsed?: unknown; error?: string }>;
       onTeamsStatusChanged: (callback: (status: TeamsAgentStatus) => void) => void;
@@ -605,9 +624,10 @@ declare global {
       orchestratorRespondRestartAgent: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
       orchestratorRespondTeamsPresence: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
       orchestratorRespondSetTitle: (requestId: string, result: OrchestratorActOnResult) => Promise<{ ok: boolean }>;
+      orchestratorRespondTeamsAgentsPause: (requestId: string, result: OrchestratorTeamsAgentsPauseResult) => Promise<{ ok: boolean }>;
       orchestratorGetTranscript: (sessionId?: string) => Promise<{ transcript: OrchestratorTranscriptData | null }>;
       onOrchestratorEvent: (callback: (payload: { sessionId: string; event: CopilotEventData }) => void) => () => void;
-      onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; agentName?: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; title?: string; reason?: string } }) => void) => () => void;
+      onOrchestratorPermissionRequest: (callback: (payload: { sessionId: string; toolCallId: string; toolName: string; args: { agentId?: string; agentName?: string; officeId?: string; answer?: string; prompt?: string; online?: boolean; title?: string; reason?: string; paused?: boolean } }) => void) => () => void;
       onOrchestratorCandidatesRequest: (callback: (payload: { sessionId: string; requestId: string; officeId?: string }) => void) => () => void;
       onOrchestratorExecuteRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
       onOrchestratorOfficesRequest: (callback: (payload: { sessionId: string; requestId: string }) => void) => () => void;
@@ -622,6 +642,7 @@ declare global {
       onOrchestratorRestartAgentRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string }) => void) => () => void;
       onOrchestratorTeamsPresenceRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; online: boolean }) => void) => () => void;
       onOrchestratorSetTitleRequest: (callback: (payload: { sessionId: string; requestId: string; agentId: string; officeId?: string; title: string }) => void) => () => void;
+      onOrchestratorTeamsAgentsPauseRequest: (callback: (payload: { sessionId: string; requestId: string; paused: boolean }) => void) => () => void;
       onOrchestratorExit: (callback: (payload: { sessionId: string; reason: string }) => void) => () => void;
     };
   }
@@ -711,6 +732,12 @@ declare global {
       | 'failed';
     message: string;
     threadWebUrl?: string;
+  }
+
+  interface OrchestratorTeamsAgentsPauseResult {
+    outcome: 'paused' | 'resumed' | 'already-paused' | 'already-active' | 'unavailable' | 'failed';
+    count: number;
+    message: string;
   }
 
   interface OrchestratorTranscriptTurn {

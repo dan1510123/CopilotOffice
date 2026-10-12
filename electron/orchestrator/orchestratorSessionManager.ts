@@ -32,6 +32,7 @@ import type {
   OrchestratorTranscript,
   PermissionDecision,
   SwitchOfficeResult,
+  TeamsAgentsPauseResult,
   TranscriptOrigin,
   TranscriptRole,
   TranscriptTurn,
@@ -52,8 +53,10 @@ const ACT_ON_TOOLS = new Set([
   'set_agent_title',
 ]);
 
-/** Union of all gated tool names (baseline bring_agent_online + act-on tools). */
-const GATED_TOOLS = new Set(['bring_agent_online', ...ACT_ON_TOOLS]);
+/** Union of all gated tool names (baseline bring_agent_online + act-on tools + the
+ *  dedicated Teams-agents-pause tool, which uses its own request/respond pair
+ *  rather than the shared ActOn plumbing). */
+const GATED_TOOLS = new Set(['bring_agent_online', 'set_teams_agents_connection', ...ACT_ON_TOOLS]);
 
 const ORCHESTRATOR_SYSTEM_PROMPT = [
   'You are the Office Orchestrator — a concierge that helps the user bring the right',
@@ -158,6 +161,7 @@ export interface OrchestratorEmitter {
       online?: boolean;
       title?: string;
       reason?: string;
+      paused?: boolean;
     };
   }): void;
   emitCandidatesRequest(payload: { sessionId: string; requestId: string; officeId?: string }): void;
@@ -212,6 +216,12 @@ export interface OrchestratorEmitter {
     officeId?: string;
     online: boolean;
   }): void;
+  /** Pause/resume non-orchestrator agent Teams connections (never the orchestrator's own). */
+  emitTeamsAgentsPauseRequest?(payload: {
+    sessionId: string;
+    requestId: string;
+    paused: boolean;
+  }): void;
   emitSetTitleRequest?(payload: {
     sessionId: string;
     requestId: string;
@@ -248,6 +258,8 @@ export class OrchestratorSessionManager {
   private readonly pendingAgentOutput = new Map<string, (output: AgentRecentOutput) => void>();
   private readonly pendingAgentStatus = new Map<string, (lookup: AgentStatusLookup) => void>();
   private readonly pendingActOn = new Map<string, (result: ActOnResult) => void>();
+  /** Dedicated pending map for set_teams_agents_connection (distinct ActOnResult shape — no agentId). */
+  private readonly pendingTeamsAgentsPause = new Map<string, (result: TeamsAgentsPauseResult) => void>();
 
   /** agentId → resolved display name (office-custom aware), populated by read tools. */
   private readonly agentNameCache = new Map<string, string>();
@@ -262,7 +274,7 @@ export class OrchestratorSessionManager {
   // signals the IPC emitter pushes to the renderer, without a second SDK session.
   private readonly eventListeners = new Set<(event: CopilotEvent) => void>();
   private readonly permissionListeners = new Set<
-    (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string }) => void
+    (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string; paused?: boolean }) => void
   >();
   private readonly exitListeners = new Set<(reason: string) => void>();
 
@@ -288,7 +300,7 @@ export class OrchestratorSessionManager {
 
   /** Subscribe to gated tool-approval requests (the always-on permission gate). */
   onPermissionRequested(
-    cb: (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string }) => void,
+    cb: (payload: { toolCallId: string; toolName: string; agentId?: string; agentName?: string; online?: boolean; title?: string; reason?: string; paused?: boolean }) => void,
   ): () => void {
     this.permissionListeners.add(cb);
     return () => this.permissionListeners.delete(cb);
@@ -427,6 +439,7 @@ export class OrchestratorSessionManager {
       requestRestartAgent: (a) => this.requestActOn('restart_agent', a),
       requestTeamsPresence: (a) => this.requestActOn('set_agent_teams_presence', a),
       requestSetTitle: (a) => this.requestActOn('set_agent_title', a),
+      requestTeamsAgentsPause: (paused) => this.requestTeamsAgentsPause(paused),
     });
 
     this.session = await this.client.createSession({
@@ -611,6 +624,10 @@ export class OrchestratorSessionManager {
       resolve({ agentId: '', officeId: '', outcome: 'failed', message: ended });
     }
     this.pendingActOn.clear();
+    for (const [, resolve] of this.pendingTeamsAgentsPause) {
+      resolve({ outcome: 'failed', count: 0, message: ended });
+    }
+    this.pendingTeamsAgentsPause.clear();
   }
 
   // ── Permission gate (non-YOLO, always gated) ─────────────────────────────
@@ -629,6 +646,7 @@ export class OrchestratorSessionManager {
         online?: boolean;
         title?: string;
         reason?: string;
+        paused?: boolean;
       };
       const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
       const agentName = args.agentId ? this.agentNameCache.get(args.agentId) : undefined;
@@ -658,10 +676,11 @@ export class OrchestratorSessionManager {
             online: args.online,
             title: args.title,
             reason: args.reason,
+            paused: args.paused,
           },
         });
         for (const cb of this.permissionListeners) {
-          cb({ toolCallId, toolName, agentId: args.agentId, agentName, online: args.online, title: args.title, reason: args.reason });
+          cb({ toolCallId, toolName, agentId: args.agentId, agentName, online: args.online, title: args.title, reason: args.reason, paused: args.paused });
         }
       });
     }
@@ -923,6 +942,29 @@ export class OrchestratorSessionManager {
     const resolve = this.pendingActOn.get(requestId);
     if (!resolve) return false;
     this.pendingActOn.delete(requestId);
+    resolve(result);
+    return true;
+  }
+
+  // ── Pause/resume non-orchestrator agent Teams connections (gated) ─────────
+  requestTeamsAgentsPause(paused: boolean): Promise<TeamsAgentsPauseResult> {
+    const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
+    const requestId = randomUUID();
+    return new Promise<TeamsAgentsPauseResult>((resolve) => {
+      this.pendingTeamsAgentsPause.set(requestId, (result) => {
+        this.captureTurn('tool', `[set_teams_agents_connection] ${result.outcome}: ${result.message}`, {
+          tool: { name: 'set_teams_agents_connection', outcome: result.outcome },
+        });
+        resolve(result);
+      });
+      this.emitter.emitTeamsAgentsPauseRequest?.({ sessionId, requestId, paused });
+    });
+  }
+
+  respondTeamsAgentsPause(requestId: string, result: TeamsAgentsPauseResult): boolean {
+    const resolve = this.pendingTeamsAgentsPause.get(requestId);
+    if (!resolve) return false;
+    this.pendingTeamsAgentsPause.delete(requestId);
     resolve(result);
     return true;
   }

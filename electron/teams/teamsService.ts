@@ -29,6 +29,7 @@ import { pickAckQuip, pickOrchestratorAckQuip } from './ackQuips';
 import { tlog, twarn } from './log';
 import { isAzLoginError } from './auth';
 import { isOrchestratorKey } from '../orchestrator/orchestratorIdentity';
+import type { TeamsAgentsPauseResult } from '../orchestrator/types';
 import { resolveSlashCommand, type SlashCommand } from './slashCommands';
 import { formatControlData, formatHelp } from './slashCommandFormat';
 import type {
@@ -292,6 +293,16 @@ export class TeamsService {
   private lastAuthToastAt = 0;
   /** Last observed receive-transport health, to emit connect/reconnect notices once per transition. */
   private lastTransportHealth: 'connected' | 'disconnected' | 'error' | 'unknown' = 'unknown';
+  /**
+   * True while the top-bar "Teams: Connection Paused" toggle (or the
+   * orchestrator's set_teams_agents_connection tool) has paused non-orchestrator
+   * agent connections. Distinct from {@link TeamsSettings.enabled} — that flag
+   * is the full feature kill switch (closes the shared transport, affects every
+   * binding including the orchestrator's); this only gates per-binding
+   * forwarding/online state and is set/cleared by {@link pauseAgentConnections}
+   * / {@link resumeAgentConnections}.
+   */
+  private agentsPaused = false;
 
   constructor(private readonly deps: TeamsServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -313,6 +324,13 @@ export class TeamsService {
     const { kept, removed } = gcStale(state.bindings, this.now());
     this.bindings = kept.map((b) => ({ ...b, online: false })); // reconnect is event-driven
     this.knownThreads = state.knownThreads;
+    // A pause persists across restarts (pausedByUser survives on each binding),
+    // but `agentsPaused` itself is in-memory only — recompute it from the
+    // reloaded bindings so the pill/tool report "Paused" immediately after a
+    // restart instead of falsely showing "Active" while every paused binding
+    // sits dark (reconcile() correctly keeps skipping them either way; this
+    // only fixes what the status/pill SHOWS).
+    this.agentsPaused = this.bindings.some((b) => b.pausedByUser && !isOrchestratorKey(b.officeId, b.agentId));
     tlog(`Loaded ${this.bindings.length} persisted binding(s), ${this.knownThreads.length} known thread(s).`);
     if (removed.length > 0) {
       await this.persist();
@@ -381,6 +399,95 @@ export class TeamsService {
     return b ? this.toStatus(b) : null;
   }
 
+  /** Whether the top-bar/orchestrator pause toggle currently has agent connections paused. */
+  isAgentsPaused(): boolean {
+    return this.agentsPaused;
+  }
+
+  /**
+   * Pause Teams streaming for every online, non-orchestrator binding: disables
+   * forwarding (stops mirroring the agent's activity out) and marks the binding
+   * offline + `pausedByUser` (stops inbound replies routing to it — see
+   * `handleInbound`'s `activeChannelSet`/filter, which only admits ONLINE
+   * bindings). Deliberately does NOT touch the shared receive transport (the
+   * orchestrator's own binding needs it to stay connected) and does NOT remove
+   * the binding or its thread mapping — `resumeAgentConnections()` reconnects
+   * every one of them back into its EXISTING thread via the normal event-driven
+   * reconcile path (posts "🔄 Reconnected"), exactly like a dropped-then-restored
+   * session. The orchestrator's binding (ORCHESTRATOR_OFFICE_ID/ORCHESTRATOR_AGENT_ID)
+   * is always skipped — this never affects the orchestrator's Teams presence.
+   */
+  async pauseAgentConnections(): Promise<TeamsAgentsPauseResult> {
+    if (!this.deps.getSettings().enabled) {
+      return { outcome: 'unavailable', count: 0, message: 'Teams remote is disabled in settings.' };
+    }
+    let onlineCount = 0;
+    for (const b of this.bindings) {
+      if (isOrchestratorKey(b.officeId, b.agentId)) continue;
+      // Tag EVERY non-orchestrator binding, not just currently-online ones —
+      // one that's offline-but-reconnecting (e.g. right after app start, or a
+      // dropped session mid-retry) must also be marked so reconcile()'s
+      // event-driven reconnect (and register()) treat it as paused instead of
+      // silently bringing it back online mid-pause.
+      b.pausedByUser = true;
+      if (!b.online) continue;
+      b.online = false;
+      this.deps.gateway.setForwarding(b.officeId, b.agentId, false);
+      // Immediately quiesce dispatch state (queue/ambient/in-flight turn) so an
+      // already-in-progress turn can't post a late reply after the user asked
+      // to pause — mirrors goOffline()'s cleanup, but the binding/thread itself
+      // is kept (unlike goOffline, which removes it).
+      this.quiesceDispatchState(b.officeId, b.agentId);
+      this.deps.emitStatus(this.toStatus(b));
+      onlineCount++;
+    }
+    this.agentsPaused = true;
+    await this.persist();
+    this.updateSourceChannels();
+    tlog(`Paused ${onlineCount} agent Teams connection(s) (orchestrator unaffected).`);
+    return {
+      outcome: onlineCount > 0 ? 'paused' : 'already-paused',
+      count: onlineCount,
+      message:
+        onlineCount > 0
+          ? `Paused ${onlineCount} agent Teams connection(s). The orchestrator's own Teams presence is unaffected.`
+          : 'No online agent Teams connections to pause (orchestrator unaffected either way).',
+    };
+  }
+
+  /**
+   * Resume every binding paused by {@link pauseAgentConnections}: clears the
+   * `pausedByUser` tag and runs an immediate reconcile pass, which re-onlines
+   * each one into its SAME existing thread (session + binding were never torn
+   * down) and posts its usual "🔄 Reconnected" notice — identical to a normal
+   * dropped-connection recovery. The orchestrator is never touched (it was
+   * never paused).
+   */
+  async resumeAgentConnections(): Promise<TeamsAgentsPauseResult> {
+    if (!this.deps.getSettings().enabled) {
+      return { outcome: 'unavailable', count: 0, message: 'Teams remote is disabled in settings.' };
+    }
+    const toResume = this.bindings.filter((b) => b.pausedByUser);
+    for (const b of toResume) b.pausedByUser = false;
+    this.agentsPaused = false;
+    if (toResume.length > 0) {
+      await this.persist();
+    }
+    // Let the normal event-driven path do the actual reconnect (ready-check,
+    // forwarding re-enable, "Reconnected" notice) — reuse reconcile(), don't
+    // duplicate its logic here.
+    await this.reconcile();
+    tlog(`Resumed ${toResume.length} paused agent Teams connection(s).`);
+    return {
+      outcome: toResume.length > 0 ? 'resumed' : 'already-active',
+      count: toResume.length,
+      message:
+        toResume.length > 0
+          ? `Resuming ${toResume.length} agent Teams connection(s) — they will reconnect shortly.`
+          : 'No paused agent Teams connections to resume.',
+    };
+  }
+
   /**
    * Note that the orchestrator just dispatched an approved follow-up prompt to `agentId`
    * (spec 017). Tags the agent's NEXT ambient turn so its mirrored request is attributed
@@ -408,6 +515,16 @@ export class TeamsService {
     const { officeId, agentId } = ctx;
     const settings = this.deps.getSettings();
     if (!settings.enabled) return { success: false, error: 'Teams remote is disabled in settings.' };
+    // The top-bar pill / orchestrator pause tool paused non-orchestrator agent
+    // connections — refuse new or re-registrations until resumeAgentConnections()
+    // explicitly lifts it. Without this, a brand-new registration would come
+    // online untagged (bypassing the pause entirely), and re-registering an
+    // agent that already has a paused binding would mint a SECOND Teams thread,
+    // orphaning the first (register() has no "reuse this paused binding in
+    // place" path). The orchestrator itself is exempt — it is never paused.
+    if (this.agentsPaused && !isOrchestratorKey(officeId, agentId)) {
+      return { success: false, error: 'Agent Teams connections are paused — resume them first (top-bar pill, or ask the orchestrator).' };
+    }
 
     const channelUrl = resolveChannel({ teamsChannelUrl: ctx.officeChannelUrl }, settings);
     const coords = parseChannelLink(channelUrl);
@@ -573,23 +690,10 @@ export class TeamsService {
     if (postNotice && b.online && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
-    this.queue.clear(officeId, agentId);
     // Stop event mirroring now that the agent is leaving (enabled for the whole online
-    // lifetime in register/reconnect). Also discard any in-flight ambient turn.
+    // lifetime in register/reconnect).
     this.deps.gateway.setForwarding(officeId, agentId, false);
-    const amb = this.ambient.get(agentId);
-    if (amb) {
-      if (amb.settleTimer) clearTimeout(amb.settleTimer);
-      this.ambient.delete(agentId);
-    }
-    // If a turn is in flight, resolve its dispatch promise so the per-agent queue
-    // can't wedge (finalizeDispatch would otherwise never run).
-    const inFlight = this.pending.get(agentId);
-    if (inFlight) {
-      this.cancelSettle(inFlight);
-      this.pending.delete(agentId);
-      inFlight.resolve();
-    }
+    this.quiesceDispatchState(officeId, agentId);
     this.bindings = this.bindings.filter((x) => !(x.officeId === officeId && x.agentId === agentId));
     await this.persist();
     this.updateSourceChannels();
@@ -604,6 +708,15 @@ export class TeamsService {
     // this app posted, keyed on message id. Deterministic — does not rely on the
     // content marker surviving Teams' sanitizer.
     if (msg.messageId && this.postedMessageIds.has(msg.messageId)) {
+      return;
+    }
+    // A deliberately paused binding's thread looks identical to a genuinely
+    // orphaned one to classifyThread() (offline, but still a known thread) —
+    // without this check, the FIRST reply during a pause would wrongly post
+    // "no longer active" and latch `noticePosted`, so later real orphan
+    // notices for that thread would be (silently, correctly) suppressed.
+    // Silently ignore instead; resumeAgentConnections() reconnects normally.
+    if (msg.threadRootId && this.bindings.some((b) => b.pausedByUser && b.threadRootId === msg.threadRootId)) {
       return;
     }
     const result = this.filter.evaluate(msg, this.bindings, this.knownThreads);
@@ -924,6 +1037,30 @@ export class TeamsService {
     if (rec.settleTimer) {
       clearTimeout(rec.settleTimer);
       rec.settleTimer = null;
+    }
+  }
+
+  /**
+   * Quiesce an agent's Teams dispatch state WITHOUT touching its binding/thread:
+   * clears any queued-but-undelivered inbound prompts, discards an in-flight
+   * ambient (locally-driven) turn accumulator, and resolves any in-flight
+   * dispatch promise so the per-agent queue can't wedge. Shared by `goOffline`
+   * (binding is then removed) and `pauseAgentConnections` (binding is KEPT,
+   * just taken offline) — the in-flight-turn/queue/ambient cleanup is identical
+   * in both cases; only what happens to the binding itself differs.
+   */
+  private quiesceDispatchState(officeId: string, agentId: string): void {
+    this.queue.clear(officeId, agentId);
+    const amb = this.ambient.get(agentId);
+    if (amb) {
+      if (amb.settleTimer) clearTimeout(amb.settleTimer);
+      this.ambient.delete(agentId);
+    }
+    const inFlight = this.pending.get(agentId);
+    if (inFlight) {
+      this.cancelSettle(inFlight);
+      this.pending.delete(agentId);
+      inFlight.resolve();
     }
   }
 
@@ -2280,6 +2417,11 @@ export class TeamsService {
           b.lastConnected = this.now();
         }
       } else {
+        // An explicit user/orchestrator-tool pause (pauseAgentConnections) must
+        // stay paused until resumeAgentConnections() explicitly clears the tag —
+        // otherwise this same event-driven reconnect would silently re-online it
+        // on the very next tick, defeating the pause.
+        if (b.pausedByUser) continue;
         // Event-driven reconnect (FR-024): the stored session reappeared. Only
         // re-online (and post the "reconnected" notice) once the agent's PTY is
         // actually alive AND the CLI has signalled ready — get-session-id returns
@@ -2289,6 +2431,11 @@ export class TeamsService {
           const ready = await this.deps.gateway.isAgentReady(b.officeId, b.agentId).catch(() => false);
           if (!ready) continue; // session exists but not ready yet — wait for a later pass
           if (!this.started) return; // service stopped during the await — don't reconnect
+          // Re-check: a pause could have landed WHILE this await was in flight
+          // (pauseAgentConnections runs synchronously once invoked, but this
+          // loop yields at every `await`) — don't resurrect a binding that was
+          // just paused out from under this in-progress reconnect.
+          if (b.pausedByUser) continue;
           b.online = true;
           b.lastConnected = this.now();
           // Re-enable online-lifetime event mirroring (see register).

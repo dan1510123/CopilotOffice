@@ -239,3 +239,24 @@ export interface SwitchOfficeResult {
   outcome: SwitchOfficeOutcome;
   message: string;
 }
+
+// ── Teams agents connection pause/resume (orchestrator tool) ─────────────────
+// Lets the orchestrator pause/resume the SAME top-bar "Teams: Connection
+// Active/Paused" mechanism the desktop pill drives — scoped to non-orchestrator
+// agent bindings only; the orchestrator's own Teams presence is never affected.
+
+export type TeamsAgentsPauseOutcome =
+  | 'paused' // transitioned 1+ bindings to paused
+  | 'resumed' // transitioned 1+ paused bindings back toward reconnect
+  | 'already-paused' // requested paused=true, nothing changed (already paused / none online)
+  | 'already-active' // requested paused=false, nothing changed (nothing was paused)
+  | 'unavailable' // Teams feature disabled/unconfigured
+  | 'failed'; // execution error
+
+export interface TeamsAgentsPauseResult {
+  outcome: TeamsAgentsPauseOutcome;
+  /** Count of bindings transitioned by this call (0 for already-* outcomes). */
+  count: number;
+  message: string;
+}
+
