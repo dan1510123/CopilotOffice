@@ -28,6 +28,7 @@ import {
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 import { resolveAccessibleWorkingDir } from './working-dir';
+import { evictUnbridgedReusedTerminal } from './unbridged-recovery';
 import { didTerminalBackendFallBack, parseTerminalBackend } from '../../src/config/terminalBackend';
 
 // Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
@@ -490,6 +491,7 @@ type StartTerminalResult = StartResult;
  * composite key so a single backend process is ever created closes that race.
  */
 const inFlightStarts = new Map<string, Promise<StartTerminalResult>>();
+const unbridgedRecoveries = new Map<string, Promise<StartTerminalResult>>();
 
 function startTerminalForAgent(
   officeId: string,
@@ -528,6 +530,88 @@ function startTerminalForAgent(
   return tracked.finally(() => {
     inFlightStarts.delete(ck);
   });
+}
+
+async function recoverUnbridgedTerminal(
+  officeId: string,
+  agentId: string,
+  workingDir: string | undefined,
+  cols: number | undefined,
+  rows: number | undefined,
+  preseededPrompt: string | undefined,
+  launchMode: 'copilot' | 'shell' | undefined,
+  hostWorkingDir: string | undefined,
+  agentKey: string,
+  terminalKey: string,
+  staleProcess: PtyProcess,
+  readyTimeoutMs: number,
+  failure: StartTerminalResult,
+): Promise<StartTerminalResult> {
+  if (!evictUnbridgedReusedTerminal(
+    ptyProcesses,
+    agentToTerminal,
+    terminalKey,
+    staleProcess,
+    killPtyProcess,
+  )) {
+    return failure;
+  }
+
+  // A reused native TUI can remain visibly alive after its extension exits. It
+  // cannot serve Teams, so replace it once while retaining the persisted
+  // session ID for continuity.
+  console.warn(`[TermServer] Replacing reused TUI for ${agentKey} after bridge-readiness timeout (pid ${staleProcess.pid})`);
+  agentWatchers.get(terminalKey)?.stop();
+  agentWatchers.delete(terminalKey);
+  agentReadyState.delete(terminalKey);
+  agentInTurn.delete(terminalKey);
+
+  let replacement = await startTerminalForAgent(
+    officeId,
+    agentId,
+    workingDir,
+    cols,
+    rows,
+    preseededPrompt,
+    launchMode,
+    hostWorkingDir,
+  );
+  const replacementKey = getTerminalKey(officeId, agentId) ?? agentKey;
+  const replacementProcess = ptyProcesses.get(replacementKey);
+  try {
+    if (!replacement.success || !replacementProcess) {
+      throw new Error(replacement.error ?? `Failed to replace unbridged TUI for ${agentKey}`);
+    }
+    if (typeof replacementProcess.process.whenReady === 'function') {
+      await replacementProcess.process.whenReady(readyTimeoutMs);
+    } else {
+      await waitForAgentReady(replacementKey, readyTimeoutMs);
+    }
+    return {
+      ...replacement,
+      sessionId: replacementProcess.process.getSessionId?.() ?? replacementProcess.sessionId,
+      ready: true,
+    };
+  } catch (error) {
+    replacement = {
+      ...replacement,
+      success: false,
+      ready: false,
+      error: `Replacement TUI did not become ready: ${String((error as Error)?.message ?? error)}`,
+    };
+    if (
+      replacementProcess
+      && !replacement.reused
+      && ptyProcesses.get(replacementKey) === replacementProcess
+      && !hasActiveViewerForMaps(replacementKey, viewerMaps)
+    ) {
+      if (killPtyProcess(replacementProcess)) {
+        ptyProcesses.delete(replacementKey);
+        agentToTerminal.delete(agentKey);
+      }
+    }
+    return replacement;
+  }
 }
 
 async function startTerminalForAgentImpl(
@@ -1091,6 +1175,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
   switch (msg.type) {
     case 'start': {
       const ck = compositeKey(msg.officeId, msg.agentId);
+      // `result.reused` also covers callers coalesced onto a still-pending
+      // fresh start. Capture actual pre-existence before starting so only a
+      // genuinely pre-existing, unbridged TUI is eligible for replacement.
+      const existingKeyBeforeStart = getTerminalKey(msg.officeId, msg.agentId);
+      const hadExistingTerminal = !!(existingKeyBeforeStart && ptyProcesses.has(existingKeyBeforeStart));
       // A main-process (background) start — the Teams ensure-online seam — must
       // never claim a renderer viewer. Renderer starts register through the
       // dual-key helper (R-002).
@@ -1124,19 +1213,46 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           }
         } catch (error) {
           result = { ...result, success: false, ready: false, error: String((error as Error)?.message ?? error) };
-          // Only a FRESHLY spawned PTY (never a reused, already-running one) is
-          // killed here. Each native-bridge attempt uses a unique random
-          // terminalKey, so a readiness timeout on a brand-new spawn (e.g. a
-          // Teams-register ensure-online call under resource pressure) used to
-          // leak a zombie copilot.exe with no retry/cleanup, compounding across
-          // repeated attempts. A reused session must never be killed just
-          // because this particular wait timed out — it may still be alive and
-          // in active use elsewhere.
-          if (!result.reused && readyProc && ptyProcesses.get(readyKey) === readyProc) {
+          const activeRecovery = unbridgedRecoveries.get(readyKey);
+          if (activeRecovery) {
+            result = await activeRecovery;
+          } else if (
+            hadExistingTerminal
+            && readyProc
+            && typeof readyProc.process.whenReady === 'function'
+            && !hasActiveViewerForMaps(readyKey, viewerMaps)
+          ) {
+            const recovery = recoverUnbridgedTerminal(
+              msg.officeId,
+              msg.agentId,
+              msg.workingDir,
+              msg.cols,
+              msg.rows,
+              msg.preseededPrompt,
+              msg.launchMode,
+              msg.hostWorkingDir,
+              ck,
+              readyKey,
+              readyProc,
+              msg.readyTimeoutMs,
+              result,
+            );
+            unbridgedRecoveries.set(readyKey, recovery);
+            try {
+              result = await recovery;
+            } finally {
+              if (unbridgedRecoveries.get(readyKey) === recovery) {
+                unbridgedRecoveries.delete(readyKey);
+              }
+            }
+          } else if (!hadExistingTerminal && readyProc && ptyProcesses.get(readyKey) === readyProc) {
+            // Each native-bridge attempt uses a unique random terminal key, so
+            // a failed fresh start must not remain as a zombie process.
             console.warn(`[TermServer] Killing freshly-spawned PTY for ${readyKey} after bridge-readiness timeout (pid ${readyProc.pid})`);
-            killPtyProcess(readyProc);
-            ptyProcesses.delete(readyKey);
-            agentToTerminal.delete(ck);
+            if (killPtyProcess(readyProc)) {
+              ptyProcesses.delete(readyKey);
+              agentToTerminal.delete(ck);
+            }
           }
         }
       }
