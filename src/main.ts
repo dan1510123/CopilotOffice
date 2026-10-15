@@ -1991,32 +1991,14 @@ function scheduleTeamsColdWarmRetry(): void {
  * while a genuinely empty binding list simply exhausts the retry budget cheaply.
  * teamsColdWarmInFlight prevents overlapping passes.
  */
-const COLD_WARM_CONCURRENCY = 3;
+const coldWarmChains = new Map<string, Promise<unknown>>();
 
-let coldWarmActive = 0;
-const coldWarmWaiters: Array<() => void> = [];
-
-/** Runs `fn` under a limiter shared by ALL cold-launch warmers, so Teams + flagged together stay within the cap. */
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  _limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const run = async (item: T): Promise<R> => {
-    if (coldWarmActive >= COLD_WARM_CONCURRENCY) {
-      await new Promise<void>((resolve) => coldWarmWaiters.push(resolve));
-    } else {
-      coldWarmActive += 1;
-    }
-    try {
-      return await fn(item);
-    } finally {
-      const next = coldWarmWaiters.shift();
-      if (next) next();
-      else coldWarmActive -= 1;
-    }
-  };
-  return Promise.all(items.map(run));
+/** Serializes cold-launch warms per office (one ui-server host each); offices run in parallel. */
+function warmQueuedForOffice<R>(officeId: string, fn: () => Promise<R>): Promise<R> {
+  const prev = coldWarmChains.get(officeId) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  coldWarmChains.set(officeId, next.catch(() => undefined));
+  return next;
 }
 
 async function warmAllTeamsBoundAgents(): Promise<void> {
@@ -2040,10 +2022,8 @@ async function warmAllTeamsBoundAgents(): Promise<void> {
       scheduleTeamsColdWarmRetry();
       return;
     }
-    const results = await mapWithConcurrency(
-      bindings,
-      COLD_WARM_CONCURRENCY,
-      async (b) => {
+    const results = await Promise.all(
+      bindings.map((b) => warmQueuedForOffice(b.officeId, async () => {
         try {
           return await warmAgentSession(b.officeId, b.agentId);
         } catch (err) {
@@ -2053,7 +2033,7 @@ async function warmAllTeamsBoundAgents(): Promise<void> {
           );
           return false;
         }
-      },
+      })),
     );
     if (!results.some(Boolean)) {
       // No binding actually warmed — a soft `success:false`, a missing
@@ -2096,13 +2076,13 @@ async function warmAllFlaggedAgents(): Promise<void> {
     }
     // Leave the one-shot unarmed if offices are still loading.
     if (targets.length === 0) return;
-    await mapWithConcurrency(targets, COLD_WARM_CONCURRENCY, async ({ officeId, agentId }) => {
+    await Promise.all(targets.map(({ officeId, agentId }) => warmQueuedForOffice(officeId, async () => {
       try {
         await warmAgentSession(officeId, agentId);
       } catch (err) {
         console.warn(`[Flagged] cold-launch warm failed for ${officeId}/${agentId}:`, err);
       }
-    });
+    })));
     flaggedColdWarmDone = true;
   } finally {
     flaggedColdWarmInFlight = false;
