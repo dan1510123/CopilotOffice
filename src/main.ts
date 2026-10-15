@@ -1991,24 +1991,32 @@ function scheduleTeamsColdWarmRetry(): void {
  * while a genuinely empty binding list simply exhausts the retry budget cheaply.
  * teamsColdWarmInFlight prevents overlapping passes.
  */
-const COLD_WARM_CONCURRENCY = 2;
+const COLD_WARM_CONCURRENCY = 3;
 
-/** Runs `fn` over `items` with at most `limit` in flight; results keep input order. */
+let coldWarmActive = 0;
+const coldWarmWaiters: Array<() => void> = [];
+
+/** Runs `fn` under a limiter shared by ALL cold-launch warmers, so Teams + flagged together stay within the cap. */
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
-  limit: number,
+  _limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await fn(items[i]);
+  const run = async (item: T): Promise<R> => {
+    if (coldWarmActive >= COLD_WARM_CONCURRENCY) {
+      await new Promise<void>((resolve) => coldWarmWaiters.push(resolve));
+    } else {
+      coldWarmActive += 1;
+    }
+    try {
+      return await fn(item);
+    } finally {
+      const next = coldWarmWaiters.shift();
+      if (next) next();
+      else coldWarmActive -= 1;
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
+  return Promise.all(items.map(run));
 }
 
 async function warmAllTeamsBoundAgents(): Promise<void> {
@@ -2068,6 +2076,36 @@ async function warmAllTeamsBoundAgents(): Promise<void> {
     scheduleTeamsColdWarmRetry();
   } finally {
     teamsColdWarmInFlight = false;
+  }
+}
+
+let flaggedColdWarmDone = false;
+let flaggedColdWarmInFlight = false;
+
+/** Cold-launch: warm every user-flagged agent across ALL offices, a few at a time. */
+async function warmAllFlaggedAgents(): Promise<void> {
+  if (flaggedColdWarmDone || flaggedColdWarmInFlight) return;
+  if (!window.copilotBridge) return;
+  flaggedColdWarmInFlight = true;
+  try {
+    const targets: Array<{ officeId: string; agentId: string }> = [];
+    for (const office of officeManager.getAllOffices()) {
+      for (const agentId of officeManager.getFlaggedAgentIds(office.id)) {
+        targets.push({ officeId: office.id, agentId });
+      }
+    }
+    // Leave the one-shot unarmed if offices are still loading.
+    if (targets.length === 0) return;
+    await mapWithConcurrency(targets, COLD_WARM_CONCURRENCY, async ({ officeId, agentId }) => {
+      try {
+        await warmAgentSession(officeId, agentId);
+      } catch (err) {
+        console.warn(`[Flagged] cold-launch warm failed for ${officeId}/${agentId}:`, err);
+      }
+    });
+    flaggedColdWarmDone = true;
+  } finally {
+    flaggedColdWarmInFlight = false;
   }
 }
 
@@ -4164,8 +4202,8 @@ officeManager.onOfficesUpdated = () => {
   // session), so bound agents in non-current offices come online at launch
   // instead of only when their tab is visited.
   void warmAllTeamsBoundAgents();
-  // Flagged agents are intentionally NOT cold-warmed: under the shared ui-server
-  // host each session costs memory, so they start lazily when opened.
+  // Flagged ("Needs attention") agents are warmed too, throttled to a few at a time.
+  void warmAllFlaggedAgents();
 };
 
 // Foreground catch-up: ensure dashboard + scene badges refresh immediately after backgrounding.
