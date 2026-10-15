@@ -124,6 +124,7 @@ export class SeriousTerminalController {
       onClose: options.onOverlayClose,
       onSaved: () => { void this.refreshTeamsButton(); },
     });
+    window.addEventListener('teams:paused-changed', () => { void this.refreshTeamsButton(); });
     this.isFullWidth = localStorage.getItem(SeriousTerminalController.FULL_WIDTH_STORAGE_KEY) === 'true';
     this.container = document.createElement('div');
     this.container.style.cssText = `
@@ -861,17 +862,19 @@ export class SeriousTerminalController {
     }
     this.teamsRemoteBtn.style.display = '';
     let online = false;
+    let paused = false;
     try {
       const status = await window.copilotBridge.teamsStatus({
         officeId: this.activeOfficeId ?? undefined,
         agentId: this.activeAgentId ?? undefined,
       });
       online = !!status?.connected;
+      paused = !!(status as { agentsPaused?: boolean } | undefined)?.agentsPaused && (online || ((status as { bindings?: unknown[] } | undefined)?.bindings?.length ?? 0) > 0);
     } catch { online = false; }
-    this.setTeamsButtonState(online);
+    this.setTeamsButtonState(online, false, paused);
   }
 
-  private setTeamsButtonState(online: boolean, pending = false): void {
+  private setTeamsButtonState(online: boolean, pending = false, paused = false): void {
     if (!this.teamsRemoteBtn) return;
     if (pending) {
       this.teamsRemoteBtn.innerHTML = teamsLabel('Connecting…');
@@ -879,8 +882,9 @@ export class SeriousTerminalController {
       return;
     }
     this.teamsRemoteBtn.disabled = false;
-    this.teamsRemoteBtn.className = uiButtonClass(online ? 'teams-online' : 'teams');
-    this.teamsRemoteBtn.innerHTML = teamsLabel(online ? 'Teams Online' : 'Teams Remote');
+    this.teamsRemoteBtn.className = uiButtonClass(paused ? 'teams-paused' : online ? 'teams-online' : 'teams');
+    this.teamsRemoteBtn.title = paused ? 'Teams connection is paused — resume it from the top bar' : this.teamsRemoteBtn.title;
+    this.teamsRemoteBtn.innerHTML = teamsLabel(paused ? 'Teams Paused' : online ? 'Teams Online' : 'Teams Remote');
   }
 
   private async handleTeamsRemote(): Promise<void> {

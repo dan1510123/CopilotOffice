@@ -272,12 +272,14 @@ export const defaultDashboard: DashboardRenderer = {
       const d = buildAgentDynamics(agent, ctx, t);
       const isTeamsOnline = teamsOnline.has(agent.id);
       const pendingTeamsAction = teamsPending.get(agent.id);
+      const isTeamsPaused = !!ctx.teamsPaused && !pendingTeamsAction && (isTeamsOnline || !!ctx.teamsBoundAgentIds?.has(agent.id));
+      const teamsBtnClass = isTeamsPaused ? 'ui-btn--teams-paused' : (isTeamsOnline ? 'ui-btn--teams-online' : 'ui-btn--teams');
       const teamsButtonLabel = pendingTeamsAction
         ? `<span class="ui-btn__spinner" aria-hidden="true"></span>${pendingTeamsAction === 'disconnecting' ? 'Disconnecting…' : 'Connecting…'}`
-        : teamsLabel(isTeamsOnline ? 'Teams Online' : 'Teams Remote');
+        : (isTeamsPaused ? teamsLabel('Teams Paused') : teamsLabel(isTeamsOnline ? 'Teams Online' : 'Teams Remote'));
       const teamsButtonTitle = pendingTeamsAction
         ? (pendingTeamsAction === 'disconnecting' ? 'Taking this agent offline in Teams' : 'Bringing this agent online in Teams')
-        : (isTeamsOnline ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread');
+        : (isTeamsPaused ? 'Teams connection is paused — resume it from the top bar to reconnect' : (isTeamsOnline ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'));
 
       // ── Session Metadata Panel (right side) ──
       const meta = cachedSessionMeta[agent.id];
@@ -339,7 +341,7 @@ export const defaultDashboard: DashboardRenderer = {
               title="Start a new session for this agent">🔄 New Session</button>
             <button class="session-close-btn ui-btn ui-btn--danger" data-agent="${agent.id}"
               title="Close this agent's session (agent returns to slacking)">✖ Close Session</button>
-            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${isTeamsOnline ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}"
+            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${teamsBtnClass}" data-agent="${agent.id}"
               title="${teamsButtonTitle}"${pendingTeamsAction ? ' disabled aria-busy="true"' : ''}>${teamsButtonLabel}</button>` : ''}
             <button class="session-edit-btn ui-btn ui-btn--ghost" data-agent="${agent.id}" style="
               padding: 5px 9px;
@@ -361,7 +363,7 @@ export const defaultDashboard: DashboardRenderer = {
             " title="${d.activityDetailEsc}">${d.activityDetail || 'No active session'}</div>
           </div>
           <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
-            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${isTeamsOnline ? 'ui-btn--teams-online' : 'ui-btn--teams'}" data-agent="${agent.id}"
+            ${teamsEnabled ? `<button class="session-teams-btn ui-btn ${teamsBtnClass}" data-agent="${agent.id}"
               title="${teamsButtonTitle}"${pendingTeamsAction ? ' disabled aria-busy="true"' : ''}>${teamsButtonLabel}</button>` : ''}
             ${flagBtnHtml}
           </div>

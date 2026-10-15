@@ -38,6 +38,7 @@ export type UiButtonVariant =
   | 'amber'
   | 'teams'
   | 'teams-online'
+  | 'teams-paused'
   | 'ghost';
 
 /** Class name for a shared kit button. Combine with `injectUiKit()`. */
@@ -107,6 +108,9 @@ export function injectUiKit(): void {
 
     .ui-btn--teams-online { background: color-mix(in srgb, var(--co-success) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-success) 50%, var(--co-border)); color: var(--co-success); }
     .ui-btn--teams-online:hover { background: color-mix(in srgb, var(--co-success) 26%, var(--co-bg-raised)); border-color: var(--co-success); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-success) 28%, transparent); }
+
+    .ui-btn--teams-paused { background: color-mix(in srgb, var(--co-amber) 15%, var(--co-bg-raised)); border-color: color-mix(in srgb, var(--co-amber) 55%, var(--co-border)); color: var(--co-amber); }
+    .ui-btn--teams-paused:hover { background: color-mix(in srgb, var(--co-amber) 26%, var(--co-bg-raised)); border-color: var(--co-amber); color: var(--co-text-strong); box-shadow: 0 0 10px color-mix(in srgb, var(--co-amber) 28%, transparent); }
 
     .ui-btn--ghost { background: transparent; border-color: color-mix(in srgb, var(--co-border) 70%, transparent); color: var(--co-text-secondary); }
     .ui-btn--ghost:hover { background: var(--co-bg-raised-hover); border-color: var(--co-border); color: var(--co-text-strong); }

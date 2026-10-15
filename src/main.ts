@@ -2618,6 +2618,7 @@ async function refreshTeamsDashboardState(): Promise<void> {
   } catch { /* leave caches as-is */ }
   updateTerminalContent();
   renderOfficeTabs();
+  window.dispatchEvent(new CustomEvent('teams:paused-changed'));
 }
 
 /**
@@ -2767,6 +2768,8 @@ function updateTerminalContentNow() {
     formatRelativeTime,
     teamsEnabled: teamsFeatureEnabled,
     teamsOnlineAgentIds,
+    teamsPaused: teamsAgentsPaused,
+    teamsBoundAgentIds,
     teamsPendingActions,
     flaggedAgentIds,
   });
@@ -2793,6 +2796,8 @@ function updateTerminalContentNow() {
         formatRelativeTime,
         teamsEnabled: teamsFeatureEnabled,
         teamsOnlineAgentIds,
+        teamsPaused: teamsAgentsPaused,
+        teamsBoundAgentIds,
         teamsPendingActions,
         flaggedAgentIds,
       });
