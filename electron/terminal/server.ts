@@ -11,7 +11,7 @@ import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from 
 import { formatToolStatus, buildAskUserRelay, buildPlanRelay, buildElicitationRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
-import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession, elicitationTransport, handlePendingElicitation, clearPendingElicitationForSession } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, UI_SERVER_SHARED_HOST_ID, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession, elicitationTransport, handlePendingElicitation, clearPendingElicitationForSession } from './terminal-backend';
 import type { TerminalSessionChange } from './terminal-backend';
 import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEND_NAME } from './native-bridge-backend';
 import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
@@ -29,6 +29,7 @@ import {
   shouldForwardSharedHostData,
   foregroundAfterStart,
   shouldReassertForeground,
+  officeOf,
 } from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
@@ -102,8 +103,8 @@ const activeAgentViewers: Set<string> = new Set();
 const agentForwardKeys: Set<string> = new Set();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
 // ui-server shared-host foreground tracking: every agent in an office shares ONE
-// host TUI (rawPty) that renders only the foreground session. Maps
-// officeId -> composite key of the agent that owns the shared stream.
+// host TUI (rawPty) that renders only the foreground session. Keyed by the single
+// shared host id -> composite key of the agent that owns the shared stream.
 const officeForegroundCk: Map<string, string> = new Map();
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
@@ -194,8 +195,8 @@ function compositeKey(officeId: string, agentId: string): string {
 }
 
 // Clear an office's shared-host foreground pointer only when it points at the key.
-function clearForegroundIf(officeId: string, ck: string): void {
-  if (officeForegroundCk.get(officeId) === ck) officeForegroundCk.delete(officeId);
+function clearForegroundIf(_officeId: string, ck: string): void {
+  if (officeForegroundCk.get(UI_SERVER_SHARED_HOST_ID) === ck) officeForegroundCk.delete(UI_SERVER_SHARED_HOST_ID);
 }
 
 /**
@@ -823,7 +824,7 @@ async function startTerminalForAgentImpl(
     // input to its foreground session. If this start is for a DIFFERENT agent
     // than the one the viewer attached to, re-assert the intended foreground.
     if (activeBackend.name === 'ui-server') {
-      const intendedCk = officeForegroundCk.get(officeId);
+      const intendedCk = officeForegroundCk.get(UI_SERVER_SHARED_HOST_ID);
       if (shouldReassertForeground(intendedCk, ck)) {
         const fgKey = agentToTerminal.get(intendedCk!);
         const fgProc = fgKey ? ptyProcesses.get(fgKey) : null;
@@ -1153,11 +1154,11 @@ async function startTerminalForAgentImpl(
     // foreground is never overwritten by a starting agent (see foregroundAfterStart).
     const isSharedHostBackend = activeBackend.name === 'ui-server';
     if (isSharedHostBackend) {
-      officeForegroundCk.set(officeId, foregroundAfterStart(officeForegroundCk.get(officeId), ck));
+      officeForegroundCk.set(UI_SERVER_SHARED_HOST_ID, foregroundAfterStart(officeForegroundCk.get(UI_SERVER_SHARED_HOST_ID), ck));
     }
 
     proc.onData((data: string) => {
-      if (isSharedHostBackend && !shouldForwardSharedHostData(ck, officeForegroundCk.get(officeId))) {
+      if (isSharedHostBackend && !shouldForwardSharedHostData(ck, officeForegroundCk.get(UI_SERVER_SHARED_HOST_ID))) {
         return;
       }
       appendToScrollback(ck, data);
@@ -1465,7 +1466,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // is the event-derived id, kept for diagnostics only.
           let resolved = handlePendingUserInput(proc.sessionId, { answer: msg.answer, wasFreeform: msg.wasFreeform });
           const ck = compositeKey(msg.officeId, msg.agentId);
-          if (!resolved && officeForegroundCk.get(msg.officeId) === ck && typeof msg.answer === 'string' && msg.answer.trim()) {
+          if (!resolved && officeForegroundCk.get(UI_SERVER_SHARED_HOST_ID) === ck && typeof msg.answer === 'string' && msg.answer.trim()) {
             // Foreground agent: the TUI owns the question (no SDK resolver exists), so
             // deliver the Teams answer as plain text + Enter. Only reached for an
             // answer to a pending ask_user, never for general prompts.
@@ -1676,7 +1677,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
       const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
       if (isSharedHost && msg.foreground === true) {
-        officeForegroundCk.set(msg.officeId, ck);
+        officeForegroundCk.set(UI_SERVER_SHARED_HOST_ID, ck);
         try {
           await attachedProc!.process.setForeground?.();
         } catch (err: unknown) {
@@ -1742,7 +1743,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
       const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
       if (isSharedHost && msg.foreground === true) {
-        officeForegroundCk.set(msg.officeId, ck);
+        officeForegroundCk.set(UI_SERVER_SHARED_HOST_ID, ck);
         try {
           await attachedProc!.process.setForeground?.();
         } catch (err: unknown) {
@@ -2036,7 +2037,11 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         break;
       }
 
+      // ui-server shares ONE host across all offices, so restarting it takes every
+      // office's sessions down with it — restart them all, not just the requested one.
+      const restartsWholeHost = terminalBackend.name === 'ui-server';
       const restartTargets: Array<{
+        officeId: string;
         agentId: string;
         workingDir?: string;
         hostWorkingDir?: string;
@@ -2045,11 +2050,13 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       }> = [];
 
       for (const [ck, key] of agentToTerminal) {
-        if (!ck.startsWith(`${officeId}:`) || key !== ck) continue;
+        const targetOfficeId = officeOf(ck);
+        if ((!restartsWholeHost && targetOfficeId !== officeId) || key !== ck) continue;
         const proc = ptyProcesses.get(key);
         if (!proc || proc.launchMode !== 'copilot') continue;
         restartTargets.push({
-          agentId: ck.slice(officeId.length + 1),
+          officeId: targetOfficeId,
+          agentId: ck.slice(targetOfficeId.length + 1),
           workingDir: proc.workingDir,
           hostWorkingDir: proc.hostWorkingDir,
           viewed: activeAgentViewers.has(ck),
@@ -2057,17 +2064,17 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         });
       }
 
-      console.log(`[lifecycle] refreshing sdk office=${officeId} agents=${restartTargets.map((target) => target.agentId).join(',') || '(none)'}`);
+      console.log(`[lifecycle] refreshing ${terminalBackend.name} office=${officeId} wholeHost=${restartsWholeHost} agents=${restartTargets.map((target) => compositeKey(target.officeId, target.agentId)).join(',') || '(none)'}`);
 
       for (const target of restartTargets) {
-        const ck = compositeKey(officeId, target.agentId);
+        const ck = compositeKey(target.officeId, target.agentId);
         const proc = ptyProcesses.get(ck);
         if (proc) {
           killPtyProcess(proc);
           ptyProcesses.delete(ck);
         }
         agentToTerminal.delete(ck);
-        clearForegroundIf(officeId, ck);
+        clearForegroundIf(target.officeId, ck);
         const watcher = agentWatchers.get(ck);
         if (watcher) {
           watcher.stop();
@@ -2080,14 +2087,17 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       }
 
       backendOnlineOffices.delete(officeId);
+      if (restartsWholeHost) {
+        for (const target of restartTargets) backendOnlineOffices.delete(target.officeId);
+      }
       try {
         await terminalBackend.restartOffice(officeId);
         for (const target of restartTargets) {
-          const ck = compositeKey(officeId, target.agentId);
+          const ck = compositeKey(target.officeId, target.agentId);
           if (target.viewed) addAgentViewer(ck, viewerMaps);
           if (target.forwarded) agentForwardKeys.add(ck);
           const result = await startTerminalForAgent(
-            officeId,
+            target.officeId,
             target.agentId,
             target.workingDir,
             undefined,
@@ -2099,7 +2109,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           if (!result.success) {
             throw new Error(result.error || `Failed to restart ${target.agentId}`);
           }
-          restartedAgentIds.push(target.agentId);
+          if (target.officeId === officeId) restartedAgentIds.push(target.agentId);
         }
 
         if (restartTargets.length > 0 && !backendOnlineOffices.has(officeId)) {
@@ -2124,7 +2134,6 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       }
       break;
     }
-
     case 'list-active': {
       const activeAgentIds = Array.from(agentToTerminal.keys())
         .filter(ck => {

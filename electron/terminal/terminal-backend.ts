@@ -1745,7 +1745,12 @@ type UiServerOfficeEntry = {
   foregroundClaimed: boolean;
 };
 
-const DEFAULT_UI_SERVER_OFFICE_ID = '__default__';
+/**
+ * All offices share ONE ui-server host (a fixed ~1 GB of host + helper processes
+ * each, versus ~10 MB per extra SDK session). Host-level settings (yolo, env,
+ * extra args, cwd) come from whichever agent starts the host first.
+ */
+export const UI_SERVER_SHARED_HOST_ID = '__shared__';
 
 export function buildUiServerHostOptions(options: StartTerminalOptions): StartTerminalOptions {
   return { ...options, cwd: options.hostCwd ?? options.cwd };
@@ -1792,7 +1797,7 @@ export class UiServerBackend implements TerminalBackend {
       throw new Error('Cannot start ui-server backend without a resolved Copilot CLI path');
     }
 
-    const officeId = options.officeId ?? DEFAULT_UI_SERVER_OFFICE_ID;
+    const officeId = UI_SERVER_SHARED_HOST_ID;
     const entry = this.getOrCreateOfficeEntry(officeId, options);
     try {
       await entry.client.start();
@@ -1819,11 +1824,12 @@ export class UiServerBackend implements TerminalBackend {
     }
   }
 
-  async restartOffice(officeId: string): Promise<void> {
-    const entry = this.offices.get(officeId);
+  /** Restarts the single shared host; the office id is irrelevant (all offices share it). */
+  async restartOffice(_officeId?: string): Promise<void> {
+    const entry = this.offices.get(UI_SERVER_SHARED_HOST_ID);
     if (!entry) return;
 
-    this.offices.delete(officeId);
+    this.offices.delete(UI_SERVER_SHARED_HOST_ID);
     try {
       await entry.client.stop();
     } finally {
