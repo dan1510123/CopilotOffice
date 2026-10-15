@@ -481,7 +481,7 @@ export interface BackendSelectionInfo {
   requested: string;
   /**
    * True when the requested backend could not load and another one was used
-   * instead (native-bridge → sdk).
+   * instead (ui-server → native-bridge → sdk).
    */
   fellBack: boolean;
   /** Human-readable reason for the fallback, when one occurred. */
@@ -724,6 +724,18 @@ export interface SrvBackendOnline {
   backend: string;
 }
 
+/**
+ * Emitted when a specific agent session was requested on ui-server but its start
+ * failed and it fell back to node-pty. Lets the renderer surface a toast so a
+ * broken SDK attach is never silent.
+ */
+export interface SrvBackendSessionFallback {
+  type: 'backend-session-fallback';
+  officeId: string;
+  agentId: string;
+  reason: string;
+}
+
 export interface SrvSessionMetaUpdated {
   type: 'session-meta-updated';
   agentId: string;
@@ -762,5 +774,6 @@ export type ServerToMain =
   | SrvCopilotUserMessage
   | SrvTerminalPreloadStatus
   | SrvBackendOnline
+  | SrvBackendSessionFallback
   | SrvSessionMetaUpdated
   | SrvResponse;

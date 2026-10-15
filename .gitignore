@@ -58,3 +58,5 @@ yarn-error.log*
 
 # Skill dependency installs (office-image-reply etc.)
 .github/skills/**/node_modules/
+
+office-*.sessions.json

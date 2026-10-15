@@ -206,3 +206,21 @@ These items are designed and code-verified where possible, but their live-runtim
   `SeriousTerminalController`, `src/util/toolStatus`, `src/scenes`, `src/entities`, nor `src/input`
   — so Phaser-first rendering (I), InputManager focus (II), and clipboard/selection discipline (VI)
   are structurally preserved for the default path; `ui-server` adds behavior additively.
+
+## 2026-10-14 re-spike on CLI 1.0.98
+
+`--ui-server` is hidden (`.hideHelp()`) but registered and functional. The `github/copilot-cli` changelog and docs have no deprecation notice. CO-001's "removed in 1.0.88" diagnosis was wrong; the likely cause was a non-spawnable launcher or wrong exe resolution.
+
+| Spike | Result |
+|---|---|
+| `copilot.exe --ui-server --port 0` under node-pty | Prints "Server listening on port N" in about 2s; 127.0.0.1 listener confirmed |
+| Two SDK sessions on one host, `setForegroundSessionId` | Switch works; `session.foreground` and `session.background` events fire |
+| Background session events | A never-foreground session emitted 152 events; one backgrounded mid-tool-call emitted 198 |
+| `ask_user` in a background session | `user_input.requested` then `user_input.completed` resolved late |
+| Permissions | CLI 1.0.98 rejects `{kind:'approved'}`; accepted kinds are `approve-once`, `approve-for-session`, `reject`, `user-not-available` |
+| Memory | About 530MB host idle, about 660MB with two sessions (about 15MB per extra session) |
+
+Notes:
+- The repo SDK 1.0.14 lacks `getForegroundSessionId`, `setForegroundSessionId` and `client.on`. The CLI-bundled SDK has them and uses `new CopilotClient({ cliUrl: 'localhost:N' })`.
+- Use the pinned native `copilot.exe`, not a wrapper.
+- Not verified: 1.0.99-0 prerelease, and the native-bridge extension across a foreground switch.

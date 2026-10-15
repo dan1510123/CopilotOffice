@@ -6,7 +6,7 @@ has regression coverage and the applicable smoke path passes.
 
 | ID | Status | Defect | Resolution / evidence |
 |---|---|---|---|
-| CO-001 | Fixed | CLI 1.0.88 no longer starts the hidden `--ui-server` mode, leaving startup waiting forever for a port. | Capability probing now rejects unsupported UI-server startup; `native-bridge` is the default and `sdk` is its explicit fallback. |
+| CO-001 | Fixed (diagnosis revised 2026-10-14) | The `ui-server` backend stopped starting after CLI 1.0.88 and startup waited forever for a port. | Re-spiked on CLI 1.0.98: `--ui-server` is still registered (hidden, `.hideHelp()`) and works. No deprecation appears in the `github/copilot-cli` changelog or docs. The likely cause was a non-spawnable wrapper or wrong launcher resolution, not removal. Keep the capability probe and fallback. See `specs/013-sdk-control-plane/research.md` "2026-10-14 re-spike". |
 | CO-002 | Fixed | `EventsWatcher` synchronously read and parsed the complete historical `events.jsonl`; several large histories could block terminal-server IPC and time out startup requests. | Historical replay now uses bounded asynchronous chunks with coalesced triggers, UTF-8-safe buffering, and regression coverage (`0a590d0`). |
 | CO-003 | Fixed | Bridge credentials could leak into shell or MCP tool child environments. | Bridge variables are passed via `--secret-env-vars` and stripped from inherited child environments (`85f4686`). |
 | CO-004 | Fixed | Parent PID was treated as sufficient bridge identity and could be spoofed. | Each launch now requires a random per-TUI nonce, constant-time comparison, and expected-parent validation (`85f4686`). |

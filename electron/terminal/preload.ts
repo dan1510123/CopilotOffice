@@ -254,7 +254,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('show-native-notification', title, body);
   },
 
-  // Terminal backend selection (native-bridge / node-pty / sdk).
+  // Terminal backend selection (ui-server / node-pty / sdk).
   getBackendInfo: (): Promise<{ name: string; requested: string; fellBack: boolean; reason?: string } | null> => {
     return ipcRenderer.invoke('terminal-backend-info');
   },
@@ -263,6 +263,9 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
   onBackendOnline: (callback: (officeId: string, backend: string) => void) => {
     ipcRenderer.on('backend-online', (_event, officeId, backend) => callback(officeId, backend));
+  },
+  onBackendSessionFallback: (callback: (officeId: string, agentId: string, reason: string) => void) => {
+    ipcRenderer.on('backend-session-fallback', (_event, officeId, agentId, reason) => callback(officeId, agentId, reason));
   },
 
   // Spec 003 follow-up: write to OS clipboard via Electron main process.
@@ -589,6 +592,7 @@ declare global {
       getBackendInfo: () => Promise<{ name: string; requested: string; fellBack: boolean; reason?: string } | null>;
       onBackendFallback: (callback: (info: { name: string; requested: string; fellBack: boolean; reason?: string }) => void) => void;
       onBackendOnline: (callback: (officeId: string, backend: string) => void) => void;
+      onBackendSessionFallback: (callback: (officeId: string, agentId: string, reason: string) => void) => void;
       clipboardWriteText: (text: string) => Promise<{ success: boolean; verified?: boolean; error?: string }>;
       clipboardReadText: () => Promise<{ success: boolean; text: string; error?: string }>;
       saveOffices: (data: string) => Promise<{ success: boolean; error?: string }>;

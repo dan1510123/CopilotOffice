@@ -3580,6 +3580,15 @@ if (window.copilotBridge) {
     showClipboardToast(`GitHub Copilot SDK server online for ${officeName}`, 'success', 10_000);
   });
 
+  // Per-agent fallback notice (013): a specific agent was requested on ui-server
+  // but its start failed and fell back to node-pty. Surface it so a broken SDK
+  // attach is never silent.
+  window.copilotBridge.onBackendSessionFallback?.((_officeId: string, agentId: string, reason: string) => {
+    const agentName = getAgentConfig(agentId)?.name ?? agentId;
+    const detail = reason ? ` (${reason})` : '';
+    showClipboardToast(`${agentName}: UI-server unavailable — using node-pty${detail}`, 'error', 10_000);
+  });
+
   // Teams Remote Agents (011): keep the dashboard tile buttons in sync with
   // the service's per-agent online state.
   window.copilotBridge.onTeamsStatusChanged?.((status: { agentId?: string; online?: boolean }) => {

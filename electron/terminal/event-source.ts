@@ -15,6 +15,19 @@ export interface SdkCopilotSession {
   on(handler: (evt: unknown) => void): () => void;
 }
 
+/** Structural session surface; independent of the installed SDK version. */
+export type SdkSessionLike = SdkCopilotSession;
+
+export interface SdkEventSourceOptions {
+  /** Fired once, on the first `session.idle` / `assistant.turn_end`. */
+  onReady?: (event: CopilotEvent) => void;
+  /** Tolerated clock skew when classifying events as replayed history. */
+  replaySkewMs?: number;
+  now?: () => number;
+}
+
+const REPLAY_SKEW_MS = 5_000;
+
 const EVENT_METADATA_KEYS = new Set(['type', 'id', 'timestamp', 'parentId']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -61,17 +74,37 @@ export function mapSdkEventToCopilotEvent(evt: unknown): CopilotEvent {
  */
 export class SdkEventSource implements CopilotEventSource {
   private unsubscribe: (() => void) | null = null;
+  private ready = false;
+  private startedAtMs = 0;
 
   constructor(
     private readonly sessionId: string,
-    private readonly session: SdkCopilotSession,
+    private readonly session: SdkSessionLike,
+    private readonly options: SdkEventSourceOptions = {},
   ) {}
 
   start(onEvent: EventCallback): void {
     this.stop();
+    this.ready = false;
+    this.startedAtMs = (this.options.now ?? Date.now)();
+    const skewMs = this.options.replaySkewMs ?? REPLAY_SKEW_MS;
     this.unsubscribe = this.session.on((evt: unknown) => {
-      onEvent(mapSdkEventToCopilotEvent(evt), false);
+      const event = mapSdkEventToCopilotEvent(evt);
+      // Replayed history (resumed sessions) carries timestamps older than this
+      // subscription; flag it so the server never forwards it as live activity.
+      const ts = Date.parse(event.timestamp);
+      const isHistorical = !this.ready && Number.isFinite(ts) && ts < this.startedAtMs - skewMs;
+      if (!this.ready && (event.type === 'session.idle' || event.type === 'assistant.turn_end')) {
+        this.ready = true;
+        this.options.onReady?.(event);
+      }
+      onEvent(event, isHistorical);
     });
+  }
+
+  /** True once `session.idle` or the first `assistant.turn_end` was observed. */
+  isReady(): boolean {
+    return this.ready;
   }
 
   stop(): void {

@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
 import type { ExitPlanModeHandler, ExitPlanModeResult, ElicitationHandler, ElicitationResult } from '@github/copilot-sdk';
+import { createOnPermissionRequest } from './sdk-permissions';
 import type { ControlCommand, ControlData } from './protocol';
 import { loadCustomAgents } from './custom-agents';
 import { resolveSkillDirectories } from './custom-skills';
@@ -42,7 +43,7 @@ interface UserInputRequest {
 
 /**
  * Build the SDK `onUserInputRequest` handler (spec 015 prerequisite). Registered on
- * every managed SDK session so `ask_user` is usable. `sessionId` is the ONLY
+ * every managed SDK/ui-server session so `ask_user` is usable. `sessionId` is the ONLY
  * correlation key (see module header) — the callback provides no requestId. Returns a
  * promise resolved LATE by {@link handlePendingUserInput} when the answer arrives.
  */
@@ -163,7 +164,7 @@ export function programmaticInputUnsupportedError(kind: ProgrammaticInputKind): 
 
 // ── plan mode (SDK exit_plan_mode interaction) approval channel ─────────────────
 //
-// Mirrors the ask_user (spec 015) machinery above. When a managed SDK session
+// Mirrors the ask_user (spec 015) machinery above. When a managed SDK/ui-server session
 // enters plan mode and the agent calls `exit_plan_mode`, the SDK invokes the registered
 // `onExitPlanModeRequest` handler and BLOCKS the turn on the promise it returns. Like
 // `onUserInputRequest`, the callback carries no requestId — the parallel event stream
@@ -186,7 +187,7 @@ const pendingPlanApproval = new Map<string, PendingPlanApprovalEntry>();
 
 /**
  * Build the SDK `onExitPlanModeRequest` handler. Registered on every managed
- * SDK session so a Teams-online agent's plan can be approved/rejected from the
+ * SDK/ui-server session so a Teams-online agent's plan can be approved/rejected from the
  * thread. Returns a promise resolved LATE by {@link handlePendingPlanApproval} when the
  * decision arrives. The relay of the plan itself rides the normal event stream
  * (`exit_plan_mode.requested` → server watcherCallback), NOT this callback.
@@ -418,11 +419,19 @@ export interface TerminalProcess {
 
   /**
    * Optional: build the {@link CopilotEventSource} for this process's agent.
-   * SDK-backed processes return an {@link SdkEventSource} bound to the
+   * SDK-backed processes (ui-server) return an {@link SdkEventSource} bound to the
    * live session so status/tool/turn events come from `session.on(...)` instead of
    * tailing `events.jsonl`. Backends that omit it are driven by the file watcher.
    */
   createEventSource?(): CopilotEventSource;
+
+  /**
+   * Optional: make this agent's session the one the hosted runtime's TUI renders
+   * (T024). Called when a viewer attaches / the visible agent switches. Implemented
+   * by the ui-server backend (`client.setForegroundSessionId`); a no-op concept for
+   * backends where each agent already owns its own PTY.
+   */
+  setForeground?(): Promise<void>;
 }
 
 export interface StartTerminalOptions {
@@ -438,16 +447,24 @@ export interface StartTerminalOptions {
   cols: number;
   rows: number;
   cwd: string;
-  /** Office-level cwd for the shared per-office SDK host; session cwd may be agent-specific. */
+  /** Office-level cwd for the shared ui-server host; session cwd may be agent-specific. */
   hostCwd?: string;
   env: { [key: string]: string };
   /** YOLO/auto-approve posture for this session (FR-009). Defaults to false. */
   yolo?: boolean;
   /**
+   * Live YOLO/auto-approve getter (ui-server backend). Unlike the `yolo` boolean
+   * — captured once at session-create time and used for the node-pty `--yolo`
+   * launch flag — this is evaluated on every permission request so toggling YOLO
+   * takes effect on already-running ui-server sessions. Falls back to `yolo`.
+   */
+  isYoloEnabled?: () => boolean;
+  /**
    * Extra CLI arguments from the app's "additional parameters" setting
-   * (e.g. ['--model', 'gpt-5.4']). For the sdk backend these are appended
-   * to the per-office headless host launch; the host is created once per office,
-   * so the args are captured from the first agent that starts it. Empty/omitted = none.
+   * (e.g. ['--model', 'gpt-5.4']). For the ui-server backend these are appended
+   * to the per-office host launch (`copilot <extraArgs> --ui-server --port 0`);
+   * the host is created once per office, so the args are captured from the first
+   * agent that starts it. Empty/omitted = none.
    */
   extraArgs?: string[];
 }
@@ -488,11 +505,11 @@ export function sanitizeCopilotPath(pathValue: string | undefined, repoRoot: str
  * `@github/copilot-sdk` (`@github/copilot` → `@github/copilot-<platform>-<arch>`).
  *
  * This binary is a real native `copilot` executable (not the extensionless VS
- * Code wrapper), so it can be spawned directly (headless host / native TUI).
+ * Code wrapper), so it can be `pty.spawn`'d directly AND can host `--ui-server`.
  * Preferring it makes CLI resolution deterministic and npm-managed instead of
  * depending on whatever `copilot` happens to be first on the user's PATH (which
- * on dev machines is often the VS Code copilot-chat shim). Returns null if the
- * platform package isn't installed.
+ * on dev machines is often the VS Code copilot-chat shim that cannot host
+ * ui-server). Returns null if the platform package isn't installed.
  */
 export function resolveBundledCopilotCliPath(): string | null {
   try {
@@ -526,6 +543,63 @@ export function resolveCopilotCliPath(repoRoot: string, pathValue: string | unde
   } catch {
     return null;
   }
+}
+
+/**
+ * Interpret the raw output of a `copilot --ui-server` probe.
+ *
+ * The Copilot CLI's argument parser is strict: an unrecognized flag produces
+ * `error: unknown option '...'`. `--ui-server` is an undocumented-but-recognized
+ * flag (TUI + local control server mode), so a CLI that supports it does NOT emit
+ * that error — in a non-interactive context it falls through to a normal path
+ * (e.g. "No prompt provided. Run in an interactive terminal ..."). Returns true
+ * when the flag is recognized (supported), false when reported unknown.
+ *
+ * Pure and unit-testable — kept separate from the process-spawning probe below.
+ */
+export function interpretUiServerProbe(output: string): boolean {
+  if (/listening on port \d+/i.test(output)) return true;
+  // CLI >= 1.0.98 only announces the port under a TTY, so the probe passes a bogus
+  // trailing flag: the strict parser reports the FIRST unknown argument, which is
+  // the sentinel only when `--ui-server` itself was recognized.
+  return new RegExp(`unexpected argument '${UI_SERVER_PROBE_SENTINEL}'`, 'i').test(output)
+    && !/unexpected argument '--ui-server'/i.test(output);
+}
+
+const UI_SERVER_PROBE_SENTINEL = '--copilot-office-probe-unknown';
+export const UI_SERVER_PORT_REGEX = /listening on port (\d+)/i;
+
+const uiServerProbeCache = new Map<string, boolean>();
+
+/**
+ * Probe whether the resolved Copilot CLI supports the (undocumented) `--ui-server`
+ * TUI+server mode. Runs the CLI with the flag in a non-interactive context (no TTY,
+ * piped stdio) and requires the control-port announcement via
+ * {@link interpretUiServerProbe}. Results are cached per `cliPath`. Never throws.
+ *
+ * A CLI that does not support the hidden flag ignores it and launches the
+ * normal interactive TUI. A process timeout alone is therefore not evidence of
+ * support; only an announced control port is.
+ */
+export function probeUiServerSupport(cliPath: string | null): boolean {
+  if (!cliPath) return false;
+  const cached = uiServerProbeCache.get(cliPath);
+  if (cached !== undefined) return cached;
+
+  const launch = createSdkCliLaunchConfig(cliPath);
+  const command = [`"${launch.cliPath}"`, ...launch.cliArgs, '--ui-server', '--port', '0', UI_SERVER_PROBE_SENTINEL].join(' ');
+
+  let supported = false;
+  try {
+    const output = execSync(command, { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    supported = interpretUiServerProbe(output);
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string };
+    supported = interpretUiServerProbe(`${e.stdout ?? ''}${e.stderr ?? ''}`);
+  }
+
+  uiServerProbeCache.set(cliPath, supported);
+  return supported;
 }
 
 class NodePtyProcess implements TerminalProcess {
@@ -612,7 +686,7 @@ export class NodePtyBackend implements TerminalBackend {
 
 // ── Session control (Teams slash-command execution via the SDK control plane) ────
 //
-// The managed SDK session is a full `CopilotSession` exposing a typed
+// The managed SDK/ui-server session is a full `CopilotSession` exposing a typed
 // `rpc` surface. `/compact`, `/usage` and `/model` map to real RPC calls that return
 // structured, postable content — so Teams can execute them instead of enqueueing the
 // slash text as a model prompt. Only the narrow subset used here is typed; each call
@@ -653,8 +727,8 @@ type ControlSession = {
 };
 
 /**
- * Execute a control command against an SDK-backed session's RPC surface. Used by
- * {@link CopilotSdkProcess}. Rejects with a descriptive
+ * Execute a control command against an SDK-backed session's RPC surface. Shared by
+ * {@link CopilotSdkProcess} and {@link UiServerProcess}. Rejects with a descriptive
  * error when the session lacks the required RPC method.
  */
 export async function runSessionControl(session: ControlSession, cmd: ControlCommand): Promise<ControlData> {
@@ -1066,10 +1140,6 @@ type SdkHostClient = {
 
 type SdkHostClientConstructor = new (options?: Record<string, unknown>) => SdkHostClient;
 
-type RuntimeConnectionForUri = {
-  forUri(uri: string): unknown;
-};
-
 type SdkOfficeEntry = {
   host: HeadlessCliHost;
   client: SdkHostClient | null;
@@ -1229,7 +1299,8 @@ export class CopilotSdkBackend implements TerminalBackend {
       // though the hosted TUI's `/` menu still lists them. See ./custom-skills.
       enableSkills: true,
       skillDirectories: resolveSkillDirectories(options.cwd),
-      onPermissionRequest: this.approveAll ?? (async () => ({ kind: 'approved' })),
+      // CLI >= 1.0.98 rejects the SDK's legacy `{ kind: 'approved' }` (approveAll).
+      onPermissionRequest: createOnPermissionRequest({ yolo: true }),
       // spec 015 prerequisite (forStdio path): register the user-input handler so
       // the model is told `ask_user` is available and Teams/local answers can
       // resolve the pending interaction late. See makeUserInputHandler.
@@ -1255,4 +1326,546 @@ export class CopilotSdkBackend implements TerminalBackend {
       });
     }
   }
+}
+
+type UiServerStatus = 'launching' | 'listening' | 'ready' | 'crashed' | 'stopped';
+
+type UiServerPty = import('node-pty').IPty;
+
+type UiServerSession = {
+  send(request: { prompt: string; mode: 'enqueue' }): Promise<unknown>;
+  disconnect(): Promise<void> | void;
+};
+
+type UiServerClient = {
+  start(): Promise<void>;
+  createSession(options: Record<string, unknown>): Promise<UiServerSession>;
+  resumeSession(sessionId: string, options: Record<string, unknown>): Promise<UiServerSession>;
+  setForegroundSessionId(sessionId: string): Promise<void>;
+  listSessions(): Promise<unknown>;
+  stop?(): Promise<void>;
+};
+
+type UiServerClientConstructor = new (options?: Record<string, unknown>) => UiServerClient;
+
+type RuntimeConnectionForUri = {
+  forUri(uri: string): unknown;
+};
+
+function buildUiServerEnv(env: { [key: string]: string }, repoRoot: string): { [key: string]: string } {
+  const sanitizedPath = sanitizeCopilotPath(env.PATH ?? env.Path ?? process.env.PATH, repoRoot);
+  return {
+    ...env,
+    PATH: sanitizedPath,
+    Path: sanitizedPath,
+    // Pin the bundled runtime: never let the self-updating SEA drift off the
+    // npm-locked version (avoids the SDK↔runtime mismatch crash + session picker).
+    COPILOT_AUTO_UPDATE: 'false',
+  };
+}
+
+/**
+ * Hosts one real Copilot TUI runtime for an office by launching
+ * `copilot --ui-server --port 0` inside node-pty.
+ *
+ * The PTY remains the source of terminal bytes and human keystroke input; the
+ * discovered local control port is used only by {@link ControlPlaneClient}.
+ */
+export class UiServerHostRuntime {
+  private readonly proc: UiServerPty;
+  private readonly listeningPromise: Promise<number>;
+  private readonly listeningTimeout: NodeJS.Timeout;
+  private resolveListening!: (port: number) => void;
+  private rejectListening!: (error: Error) => void;
+  private controlPort: number | null = null;
+  private promoDismissed = false;
+  private startupBuffer = '';
+
+  status: UiServerStatus = 'launching';
+
+  constructor(
+    readonly officeId: string,
+    pty: typeof import('node-pty'),
+    cliPath: string,
+    repoRoot: string,
+    options: Pick<StartTerminalOptions, 'cols' | 'rows' | 'cwd' | 'env' | 'extraArgs' | 'yolo'>,
+    listeningTimeoutMs = 15_000,
+  ) {
+    const launch = createSdkCliLaunchConfig(cliPath);
+    this.listeningPromise = new Promise<number>((resolve, reject) => {
+      this.resolveListening = resolve;
+      this.rejectListening = reject;
+    });
+    // Defensive: guarantee the stored promise always has a handler so a
+    // port-discovery timeout/exit can NEVER surface as a fatal unhandled
+    // rejection that crashes the whole terminal server. Consumers still receive
+    // the rejection through their own `await whenListening()`.
+    this.listeningPromise.catch(() => { /* handled by awaiters */ });
+    this.listeningTimeout = setTimeout(() => {
+      this.status = 'crashed';
+      this.rejectListening(new Error(`Timed out waiting for Copilot UI server port for office ${officeId}`));
+    }, listeningTimeoutMs);
+
+    const extraArgs = (options.extraArgs ?? []).filter((a) => a && a.trim().length > 0);
+    // FR-009: under ui-server the SDK client's onPermissionRequest handler does NOT
+    // reliably intercept permission prompts for the hosted runtime (esp. resumed
+    // sessions), so YOLO must be enforced at the runtime itself. Launch the host
+    // with `--yolo` (all tool/path/url permissions) when YOLO is on. This is
+    // captured at host-creation (one host per office); toggling YOLO afterwards
+    // requires the office host to respawn.
+    const yoloArgs = options.yolo ? ['--yolo'] : [];
+    this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, ...extraArgs, ...yoloArgs, '--ui-server', '--port', '0'], {
+      name: 'xterm-256color',
+      cols: options.cols,
+      rows: options.rows,
+      cwd: options.cwd,
+      env: buildUiServerEnv(options.env, repoRoot),
+    });
+
+    this.proc.onData((data) => {
+      // Parse the control port FIRST so that if a single PTY chunk ever carries
+      // both late startup noise and the "listening on port" line, we never write
+      // stray input into an already-live runtime.
+      const match = UI_SERVER_PORT_REGEX.exec(data);
+      if (match && this.controlPort === null) {
+        this.controlPort = Number(match[1]);
+        this.status = 'listening';
+        this.startupBuffer = '';
+        clearTimeout(this.listeningTimeout);
+        this.resolveListening(this.controlPort);
+        return;
+      }
+
+      // Before the server is listening, watch for the CLI's install-nudge
+      // "install the desktop app?" promo modal, which blocks --ui-server
+      // startup by waiting on stdin. It is a one-time nudge per profile —
+      // gated by `appInstallNudgeResponded` in ~/.copilot/config.json — so it
+      // fires on a fresh machine/user (or when a CLI upgrade adds a new
+      // interstitial), not on a fixed schedule. Dismiss it once with ESC
+      // (cancel/dismiss) — verified to close the nudge without triggering an
+      // install and to generalize to reworded modals better than a Y/N key.
+      // Detection uses a bounded rolling buffer because the prompt text can
+      // straddle PTY chunk boundaries.
+      if (this.controlPort === null && !this.promoDismissed) {
+        this.startupBuffer = (this.startupBuffer + data).slice(-4000);
+        if (/install it\?|Yes, install/i.test(this.startupBuffer)) {
+          this.promoDismissed = true;
+          try {
+            this.proc.write('\x1b');
+          } catch {
+            // PTY already gone; onExit will surface the failure.
+          }
+        }
+      }
+    });
+
+    this.proc.onExit((event) => {
+      clearTimeout(this.listeningTimeout);
+      if (this.status !== 'stopped') {
+        this.status = 'crashed';
+        this.rejectListening(new Error(`Copilot UI server exited before ready (code ${event.exitCode})`));
+      }
+    });
+  }
+
+  get pid(): number {
+    return this.proc.pid;
+  }
+
+  get rawPty(): UiServerPty {
+    return this.proc;
+  }
+
+  whenListening(): Promise<number> {
+    return this.listeningPromise;
+  }
+
+  markReady(): void {
+    if (this.status === 'listening') {
+      this.status = 'ready';
+    }
+  }
+
+  stop(): void {
+    if (this.status === 'stopped') return;
+    this.status = 'stopped';
+    clearTimeout(this.listeningTimeout);
+    try {
+      if (os.platform() === 'win32') {
+        try {
+          execSync(`taskkill /T /F /PID ${this.proc.pid}`, { stdio: 'ignore' });
+        } catch {
+          this.proc.kill();
+        }
+      } else {
+        this.proc.kill();
+      }
+    } catch {
+      // Runtime is already gone.
+    }
+  }
+}
+
+/**
+ * SDK control-plane client attached to an already-running UI-server runtime.
+ *
+ * This intentionally does not pass auth options: `RuntimeConnection.forUri`
+ * connects to a hosted runtime that owns authentication and GitHub identity.
+ */
+export class ControlPlaneClient {
+  private client: UiServerClient | null = null;
+  private startPromise: Promise<void> | null = null;
+  private CopilotClient: UiServerClientConstructor | null = null;
+  private RuntimeConnection: RuntimeConnectionForUri | null = null;
+
+  constructor(private readonly runtime: UiServerHostRuntime) {}
+
+  async start(): Promise<void> {
+    if (!this.startPromise) {
+      this.startPromise = this.startClient();
+    }
+
+    await this.startPromise;
+  }
+
+  async createOrResumeSession(
+    sessionId: string,
+    cwd: string,
+    isYoloEnabled: () => boolean = () => false,
+  ): Promise<UiServerSession> {
+    const client = await this.getStartedClient();
+    // FR-009: map the app's YOLO posture onto the SDK permission handler.
+    // Results come from ./sdk-permissions: CLI >= 1.0.98 only accepts
+    // approve-once / approve-for-session / reject / user-not-available.
+    // `isYoloEnabled` is evaluated PER REQUEST (not captured), so toggling YOLO in
+    // the app takes effect on already-running ui-server sessions without a reopen.
+    const onPermissionRequest = (request: unknown, invocation?: unknown) =>
+      createOnPermissionRequest({ yolo: isYoloEnabled() })(request, invocation);
+    const sharedConfig: Record<string, unknown> = {
+      streaming: true,
+      workingDirectory: cwd,
+      // Inject the user's custom agents (~/.copilot/agents + <cwd>/.github/agents)
+      // so SDK-created ("New Session") sessions expose them like the TUI does.
+      customAgents: loadCustomAgents(cwd),
+      // Inject the user's skills too (~/.copilot/skills + <cwd>/.github/skills)
+      // so SDK-created ("New Session") sessions load them like the TUI does.
+      // See ./custom-skills.
+      enableSkills: true,
+      skillDirectories: resolveSkillDirectories(cwd),
+      onPermissionRequest,
+      // spec 015 prerequisite: advertise `ask_user` (requestUserInput: true) and
+      // provide the late-resolvable answer channel. Without this the model refuses
+      // to call ask_user. The relay of the question itself rides the normal event
+      // stream (user_input.requested → server watcherCallback).
+      onUserInputRequest: makeUserInputHandler(sessionId),
+      // Plan mode: register the exit_plan_mode approval handler (ControlPlaneClient /
+      // ui-server path). See resumeOrCreateSession for the rationale.
+      onExitPlanModeRequest: makeExitPlanModeHandler(sessionId),
+    };
+
+    try {
+      return await client.resumeSession(sessionId, sharedConfig);
+    } catch {
+      return client.createSession({
+        sessionId,
+        ...sharedConfig,
+      });
+    }
+  }
+
+  async setForeground(sessionId: string): Promise<void> {
+    const client = await this.getStartedClient();
+    await client.setForegroundSessionId(sessionId);
+  }
+
+  async listSessions(): Promise<unknown> {
+    const client = await this.getStartedClient();
+    return client.listSessions();
+  }
+
+  async stop(): Promise<void> {
+    if (this.client?.stop) {
+      await this.client.stop();
+    }
+  }
+
+  private async getStartedClient(): Promise<UiServerClient> {
+    await this.start();
+    if (!this.client) {
+      throw new Error('Control plane client did not initialize');
+    }
+
+    return this.client;
+  }
+
+  private async startClient(): Promise<void> {
+    const port = await this.runtime.whenListening();
+    await this.loadSdk();
+    if (!this.CopilotClient || !this.RuntimeConnection) {
+      throw new Error('Copilot SDK did not expose required ui-server APIs');
+    }
+
+    this.client = new this.CopilotClient({
+      connection: this.RuntimeConnection.forUri(`localhost:${port}`),
+    });
+    await this.client.start();
+    this.runtime.markReady();
+  }
+
+  private async loadSdk(): Promise<void> {
+    if (this.CopilotClient && this.RuntimeConnection) return;
+
+    const sdk = await import('@github/copilot-sdk') as unknown as {
+      CopilotClient?: UiServerClientConstructor;
+      RuntimeConnection?: RuntimeConnectionForUri;
+    };
+    if (!sdk.CopilotClient || !sdk.RuntimeConnection?.forUri) {
+      throw new Error('Installed Copilot SDK lacks RuntimeConnection.forUri support');
+    }
+
+    this.CopilotClient = sdk.CopilotClient;
+    this.RuntimeConnection = sdk.RuntimeConnection;
+  }
+}
+
+export class UiServerProcess implements TerminalProcess {
+  private static nextSyntheticPid = 1_000_000;
+  private readonly dataDisposables: Array<{ dispose(): void }> = [];
+  private readonly exitDisposables: Array<{ dispose(): void }> = [];
+  private readonly exitListeners: Array<(event: TerminalExitEvent) => void> = [];
+  private queuedSend: Promise<void> = Promise.resolve();
+  private closed = false;
+
+  readonly pid: number;
+
+  constructor(
+    private readonly sessionId: string,
+    private readonly session: UiServerSession,
+    private readonly runtime: UiServerHostRuntime,
+    private readonly client: ControlPlaneClient,
+  ) {
+    this.pid = UiServerProcess.nextSyntheticPid++;
+  }
+
+  write(data: string): void {
+    if (this.closed || this.runtime.status === 'launching' || this.runtime.status === 'crashed' || this.runtime.status === 'stopped') {
+      return;
+    }
+
+    this.runtime.rawPty.write(data);
+  }
+
+  resize(cols: number, rows: number): void {
+    if (this.closed) return;
+    this.runtime.rawPty.resize(cols, rows);
+  }
+
+  onData(callback: (data: string) => void): void {
+    const disposable = this.runtime.rawPty.onData(callback);
+    this.dataDisposables.push(disposable);
+  }
+
+  onExit(callback: (event: TerminalExitEvent) => void): void {
+    this.exitListeners.push(callback);
+    const disposable = this.runtime.rawPty.onExit((event) => {
+      callback({ exitCode: event.exitCode });
+    });
+    this.exitDisposables.push(disposable);
+  }
+
+  /**
+   * Submit a full prompt through the SDK control plane. The optional label is
+   * intentionally not sent; server/UI wiring may render it separately later.
+   */
+  submitPrompt(text: string, _label?: string): void {
+    if (this.closed) return;
+    const prompt = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    if (!prompt) return;
+
+    this.queuedSend = this.queuedSend
+      .then(async () => {
+        await this.session.send({ prompt, mode: 'enqueue' });
+      })
+      .catch((error: unknown) => {
+        console.warn(`[UiServerProcess] Failed to submit prompt for ${this.sessionId}: ${String(error)}`);
+      });
+  }
+
+  /** Run a control command (`/compact`, `/usage`, `/model`) via the SDK RPC surface. */
+  runControl(cmd: ControlCommand): Promise<ControlData> {
+    return runSessionControl(this.session as unknown as ControlSession, cmd);
+  }
+
+  kill(): boolean {
+    // Synthetic PID, never registered for OS-level reaping; the shared office
+    // runtime is intentionally left running for sibling agents.
+    if (this.closed) return true;
+    this.closed = true;
+    for (const disposable of this.dataDisposables) {
+      disposable.dispose();
+    }
+    for (const disposable of this.exitDisposables) {
+      disposable.dispose();
+    }
+
+    Promise.resolve(this.session.disconnect())
+      .catch((error: unknown) => {
+        console.warn(`[UiServerProcess] Failed to disconnect session ${this.sessionId}: ${String(error)}`);
+      })
+      .finally(() => {
+        this.emitExit({ exitCode: 0 });
+      });
+    return true;
+  }
+
+  setForeground(): Promise<void> {
+    return this.client.setForeground(this.sessionId);
+  }
+
+  /**
+   * Build the SDK-backed event source for this agent (T011). Status/tool/turn
+   * events flow from `session.on(...)` via {@link SdkEventSource}, normalized to
+   * the shared `CopilotEvent` shape, instead of tailing `events.jsonl`.
+   */
+  createEventSource(): CopilotEventSource {
+    return new SdkEventSource(this.sessionId, this.session as unknown as SdkCopilotSession);
+  }
+
+  private emitExit(event: TerminalExitEvent): void {
+    for (const listener of this.exitListeners) {
+      listener(event);
+    }
+  }
+}
+
+type UiServerOfficeEntry = {
+  runtime: UiServerHostRuntime;
+  client: ControlPlaneClient;
+};
+
+const DEFAULT_UI_SERVER_OFFICE_ID = '__default__';
+
+export function buildUiServerHostOptions(options: StartTerminalOptions): StartTerminalOptions {
+  return { ...options, cwd: options.hostCwd ?? options.cwd };
+}
+
+/**
+ * Terminal backend for SDK Control Plane Variant 1: one shared Copilot
+ * TUI+server runtime per office, with per-agent SDK sessions multiplexed onto
+ * that runtime.
+ *
+ * Wired into server.ts: backend selection + start-time fallback (T008/T039),
+ * SDK event source (T011), and foreground-switch on viewer attach (T024).
+ */
+export class UiServerBackend implements TerminalBackend {
+  readonly name = 'ui-server';
+  private readonly offices = new Map<string, UiServerOfficeEntry>();
+
+  constructor(
+    private readonly pty: typeof import('node-pty'),
+    private readonly cliPath: string | null,
+    private readonly repoRoot = process.cwd(),
+  ) {}
+
+  static tryCreate(cliPath: string | null, repoRoot = process.cwd()): UiServerBackend | null {
+    try {
+      // Always host the PINNED native exe; a PATH wrapper (.bat/.cmd/shim) is
+      // not spawnable as a --ui-server host.
+      const resolved = resolveBundledCopilotCliPath() ?? cliPath;
+      if (!resolved || (os.platform() === 'win32' && !/\.exe$/i.test(resolved))) return null;
+      if (!probeUiServerSupport(resolved)) return null;
+      const pty = require('node-pty') as typeof import('node-pty');
+      return new UiServerBackend(pty, resolved, repoRoot);
+    } catch {
+      return null;
+    }
+  }
+
+  isAvailable(): boolean {
+    return probeUiServerSupport(this.cliPath);
+  }
+
+  async start(options: StartTerminalOptions): Promise<TerminalProcess> {
+    if (!this.cliPath) {
+      throw new Error('Cannot start ui-server backend without a resolved Copilot CLI path');
+    }
+
+    const officeId = options.officeId ?? DEFAULT_UI_SERVER_OFFICE_ID;
+    const entry = this.getOrCreateOfficeEntry(officeId, options);
+    try {
+      await entry.client.start();
+      const session = await entry.client.createOrResumeSession(
+        options.sessionId,
+        options.cwd,
+        options.isYoloEnabled ?? (() => options.yolo ?? false),
+      );
+      const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
+      await process.setForeground();
+      return process;
+    } catch (error) {
+      // Any failure bringing the office runtime online (e.g. the resolved CLI
+      // does not emit a control port) must not leave a half-broken cached entry
+      // or a stray PTY. Tear it down and rethrow so the server can return a
+      // clean failure (and the app can fall back to node-pty).
+      try { void Promise.resolve(entry.client.stop()).catch(() => { /* best effort */ }); } catch { /* best effort */ }
+      try { entry.runtime.stop(); } catch { /* best effort */ }
+      this.offices.delete(officeId);
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  async restartOffice(officeId: string): Promise<void> {
+    const entry = this.offices.get(officeId);
+    if (!entry) return;
+
+    this.offices.delete(officeId);
+    try {
+      await entry.client.stop();
+    } finally {
+      entry.runtime.stop();
+    }
+  }
+
+  async stop(): Promise<void> {
+    const entries = [...this.offices.values()];
+    this.offices.clear();
+    await Promise.all(entries.map(async (entry) => {
+      try {
+        await entry.client.stop();
+      } finally {
+        entry.runtime.stop();
+      }
+    }));
+  }
+
+  private getOrCreateOfficeEntry(officeId: string, options: StartTerminalOptions): UiServerOfficeEntry {
+    const existing = this.offices.get(officeId);
+    if (existing && existing.runtime.status !== 'crashed' && existing.runtime.status !== 'stopped') {
+      return existing;
+    }
+
+    const runtime = new UiServerHostRuntime(
+      officeId,
+      this.pty,
+      this.cliPath!,
+      this.repoRoot,
+      buildUiServerHostOptions(options),
+    );
+    const client = new ControlPlaneClient(runtime);
+    const entry = { runtime, client };
+    this.offices.set(officeId, entry);
+    return entry;
+  }
+}
+
+function createSdkCliLaunchConfig(cliPath: string): { cliPath: string; cliArgs: string[] } {
+  if (os.platform() === 'win32' && /\.(bat|cmd)$/i.test(cliPath)) {
+    const commandProcessor = process.env.ComSpec || path.join(process.env.WINDIR || 'C:\\Windows', 'System32', 'cmd.exe');
+    return {
+      cliPath: commandProcessor,
+      cliArgs: ['/c', cliPath, '--no-auto-update'],
+    };
+  }
+
+  return { cliPath, cliArgs: ['--no-auto-update'] };
 }

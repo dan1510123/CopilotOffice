@@ -11,7 +11,7 @@ import { CopilotEvent, CopilotEventSource, FileWatcherEventSourceFactory } from 
 import { formatToolStatus, buildAskUserRelay, buildPlanRelay, buildElicitationRelay } from './events-watcher';
 import type { MainToServer, ServerToMain, MsgSetSessionMeta, MsgGetSessionMeta, MsgQueryAgentStatuses, SessionHistoryEntry, ActivateResult, StartResult } from './protocol';
 import { coerceHistory, pushArchivedEntry, promoteHistoryEntry } from './session-history';
-import { CopilotSdkBackend, NodePtyBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession, elicitationTransport, handlePendingElicitation, clearPendingElicitationForSession } from './terminal-backend';
+import { CopilotSdkBackend, NodePtyBackend, UiServerBackend, resolveCopilotCliPath, sanitizeCopilotPath, TerminalBackend, TerminalProcess, handlePendingUserInput, answerTransport, programmaticInputUnsupportedError, clearPendingUserInputForSession, handlePendingPlanApproval, clearPendingPlanApprovalForSession, elicitationTransport, handlePendingElicitation, clearPendingElicitationForSession } from './terminal-backend';
 import type { TerminalSessionChange } from './terminal-backend';
 import { initializeNativeBridge, selectNativeBridgeBackend, NATIVE_BRIDGE_BACKEND_NAME } from './native-bridge-backend';
 import { isNativeBridgeEnvName, type NativeBridgeBroker } from './native-bridge-broker';
@@ -25,6 +25,11 @@ import {
   removeAgentViewer,
   type ViewerMaps,
 } from './agent-viewers';
+import {
+  shouldForwardSharedHostData,
+  foregroundAfterStart,
+  shouldReassertForeground,
+} from './office-foreground';
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 import { resolveAccessibleWorkingDir } from './working-dir';
@@ -96,11 +101,26 @@ const activeAgentViewers: Set<string> = new Set();
 // (e.g. the Teams service) even when no renderer is viewing the agent.
 const agentForwardKeys: Set<string> = new Set();
 const viewerMaps: ViewerMaps = { activeAgentViewers, agentToTerminal };
+// ui-server shared-host foreground tracking: every agent in an office shares ONE
+// host TUI (rawPty) that renders only the foreground session. Maps
+// officeId -> composite key of the agent that owns the shared stream.
+const officeForegroundCk: Map<string, string> = new Map();
 const agentWatchers: Map<string, CopilotEventSource> = new Map();
 let terminalBackend: TerminalBackend | null = null;
 // Shared authenticated broker for the native-bridge backend (one per server).
 // Every native TUI gets its own credentials on it; closed on shutdown.
 let nativeBridgeBroker: NativeBridgeBroker | null = null;
+// Lazily-created node-pty backend used only as a start-time fallback when the
+// ui-server backend fails to bring an office runtime online (probe success is
+// necessary but not sufficient), so a failed start never leaves an agent unstarted.
+let nodePtyFallbackBackend: TerminalBackend | null = null;
+function getNodePtyFallbackBackend(): TerminalBackend | null {
+  if (terminalBackend && terminalBackend.name === 'node-pty') return terminalBackend;
+  if (!nodePtyFallbackBackend) {
+    nodePtyFallbackBackend = NodePtyBackend.tryCreate();
+  }
+  return nodePtyFallbackBackend;
+}
 // Dedicated node-pty backend for the PC Terminal / local shell. A local shell
 // (powershell/bash) is a plain OS process with nothing to do with Copilot, so it
 // always runs on node-pty regardless of the office's control-plane backend. This
@@ -171,6 +191,11 @@ function getOfficeSession(officeId: string): OfficeSessionData {
 // Composite key for PTY/runtime maps: `${officeId}:${agentId}`
 function compositeKey(officeId: string, agentId: string): string {
   return `${officeId}:${agentId}`;
+}
+
+// Clear an office's shared-host foreground pointer only when it points at the key.
+function clearForegroundIf(officeId: string, ck: string): void {
+  if (officeForegroundCk.get(officeId) === ck) officeForegroundCk.delete(officeId);
 }
 
 /**
@@ -750,16 +775,37 @@ async function startTerminalForAgentImpl(
       env: taggedEnv,
       officeId,
       yolo: yoloEnabled,
+      // Live getter so toggling YOLO takes effect on already-running ui-server
+      // sessions (the permission handler evaluates this per request).
+      isYoloEnabled: () => yoloEnabled,
       // Additional-parameters setting (e.g. "--model gpt-5.4"). node-pty appends
       // these to its `copilot --session-id` launch below; the sdk backend
       // appends them to the per-office headless host launch (once per office).
       extraArgs: additionalParams ? additionalParams.split(/\s+/).filter(Boolean) : [],
     };
 
-    // Backend used for THIS session (the shell backend in shell mode).
-    const activeBackend: TerminalBackend = sessionBackend;
-    const proc: TerminalProcess = await sessionBackend.start(startOptions);
-
+    // Backend used for THIS session — may differ from the selected backend if the
+    // ui-server start fails and we fall back to node-pty.
+    let activeBackend: TerminalBackend = sessionBackend;
+    let sessionFallbackReason: string | undefined;
+    let proc: TerminalProcess;
+    try {
+      proc = await sessionBackend.start(startOptions);
+    } catch (startError) {
+      if (sessionBackend.name === 'ui-server' && !shellOnlyMode) {
+        const fallback = getNodePtyFallbackBackend();
+        if (fallback && fallback.isAvailable()) {
+          console.warn(`[lifecycle] ui-server start failed for ${ck} (${String(startError)}); falling back to node-pty for this session`);
+          activeBackend = fallback;
+          sessionFallbackReason = String((startError as Error)?.message ?? startError);
+          proc = await fallback.start(startOptions);
+        } else {
+          throw startError;
+        }
+      } else {
+        throw startError;
+      }
+    }
     ptyProcesses.set(terminalKey, {
       pid: proc.pid,
       process: proc,
@@ -772,10 +818,32 @@ async function startTerminalForAgentImpl(
 
     agentToTerminal.set(ck, terminalKey);
 
-    // Announce once per office when an SDK control plane is online. For the sdk
-    // backend this means the headless host is listening and its client attached
-    // (the native bridge announces on its first bridge registration below).
-    if (activeBackend.name === 'sdk' && !backendOnlineOffices.has(officeId)) {
+    // Foreground hijack guard (R-FG): under the shared ui-server host every newly
+    // started agent calls setForeground() on the host, which routes ALL rawPty
+    // input to its foreground session. If this start is for a DIFFERENT agent
+    // than the one the viewer attached to, re-assert the intended foreground.
+    if (activeBackend.name === 'ui-server') {
+      const intendedCk = officeForegroundCk.get(officeId);
+      if (shouldReassertForeground(intendedCk, ck)) {
+        const fgKey = agentToTerminal.get(intendedCk!);
+        const fgProc = fgKey ? ptyProcesses.get(fgKey) : null;
+        if (fgProc && typeof fgProc.process.setForeground === 'function') {
+          void Promise.resolve(fgProc.process.setForeground()).catch((err: unknown) => {
+            console.warn(`[lifecycle] re-assert foreground failed for ${intendedCk}: ${String(err)}`);
+          });
+        }
+      }
+    }
+
+    // Per-agent ui-server -> node-pty fallback: surface it so a broken attach is never silent.
+    if (sessionFallbackReason) {
+      send({ type: 'backend-session-fallback', officeId, agentId, reason: sessionFallbackReason });
+    }
+
+    // Announce once per office when an SDK control plane is online (sdk host or
+    // ui-server runtime attached; the native bridge announces on its first
+    // bridge registration below).
+    if ((activeBackend.name === 'sdk' || activeBackend.name === 'ui-server') && !backendOnlineOffices.has(officeId)) {
       backendOnlineOffices.add(officeId);
       send({ type: 'backend-online', officeId, backend: activeBackend.name });
     }
@@ -857,7 +925,7 @@ async function startTerminalForAgentImpl(
       const watcher = proc.createEventSource ? proc.createEventSource() : eventSourceFactory.create(sessionId);
       agentWatchers.set(ck, watcher);
 
-      if (activeBackend.name === 'sdk' || activeBackend.name === 'copilot-sdk') {
+      if (activeBackend.name === 'sdk' || activeBackend.name === 'copilot-sdk' || activeBackend.name === 'ui-server') {
         setTimeout(signalReady, 50);
       }
 
@@ -1078,7 +1146,20 @@ async function startTerminalForAgentImpl(
       pendingData = '';
     };
 
+    // ui-server: every agent in an office shares ONE host TUI (rawPty) whose bytes
+    // only render the *foreground* session, yet all agents' onData callbacks fire.
+    // Attribute the shared stream to exactly one agent (the office foreground) so
+    // output can't leak into another session's scrollback/live view. An existing
+    // foreground is never overwritten by a starting agent (see foregroundAfterStart).
+    const isSharedHostBackend = activeBackend.name === 'ui-server';
+    if (isSharedHostBackend) {
+      officeForegroundCk.set(officeId, foregroundAfterStart(officeForegroundCk.get(officeId), ck));
+    }
+
     proc.onData((data: string) => {
+      if (isSharedHostBackend && !shouldForwardSharedHostData(ck, officeForegroundCk.get(officeId))) {
+        return;
+      }
       appendToScrollback(ck, data);
       // Ready signal from PTY output. Newer CLI builds do not always emit the old
       // "Environment loaded" marker, so accept either the legacy marker or the
@@ -1124,6 +1205,7 @@ async function startTerminalForAgentImpl(
         });
         ptyProcesses.delete(terminalKey);
         activeAgentViewers.delete(ck);
+        clearForegroundIf(officeId, ck);
         agentScrollbackBuffers.delete(ck);
         agentScrollbackBytes.delete(ck);
         agentReadyState.delete(ck);
@@ -1541,6 +1623,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           killPtyProcess(proc);
           ptyProcesses.delete(key!);
           agentToTerminal.delete(ck);
+          clearForegroundIf(msg.officeId, ck);
           // Archive old session ID and clear it so next start generates a fresh one
           archiveSessionId(msg.officeId, msg.agentId);
           const officeData = getOfficeSession(msg.officeId);
@@ -1573,6 +1656,24 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
       }
 
+      // Bring this agent's session to the foreground of its office's hosted TUI
+      // runtime (ui-server only; other backends own a PTY per agent). Event
+      // subscription (addAgentViewer above) is safe for many agents; the host
+      // FOREGROUND (render + keyboard target) belongs to exactly ONE, so only a
+      // genuine user-view attach (foreground === true) claims it — background
+      // attaches can never steal the input target. Awaited so keystrokes never
+      // race to the previous foreground agent; failure is non-fatal.
+      const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
+      const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
+      const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
+      if (isSharedHost && msg.foreground === true) {
+        officeForegroundCk.set(msg.officeId, ck);
+        try {
+          await attachedProc!.process.setForeground?.();
+        } catch (err: unknown) {
+          console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
+        }
+      }
       const chunks = agentScrollbackBuffers.get(ck) || [];
       const rawScrollback = chunks.join('');
       send({ type: 'response', requestId: msg.requestId, result: { success: true, scrollback: rawScrollback } });
@@ -1621,6 +1722,24 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         console.log(`[TermServer] Also marking original key ${aliasKey} as active viewer (transferred session)`);
       }
 
+      // Bring this agent's session to the foreground of its office's hosted TUI
+      // runtime (ui-server only; other backends own a PTY per agent). Event
+      // subscription (addAgentViewer above) is safe for many agents; the host
+      // FOREGROUND (render + keyboard target) belongs to exactly ONE, so only a
+      // genuine user-view attach (foreground === true) claims it — background
+      // attaches can never steal the input target. Awaited so keystrokes never
+      // race to the previous foreground agent; failure is non-fatal.
+      const attachedKey = getTerminalKey(msg.officeId, msg.agentId);
+      const attachedProc = attachedKey ? ptyProcesses.get(attachedKey) : null;
+      const isSharedHost = !!attachedProc && typeof attachedProc.process.setForeground === 'function';
+      if (isSharedHost && msg.foreground === true) {
+        officeForegroundCk.set(msg.officeId, ck);
+        try {
+          await attachedProc!.process.setForeground?.();
+        } catch (err: unknown) {
+          console.warn(`[lifecycle] setForeground failed for ${ck}: ${String(err)}`);
+        }
+      }
       const officeData = getOfficeSession(msg.officeId);
       const result: ActivateResult = {
         success: true,
@@ -1751,6 +1870,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         killPtyProcess(restoreProc);
         ptyProcesses.delete(restoreKey!);
         agentToTerminal.delete(ck);
+        clearForegroundIf(msg.officeId, ck);
       }
       const restoreWatcher = agentWatchers.get(ck);
       if (restoreWatcher) { restoreWatcher.stop(); agentWatchers.delete(ck); }
@@ -1818,6 +1938,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       agentScrollbackBuffers.delete(ck);
       agentScrollbackBytes.delete(ck);
       activeAgentViewers.delete(ck);
+      clearForegroundIf(msg.officeId, ck);
       const officeDataReset = getOfficeSession(msg.officeId);
       // Archive old session ID (snapshots the current title) BEFORE clearing
       // metadata, otherwise the archived entry loses its title (spec 019).
@@ -1875,6 +1996,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         agentInTurn.delete(ck);
         pendingPreseededPrompts.delete(ck);
         activeAgentViewers.delete(ck);
+        clearForegroundIf(officeId, ck);
         hasAutoTitled.delete(ck);
         send({ type: 'session-meta-updated', agentId, officeId, meta: { title: '' } });
       }
@@ -1892,14 +2014,14 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'refresh-office-backend': {
       const { officeId } = msg;
       const restartedAgentIds: string[] = [];
-      if (terminalBackend?.name !== 'sdk' || typeof terminalBackend.restartOffice !== 'function') {
+      if ((terminalBackend?.name !== 'ui-server' && terminalBackend?.name !== 'sdk') || typeof terminalBackend.restartOffice !== 'function') {
         send({
           type: 'response',
           requestId: msg.requestId,
           result: {
             success: false,
             restartedAgentIds,
-            error: 'The active terminal backend does not support office refresh (sdk only)',
+            error: 'The active terminal backend does not support office refresh (ui-server or sdk only)',
           },
         });
         break;
@@ -1936,6 +2058,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           ptyProcesses.delete(ck);
         }
         agentToTerminal.delete(ck);
+        clearForegroundIf(officeId, ck);
         const watcher = agentWatchers.get(ck);
         if (watcher) {
           watcher.stop();
@@ -2166,23 +2289,24 @@ async function main(): Promise<void> {
 
   const resolvedCopilotCliPath = resolveCopilotCliPath(process.cwd(), process.env.PATH);
   // Backend selection (T008). Values mirror src/config/terminalBackend.ts
-  // ('native-bridge' | 'node-pty' | 'sdk'); the renderer decides and passes the
-  // choice via COPILOT_TERMINAL_BACKEND. Default is native-bridge (one pinned
-  // native TUI per agent under node-pty, driven through the authenticated SDK
-  // extension bridge). When its startup capability check fails we report the
-  // reason and fall back GLOBALLY to sdk (headless host + custom renderer) —
+  // ('ui-server' | 'native-bridge' | 'node-pty' | 'sdk'); the renderer decides and
+  // passes the choice via COPILOT_TERMINAL_BACKEND. Default is ui-server (one
+  // --ui-server TUI per office, SDK session per agent). If its probe fails we
+  // report the reason and fall back to native-bridge (one pinned native TUI per
+  // agent, driven through the authenticated SDK extension bridge). When the
+  // bridge capability check fails we fall back GLOBALLY to sdk (headless host + custom renderer) —
   // never to an unauthenticated raw-PTY programmatic path. node-pty is used only
   // when explicitly selected or for shell mode.
   const preferredBackend = parseTerminalBackend(process.env.COPILOT_TERMINAL_BACKEND);
   let backendFallbackReason: string | undefined;
-  if (preferredBackend === 'native-bridge') {
+  const selectNativeBridge = async (): Promise<void> => {
     const selection = await selectNativeBridgeBackend({
       initialize: () => initializeNativeBridge({ repoRoot: process.cwd() }),
       createSdkFallback: () => CopilotSdkBackend.tryCreate(resolvedCopilotCliPath),
     });
     terminalBackend = selection.backend;
     nativeBridgeBroker = selection.broker;
-    backendFallbackReason = selection.fallbackReason;
+    backendFallbackReason = [backendFallbackReason, selection.fallbackReason].filter(Boolean).join('; ') || undefined;
     if (selection.ready) {
       console.log(
         `[TermServer] Native bridge ready: cli=${selection.ready.capability.cliPath} ` +
@@ -2191,6 +2315,28 @@ async function main(): Promise<void> {
     } else {
       console.error(`[TermServer] ${backendFallbackReason}; using ${terminalBackend?.name ?? 'no backend'} (never a raw-PTY programmatic fallback)`);
     }
+  };
+  if (preferredBackend === 'ui-server') {
+    // Default: one `copilot --ui-server` TUI per office, SDK session per agent.
+    // isAvailable() runs the --ui-server capability probe (undocumented flag). On
+    // failure fall back to native-bridge (which itself falls back to sdk), never
+    // to a user-facing error.
+    let candidate: TerminalBackend | null = null;
+    try {
+      const created = UiServerBackend.tryCreate(resolvedCopilotCliPath);
+      candidate = created && created.isAvailable() ? created : null;
+    } catch (error) {
+      console.warn(`[lifecycle] ui-server probe threw: ${String((error as Error)?.message ?? error)}`);
+    }
+    if (candidate) {
+      terminalBackend = candidate;
+    } else {
+      backendFallbackReason = 'UI-server is unavailable on this Copilot CLI';
+      console.warn('[lifecycle] backend=ui-server requested but --ui-server is unavailable on this CLI; falling back to native-bridge');
+      await selectNativeBridge();
+    }
+  } else if (preferredBackend === 'native-bridge') {
+    await selectNativeBridge();
   } else if (preferredBackend === 'sdk') {
     terminalBackend = await CopilotSdkBackend.tryCreate(resolvedCopilotCliPath);
     if (!terminalBackend) {
@@ -2232,7 +2378,7 @@ async function main(): Promise<void> {
   });
 
   // Signal ready, including the backend-selection outcome so the renderer can
-  // surface a toast when a requested backend fell back (native-bridge → sdk).
+  // surface a toast when a requested backend fell back (ui-server → native-bridge → sdk).
   const loadedBackendName = terminalBackend?.name ?? 'none';
   const fellBack = didTerminalBackendFallBack(preferredBackend, loadedBackendName);
   send({

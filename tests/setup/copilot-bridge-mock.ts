@@ -53,6 +53,7 @@ export function createMockCopilotBridge(
     getBackendInfo: vi.fn().mockResolvedValue(null),
     onBackendFallback: vi.fn(),
     onBackendOnline: vi.fn(),
+    onBackendSessionFallback: vi.fn(),
     clipboardWriteText: vi.fn().mockResolvedValue({ success: true, verified: true }),
     clipboardReadText: vi.fn().mockResolvedValue({ success: true, text: '' }),
     saveOffices: vi.fn().mockResolvedValue({ success: true }),

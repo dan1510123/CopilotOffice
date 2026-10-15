@@ -538,6 +538,9 @@ export class TerminalRelay {
       case 'backend-online':
         win.webContents.send('backend-online', msg.officeId, msg.backend);
         break;
+      case 'backend-session-fallback':
+        win.webContents.send('backend-session-fallback', msg.officeId, msg.agentId, msg.reason);
+        break;
     }
   }
 
