@@ -224,3 +224,49 @@ Notes:
 - The repo SDK 1.0.14 lacks `getForegroundSessionId`, `setForegroundSessionId` and `client.on`. The CLI-bundled SDK has them and uses `new CopilotClient({ cliUrl: 'localhost:N' })`.
 - Use the pinned native `copilot.exe`, not a wrapper.
 - Not verified: 1.0.99-0 prerelease, and the native-bridge extension across a foreground switch.
+
+## 2026-10-14 per-session cost, latency and foreground `ask_user` (CLI 1.0.98)
+
+Spikes: `spike-swap-latency`, `spike-session-mem`, `spike-fg-askuser` (session files, not in repo). All sessions were idle and empty. Resumed long-history sessions and concurrent turns were not measured.
+
+### Memory (one host, 20 idle SDK sessions)
+
+| Sessions | Processes | Memory |
+|---|---|---|
+| 0 | 5 | 942 MB |
+| 1 | 5 | 1042 MB |
+| 2 | 5 | 1382 MB |
+| 5 | 7 | 1364 MB |
+| 10 | 5 | 1185 MB |
+| 15 | 5 | 1156 MB |
+| 20 | 5 | 1135 MB |
+
+- Cost is dominated by a fixed per-host cost of about 0.9-1 GB across 5 processes (host plus about 4 helpers). Per-session cost is about 10 MB, noisy because of GC.
+- Helper processes are per host, not per session (count stayed at 5 across 20 sessions).
+- Observed in the live app: 8 office hosts used about 9 GB, their helpers about 4 GB, so 13 GB combined. A single shared host would save roughly 7-10 GB and 7 host startups.
+- Caveat: `--ui-server` host RSS ranged 0.53 GB (earlier spike) to 0.94 GB here, so treat the fixed cost as 0.5-1 GB.
+
+### Latency
+
+- Host ready: about 4.7 s, once per office.
+- New session create: 0.8-2.0 s. Resume of an on-disk session: about 0.45 s.
+- `setForegroundSessionId`: 0.3-1.0 s (about 0.5 s typical).
+- Swapping to an unwarmed agent therefore takes about 1.5-2.5 s.
+
+### Foreground `ask_user`
+
+- Foreground session: only the `user_input.requested` event fires. The SDK `onUserInputRequest` callback does not, because the TUI owns the question, so no resolver exists.
+- Background session: the callback fires and the answer resolves through the SDK.
+- The SDK has no RPC to answer a pending question by requestId.
+- Resolution: `submit-answer` in `electron/terminal/server.ts` types the Teams answer into the foreground TUI as plain text plus Enter when no SDK resolver exists. This is limited to `submit-answer`. Option questions are typed as the option's text.
+
+### Shared-host (one ui-server for all offices) notes
+
+- Feasible: sessions are independent objects with their own events and callbacks, and there is a single foreground.
+- Required changes: one constant office key in `UiServerBackend.offices`, global foreground tracking (`officeForegroundCk`, `foregroundClaimed`, re-assert guard), crash relaunch, and per-session YOLO because `--yolo` is a host-level flag.
+- Unknown: behavior under tens of concurrent running turns (CPU, event loop, rate limits).
+
+### Warm-up policy (committed)
+
+- Only the first session of an office takes foreground (`foregroundClaimed`), so warmers do not steal the shared TUI.
+- Teams-bound and flagged agents cold-warm serially per office, with offices in parallel (`warmQueuedForOffice` in `src/main.ts`).
