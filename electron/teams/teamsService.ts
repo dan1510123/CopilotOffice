@@ -707,7 +707,9 @@ export class TeamsService {
     // Primary self-loop guard (research D9): drop the Trouter echo of any message
     // this app posted, keyed on message id. Deterministic — does not rely on the
     // content marker surviving Teams' sanitizer.
+    tlog(`Inbound: id=${msg.messageId ?? '∅'} thread=${msg.threadRootId ?? '∅'} from "${msg.senderName}": ${truncate(msg.content ?? '', 60)}`);
     if (msg.messageId && this.postedMessageIds.has(msg.messageId)) {
+      tlog(`Inbound dropped (own echo) id=${msg.messageId}.`);
       return;
     }
     // A deliberately paused binding's thread looks identical to a genuinely
@@ -717,13 +719,12 @@ export class TeamsService {
     // notices for that thread would be (silently, correctly) suppressed.
     // Silently ignore instead; resumeAgentConnections() reconnects normally.
     if (msg.threadRootId && this.bindings.some((b) => b.pausedByUser && b.threadRootId === msg.threadRootId)) {
+      tlog(`Inbound dropped (binding paused) thread=${msg.threadRootId}.`);
       return;
     }
     const result = this.filter.evaluate(msg, this.bindings, this.knownThreads);
     if (result.action === 'ignore') {
-      if (result.reason && result.reason !== 'duplicate' && result.reason !== 'root-message' && result.reason !== 'inactive-channel') {
-        tlog(`Ignored inbound (${result.reason}) from "${msg.senderName}".`);
-      }
+      tlog(`Ignored inbound (${result.reason ?? 'unspecified'}) from "${msg.senderName}".`);
       return;
     }
 

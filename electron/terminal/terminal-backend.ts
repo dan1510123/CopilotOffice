@@ -1741,6 +1741,8 @@ export class UiServerProcess implements TerminalProcess {
 type UiServerOfficeEntry = {
   runtime: UiServerHostRuntime;
   client: ControlPlaneClient;
+  /** True once any session took foreground; later starts must not steal the shared TUI. */
+  foregroundClaimed: boolean;
 };
 
 const DEFAULT_UI_SERVER_OFFICE_ID = '__default__';
@@ -1800,7 +1802,10 @@ export class UiServerBackend implements TerminalBackend {
         options.isYoloEnabled ?? (() => options.yolo ?? false),
       );
       const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
-      await process.setForeground();
+      if (!entry.foregroundClaimed) {
+        entry.foregroundClaimed = true;
+        await process.setForeground();
+      }
       return process;
     } catch (error) {
       // Any failure bringing the office runtime online (e.g. the resolved CLI
@@ -1852,7 +1857,7 @@ export class UiServerBackend implements TerminalBackend {
       buildUiServerHostOptions(options),
     );
     const client = new ControlPlaneClient(runtime);
-    const entry = { runtime, client };
+    const entry: UiServerOfficeEntry = { runtime, client, foregroundClaimed: false };
     this.offices.set(officeId, entry);
     return entry;
   }
