@@ -1463,7 +1463,16 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // The resolver is correlated by sessionId (the onUserInputRequest callback
           // carries no requestId — see terminal-backend module header); answerRequestId
           // is the event-derived id, kept for diagnostics only.
-          const resolved = handlePendingUserInput(proc.sessionId, { answer: msg.answer, wasFreeform: msg.wasFreeform });
+          let resolved = handlePendingUserInput(proc.sessionId, { answer: msg.answer, wasFreeform: msg.wasFreeform });
+          const ck = compositeKey(msg.officeId, msg.agentId);
+          if (!resolved && officeForegroundCk.get(msg.officeId) === ck && typeof msg.answer === 'string' && msg.answer.trim()) {
+            // Foreground agent: the TUI owns the question (no SDK resolver exists), so
+            // deliver the Teams answer as plain text + Enter. Only reached for an
+            // answer to a pending ask_user, never for general prompts.
+            backendProc.write(`${msg.answer.replace(/[\r\n]+/g, ' ')}\r`);
+            console.log(`[TermServer] submit-answer: typed answer into foreground TUI for ${ck}`);
+            resolved = true;
+          }
           if (!resolved) {
             console.warn(`[TermServer] submit-answer: no pending user-input for session="${proc.sessionId}" (answerRequestId="${msg.answerRequestId ?? ''}", ${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
           }
