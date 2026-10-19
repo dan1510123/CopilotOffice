@@ -1180,7 +1180,7 @@ export class TerminalOverlay {
       const officeId = this.attachedOfficeId ?? this.getOfficeId();
       const status = await window.copilotBridge.teamsStatus({ officeId, agentId: this.currentAgentId ?? undefined });
       online = !!status?.connected;
-      paused = !!(status as { agentsPaused?: boolean } | undefined)?.agentsPaused && (online || ((status as { bindings?: unknown[] } | undefined)?.bindings?.length ?? 0) > 0);
+      paused = !!status?.agentsPaused && (online || status.bindings.length > 0);
     } catch {
       online = false;
     }
@@ -1196,7 +1196,7 @@ export class TerminalOverlay {
     }
     this.teamsRemoteBtn.disabled = false;
     this.teamsRemoteBtn.className = uiButtonClass(paused ? 'teams-paused' : online ? 'teams-online' : 'teams');
-    this.teamsRemoteBtn.title = paused ? 'Teams connection is paused — resume it from the top bar' : this.teamsRemoteBtn.title;
+    this.teamsRemoteBtn.title = paused ? 'Teams streaming is paused. Click to disconnect this agent from Teams.' : online ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread';
     this.teamsRemoteBtn.innerHTML = teamsLabel(paused ? 'Teams Paused' : online ? 'Teams Online' : 'Teams Remote');
   }
 
@@ -1205,17 +1205,27 @@ export class TerminalOverlay {
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
     const agentId = this.currentAgentId;
 
-    // If already online, toggle offline.
-    let online = false;
+    // A paused binding still owns a thread and must toggle off, not register again.
+    let disconnect: boolean;
     try {
       const status = await window.copilotBridge.teamsStatus({ officeId, agentId });
-      online = !!status?.connected;
-    } catch { /* treat as offline */ }
+      if (!status?.success) throw new Error('Failed to read Teams connection status');
+      disconnect = status.connected || (!!status.agentsPaused && status.bindings.length > 0);
+    } catch (error) {
+      showClipboardToast(`Teams: ${(error as Error).message}`, 'error');
+      return;
+    }
 
-    if (online) {
+    if (disconnect) {
       this.setTeamsButtonState(false, true);
-      await window.copilotBridge.teamsStop({ officeId, agentId });
-      this.setTeamsButtonState(false);
+      try {
+        const res = await window.copilotBridge.teamsStop({ officeId, agentId });
+        if (!res?.success) throw new Error('Failed to disconnect agent');
+      } catch (error) {
+        showClipboardToast(`Teams: ${(error as Error).message}`, 'error');
+      } finally {
+        await this.refreshTeamsButton();
+      }
       return;
     }
 
@@ -1239,7 +1249,7 @@ export class TerminalOverlay {
       officeMentionValue: office?.teamsMentionValue,
     });
     if (res?.success) {
-      this.setTeamsButtonState(true);
+      await this.refreshTeamsButton();
       return;
     }
     this.setTeamsButtonState(false);

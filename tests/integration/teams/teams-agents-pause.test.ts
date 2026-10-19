@@ -74,7 +74,7 @@ function makeHarness(settingsOverrides: Partial<TeamsSettings> = {}, sharedStore
     emitToast: () => {},
     turnSettleMs: 5,
   });
-  return { service, replies, forwardingCalls, store, inbound: () => emit, agentEvent: (e: import('../../../electron/teams/sessionGateway').AgentEvent) => agentEventCb(e) };
+  return { service, graph, replies, forwardingCalls, store, inbound: () => emit, agentEvent: (e: import('../../../electron/teams/sessionGateway').AgentEvent) => agentEventCb(e) };
 }
 
 describe('teams agents pause/resume (orchestrator separation)', () => {
@@ -159,21 +159,31 @@ describe('teams agents pause/resume (orchestrator separation)', () => {
     expect(resumeResult.outcome).toBe('unavailable');
   });
 
-  it('register() rejects a brand-new non-orchestrator agent while paused, but the orchestrator can still register', async () => {
+  it('register() creates a paused thread while the orchestrator can still register online', async () => {
     const h = makeHarness();
     await h.service.start();
     await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
     await h.service.pauseAgentConnections();
 
-    const blocked = await h.service.register({ officeId: 'office-0', agentId: 'debugger', displayName: 'Dan', workingDir: '.' });
-    expect(blocked.success).toBe(false);
-    expect(blocked.error).toMatch(/paused/i);
+    h.forwardingCalls.length = 0;
+    const connected = await h.service.register({ officeId: 'office-0', agentId: 'debugger', displayName: 'Dan', workingDir: '.' });
+    expect(connected.success).toBe(true);
+    expect(h.graph.createThread).toHaveBeenCalledTimes(2);
+    expect(h.service.getStatus('office-0', 'debugger')?.online).toBe(false);
+    expect(h.forwardingCalls).toContainEqual({ officeId: 'office-0', agentId: 'debugger', enabled: false });
+    expect(h.forwardingCalls.some((c) => c.enabled)).toBe(false);
+    await h.service.reconcileNow();
+    expect(h.service.getStatus('office-0', 'debugger')?.online).toBe(false);
 
     const orchResult = await h.service.register({ officeId: ORCHESTRATOR_OFFICE_ID, agentId: ORCHESTRATOR_AGENT_ID, displayName: 'Office Orchestrator', workingDir: '.' });
     expect(orchResult.success).toBe(true);
+    expect(h.service.getStatus(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID)?.online).toBe(true);
+    await h.service.resumeAgentConnections();
+    expect(h.service.getStatus('office-0', 'debugger')?.online).toBe(true);
+    expect(h.graph.createThread).toHaveBeenCalledTimes(3);
   });
 
-  it('register() rejects re-registering an already-paused agent (never orphans its existing thread)', async () => {
+  it('register() reuses an already-paused binding without orphaning its thread', async () => {
     const h = makeHarness();
     await h.service.start();
     const first = await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
@@ -182,7 +192,8 @@ describe('teams agents pause/resume (orchestrator separation)', () => {
 
     const reRegister = await h.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
 
-    expect(reRegister.success).toBe(false);
+    expect(reRegister.success).toBe(true);
+    expect(h.graph.createThread).toHaveBeenCalledTimes(1);
     // No second thread was created, and the original paused binding/thread survives intact.
     expect(h.service.getStatus('office-0', 'generalist')?.threadWebUrl).toBe(firstThread);
     expect(first.threadWebUrl).toBe(firstThread);
@@ -203,8 +214,27 @@ describe('teams agents pause/resume (orchestrator separation)', () => {
     // Pause fires in this window, before reconcile() has run — must still tag
     // the (currently offline) binding so it doesn't bypass the pause.
     await h2.service.pauseAgentConnections();
-    const blocked = await h2.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
-    expect(blocked.success).toBe(false);
+    const registered = await h2.service.register({ officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' });
+    expect(registered.success).toBe(true);
+    expect(h2.graph.createThread).not.toHaveBeenCalled();
+    expect(h2.service.getStatus('office-0', 'generalist')?.online).toBe(false);
+  });
+
+  it('disconnecting while paused posts the offline notice and prevents resume from restoring the binding', async () => {
+    const h = makeHarness();
+    await h.service.start();
+    await h.service.pauseAgentConnections();
+    const ctx = { officeId: 'office-0', agentId: 'generalist', displayName: 'Gene', workingDir: '.' };
+    await h.service.register(ctx);
+    await h.service.goOffline(ctx.officeId, ctx.agentId);
+    expect(h.replies.some((r) => r.threadRootId === 'root-1' && /gone offline/.test(r.html))).toBe(true);
+    expect(h.service.getStatus(ctx.officeId, ctx.agentId)).toBeNull();
+    await h.service.resumeAgentConnections();
+    expect(h.service.getStatus(ctx.officeId, ctx.agentId)).toBeNull();
+    await h.service.pauseAgentConnections();
+    await h.service.register(ctx);
+    expect(h.graph.createThread).toHaveBeenCalledTimes(2);
+    expect(h.service.getStatus(ctx.officeId, ctx.agentId)?.online).toBe(false);
   });
 
   it('a paused thread\'s inbound reply is silently ignored, never posts a "no longer active" orphaned notice', async () => {
@@ -274,9 +304,10 @@ describe('teams agents pause/resume (orchestrator separation)', () => {
     await h2.service.start();
 
     expect(h2.service.isAgentsPaused()).toBe(true);
-    // And it's still correctly rejecting new registrations until resumed.
-    const blocked = await h2.service.register({ officeId: 'office-0', agentId: 'debugger', displayName: 'Dan', workingDir: '.' });
-    expect(blocked.success).toBe(false);
+    // New threads are allowed, but inherit the restored streaming pause.
+    const connected = await h2.service.register({ officeId: 'office-0', agentId: 'debugger', displayName: 'Dan', workingDir: '.' });
+    expect(connected.success).toBe(true);
+    expect(h2.service.getStatus('office-0', 'debugger')?.online).toBe(false);
 
     const resumed = await h2.service.resumeAgentConnections();
     expect(resumed.outcome).toBe('resumed');

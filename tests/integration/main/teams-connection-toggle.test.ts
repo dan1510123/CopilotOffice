@@ -235,5 +235,34 @@ describe('integration/teams connection toggle (top bar)', () => {
     // feature kill switch, which would also affect the orchestrator).
     expect(bridge.teamsSaveSettings).not.toHaveBeenCalled();
   }, 15000);
-});
 
+  it('clicking an orange paused agent button disconnects its thread rather than registering again', async () => {
+    const { bridge } = await bootstrapMain({
+      enabled: true,
+      defaultChannelUrl: 'https://teams.microsoft.com/l/channel/x',
+    });
+    const binding = {
+      officeId: 'office-0', agentId: 'generalist', online: false,
+      handle: 'gene', health: 'disconnected' as const, workingDir: '.',
+    };
+    vi.mocked(bridge.teamsStatus).mockResolvedValue({
+      success: true, connected: false, agentsPaused: true, bindings: [binding],
+    });
+    vi.mocked(bridge.teamsStop).mockImplementation(async () => {
+      vi.mocked(bridge.teamsStatus).mockResolvedValue({
+        success: true, connected: false, agentsPaused: true, bindings: [],
+      });
+      return { success: true };
+    });
+    getTogglePill()?.click();
+    await flushUi();
+    const button = document.querySelector<HTMLButtonElement>('.session-teams-btn[data-agent="generalist"]');
+    expect(button?.textContent).toContain('Teams Paused');
+    expect(button?.classList.contains('ui-btn--teams-paused')).toBe(true);
+    button?.click();
+    await flushUi();
+    expect(bridge.teamsStop).toHaveBeenCalledWith({ officeId: 'office-0', agentId: 'generalist' });
+    expect(bridge.teamsRegister).not.toHaveBeenCalled();
+    expect(document.querySelector('.session-teams-btn[data-agent="generalist"]')?.textContent).toContain('Teams Remote');
+  }, 15000);
+});

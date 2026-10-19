@@ -2610,7 +2610,8 @@ async function refreshTeamsDashboardState(): Promise<void> {
     teamsOnlineAgentIds.clear();
     teamsBoundAgentIds.clear();
     if (statusRes?.success) {
-      for (const b of statusRes.bindings as Array<{ agentId: string; online: boolean }>) {
+      for (const b of statusRes.bindings) {
+        if (b.officeId !== officeManager.currentOfficeId) continue;
         teamsBoundAgentIds.add(b.agentId);
         if (b.online) teamsOnlineAgentIds.add(b.agentId);
       }
@@ -2675,12 +2676,19 @@ async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
   if (!window.copilotBridge?.teamsRegister) return;
   if (teamsPendingActions.has(agentId)) return;
   const officeId = officeManager.currentOfficeId || 'office-0';
-  teamsPendingActions.set(agentId, teamsOnlineAgentIds.has(agentId) ? 'disconnecting' : 'connecting');
+  const disconnect = teamsOnlineAgentIds.has(agentId)
+    || (teamsAgentsPaused && teamsBoundAgentIds.has(agentId));
+  teamsPendingActions.set(agentId, disconnect ? 'disconnecting' : 'connecting');
   updateTerminalContent();
   try {
-    if (teamsOnlineAgentIds.has(agentId)) {
-      await window.copilotBridge.teamsStop({ officeId, agentId });
+    if (disconnect) {
+      const res = await window.copilotBridge.teamsStop({ officeId, agentId });
+      if (!res?.success) {
+        showClipboardToast('Teams: Failed to disconnect agent', 'error');
+        return;
+      }
       teamsOnlineAgentIds.delete(agentId);
+      teamsBoundAgentIds.delete(agentId);
       return;
     }
     const agent = getSeriousLaunchConfig(agentId);
@@ -2699,15 +2707,17 @@ async function toggleTeamsRemoteFromOverview(agentId: string): Promise<void> {
       officeMentionValue: office?.teamsMentionValue,
     });
     if (res?.success) {
-      teamsOnlineAgentIds.add(agentId);
+      teamsBoundAgentIds.add(agentId);
     } else if (res?.error === 'no-channel') {
       void teamsSettingsOverlay.open('No Teams channel is configured. Add a default channel link to bring agents online.');
     } else if (res?.error) {
       showClipboardToast(`Teams: ${res.error}`, 'error');
     }
+  } catch (error) {
+    showClipboardToast(`Teams: ${(error as Error).message}`, 'error');
   } finally {
     teamsPendingActions.delete(agentId);
-    updateTerminalContent();
+    await refreshTeamsDashboardState();
   }
 }
 
@@ -3582,11 +3592,9 @@ if (window.copilotBridge) {
 
   // Teams Remote Agents (011): keep the dashboard tile buttons in sync with
   // the service's per-agent online state.
-  window.copilotBridge.onTeamsStatusChanged?.((status: { agentId?: string; online?: boolean }) => {
-    if (!status?.agentId) return;
-    if (status.online) teamsOnlineAgentIds.add(status.agentId);
-    else teamsOnlineAgentIds.delete(status.agentId);
-    updateTerminalContent();
+  window.copilotBridge.onTeamsStatusChanged?.((status: { agentId?: string; officeId?: string }) => {
+    if (!status?.agentId || status.officeId !== officeManager.currentOfficeId) return;
+    void refreshTeamsDashboardState();
   });
 
   // Initial load of the Teams feature flag + online set for the dashboard.
