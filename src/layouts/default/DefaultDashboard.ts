@@ -279,7 +279,7 @@ export const defaultDashboard: DashboardRenderer = {
         : (isTeamsPaused ? teamsLabel('Teams Paused') : teamsLabel(isTeamsOnline ? 'Teams Online' : 'Teams Remote'));
       const teamsButtonTitle = pendingTeamsAction
         ? (pendingTeamsAction === 'disconnecting' ? 'Taking this agent offline in Teams' : 'Bringing this agent online in Teams')
-        : (isTeamsPaused ? 'Teams connection is paused — resume it from the top bar to reconnect' : (isTeamsOnline ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'));
+        : (isTeamsPaused ? 'Teams streaming is paused. Click to disconnect this agent from Teams.' : (isTeamsOnline ? 'Take this agent offline in Teams' : 'Bring this agent online in a Teams channel thread'));
 
       // ── Session Metadata Panel (right side) ──
       const meta = cachedSessionMeta[agent.id];

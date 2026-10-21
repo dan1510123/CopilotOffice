@@ -515,15 +515,11 @@ export class TeamsService {
     const { officeId, agentId } = ctx;
     const settings = this.deps.getSettings();
     if (!settings.enabled) return { success: false, error: 'Teams remote is disabled in settings.' };
-    // The top-bar pill / orchestrator pause tool paused non-orchestrator agent
-    // connections — refuse new or re-registrations until resumeAgentConnections()
-    // explicitly lifts it. Without this, a brand-new registration would come
-    // online untagged (bypassing the pause entirely), and re-registering an
-    // agent that already has a paused binding would mint a SECOND Teams thread,
-    // orphaning the first (register() has no "reuse this paused binding in
-    // place" path). The orchestrator itself is exempt — it is never paused.
-    if (this.agentsPaused && !isOrchestratorKey(officeId, agentId)) {
-      return { success: false, error: 'Agent Teams connections are paused — resume them first (top-bar pill, or ask the orchestrator).' };
+    // A paused binding still owns its thread. Retrying registration must not
+    // replace it; disconnect explicitly before creating another thread.
+    const pausedBinding = this.findBinding(officeId, agentId);
+    if (pausedBinding?.pausedByUser) {
+      return { success: true, handle: pausedBinding.handle, threadWebUrl: pausedBinding.threadWebUrl };
     }
 
     const channelUrl = resolveChannel({ teamsChannelUrl: ctx.officeChannelUrl }, settings);
@@ -561,9 +557,9 @@ export class TeamsService {
 
     const displayName = ctx.displayName || agentId;
 
-    // Already online? Return existing binding.
+    // A pause may have landed while the session was starting.
     const existing = this.findBinding(officeId, agentId);
-    if (existing && existing.online) {
+    if (existing && (existing.online || existing.pausedByUser)) {
       return { success: true, handle: existing.handle, threadWebUrl: existing.threadWebUrl };
     }
 
@@ -596,6 +592,7 @@ export class TeamsService {
     // Record our own post id so its Trouter echo is dropped (self-loop guard, D9).
     this.rememberPosted(thread.threadRootId);
 
+    const paused = this.agentsPaused && !isOrchestratorKey(officeId, agentId);
     const binding: OnlineAgentBinding = {
       agentId,
       officeId,
@@ -611,7 +608,8 @@ export class TeamsService {
       mentionValue: ctx.officeMentionValue,
       threadRootId: thread.threadRootId,
       threadWebUrl: thread.webUrl,
-      online: true,
+      online: !paused,
+      pausedByUser: paused,
       lastConnected: this.now(),
     };
     // Replace any stale binding for this agent.
@@ -623,9 +621,9 @@ export class TeamsService {
     // Keep event mirroring on for the WHOLE time the agent is online (not just during
     // a Teams-driven turn) so locally-driven turns are captured and streamed to the
     // thread too. Disabled again in goOffline.
-    this.deps.gateway.setForwarding(officeId, agentId, true);
+    this.deps.gateway.setForwarding(officeId, agentId, binding.online);
     this.deps.emitStatus(this.toStatus(binding));
-    tlog(`ONLINE: @${handle} (${officeId}:${agentId}). Active channels: ${activeChannelSet(this.bindings).size}.`);
+    tlog(`${binding.pausedByUser ? 'PAUSED' : 'ONLINE'}: @${handle} (${officeId}:${agentId}). Active channels: ${activeChannelSet(this.bindings).size}.`);
 
     return { success: true, handle, threadWebUrl: thread.webUrl };
   }
@@ -687,7 +685,7 @@ export class TeamsService {
         await this.safeReply(b, `${this.agentLabel(b)} ⚠️ This form is no longer answerable (agent offline).`);
       }
     }
-    if (postNotice && b.online && b.threadRootId) {
+    if (postNotice && (b.online || b.pausedByUser) && b.threadRootId) {
       await this.safeReply(b, '🔌 This agent has gone offline. Replies here will not be answered.');
     }
     // Stop event mirroring now that the agent is leaving (enabled for the whole online

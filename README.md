@@ -103,6 +103,13 @@ npm run dev
 > `approve`/`A` or `deny`/`D` to decide. Unanswered gates auto-deny after 5 minutes.
 > A remote `switch_office` also changes the on-screen desktop office.
 
+**Teams streaming pause.** The top-bar Teams connection control pauses ordinary
+agents' incoming replies and outgoing activity without affecting the orchestrator.
+You can still connect agents (creating their normal Teams threads) or disconnect
+them (posting the normal offline notice) while paused. Connected agents remain
+orange, labeled **Teams Paused**, until resumed. Resume reuses retained threads;
+disconnected agents stay disconnected.
+
 ## Project Structure
 
 ```
