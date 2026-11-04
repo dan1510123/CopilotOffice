@@ -26,6 +26,7 @@ import { createAllowlistedGraphSender, allowedChannelIdSet, officeChannelOverrid
 import { createRelaySender, type MentionResolver } from './teams/relaySender';
 import { createResilientGraphSender } from './teams/graphResilience';
 import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/teamsIpc';
+import { handleAppZoom } from './appZoom';
 import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
 import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
 import { FileOrchestratorTranscriptStore } from './orchestrator/orchestratorTranscriptStore';
@@ -133,6 +134,12 @@ function createWindow(): void {
       nodeIntegration: false,
       backgroundThrottling: false,
     },
+  });
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (mainWindow && handleAppZoom(mainWindow.webContents, input)) {
+      event.preventDefault();
+    }
   });
 
   mainWindow.maximize();

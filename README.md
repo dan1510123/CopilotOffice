@@ -112,6 +112,8 @@ npm run dev
 | `F10` | Close terminal |
 | `Escape` | Close terminal or mini-game |
 | `Ctrl+Shift+N` | New terminal session (terminal focused) |
+| `Ctrl+-` / `Ctrl++` (or `Ctrl+=`) | Zoom the entire interface out / in, including the terminal |
+| `Ctrl+0` | Reset interface zoom (use `Cmd` instead of `Ctrl` on macOS) |
 
 > The **🎩 Office Orchestrator** button in the top toolbar opens the orchestrator
 > chat. Describe what you need in plain language and it proposes an agent to bring
