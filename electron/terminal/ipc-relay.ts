@@ -9,6 +9,9 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import type { MainToServer, ServerToMain, MsgQueryAgentStatuses, BackendSelectionInfo, SessionHistoryEntry, ControlCommandName, ControlCommandResult, StartResult } from './protocol';
 import { reapRegisteredPtys } from './pty-registry';
+import { createDiagnosticLog } from '../diagnostics';
+
+const diagnosticLog = createDiagnosticLog(path.resolve(process.cwd(), '.logs'), 'main');
 
 export class TerminalRelay {
   /**
@@ -101,6 +104,9 @@ export class TerminalRelay {
         cwd: process.cwd(),
         stdio: ['pipe', 'inherit', 'inherit', 'ipc'],
       });
+      diagnosticLog('terminal-server-spawn', { pid: this.server.pid });
+      this.server.on('error', (error) => diagnosticLog('terminal-server-error', error));
+      this.server.on('disconnect', () => diagnosticLog('terminal-server-disconnected'));
 
       const readyTimeout = setTimeout(() => {
         reject(new Error('Terminal server did not send ready in time'));
@@ -111,6 +117,7 @@ export class TerminalRelay {
       });
 
       this.server.on('exit', (code, signal) => {
+        diagnosticLog('terminal-server-exit', { code, signal, deliberate: this.shuttingDown });
         console.error(`[Relay] Terminal server exited (code=${code}, signal=${signal})`);
         clearTimeout(readyTimeout);
         this.pendingRequests.forEach((cb) =>
@@ -218,28 +225,27 @@ export class TerminalRelay {
   }
 
   private request(msg: MainToServer & { requestId: string }): Promise<unknown> {
-    // If the server isn't connected (e.g. during a hard-reload restart), queue
-    // the request so it's sent as soon as the new server is ready.
-    if (!this.server?.connected) {
-      console.log(`[Relay] Server not connected — queuing request ${msg.type} (${msg.requestId})`);
-      return new Promise((resolve) => {
-        this.queuedRequests.push({ msg, resolve });
-      });
-    }
-    const timeoutMs = this.timeoutFor(msg.type);
+    const timeoutMs = msg.type === 'start' && msg.deadline !== undefined
+      ? Math.max(1, msg.deadline - Date.now()) : this.timeoutFor(msg.type);
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
         if (this.pendingRequests.delete(msg.requestId)) {
+          this.queuedRequests = this.queuedRequests.filter((q) => q.msg.requestId !== msg.requestId);
           console.warn(`[Relay] Request ${msg.type} (${msg.requestId}) timed out after ${timeoutMs}ms`);
           resolve({ success: false, error: 'Request timed out' });
         }
       }, timeoutMs);
 
-      this.pendingRequests.set(msg.requestId, (result) => {
+      const respond = (result: unknown) => {
         clearTimeout(timeout);
         resolve(result);
-      });
-      this.send(msg);
+      };
+      this.pendingRequests.set(msg.requestId, respond);
+      if (!this.server?.connected) {
+        this.queuedRequests.push({ msg, resolve: respond });
+      } else {
+        this.send(msg);
+      }
     });
   }
 
@@ -300,6 +306,26 @@ export class TerminalRelay {
       workingDir,
       background: true,
       readyTimeoutMs,
+    }) as Promise<StartResult>;
+  }
+
+  mainAgentStatuses(officeId: string): Promise<Record<string, { alive: boolean; ready: boolean; inTurn: boolean; starting?: boolean }>> {
+    return this.request({ type: 'query-agent-statuses', requestId: this.id(), officeId }).then((result) => {
+      if (!result || typeof result !== 'object' || 'success' in result) {
+        throw new Error('Terminal server did not return agent runtime state.');
+      }
+      return result as Record<string, { alive: boolean; ready: boolean; inTurn: boolean; starting?: boolean }>;
+    });
+  }
+
+  mainStartBackground(
+    officeId: string, agentId: string, workingDir: string, hostWorkingDir: string,
+    requireInactive: boolean, deadline: number,
+  ): Promise<StartResult> {
+    return this.request({
+      type: 'start', requestId: this.id(), officeId, agentId, workingDir, hostWorkingDir,
+      launchMode: 'copilot', background: true, requireInactive, deadline,
+      readyTimeoutMs: Math.min(TerminalRelay.ENSURE_ONLINE_READY_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
     }) as Promise<StartResult>;
   }
 
@@ -423,8 +449,7 @@ export class TerminalRelay {
       if (this.queuedRequests.length > 0) {
         console.log(`[Relay] Flushing ${this.queuedRequests.length} queued request(s)`);
         for (const queued of this.queuedRequests) {
-          this.pendingRequests.set(queued.msg.requestId, queued.resolve);
-          this.send(queued.msg);
+          if (this.pendingRequests.has(queued.msg.requestId)) this.send(queued.msg);
         }
         this.queuedRequests = [];
       }
@@ -447,7 +472,7 @@ export class TerminalRelay {
     // which must receive events even when no renderer window is present.
     switch (msg.type) {
       case 'copilot-event':
-        this.mainEvents.emit('copilot-event', msg.agentId, msg.event);
+        if (!msg.voiceOnly) this.mainEvents.emit('copilot-event', msg.agentId, msg.event);
         break;
       case 'copilot-turn-start':
         this.mainEvents.emit('copilot-turn-start', msg.agentId);
@@ -500,6 +525,7 @@ export class TerminalRelay {
         win.webContents.send('terminal-exit', msg.agentId, msg.exitCode, msg.officeId, msg.sessionId);
         break;
       case 'copilot-event':
+        win.webContents.send('voice-event', msg.agentId, msg.event, msg.officeId, msg.sessionId);
         if (!msg.mainOnly) win.webContents.send('copilot-event', msg.agentId, msg.event);
         break;
       case 'copilot-tool-start':
@@ -622,8 +648,7 @@ export class TerminalRelay {
     });
 
     ipcMain.handle('set-yolo', (_event, enabled: boolean) => {
-      this.send({ type: 'set-yolo', enabled: !!enabled });
-      return { success: true };
+      return this.request({ type: 'set-yolo', requestId: this.id(), enabled: !!enabled });
     });
 
     ipcMain.handle('set-additional-params', (_event, params: string) => {

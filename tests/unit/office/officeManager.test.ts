@@ -1,8 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OfficeManager } from '../../../src/office/officeManager';
 import { createStoredOfficePayload } from '../../factories/office-factory';
+import { createNoopPersistencePort } from '../../../src/office/officePersistence';
 
 describe('office/officeManager', () => {
+  it('persists a reserve seat in another office without switching the visible office', async () => {
+    const saveDurableChecked = vi.fn(async (_json: string) => {});
+    const manager = new OfficeManager({ ...createNoopPersistencePort(), saveDurableChecked });
+    manager.ensureDefaultOffice();
+    const other = manager.createOffice('Other', 'other-repo');
+    const [deskId, agent] = Object.entries(other.config.customReserveAgents!)[0];
+    await manager.ensureAgentSeat(other.config.id, agent.id, deskId, Date.now() + 10_000);
+    expect(manager.currentOfficeId).toBe('office-0');
+    expect(manager.getSeatedAgents(other.config.id)).toContainEqual({ deskId, agentId: agent.id });
+    const saved = JSON.parse(saveDurableChecked.mock.calls[0][0]);
+    expect(saved.offices.find((o: { id: string }) => o.id === other.config.id).seatedAgents).toContainEqual({ deskId, agentId: agent.id });
+  });
+
+  it('does not acknowledge or retain a new seat when durable persistence fails', async () => {
+    const manager = new OfficeManager({
+      ...createNoopPersistencePort(),
+      saveDurableChecked: async () => { throw new Error('Disk unavailable'); },
+    });
+    manager.ensureDefaultOffice();
+    const other = manager.createOffice('Other', '.');
+    const [deskId, agent] = Object.entries(other.config.customReserveAgents!)[0];
+    await expect(manager.ensureAgentSeat(other.config.id, agent.id, deskId, Date.now() + 10_000)).rejects.toThrow('Disk unavailable');
+    expect(manager.getSeatedAgents(other.config.id)).toEqual([]);
+  });
+
   beforeEach(() => {
     localStorage.clear();
   });
@@ -327,4 +353,3 @@ describe('office/officeManager', () => {
     });
   });
 });
-

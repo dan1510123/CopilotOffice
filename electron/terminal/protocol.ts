@@ -27,6 +27,8 @@ export interface MsgStart {
    * explicit error if it does not arrive in time.
    */
   readyTimeoutMs?: number;
+  requireInactive?: boolean;
+  deadline?: number;
 }
 
 /** Response payload of `start` (carried in `SrvResponse.result`). */
@@ -38,6 +40,7 @@ export interface StartResult {
   /** Present when `readyTimeoutMs` was requested: whether the agent became ready. */
   ready?: boolean;
   error?: string;
+  alreadyActive?: boolean;
 }
 
 export interface MsgWrite {
@@ -319,6 +322,7 @@ export interface MsgShutdown {
 
 export interface MsgSetYolo {
   type: 'set-yolo';
+  requestId: string;
   enabled: boolean;
 }
 
@@ -526,7 +530,11 @@ export interface SrvTerminalExit {
 export interface SrvCopilotEvent {
   type: 'copilot-event';
   agentId: string;
+  officeId?: string;
+  sessionId?: string;
   event: CopilotEvent;
+  /** Voice-only background delivery must not enter Teams' agent-only event bus. */
+  voiceOnly?: boolean;
   /**
    * When true, the relay mirrors this event to main-process consumers (e.g. the
    * Teams service) but does NOT forward it to the renderer. Used to deliver

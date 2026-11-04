@@ -64,6 +64,13 @@ Full-featured agent card renderer for the main office layout. Each card includes
 - Unread message count badge (top-right, red)
 - Selected/unselected visual states with distinct border and background colors
 
+Done and Waiting take precedence over manual Flagged markers for the card banner,
+border, background, and leading status pill, including on selected cards. The flag
+remains a secondary pill with its Resolve control. Opening a Done card acknowledges
+completion without clearing the manual flag, so Flagged styling returns; opening a
+Waiting card does not resolve its input request. Keep full and partial refreshes
+consistent through the shared `buildAgentDynamics` helper.
+
 ### `default/DefaultClickHandler.ts` — Default Click Behavior
 
 Clicking any agent card: selects the agent, clears unread count, updates the dashboard,

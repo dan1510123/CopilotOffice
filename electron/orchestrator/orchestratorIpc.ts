@@ -6,6 +6,7 @@
 
 import { ipcMain, BrowserWindow } from 'electron';
 import type { OrchestratorSessionManager, OrchestratorEmitter } from './orchestratorSessionManager';
+import { createOrchestratorSettingsStore, type OrchestratorSettings, type OrchestratorSettingsStore } from './orchestratorSettingsStore';
 import type {
   ActiveAgentSnapshot,
   ActOnResult,
@@ -21,6 +22,7 @@ import type {
 
 export interface OrchestratorIpcHooks {
   manager: OrchestratorSessionManager;
+  settingsStore?: OrchestratorSettingsStore;
 }
 
 /** Build the emitter the manager uses to push to the renderer. */
@@ -30,6 +32,7 @@ export function makeOrchestratorEmitter(getWindow: () => BrowserWindow | null): 
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
   return {
+    emitSeatRequest: (payload) => send('orchestrator:seat:request', payload),
     emitEvent: (sessionId, event) => send('orchestrator:event', { sessionId, event }),
     emitPermissionRequest: (payload) => send('orchestrator:permission:request', payload),
     emitCandidatesRequest: (payload) => send('orchestrator:candidates:request', payload),
@@ -54,6 +57,28 @@ export function makeOrchestratorEmitter(getWindow: () => BrowserWindow | null): 
 
 export function registerOrchestratorIpc(hooks: OrchestratorIpcHooks): void {
   const { manager } = hooks;
+  const settingsStore = hooks.settingsStore ?? createOrchestratorSettingsStore();
+  let settings = settingsStore.load();
+  manager.setAllowAllOperations(settings.allowAllOperations);
+  ipcMain.handle('orchestrator:seat:respond', (_e, args: { requestId: string; result: { success: boolean; error?: string } }) =>
+    ({ ok: manager.respondSeat(args.requestId, args.result) }));
+
+  ipcMain.handle('orchestrator:settings:get', () => ({ success: true, settings }));
+  ipcMain.handle('orchestrator:settings:save', (_e, input: OrchestratorSettings) => {
+    try {
+      if (typeof input?.allowAllOperations !== 'boolean') {
+        throw new Error('allowAllOperations must be a boolean');
+      }
+      const next = { allowAllOperations: input.allowAllOperations };
+      settingsStore.save(next);
+      manager.setAllowAllOperations(next.allowAllOperations);
+      settings = next;
+      return { success: true, settings };
+    } catch (error) {
+      console.error('[Orchestrator] Failed to save settings:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
 
   ipcMain.handle('orchestrator:open', async () => {
     try {

@@ -276,8 +276,13 @@ export class NativeBridgeBroker {
         entries = new Set();
         this.waiters.set(terminalKey, entries);
       }
+
       entries.add(waiter);
     });
+  }
+
+  isReady(terminalKey: string): boolean {
+    return !this.closed && this.registrations.get(terminalKey)?.ready === true;
   }
 
   request(

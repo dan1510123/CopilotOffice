@@ -23,6 +23,8 @@ const GATED = [
   'restart_agent',
   'set_agent_teams_presence',
   'set_agent_title',
+  'switch_office',
+  'set_teams_agents_connection',
 ];
 
 interface Captured {
@@ -61,6 +63,32 @@ function handlerOf(m: OrchestratorSessionManager) {
 }
 
 describe('act-on gate parity', () => {
+  it('bypasses every write approval only when the Ringleader setting is enabled', async () => {
+    const { manager, captured } = makeManager();
+    const listener = vi.fn();
+    manager.onPermissionRequested(listener);
+    manager.setAllowAllOperations(true);
+    for (const tool of GATED) {
+      await expect(handlerOf(manager)(req(tool))).toEqual({ kind: 'approved' });
+    }
+    expect(captured).toHaveLength(0);
+    expect(listener).not.toHaveBeenCalled();
+    expect(handlerOf(manager)(req('unrecognized_tool'))).toEqual({ kind: 'reject' });
+  });
+
+  it('requires approval again after disabling the setting and does not approve pending gates', async () => {
+    const { manager, captured } = makeManager();
+    const pending = handlerOf(manager)(req('stop_agent'));
+    manager.setAllowAllOperations(true);
+    expect(manager.respondToPermission({ toolCallId: 'call-stop_agent', decision: 'deny' })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'reject' });
+    manager.setAllowAllOperations(false);
+    const next = handlerOf(manager)(req('restart_agent'));
+    expect(captured.map((p) => p.toolName)).toEqual(['stop_agent', 'restart_agent']);
+    manager.respondToPermission({ toolCallId: 'call-restart_agent', decision: 'approve' });
+    await expect(next).resolves.toEqual({ kind: 'approved' });
+  });
+
   it('raises a prompt for EVERY gated tool without consulting YOLO', async () => {
     const yoloSpy = vi.spyOn(yoloMode, 'isYoloEnabled').mockReturnValue(true);
     const { manager, captured } = makeManager();
@@ -101,7 +129,7 @@ describe('minimize (close) vs Teams-relay parity', () => {
     const { manager } = makeManager();
     const result = handlerOf(manager)(req('answer_agent')) as Promise<PermissionRequestResult>;
     manager.close();
-    await expect(result).resolves.toEqual({ kind: 'denied-interactively-by-user' });
+    await expect(result).resolves.toEqual({ kind: 'reject' });
   });
 
   it('leaves pending gates OPEN on minimize while Teams-relay is active', async () => {

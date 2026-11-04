@@ -23,8 +23,9 @@ import type {
 } from './types';
 
 export interface OrchestratorToolDeps {
+  approvedTarget?: (toolCallId: string) => { agentId: string; officeId: string; requireInactive: boolean } | undefined;
   requestCandidates: (officeId?: string) => Promise<BringOnlineCandidate[]>;
-  requestExecute: (agentId: string, officeId?: string) => Promise<BringOnlineResult>;
+  requestExecute: (agentId: string, officeId?: string, toolCallId?: string) => Promise<BringOnlineResult>;
   requestOffices: () => Promise<OfficeSummary[]>;
   requestSwitch: (officeId: string) => Promise<SwitchOfficeResult>;
   /** Reserved for future use; officeId is currently derived from candidates. */
@@ -40,7 +41,7 @@ export interface OrchestratorToolDeps {
   requestSendPrompt: (a: { agentId: string; officeId?: string; prompt: string }) => Promise<ActOnResult>;
   requestStopAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
   requestRestartAgent: (a: { agentId: string; officeId?: string }) => Promise<ActOnResult>;
-  requestTeamsPresence: (a: { agentId: string; officeId?: string; online: boolean }) => Promise<ActOnResult>;
+  requestTeamsPresence: (a: { agentId: string; officeId?: string; online: boolean; requireInactive?: boolean; toolCallId?: string }) => Promise<ActOnResult>;
   requestSetTitle: (a: { agentId: string; officeId?: string; title: string }) => Promise<ActOnResult>;
   /** Pause/resume non-orchestrator agent Teams connections — never the orchestrator's own. */
   requestTeamsAgentsPause: (paused: boolean) => Promise<TeamsAgentsPauseResult>;
@@ -50,15 +51,15 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
   const listTool = defineTool('list_office_agents', {
     description:
       'List the dormant agents that can be brought online in an office, so you can ' +
-      'rank them against the user\'s request. Returns each candidate\'s agentId, name, ' +
-      'skill, and description. Defaults to the currently viewed office; pass `officeId` ' +
-      '(from list_offices) to list a DIFFERENT office\'s dormant agents.',
+      'rank them against the user\'s request. Returns each candidate\'s officeId, agentId, name, ' +
+      'skill, and description. Searches ALL offices by default; pass `officeId` to scope. ' +
+      'Only agents without an active or starting session are eligible.',
     parameters: {
       type: 'object',
       properties: {
         officeId: {
           type: 'string',
-          description: 'Optional office to list. Omit for the currently viewed office.',
+          description: 'Optional office to list. Omit to search all offices.',
         },
       },
       additionalProperties: false,
@@ -66,20 +67,18 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     skipPermission: true,
     handler: async (args: { officeId?: string }) => {
       const candidates = await deps.requestCandidates(args.officeId);
-      const officeId = args.officeId ?? candidates[0]?.officeId ?? deps.getOfficeId();
+      const officeId = args.officeId;
       return { officeId, candidates };
     },
   });
 
   const bringOnlineTool = defineTool('bring_agent_online', {
     description:
-      'Bring a dormant agent online. Defaults to the currently viewed office; pass ' +
-      '`officeId` (from list_offices / list_office_agents) to bring an agent online in a ' +
-      'DIFFERENT office — the desktop will switch to that office automatically. Prefer ' +
-      'passing an agentId returned by list_office_agents. If the user does NOT name a ' +
-      'specific agent (e.g. "bring someone online", "add another agent"), you may omit ' +
-      'agentId — the next dormant agent in that office\'s list is used by default. This ' +
-      'action is gated: the user must approve it before it takes effect.',
+      'Bring an inactive agent online in the background and wait for session readiness. ' +
+      'Searches ALL offices by default and NEVER switches the desktop. Pass canonical ' +
+      'agentId and officeId from discovery. Existing active sessions are not restarted. ' +
+      'Omit agentId only when exactly one inactive candidate exists; otherwise clarify. This ' +
+      'action follows the Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -87,13 +86,12 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
           type: 'string',
           description:
             'Candidate agentId (or name) from list_office_agents. Omit to default to the ' +
-            'next dormant agent in the office\'s list.',
+            'only inactive candidate in the requested scope.',
         },
         officeId: {
           type: 'string',
           description:
-            'Office the agent lives in (from list_offices). Omit for the currently viewed ' +
-            'office; when set to a different office the desktop switches to it first.',
+            'Office the agent lives in (from list_offices). Omit to search all offices.',
         },
         reason: {
           type: 'string',
@@ -102,7 +100,9 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
       },
       additionalProperties: false,
     },
-    handler: async (args: { agentId?: string; officeId?: string; reason?: string }) => {
+    handler: async (args: { agentId?: string; officeId?: string; reason?: string }, invocation) => {
+      const pinned = deps.approvedTarget?.(invocation.toolCallId);
+      if (pinned) args = { ...args, agentId: pinned.agentId, officeId: pinned.officeId };
       // Reached only AFTER the permission gate approves. Default to the next dormant
       // agent in the office's list when the caller did not specify one.
       let agentId = (args.agentId ?? '').trim();
@@ -115,9 +115,16 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
             message: 'There are no dormant agents available to bring online in this office.',
           };
         }
+        if (candidates.length > 1) {
+          return { agentId: '', outcome: 'ambiguous-target' as const,
+            message: 'Multiple inactive agents are available. Ask the user to choose an office/agent.', candidates };
+        }
         agentId = candidates[0].agentId;
+        args = { ...args, officeId: candidates[0].officeId };
       }
-      return deps.requestExecute(agentId, args.officeId);
+      return invocation.toolCallId
+        ? deps.requestExecute(agentId, args.officeId, invocation.toolCallId)
+        : deps.requestExecute(agentId, args.officeId);
     },
   });
 
@@ -137,11 +144,8 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
 
   const switchOfficeTool = defineTool('switch_office', {
     description:
-      'Switch the desktop to a different office by officeId (use one returned by ' +
-      'list_offices). Do this before bringing an agent online when the right agent lives ' +
-      'in another office. This is a reversible navigation action and is NOT gated. After ' +
-      'switching, call list_office_agents again — the candidate list is scoped to the ' +
-      'newly-selected office.',
+      'Switch the desktop to a different office by officeId for explicit navigation only. ' +
+      'Agent activation does not require switching. Follows the Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -153,7 +157,6 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
       required: ['officeId'],
       additionalProperties: false,
     },
-    skipPermission: true,
     handler: async (args: { officeId: string }) => {
       return deps.requestSwitch(args.officeId);
     },
@@ -255,12 +258,12 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
     },
   });
 
-  // ── spec 017: gated act-on tools (always gated, non-YOLO) ───────────────────
+  // ── Write tools (Ringleader approval setting, independent of agent YOLO) ───
 
   const answerAgentTool = defineTool('answer_agent', {
     description:
       'Deliver the user\'s answer to an agent that is waiting for input, unblocking it. ' +
-      'Only use an agentId returned by a status tool. Gated: the user must approve.',
+      'Only use an agentId returned by a status tool. Follows the Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -280,7 +283,7 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
   const sendPromptTool = defineTool('send_prompt_to_agent', {
     description:
       'Send a follow-up prompt/task to an already-online agent (by capability or name). ' +
-      'Only use an agentId returned by a status tool. Gated: the user must approve.',
+      'Only use an agentId returned by a status tool. Follows the Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -299,7 +302,7 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
   const stopAgentTool = defineTool('stop_agent', {
     description:
       'Stop / take an online agent offline. Destructive. Only use an agentId returned by ' +
-      'a status tool. Gated: the user must approve.',
+      'a status tool. Follows the Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -317,7 +320,7 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
   const restartAgentTool = defineTool('restart_agent', {
     description:
       "Restart an agent's session and report it ready. Only use an agentId returned by a " +
-      'status tool. Gated: the user must approve.',
+      'status tool. Follows the Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -338,8 +341,11 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
       'this also starts the agent\'s session first if it is not up yet, so a single call ' +
       'brings a dormant (incl. reserve) agent all the way online AND into Teams. When ' +
       'bringing online, you may omit agentId (e.g. "bring the next agent online in Teams") ' +
-      'to default to the next dormant agent in the office\'s list. Taking an agent OFFLINE ' +
-      'requires a specific agentId from a status tool. Gated: the user must approve. If ' +
+      'only when exactly one inactive candidate exists. Set requireInactive:true when the user ' +
+      'requests a NEW agent to Teams: select inactive, activate, wait for readiness, then connect ' +
+      'Teams sequentially. For Teams-only requests for a named existing session, omit that flag. ' +
+      'Operates across all offices without switching the desktop. Taking an agent OFFLINE ' +
+      'requires a specific agentId from a status tool. Follows the Ringleader write approval setting. If ' +
       'Teams is disabled, the tool reports unavailable — relay that to the user.',
     parameters: {
       type: 'object',
@@ -348,15 +354,18 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
           type: 'string',
           description:
             'The agent whose Teams presence to change (id or name from a status tool). ' +
-            'Omit when bringing online to default to the next dormant agent in the office.',
+            'Omit only when one inactive candidate exists across the requested scope.',
         },
         officeId: { type: 'string', description: 'Optional office to disambiguate the target.' },
         online: { type: 'boolean', description: 'true to bring online in Teams, false to take offline.' },
+        requireInactive: { type: 'boolean', description: 'true for NEW/another agent to Teams; never reuse an already-active agent as new.' },
       },
       required: ['online'],
       additionalProperties: false,
     },
-    handler: async (args: { agentId?: string; officeId?: string; online: boolean }) => {
+    handler: async (args: { agentId?: string; officeId?: string; online: boolean; requireInactive?: boolean }, invocation) => {
+      const pinned = deps.approvedTarget?.(invocation.toolCallId);
+      if (pinned) args = { ...args, agentId: pinned.agentId, officeId: pinned.officeId, requireInactive: pinned.requireInactive };
       // Reached only AFTER the permission gate approves. Mirror bring_agent_online:
       // when bringing an agent online without a named target, default to the next
       // dormant candidate in the office. Taking an agent offline still needs an
@@ -372,17 +381,26 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
             message: 'There are no dormant agents available to bring online in this office.',
           };
         }
+        if (candidates.length > 1) {
+          return { agentId: '', officeId: args.officeId ?? '', outcome: 'ambiguous-target' as const,
+            message: 'Multiple inactive agents are available. Ask the user to choose an office/agent.', candidates };
+        }
         agentId = candidates[0].agentId;
+        args = { ...args, officeId: candidates[0].officeId, requireInactive: true };
       }
-      return deps.requestTeamsPresence({ agentId, officeId: args.officeId, online: args.online });
+      return deps.requestTeamsPresence({
+        agentId, officeId: args.officeId, online: args.online,
+        ...(args.requireInactive !== undefined ? { requireInactive: args.requireInactive } : {}),
+        ...(invocation.toolCallId ? { toolCallId: invocation.toolCallId } : {}),
+      });
     },
   });
 
   const setAgentTitleTool = defineTool('set_agent_title', {
     description:
       "Rename an agent's session title (the short label shown for what it is working " +
-      'on). Only use an agentId returned by a discovery/status tool. Gated: the user ' +
-      'must approve.',
+      'on). Only use an agentId returned by a discovery/status tool. Follows the ' +
+      'Ringleader write approval setting.',
     parameters: {
       type: 'object',
       properties: {
@@ -405,7 +423,7 @@ export function buildOrchestratorTools(deps: OrchestratorToolDeps): Tool<any>[] 
       'affects your own (the orchestrator\'s) Teams presence — your thread stays connected ' +
       'either way, so you remain reachable from Teams even while agent connections are ' +
       'paused. Resuming reconnects every paused agent into its SAME existing thread (no ' +
-      'new threads are created). Gated: the user must approve. If Teams is disabled, the ' +
+      'new threads are created). Follows the Ringleader write approval setting. If Teams is disabled, the ' +
       'tool reports unavailable — relay that to the user.',
     parameters: {
       type: 'object',

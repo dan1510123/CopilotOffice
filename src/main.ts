@@ -19,8 +19,6 @@ import { SettingsPanel } from './ui/SettingsPanel';
 import { TeamsSettingsOverlay } from './ui/TeamsSettingsOverlay';
 import { SpriteCustomizerPanel } from './ui/SpriteCustomizerPanel';
 import { OrchestratorPanel } from './ui/OrchestratorPanel';
-import { computeBringOnlineCandidates } from './office/orchestratorCandidates';
-import { executeBringOnline } from './office/orchestratorExecute';
 import { computeOfficeSummaries, resolveSwitchOffice } from './office/orchestratorOffices';
 import { computeActiveAgents, computeAwaitingAgents, computeAgentStatusLookup, resolveAgentIdByNameOrId } from './office/orchestratorStatus';
 import { computeAgentRecentOutput } from './office/orchestratorPeek';
@@ -38,7 +36,6 @@ import {
   setAgentTitle,
   type ActOnDeps,
 } from './office/orchestratorActOn';
-import type { BringOnlineOutcome } from '../electron/orchestrator/types';
 import { SeriousTerminalController } from './ui/SeriousTerminalController';
 import { regeneratePlayerSprite } from './sprites/SpriteGenerator';
 import { isAskUserTool, nextSubStateAfterToolComplete, addActiveTool, removeCompletedTool, ToolEntry } from './util/toolStatus';
@@ -50,6 +47,11 @@ import { isYoloEnabled } from './config/yoloMode';
 import { getActiveAdditionalParams } from './config/additionalParams';
 import { injectUiKit } from './ui/uiKit';
 import { initTheme, toggleTheme, getTheme } from './ui/theme';
+import { VoiceController } from './voice/VoiceController';
+import { TranscriptionClient } from './voice/transcriptionClient';
+import { startMicrophone } from './voice/microphone';
+import { LocalSpeech } from './voice/speech';
+import { bindVoiceControls } from './ui/voiceControls';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -367,6 +369,60 @@ terminalPanel.style.cssText = `
   position: relative;
 `;
 mainContent.appendChild(terminalPanel);
+
+const voiceStatus = document.createElement('div');
+voiceStatus.setAttribute('role', 'status');
+voiceStatus.setAttribute('aria-live', 'polite');
+voiceStatus.style.cssText = 'display: none; padding: 8px 12px; flex-shrink: 0; color: var(--co-text); overflow-wrap: anywhere;';
+terminalPanel.appendChild(voiceStatus);
+const transcription = new TranscriptionClient();
+const voiceSpeech = new LocalSpeech();
+let voiceOwnsInput = false;
+const voiceController = new VoiceController({
+  async resolveTarget(agentId) {
+    const officeId = officeManager.currentOfficeId;
+    const status = officeId ? officeManager.getAgentStatus(officeId, agentId) : undefined;
+    if (!officeId || status?.state !== 'active') throw new Error('Start an agent session before using voice.');
+    if (status.subState === 'thinking' || status.subState === 'waiting') {
+      throw new Error('Wait for the agent to finish, or answer its question in the terminal.');
+    }
+    const sessionId = await window.copilotBridge.getSessionId(officeId, agentId);
+    if (!sessionId) throw new Error('Agent session is not ready for voice.');
+    return { officeId, agentId, sessionId };
+  },
+  isCurrent(target) {
+    return officeManager.currentOfficeId === target.officeId &&
+      officeManager.getAgentStatus(target.officeId, target.agentId)?.state === 'active' &&
+      (!cachedSessionMeta[target.agentId]?.sessionId || cachedSessionMeta[target.agentId].sessionId === target.sessionId);
+  },
+  load: (progress) => transcription.load(progress),
+  record: startMicrophone,
+  transcribe: (audio) => transcription.transcribe(audio),
+  submit: (target, text) => window.copilotBridge.terminalSubmitPrompt(target.officeId, target.agentId, text, 'Voice'),
+  speak: (text, done, failed) => voiceSpeech.speak(text, done, failed),
+  stopSpeaking: () => voiceSpeech.stop(),
+  changed(state) {
+    voiceStatus.textContent = state.detail;
+    voiceStatus.style.display = state.detail ? 'block' : 'none';
+    const ownsInput = state.phase === 'loading' || state.phase === 'recording';
+    if (ownsInput !== voiceOwnsInput) {
+      voiceOwnsInput = ownsInput;
+      phaserGameRef?.events.emit(ownsInput ? 'settings:open' : 'settings:close', 'voice');
+    }
+    document.querySelectorAll<HTMLButtonElement>('[data-voice-agent]').forEach((button) => {
+      button.setAttribute('aria-pressed', String(state.phase === 'recording' && button.dataset.voiceAgent === state.target?.agentId));
+    });
+  },
+});
+const unbindVoiceControls = bindVoiceControls(voiceController);
+const unbindVoiceEvents = window.copilotBridge?.onVoiceEvent?.((agentId, event, officeId, sessionId) => {
+  if (officeId && sessionId) voiceController.event({ agentId, officeId, sessionId }, event);
+});
+window.addEventListener('beforeunload', () => {
+  unbindVoiceControls();
+  unbindVoiceEvents?.();
+  transcription.destroy();
+}, { once: true });
 
 // Draggable split divider (serious desktop only). Lets the left agent-card panel
 // grow from 1/4 to 1/2 of the window; the agent cards reflow to the new width
@@ -1275,6 +1331,7 @@ function switchToOffice(officeId: string) {
     return;
   }
 
+  voiceController.cancel();
   selectedAgentId = null;
   void seriousTerminalController?.closeView({ detach: true });
 
@@ -1307,26 +1364,6 @@ function switchToOffice(officeId: string) {
   void autoStartCoordinator.tryWarmCurrentOffice();
 
   console.log(`[Office] Switched to office: ${officeManager.currentOffice?.config.name}`);
-}
-
-/**
- * Switch the desktop to `officeId` and resolve once the scene has finished any
- * rebuild/walk-in animation. Reserve activation (`spawnReserveAgent`) is bound to
- * the currently rendered office AND is skipped while the scene is animating, so
- * the orchestrator's cross-office bring-online must await a settled scene before
- * delegating the spawn. Bounded so a stuck animation can't hang the tool.
- */
-async function switchOfficeAndSettle(officeId: string, timeoutMs = 6000): Promise<void> {
-  if (officeManager.currentOfficeId === officeId) return;
-  switchToOffice(officeId);
-  const deadline = Date.now() + timeoutMs;
-  // Allow the office:switch → rebuildLayout to run, then wait out any walk-in.
-  while (Date.now() < deadline) {
-    const animating = phaserGameRef?.registry.get('animating') === true;
-    const arrived = officeManager.currentOfficeId === officeId;
-    if (arrived && !animating) return;
-    await new Promise((r) => setTimeout(r, 100));
-  }
 }
 
 function showNewOfficeDialog() {
@@ -1885,76 +1922,9 @@ async function warmAgentSession(
   return res?.success !== false;
 }
 
-/**
- * Bring a dormant agent FULLY online for the Teams auto-online path: idle-seated
- * agents warm their PTY directly, reserve agents are spawned via the scene
- * delegate (NPC + seat + fire-and-forget terminalStart). Because reserve spawn
- * does not await the PTY, we then wait until the agent's session id is actually
- * available so a follow-up teamsRegister (which requires a live session) succeeds.
- *
- * "Online" is judged by the REAL PTY liveness (queryAgentStatuses().alive), NOT
- * the renderer's agent status: the latter can read `active`/`Done` while the PTY
- * is dead (a dropped or half-completed restart). When the renderer still marks a
- * seated agent active but its session is gone, we re-warm it directly instead of
- * short-circuiting on the stale status (which would just wait and time out) or
- * refusing it via executeBringOnline as "already online".
- */
 async function bringAgentFullyOnline(officeId: string, agentId: string): Promise<boolean> {
-  if (await isSessionAlive(officeId, agentId)) {
-    return waitForSessionReady(officeId, agentId);
-  }
-  // No live PTY. If the renderer still marks it active, the NPC is already seated,
-  // so a plain re-warm (with a cross-office-safe workingDir) restores the session.
-  if (officeManager.getAgentStatus(officeId, agentId)?.state === 'active') {
-    const warmed = await warmAgentSession(officeId, agentId);
-    if (warmed && (await waitForSessionReady(officeId, agentId))) return true;
-    // Re-warm couldn't establish a session — fall through to a full bring-online.
-  }
-  const result = await executeBringOnline(
-    agentId,
-    {
-      startSeated: (oid, aid) => warmAgentSession(oid, aid),
-      activateReserve: activateReserveViaScene,
-      switchOffice: switchOfficeAndSettle,
-      isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
-    },
-    officeId,
-  );
-  if (result.outcome !== 'started' && result.outcome !== 'already-active') return false;
-  return waitForSessionReady(officeId, agentId);
-}
-
-/**
- * True only when the agent's PTY is actually alive server-side (not merely marked
- * `active` in the renderer's status map). This is the authoritative liveness signal
- * teamsRegister depends on; failures are swallowed as "not alive" so a transiently
- * unavailable terminal server never reports a dead session as live.
- */
-async function isSessionAlive(officeId: string, agentId: string): Promise<boolean> {
-  try {
-    const statuses = await window.copilotBridge?.queryAgentStatuses(officeId);
-    return !!statuses?.[agentId]?.alive;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Poll until the agent's terminal session id is registered server-side (the signal
- * that teamsRegister's getSessionId check will pass), bounded by `timeoutMs`.
- */
-async function waitForSessionReady(officeId: string, agentId: string, timeoutMs = 10_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const meta = await window.copilotBridge?.getAllSessionMeta(officeId);
-      if (meta?.[agentId]?.sessionId) return true;
-    } catch {
-      /* transient — retry until deadline */
-    }
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return false;
+  const result = await window.copilotBridge.activateAgent(officeId, agentId);
+  return result.outcome === 'started' || result.outcome === 'already-active';
 }
 
 /** Cold-warm one-shot state — see warmAllTeamsBoundAgents. */
@@ -2241,6 +2211,22 @@ const spriteCustomizerPanel = new SpriteCustomizerPanel({
 // reserve activation.
 let orchestratorPanel: OrchestratorPanel | null = null;
 
+window.copilotBridge?.onOrchestratorSeatRequest?.(({ requestId, officeId, agentId, deskId, deadline }) => {
+  void (async () => {
+    try {
+      await officeManager.ensureAgentSeat(officeId, agentId, deskId, deadline);
+      phaserGameRef?.events.emit('office:seat:persisted', { officeId, deskId });
+      updateTerminalContent();
+      await window.copilotBridge.orchestratorRespondSeat(requestId, { success: true });
+    } catch (error) {
+      console.warn('[Ringleader] Seat synchronization failed:', error);
+      await window.copilotBridge.orchestratorRespondSeat(requestId, {
+        success: false, error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  })();
+});
+
 function getOrchestratorPanel(): OrchestratorPanel {
   if (!orchestratorPanel) {
     orchestratorPanel = new OrchestratorPanel({
@@ -2257,43 +2243,15 @@ function toggleOrchestratorPanel(): void {
   else void panel.show();
 }
 
-// Reserve activation must run inside OfficeScene (spawnReserveAgent is private).
-// Round-trip through a fire-and-forget game event with a response callback.
-function activateReserveViaScene(deskId: string): Promise<BringOnlineOutcome> {
-  return new Promise<BringOnlineOutcome>((resolve) => {
-    if (!phaserGameRef) {
-      resolve('invalid-target');
-      return;
-    }
-    let settled = false;
-    const respond = (outcome: BringOnlineOutcome) => {
-      if (settled) return;
-      settled = true;
-      resolve(outcome);
-    };
-    phaserGameRef.events.emit('orchestrator:activate-reserve', { deskId, respond });
-    // Safety net: if the scene never responds, don't hang the tool.
-    setTimeout(() => respond('failed'), 15000);
-  });
-}
-
 if (window.copilotBridge?.onOrchestratorCandidatesRequest) {
   window.copilotBridge.onOrchestratorCandidatesRequest(({ requestId, officeId }) => {
-    const candidates = computeBringOnlineCandidates(officeId);
-    void window.copilotBridge.orchestratorRespondCandidates(requestId, candidates);
+    void window.copilotBridge.orchestratorListCandidates(officeId).then((candidates) =>
+      window.copilotBridge.orchestratorRespondCandidates(requestId, candidates)).catch((error) =>
+      console.warn('[Ringleader] Candidate request failed:', error));
   });
   window.copilotBridge.onOrchestratorExecuteRequest(({ requestId, agentId, officeId }) => {
     void (async () => {
-      const result = await executeBringOnline(
-        agentId,
-        {
-          startSeated: (oid, aid) => warmAgentSession(oid, aid),
-          activateReserve: activateReserveViaScene,
-          switchOffice: switchOfficeAndSettle,
-          isSessionAlive: (oid, aid) => isSessionAlive(oid, aid),
-        },
-        officeId,
-      );
+      const result = await window.copilotBridge.activateAgent(officeId ?? '', agentId);
       void window.copilotBridge.orchestratorRespondExecute(requestId, result);
     })();
   });
@@ -2746,6 +2704,10 @@ function updateTerminalContentNow() {
   syncActiveRosterForCurrentOffice();
   const agentTools = getCurrentAgentTools();
   const office = officeManager.currentOffice;
+  document.querySelectorAll<HTMLButtonElement>('[data-voice-agent]').forEach((button) => {
+    const status = office?.agents.get(button.dataset.voiceAgent ?? '');
+    button.disabled = status?.state !== 'active';
+  });
 
   // Show/hide Close Office button (hidden for Main Office at index 0)
   const closeBtn = document.getElementById('close-office-btn') as HTMLButtonElement | null;
@@ -3309,7 +3271,9 @@ if (window.copilotBridge) {
 
   // Sync the persisted YOLO flag to the PTY server before any terminal launches,
   // so new copilot sessions reflect the saved setting from cold boot.
-  window.copilotBridge.setYolo?.(isYoloEnabled());
+  void window.copilotBridge.setYolo?.(isYoloEnabled()).then((result) => {
+    if (!result.success) console.error('[Office] Failed to synchronize YOLO mode:', result.error);
+  }).catch((error) => console.error('[Office] Failed to synchronize YOLO mode:', error));
 
   // Sync the persisted additional-parameters string for the same reason.
   window.copilotBridge.setAdditionalParams?.(getActiveAdditionalParams());
@@ -3514,6 +3478,9 @@ if (window.copilotBridge) {
   window.copilotBridge.onSessionMetaUpdated((agentId, meta, eventOfficeId) => {
     console.log(`[Office] Session meta updated for ${agentId}: "${meta.title}"${meta.sessionId ? ` (session ${meta.sessionId})` : ''}`);
     const officeId = officeManager.currentOfficeId || 'office-0';
+    const voiceTarget = voiceController.state.target;
+    if (voiceTarget?.agentId === agentId && voiceTarget.officeId === (eventOfficeId ?? officeId) &&
+        meta.sessionId && meta.sessionId !== voiceTarget.sessionId) voiceController.cancel();
     if (eventOfficeId && eventOfficeId !== officeId) {
       // Another office's agent (e.g. native bridge /clear in a background office):
       // update that office's persisted cache without touching the current view.
@@ -3535,6 +3502,9 @@ if (window.copilotBridge) {
   // Teams-bound agent in a non-current office whose session drops).
   window.copilotBridge.onTerminalExit((agentId, _exitCode, officeId) => {
     const oid = officeId ?? officeManager.currentOfficeId;
+    if (voiceController.state.target?.officeId === oid && voiceController.state.target.agentId === agentId) {
+      voiceController.cancel();
+    }
     if (!oid) return;
     const status = officeManager.getAgentStatus(oid, agentId);
     if (status && status.state !== 'slacking') {

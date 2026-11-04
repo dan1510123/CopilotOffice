@@ -89,13 +89,21 @@ Set `COPILOT_OFFICE_DEBUG_COLD_START=1` (server side) or `window.__COPILOT_OFFIC
 
 ## Key Rules
 
+- Ringleader writes use its default-off `allowAllOperations` setting, persisted in `.data/orchestrator-settings.json`, independently of agent YOLO. Read tools always skip approval; write tools (including office switching) go through the manager's permission handler. Changes apply to subsequent operations, never auto-resolve pending approvals.
+- Ringleader activation uses `AgentLifecycle` in main with office-qualified catalog identities and authoritative runtime state. New-agent requests exclude live/starting sessions; Teams registration follows confirmed programmatic readiness and preserves pause. Never route startup through a displayed scene or use persisted session metadata as readiness.
+- Background starts must not claim a viewer. A fresh backend without programmatic control is cleaned up on failure; pre-existing/viewed sessions are preserved. Pass the lifecycle deadline through startup and Teams registration so late completion cannot enable routing.
 - All renderer ↔ main communication **must** go through `preload.ts` context bridge.
 - Terminal spawning lives in `server.ts` (via `ipc-relay.ts`), **not** `cli-bridge.ts`.
 - PTY processes must be cleaned up on session close, reset, and app shutdown. Always use `killPtyProcess()` — never bare `proc.kill()`.
 - `server.ts` runs as a forked child process. Never import or call its functions from main.
 - Protocol types in `protocol.ts` must stay in sync with handlers in both `server.ts` and `ipc-relay.ts`.
+- UI-server `ask_user` answers must use `UiServerProcess.submitAnswer` and the request-ID-based `session.rpc.ui.handlePendingUserInput`; report success only when the RPC confirms resolution. Never type programmatic answers into the shared TUI.
+- UI-server SDK sessions do not inherit host `--yolo` or `--agent`: set session permission mode with `rpc.permissions.setMode` on create/resume and YOLO changes, and pass the requested agent through the SDK session config.
+- Additional Parameters use `session-params.ts` for quote-aware tokenization and explicit SDK mappings (`--agent`, `--model`, `--reasoning-effort`). Unmapped flags remain host arguments and are logged; never guess SDK property names from CLI flags.
 
 ## Common Pitfalls
+
+- Local crash diagnostics live in `.logs/main.log` and `.logs/terminal-server.log` (5 MiB per file plus three archives per role). Keep records metadata-only: no terminal streams, prompts, credentials, or conversation content. Native Electron dumps are local-only; their directory is recorded at startup.
 
 - **Orphaned PTYs**: If cleanup fails (crash, force-quit), stale processes persist. The orphan killer in `main.ts` handles this on next startup.
 - **IPC type mismatches**: Adding a new message type requires updating `protocol.ts`, the handler in `server.ts`, and the relay in `ipc-relay.ts`.

@@ -1,6 +1,7 @@
 import { DashboardRenderer, DashboardRenderContext, getDashboardTypography } from '../types';
 import { ARCHITECT_AGENT_ID } from '../../config/agents';
 import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
+import { voiceControls } from '../../ui/voiceControls';
 
 /**
  * Dashboard renderer for the fleet v-team layout.
@@ -128,6 +129,7 @@ export const fleetDashboard: DashboardRenderer = {
               </div>
               ${taskSummaryHtml}
               ${arthurHint}
+              ${isArthur ? voiceControls(agent.id, liveStatus?.state === 'active') : ''}
             </div>
             ${activityLogHtml}
           </div>

@@ -2,11 +2,12 @@ import { execSync, spawn, type ChildProcessWithoutNullStreams, type SpawnOptions
 import * as os from 'os';
 import * as path from 'path';
 import { SdkEventSource, type CopilotEventSource, type SdkCopilotSession } from './event-source';
-import type { ExitPlanModeHandler, ExitPlanModeResult, ElicitationHandler, ElicitationResult } from '@github/copilot-sdk';
+import type { CopilotClient, CopilotSession, ExitPlanModeHandler, ExitPlanModeResult, ElicitationHandler, ElicitationResult } from '@github/copilot-sdk';
 import { createOnPermissionRequest } from './sdk-permissions';
 import type { ControlCommand, ControlData } from './protocol';
 import { loadCustomAgents } from './custom-agents';
 import { resolveSkillDirectories } from './custom-skills';
+import { sessionConfigFromArgs } from './session-params';
 
 // ── spec 015: ask_user (SDK user-input interaction) answer channel ──────────────
 //
@@ -112,8 +113,8 @@ export type AnswerTransport = 'bridge' | 'sdk';
 
 /**
  * Decide how an `ask_user` answer is delivered for a backend process (spec 015).
- * Native-bridge processes expose `submitAnswer`: the pending interaction lives in the
- * TUI's bridge extension, so the answer is routed over the authenticated broker.
+ * Native-bridge and UI-server processes expose `submitAnswer`: they resolve the
+ * request through the authenticated broker or the session's UI RPC respectively.
  * SDK backends expose `submitPrompt` (a real programmatic session) and resolve
  * the pending interaction by `requestId` via {@link handlePendingUserInput}. The raw
  * node-pty backend omits both and has no programmatic session: returns `null`, and
@@ -343,6 +344,8 @@ export interface TerminalElicitationDecision {
 
 export interface TerminalProcess {
   readonly pid: number;
+  /** Explicit capability for awaited programmatic prompts and control, not PTY readiness. */
+  readonly supportsProgrammaticControl?: boolean;
   /** Current authoritative session id for reconnecting backends (native bridge). */
   getSessionId?(): string;
   write(data: string): void;
@@ -375,7 +378,7 @@ export interface TerminalProcess {
 
   /**
    * Optional: answer the session's pending `ask_user` interaction through a
-   * dedicated control channel (native bridge). Rejects with an explicit error
+   * dedicated control channel (native bridge or UI-server RPC). Rejects with an explicit error
    * when there is no pending interaction or the channel is unavailable.
    */
   submitAnswer?(answer: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void>;
@@ -474,6 +477,7 @@ export interface TerminalBackend {
   isAvailable(): boolean;
   start(options: StartTerminalOptions): Promise<TerminalProcess>;
   restartOffice?(officeId: string): Promise<void>;
+  setYolo?(enabled: boolean): Promise<void>;
   stop?(): Promise<void>;
 }
 
@@ -603,6 +607,8 @@ export function probeUiServerSupport(cliPath: string | null): boolean {
 }
 
 class NodePtyProcess implements TerminalProcess {
+  readonly supportsProgrammaticControl = false;
+
   constructor(
     private readonly proc: {
       pid: number;
@@ -785,6 +791,8 @@ export async function runSessionControl(session: ControlSession, cmd: ControlCom
 }
 
 class CopilotSdkProcess implements TerminalProcess {
+  readonly supportsProgrammaticControl = true;
+
   private readonly dataListeners: Array<(data: string) => void> = [];
   private readonly exitListeners: Array<(event: TerminalExitEvent) => void> = [];
   private readonly streamedMessageIds = new Set<string>();
@@ -1286,7 +1294,12 @@ export class CopilotSdkBackend implements TerminalBackend {
   }
 
   private async resumeOrCreateSession(client: SdkHostClient, options: StartTerminalOptions): Promise<any> {
+    const { config, unmappedFlags } = sessionConfigFromArgs(options.extraArgs ?? []);
+    if (unmappedFlags.length) {
+      console.warn(`[terminal-backend] Additional Parameters not mapped to SDK session config (host arguments only): ${unmappedFlags.join(', ')}`);
+    }
     const sharedConfig: Record<string, unknown> = {
+      ...config,
       streaming: true,
       workingDirectory: options.cwd,
       // Inject the user's custom agents (~/.copilot/agents + <cwd>/.github/agents).
@@ -1335,12 +1348,17 @@ type UiServerPty = import('node-pty').IPty;
 type UiServerSession = {
   send(request: { prompt: string; mode: 'enqueue' }): Promise<unknown>;
   disconnect(): Promise<void> | void;
+  rpc?: {
+    ui: Pick<CopilotSession['rpc']['ui'], 'handlePendingUserInput'>;
+    permissions?: Pick<CopilotSession['rpc']['permissions'], 'setMode'>;
+  };
 };
 
 type UiServerClient = {
   start(): Promise<void>;
   createSession(options: Record<string, unknown>): Promise<UiServerSession>;
   resumeSession(sessionId: string, options: Record<string, unknown>): Promise<UiServerSession>;
+  getSessionMetadata: CopilotClient['getSessionMetadata'];
   setForegroundSessionId(sessionId: string): Promise<void>;
   listSessions(): Promise<unknown>;
   stop?(): Promise<void>;
@@ -1411,8 +1429,7 @@ export class UiServerHostRuntime {
     // reliably intercept permission prompts for the hosted runtime (esp. resumed
     // sessions), so YOLO must be enforced at the runtime itself. Launch the host
     // with `--yolo` (all tool/path/url permissions) when YOLO is on. This is
-    // captured at host-creation (one host per office); toggling YOLO afterwards
-    // requires the office host to respawn.
+    // captured at host-creation; SDK sessions also synchronize their own mode.
     const yoloArgs = options.yolo ? ['--yolo'] : [];
     this.proc = pty.spawn(launch.cliPath, [...launch.cliArgs, ...extraArgs, ...yoloArgs, '--ui-server', '--port', '0'], {
       name: 'xterm-256color',
@@ -1513,6 +1530,8 @@ export class UiServerHostRuntime {
  * connects to a hosted runtime that owns authentication and GitHub identity.
  */
 export class ControlPlaneClient {
+  private readonly sessions = new Map<string, { session: UiServerSession; isYoloEnabled: () => boolean }>();
+  private permissionUpdate: Promise<void> = Promise.resolve();
   private client: UiServerClient | null = null;
   private startPromise: Promise<void> | null = null;
   private CopilotClient: UiServerClientConstructor | null = null;
@@ -1532,7 +1551,12 @@ export class ControlPlaneClient {
     sessionId: string,
     cwd: string,
     isYoloEnabled: () => boolean = () => false,
+    extraArgs: readonly string[] = [],
   ): Promise<UiServerSession> {
+    const { config, unmappedFlags } = sessionConfigFromArgs(extraArgs);
+    if (unmappedFlags.length) {
+      console.warn(`[terminal-backend] Additional Parameters not mapped to SDK session config (host arguments only): ${unmappedFlags.join(', ')}`);
+    }
     const client = await this.getStartedClient();
     // FR-009: map the app's YOLO posture onto the SDK permission handler.
     // Results come from ./sdk-permissions: CLI >= 1.0.98 only accepts
@@ -1542,6 +1566,7 @@ export class ControlPlaneClient {
     const onPermissionRequest = (request: unknown, invocation?: unknown) =>
       createOnPermissionRequest({ yolo: isYoloEnabled() })(request, invocation);
     const sharedConfig: Record<string, unknown> = {
+      ...config,
       streaming: true,
       workingDirectory: cwd,
       // Inject the user's custom agents (~/.copilot/agents + <cwd>/.github/agents)
@@ -1563,14 +1588,56 @@ export class ControlPlaneClient {
       onExitPlanModeRequest: makeExitPlanModeHandler(sessionId),
     };
 
-    try {
-      return await client.resumeSession(sessionId, sharedConfig);
-    } catch {
-      return client.createSession({
+    // SDK 1.0.14 documents undefined metadata as absent. Resume errors have no
+    // supported absence discriminant, so never turn an RPC/config failure into
+    // a fresh session (which could silently discard the persisted conversation).
+    // Older clients without the metadata API may still resume, but must fail
+    // explicitly on resume errors rather than attempt an unverified creation.
+    const absent = typeof client.getSessionMetadata === 'function'
+      && await client.getSessionMetadata(sessionId) === undefined;
+    const session = absent
+      ? await client.createSession({
         sessionId,
         ...sharedConfig,
-      });
+      })
+      : await client.resumeSession(sessionId, sharedConfig);
+    this.sessions.set(sessionId, { session, isYoloEnabled });
+    try {
+      await this.synchronizePermissions(sessionId);
+      return session;
+    } catch (error) {
+      this.forgetSession(sessionId);
+      await session.disconnect();
+      throw error;
     }
+  }
+
+  forgetSession(sessionId: string): void {
+    this.sessions.delete(sessionId);
+  }
+
+  synchronizePermissions(onlySessionId?: string): Promise<void> {
+    const update = this.permissionUpdate.then(async () => {
+      const failures: string[] = [];
+      for (const [sessionId, { session, isYoloEnabled }] of this.sessions) {
+        if (onlySessionId !== undefined && sessionId !== onlySessionId) continue;
+        const mode = isYoloEnabled() ? 'allow-all' : 'manual';
+        try {
+          const permissions = session.rpc?.permissions;
+          if (!permissions) throw new Error('Permission-mode RPC is unavailable');
+          const result = await permissions.setMode({ mode, source: 'rpc' });
+          if (!result.success || result.mode !== mode) {
+            throw new Error(`Requested ${mode}, runtime returned ${result.mode} (success=${result.success})`);
+          }
+        } catch (error) {
+          failures.push(`${sessionId}: ${String(error)}`);
+        }
+      }
+      if (failures.length) throw new Error(`Failed to synchronize session permissions: ${failures.join('; ')}`);
+    });
+    // Keep later updates usable after a failed attempt; the caller receives the rejection.
+    this.permissionUpdate = update.catch(() => {});
+    return update;
   }
 
   async setForeground(sessionId: string): Promise<void> {
@@ -1584,6 +1651,7 @@ export class ControlPlaneClient {
   }
 
   async stop(): Promise<void> {
+    this.sessions.clear();
     if (this.client?.stop) {
       await this.client.stop();
     }
@@ -1629,6 +1697,8 @@ export class ControlPlaneClient {
 }
 
 export class UiServerProcess implements TerminalProcess {
+  readonly supportsProgrammaticControl = true;
+
   private static nextSyntheticPid = 1_000_000;
   private readonly dataDisposables: Array<{ dispose(): void }> = [];
   private readonly exitDisposables: Array<{ dispose(): void }> = [];
@@ -1691,6 +1761,24 @@ export class UiServerProcess implements TerminalProcess {
       });
   }
 
+  async submitAnswer(answer: { requestId?: string; answer: string; wasFreeform: boolean }): Promise<void> {
+    if (this.closed) throw new Error('Cannot answer a question on a closed session');
+    if (!answer.requestId) throw new Error('Answer requires a pending user-input request ID');
+    const ui = this.session.rpc?.ui;
+    if (!ui?.handlePendingUserInput) {
+      throw new Error('User-input answers are not supported by this UI-server session');
+    }
+    // A foreground TUI can own the interaction without invoking our SDK callback.
+    // Resolve the runtime request itself, never simulated terminal input.
+    const result = await ui.handlePendingUserInput({
+      requestId: answer.requestId,
+      response: { answer: answer.answer, wasFreeform: answer.wasFreeform },
+    });
+    if (!result.success) {
+      throw new Error(`User-input request "${answer.requestId}" is no longer pending`);
+    }
+  }
+
   /** Run a control command (`/compact`, `/usage`, `/model`) via the SDK RPC surface. */
   runControl(cmd: ControlCommand): Promise<ControlData> {
     return runSessionControl(this.session as unknown as ControlSession, cmd);
@@ -1701,6 +1789,7 @@ export class UiServerProcess implements TerminalProcess {
     // runtime is intentionally left running for sibling agents.
     if (this.closed) return true;
     this.closed = true;
+    this.client.forgetSession?.(this.sessionId);
     for (const disposable of this.dataDisposables) {
       disposable.dispose();
     }
@@ -1758,7 +1847,7 @@ export function buildUiServerHostOptions(options: StartTerminalOptions): StartTe
 
 /**
  * Terminal backend for SDK Control Plane Variant 1: one shared Copilot
- * TUI+server runtime per office, with per-agent SDK sessions multiplexed onto
+ * TUI+server runtime across offices, with per-agent SDK sessions multiplexed onto
  * that runtime.
  *
  * Wired into server.ts: backend selection + start-time fallback (T008/T039),
@@ -1801,27 +1890,41 @@ export class UiServerBackend implements TerminalBackend {
     const entry = this.getOrCreateOfficeEntry(officeId, options);
     try {
       await entry.client.start();
-      const session = await entry.client.createOrResumeSession(
-        options.sessionId,
-        options.cwd,
-        options.isYoloEnabled ?? (() => options.yolo ?? false),
-      );
-      const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
-      if (!entry.foregroundClaimed) {
-        entry.foregroundClaimed = true;
-        await process.setForeground();
-      }
-      return process;
     } catch (error) {
-      // Any failure bringing the office runtime online (e.g. the resolved CLI
-      // does not emit a control port) must not leave a half-broken cached entry
-      // or a stray PTY. Tear it down and rethrow so the server can return a
-      // clean failure (and the app can fall back to node-pty).
-      try { void Promise.resolve(entry.client.stop()).catch(() => { /* best effort */ }); } catch { /* best effort */ }
-      try { entry.runtime.stop(); } catch { /* best effort */ }
-      this.offices.delete(officeId);
+      // Only host/control-plane initialization owns shared runtime teardown.
+      // Concurrent failed starts must not evict a newer replacement entry.
+      if (this.offices.get(officeId) === entry) {
+        this.offices.delete(officeId);
+        try { void Promise.resolve(entry.client.stop()).catch(() => { /* best effort */ }); } catch { /* best effort */ }
+        try { entry.runtime.stop(); } catch { /* best effort */ }
+      }
       throw error instanceof Error ? error : new Error(String(error));
     }
+
+    const session = await entry.client.createOrResumeSession(
+      options.sessionId,
+      options.cwd,
+      options.isYoloEnabled ?? (() => options.yolo ?? false),
+      options.extraArgs,
+    );
+    const process = new UiServerProcess(options.sessionId, session, entry.runtime, entry.client);
+    if (!entry.foregroundClaimed) {
+      entry.foregroundClaimed = true;
+      try {
+        await process.setForeground();
+      } catch (error) {
+        entry.foregroundClaimed = false;
+        entry.client.forgetSession(options.sessionId);
+        try { await session.disconnect(); } catch { /* preserve foreground failure */ }
+        throw error;
+      }
+    }
+    return process;
+  }
+
+  /** Apply the current live setting to every connected session without restarting the host. */
+  async setYolo(): Promise<void> {
+    await Promise.all([...this.offices.values()].map((entry) => entry.client.synchronizePermissions()));
   }
 
   /** Restarts the single shared host; the office id is irrelevant (all offices share it). */

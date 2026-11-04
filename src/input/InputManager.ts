@@ -56,6 +56,7 @@ export class InputManager {
 
   private currentFocus: FocusFull = 'none';
   private suspendedFocus: FocusFull | null = null;
+  private suspensionOwners = new Set<string>();
 
   constructor(scene: Phaser.Scene) {
     this.global = new GlobalInputListener();
@@ -85,9 +86,10 @@ export class InputManager {
     );
 
     this.terminal.deactivateShortcuts();
-    this.game.activate(reason);
+    if (this.suspensionOwners.size === 0) this.game.activate(reason);
     this.global.setMode('game');
     this.currentFocus = 'game';
+    if (this.suspensionOwners.size > 0) this.suspendedFocus = 'game';
 
     console.log('[InputManager] ── switchToGame() complete ──────────────────────────');
   }
@@ -115,6 +117,7 @@ export class InputManager {
     this.terminal.activateShortcuts(onNewSession, onToggleFullscreen);
     this.global.setMode('terminal');
     this.currentFocus = 'terminal';
+    if (this.suspensionOwners.size > 0) this.suspendedFocus = 'terminal';
 
     console.log('[InputManager] ── switchToTerminal() complete ──────────────────────');
   }
@@ -137,6 +140,7 @@ export class InputManager {
     this.game.deactivate(reason);
     this.global.setMode('none');
     this.currentFocus = 'none';
+    if (this.suspensionOwners.size > 0) this.suspendedFocus = 'none';
 
     console.log('[InputManager] ── switchToNone() complete ───────────────────────────');
   }
@@ -200,9 +204,9 @@ export class InputManager {
   /**
    * Temporarily deactivate game input for a modal overlay (settings, dialogs).
    * Saves the current focus state so it can be restored by `resumeGameInput()`.
-   * Safe to call when already suspended (idempotent — won't overwrite saved state).
+   * Repeated calls by one owner are idempotent; distinct owners release independently.
    */
-  suspendGameInput(reason: string): void {
+  suspendGameInput(reason: string, owner = 'overlay'): void {
     console.log(
       `[InputManager] ── suspendGameInput() ──────────────────────────────────\n` +
       `  reason  : "${reason}"\n` +
@@ -213,6 +217,7 @@ export class InputManager {
     if (this.suspendedFocus === null) {
       this.suspendedFocus = this.currentFocus;
     }
+    this.suspensionOwners.add(owner);
     this.game.deactivate(reason);
     this.global.setMode('game');
   }
@@ -223,7 +228,9 @@ export class InputManager {
    * If the saved focus was 'terminal', leaves game input deactivated.
    * Safe to call when not suspended (no-op).
    */
-  resumeGameInput(reason: string): void {
+  resumeGameInput(reason: string, owner = 'overlay'): void {
+    this.suspensionOwners.delete(owner);
+    if (this.suspensionOwners.size > 0) return;
     const savedFocus = this.suspendedFocus;
     this.suspendedFocus = null;
 
@@ -242,6 +249,10 @@ export class InputManager {
     // If savedFocus was 'terminal', game stays deactivated — terminal still owns keyboard
   }
 
+  isInputSuspended(): boolean {
+    return this.suspensionOwners.size > 0;
+  }
+
   /** Tear down all listeners. Call when the scene is destroyed. */
   destroy(): void {
     console.log(`[InputManager] destroy() | time: ${Date.now()}`);
@@ -249,5 +260,7 @@ export class InputManager {
     this.game.deactivate('InputManager.destroy()');
     this.global.uninstall();
     this.currentFocus = 'none';
+    this.suspensionOwners.clear();
+    this.suspendedFocus = null;
   }
 }

@@ -147,9 +147,28 @@ export class SettingsPanel {
 
       ${this.renderAudioSection()}
       ${this.renderAgentsSection()}
+      ${this.renderRingleaderSection()}
       ${this.renderNotificationsSection()}
       ${this.renderTeamsSection()}
       ${this.renderAboutSection()}
+    `;
+  }
+
+  private renderRingleaderSection(): string {
+    return `
+      <div class="settings-section" style="margin-bottom: 20px;">
+        <h3 style="margin: 0 0 12px; font-size: 14px; color: var(--co-text-secondary);">Ringleader</h3>
+        <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0;">
+          <input type="checkbox" id="settings-ringleader-allow-all" disabled />
+          <span style="font-size: 13px;">Allow all operations without approval</span>
+        </label>
+        <p style="font-size: 11px; color: var(--co-text-secondary);">
+          Read operations never require approval. When enabled, the Ringleader can also
+          start, stop, and manage agents and switch offices without approval, from desktop or Teams.
+          Separate from agent YOLO. Applies to new operations; pending approvals stay pending.
+        </p>
+        <p id="settings-ringleader-error" role="alert" style="font-size: 11px; color: var(--co-danger);"></p>
+      </div>
     `;
   }
 
@@ -199,8 +218,9 @@ export class SettingsPanel {
           <span style="color: var(--co-text); font-size: 13px;">⚡ YOLO mode</span>
         </label>
         <p style="margin: 4px 0 0 25px; font-size: 10px; color: var(--co-amber);">
-          When ON, every terminal launches with <code style="color: var(--co-amber);">--yolo</code> — auto-approves all tool, file, and URL permissions without prompting. Applies to the next terminal you open.
+          When ON, auto-approves tool, file, and URL permissions. Applies immediately to active UI-server sessions and to new or resumed sessions.
         </p>
+        <p id="settings-yolo-error" role="alert" style="color: var(--co-amber);"></p>
         <label style="display: flex; align-items: center; gap: 10px; padding: 8px 0; cursor: pointer;">
           <input
             type="checkbox"
@@ -229,7 +249,7 @@ export class SettingsPanel {
           />
         </label>
         <p style="margin: 4px 0 0 25px; font-size: 10px; color: var(--co-text-faint);">
-          When ON, these parameters are appended to every <code style="color: var(--co-text-secondary);">copilot</code> launch. Applies to the next terminal you open.
+          When ON, these parameters are appended to Copilot host launches. SDK sessions also apply --agent, --model, and --reasoning-effort on creation or resume. Other flags remain host-only; changes to those require a host restart. Quote values containing spaces.
         </p>
       </div>
     `;
@@ -374,6 +394,7 @@ export class SettingsPanel {
 
     this.bindAudioEvents(panel);
     this.bindAgentsEvents(panel);
+    void this.bindRingleaderEvents(panel);
     this.bindNotificationEvents(panel);
 
     // Teams Remote: close this panel first (its z-index sits above the Teams
@@ -381,6 +402,40 @@ export class SettingsPanel {
     panel.querySelector('#settings-teams-btn')?.addEventListener('click', () => {
       this.close();
       this.callbacks.onOpenTeamsSettings?.();
+    });
+  }
+
+  private async bindRingleaderEvents(panel: HTMLElement): Promise<void> {
+    const checkbox = panel.querySelector<HTMLInputElement>('#settings-ringleader-allow-all');
+    const errorEl = panel.querySelector('#settings-ringleader-error');
+    if (!checkbox) return;
+    let saved = false;
+    try {
+      const result = await window.copilotBridge?.orchestratorGetSettings?.();
+      if (!result?.success) throw new Error('Ringleader settings are unavailable');
+      saved = result.settings.allowAllOperations;
+      checkbox.checked = saved;
+      checkbox.disabled = false;
+    } catch (error) {
+      console.error('[SettingsPanel] Failed to load Ringleader settings:', error);
+      if (errorEl) errorEl.textContent = `Could not load Ringleader settings: ${String(error)}`;
+      return;
+    }
+    checkbox.addEventListener('change', async () => {
+      checkbox.disabled = true;
+      if (errorEl) errorEl.textContent = '';
+      try {
+        const result = await window.copilotBridge?.orchestratorSaveSettings({ allowAllOperations: checkbox.checked });
+        if (!result?.success || !result.settings) throw new Error(result?.error ?? 'Ringleader settings are unavailable');
+        saved = result.settings.allowAllOperations;
+        checkbox.checked = saved;
+      } catch (error) {
+        checkbox.checked = saved;
+        console.error('[SettingsPanel] Failed to save Ringleader settings:', error);
+        if (errorEl) errorEl.textContent = `Could not save Ringleader settings: ${String(error)}`;
+      } finally {
+        checkbox.disabled = false;
+      }
     });
   }
 
@@ -394,10 +449,20 @@ export class SettingsPanel {
 
     const yoloCb = panel.querySelector('#settings-yolo-mode') as HTMLInputElement | null;
     if (yoloCb) {
-      yoloCb.addEventListener('change', () => {
+      yoloCb.addEventListener('change', async () => {
         setYoloModeSettings({ yoloEnabled: yoloCb.checked });
-        // Push the global flag to the PTY server so the next launch reflects it.
-        window.copilotBridge?.setYolo(yoloCb.checked);
+        const errorEl = panel.querySelector('#settings-yolo-error');
+        if (errorEl) errorEl.textContent = '';
+        yoloCb.disabled = true;
+        try {
+          const result = await window.copilotBridge?.setYolo(yoloCb.checked);
+          if (!result?.success) throw new Error(result?.error ?? 'Terminal server is unavailable');
+        } catch (error) {
+          console.error('[SettingsPanel] Failed to apply YOLO mode:', error);
+          if (errorEl) errorEl.textContent = `Could not apply YOLO to all active sessions: ${String(error)}`;
+        } finally {
+          yoloCb.disabled = false;
+        }
       });
     }
 

@@ -65,6 +65,10 @@ export interface RegisterContext {
   agentId: string;
   displayName: string;
   workingDir: string;
+  /** Internal coordinator seam: use only after verifying this session is ready. */
+  readySessionId?: string;
+  /** Internal lifecycle budget; late registration may retain a thread but must never enable routing. */
+  deadline?: number;
   /** Per-office override channel deep-link (office.teamsChannelUrl); may be empty. */
   officeChannelUrl?: string;
   /**
@@ -73,6 +77,19 @@ export interface RegisterContext {
    */
   officeMentionType?: 'user' | 'tag' | 'none';
   officeMentionValue?: string;
+}
+
+export interface RegisterResult {
+  success: boolean;
+  handle?: string;
+  threadWebUrl?: string;
+  state?: 'online' | 'paused';
+  error?: string;
+}
+
+interface RegistrationThread extends KnownThread {
+  /** Recovery metadata for a thread whose registration did not complete. */
+  registrationBinding?: OnlineAgentBinding;
 }
 
 export interface TeamsServiceDeps {
@@ -221,7 +238,7 @@ type AutoRenderOutcome =
 
 export class TeamsService {
   private bindings: OnlineAgentBinding[] = [];
-  private knownThreads: KnownThread[] = [];
+  private knownThreads: RegistrationThread[] = [];
   private readonly filter: MessageFilter;
   private readonly queue: DispatchQueue;
   private readonly pending = new Map<string, PendingTurn>(); // key = agentId
@@ -303,6 +320,12 @@ export class TeamsService {
    * / {@link resumeAgentConnections}.
    */
   private agentsPaused = false;
+  private readonly registrations = new Map<string, { signature: string; promise: Promise<RegisterResult> }>();
+  private readonly registrationIntents = new Map<string, number>();
+  private registrationEpoch = 0;
+  private pauseEpoch = 0;
+  /** Keep externally-created threads even if local persistence or the connecting intent fails. */
+  private readonly registrationThreads = new Map<string, OnlineAgentBinding>();
 
   constructor(private readonly deps: TeamsServiceDeps) {
     this.now = deps.now ?? Date.now;
@@ -324,13 +347,19 @@ export class TeamsService {
     const { kept, removed } = gcStale(state.bindings, this.now());
     this.bindings = kept.map((b) => ({ ...b, online: false })); // reconnect is event-driven
     this.knownThreads = state.knownThreads;
+    this.registrationThreads.clear();
+    for (const thread of this.knownThreads) {
+      const b = thread.registrationBinding;
+      if (b) this.registrationThreads.set(JSON.stringify([b.officeId, b.agentId]), b);
+    }
     // A pause persists across restarts (pausedByUser survives on each binding),
     // but `agentsPaused` itself is in-memory only — recompute it from the
     // reloaded bindings so the pill/tool report "Paused" immediately after a
     // restart instead of falsely showing "Active" while every paused binding
     // sits dark (reconcile() correctly keeps skipping them either way; this
     // only fixes what the status/pill SHOWS).
-    this.agentsPaused = this.bindings.some((b) => b.pausedByUser && !isOrchestratorKey(b.officeId, b.agentId));
+    this.agentsPaused = [...this.bindings, ...this.registrationThreads.values()]
+      .some((b) => b.pausedByUser && !isOrchestratorKey(b.officeId, b.agentId));
     tlog(`Loaded ${this.bindings.length} persisted binding(s), ${this.knownThreads.length} known thread(s).`);
     if (removed.length > 0) {
       await this.persist();
@@ -356,6 +385,7 @@ export class TeamsService {
 
   async stop(): Promise<void> {
     this.started = false;
+    this.registrationEpoch++;
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     this.reconcileTimer = null;
     this.unsubEvent?.();
@@ -421,6 +451,7 @@ export class TeamsService {
     if (!this.deps.getSettings().enabled) {
       return { outcome: 'unavailable', count: 0, message: 'Teams remote is disabled in settings.' };
     }
+    this.pauseEpoch++;
     let onlineCount = 0;
     for (const b of this.bindings) {
       if (isOrchestratorKey(b.officeId, b.agentId)) continue;
@@ -508,18 +539,74 @@ export class TeamsService {
     return expiry > this.now();
   }
 
-  /** Bring an agent online: resolve channel, create thread, bind, start listening. */
-  async register(
+  /** Ensure a ready session, reuse/create its thread, and bind with single-flight intent guards. */
+  register(
     ctx: RegisterContext,
-  ): Promise<{ success: boolean; handle?: string; threadWebUrl?: string; error?: string }> {
+  ): Promise<RegisterResult> {
+    const key = JSON.stringify([ctx.officeId, ctx.agentId]);
+    const signature = JSON.stringify([
+      ctx.displayName, normalizeWorkingDir(ctx.workingDir || ''),
+      ctx.officeChannelUrl, ctx.officeMentionType, ctx.officeMentionValue,
+      ctx.readySessionId,
+    ]);
+    const pending = this.registrations.get(key);
+    if (pending) {
+      return pending.signature === signature
+        ? pending.promise
+        : Promise.resolve({ success: false, error: 'Registration already in progress for this agent.' });
+    }
+    const intent = this.registrationIntents.get(key) ?? 0;
+    const epoch = this.registrationEpoch;
+    const pauseEpoch = this.pauseEpoch;
+    const cancelled = () =>
+      (ctx.deadline !== undefined && Date.now() >= ctx.deadline) ||
+      epoch !== this.registrationEpoch ||
+      intent !== (this.registrationIntents.get(key) ?? 0) ||
+      (!isOrchestratorKey(ctx.officeId, ctx.agentId) && pauseEpoch !== this.pauseEpoch) ||
+      !this.deps.getSettings().enabled;
+    const promise = Promise.resolve()
+      .then(() => this.registerOnce(ctx, key, cancelled))
+      .catch((e: unknown) => ({
+        success: false,
+        error: `Teams registration failed: ${(e as Error).message}`,
+        ...(this.registrationThreads.has(key)
+          ? { threadWebUrl: this.registrationThreads.get(key)!.threadWebUrl }
+          : {}),
+      }))
+      .finally(() => { this.registrations.delete(key); });
+    this.registrations.set(key, { signature, promise });
+    return promise;
+  }
+
+  private async registerOnce(
+    ctx: RegisterContext,
+    key: string,
+    cancelled: () => boolean,
+  ): Promise<RegisterResult> {
     const { officeId, agentId } = ctx;
     const settings = this.deps.getSettings();
     if (!settings.enabled) return { success: false, error: 'Teams remote is disabled in settings.' };
+    const cancellationResult = (b?: OnlineAgentBinding): RegisterResult => ({
+      success: false, error: 'Registration cancelled by a newer Teams connection intent.',
+      ...(b ? { handle: b.handle, threadWebUrl: b.threadWebUrl } : {}),
+    });
+    if (cancelled()) return cancellationResult();
+    let verifiedSessionId: string | null = null;
+    if (ctx.readySessionId !== undefined) {
+      verifiedSessionId = await this.deps.gateway.getSessionId(officeId, agentId);
+      if (cancelled()) return cancellationResult();
+      if (!ctx.readySessionId || verifiedSessionId !== ctx.readySessionId) {
+        return { success: false, error: 'Verified ready session is stale: session id no longer matches.' };
+      }
+      const ready = await this.deps.gateway.isAgentReady(officeId, agentId).catch(() => false);
+      if (cancelled()) return cancellationResult();
+      if (!ready) return { success: false, error: 'Verified ready session is stale: agent is no longer ready.' };
+    }
     // A paused binding still owns its thread. Retrying registration must not
     // replace it; disconnect explicitly before creating another thread.
     const pausedBinding = this.findBinding(officeId, agentId);
-    if (pausedBinding?.pausedByUser) {
-      return { success: true, handle: pausedBinding.handle, threadWebUrl: pausedBinding.threadWebUrl };
+    if (pausedBinding?.pausedByUser && !this.registrationThreads.has(key)) {
+      return { success: true, state: 'paused', handle: pausedBinding.handle, threadWebUrl: pausedBinding.threadWebUrl };
     }
 
     const channelUrl = resolveChannel({ teamsChannelUrl: ctx.officeChannelUrl }, settings);
@@ -534,13 +621,14 @@ export class TeamsService {
     // reuse a live, ready session (an already-connected bridge), otherwise resume
     // the persisted session in the agent's folder and wait boundedly. This runs in
     // the main process and never claims a renderer viewer.
-    if (this.deps.gateway.ensureSessionOnline) {
+    if (verifiedSessionId === null && this.deps.gateway.ensureSessionOnline) {
       let ensured: { success: boolean; error?: string };
       try {
         ensured = await this.deps.gateway.ensureSessionOnline(officeId, agentId, workingDir || undefined);
       } catch (e) {
         ensured = { success: false, error: (e as Error).message };
       }
+      if (cancelled()) return cancellationResult();
       if (!ensured.success) {
         twarn(`Register aborted for ${officeId}:${agentId}: ${ensured.error ?? 'session not online'}`);
         return {
@@ -550,20 +638,23 @@ export class TeamsService {
       }
     }
 
-    const sessionId = await this.deps.gateway.getSessionId(officeId, agentId);
+    const sessionId = verifiedSessionId ?? await this.deps.gateway.getSessionId(officeId, agentId);
+    if (cancelled()) return cancellationResult();
     if (!sessionId) {
       return { success: false, error: 'No active session for this agent. Open its terminal first.' };
     }
 
     const displayName = ctx.displayName || agentId;
 
-    // A pause may have landed while the session was starting.
-    const existing = this.findBinding(officeId, agentId);
-    if (existing && (existing.online || existing.pausedByUser)) {
-      return { success: true, handle: existing.handle, threadWebUrl: existing.threadWebUrl };
+    // Offline and partially-created bindings still own their thread.
+    const existing = this.findBinding(officeId, agentId) ?? this.registrationThreads.get(key);
+    if (existing) {
+      existing.sessionId = sessionId;
+      return this.finishRegistration(existing, key, cancelled, true);
     }
 
     const meta = await this.deps.gateway.getSessionMeta(officeId, agentId);
+    if (cancelled()) return cancellationResult();
     const sessionTitle = meta?.title?.trim() || '';
 
     const base = normalizeHandle(displayName);
@@ -608,15 +699,86 @@ export class TeamsService {
       mentionValue: ctx.officeMentionValue,
       threadRootId: thread.threadRootId,
       threadWebUrl: thread.webUrl,
-      online: !paused,
+      online: false,
       pausedByUser: paused,
       lastConnected: this.now(),
     };
-    // Replace any stale binding for this agent.
-    this.bindings = this.bindings.filter((b) => !(b.officeId === officeId && b.agentId === agentId));
-    this.bindings.push(binding);
+    this.registrationThreads.set(key, binding);
     this.rememberThread(thread.threadRootId);
-    await this.persist();
+    if (cancelled()) {
+      // A Graph create cannot be undone. Preserve its identity and report partial creation.
+      this.retainRegistrationThread(binding);
+      try {
+        await this.persist();
+      } catch (e) {
+        return {
+          ...cancellationResult(binding),
+          error: `Registration cancelled; Teams thread created but persistence failed: ${(e as Error).message}`,
+        };
+      }
+      return cancellationResult(binding);
+    }
+    return this.finishRegistration(binding, key, cancelled);
+  }
+
+  private async finishRegistration(
+    binding: OnlineAgentBinding,
+    key: string,
+    cancelled: () => boolean,
+    reconnect = false,
+  ): Promise<RegisterResult> {
+    const { officeId, agentId, handle, threadWebUrl } = binding;
+    const wasOnline = binding.online;
+    binding.pausedByUser = this.agentsPaused && !isOrchestratorKey(officeId, agentId);
+    this.registrationThreads.set(key, binding);
+    const thread = this.knownThreads.find((t) => t.threadRootId === binding.threadRootId);
+    if (thread) delete thread.registrationBinding;
+    if (!this.findBinding(officeId, agentId)) this.bindings.push(binding);
+    try {
+      await this.persist();
+    } catch (e) {
+      if (reconnect && wasOnline && binding.online && this.findBinding(officeId, agentId) === binding) {
+        this.registrationThreads.delete(key);
+        return { success: false, handle, threadWebUrl,
+          error: `Registration persistence failed; the existing Teams connection was preserved: ${(e as Error).message}` };
+      }
+      binding.online = false;
+      this.retainRegistrationThread(binding);
+      this.deps.gateway.setForwarding(officeId, agentId, false);
+      this.deps.emitStatus(this.toStatus(binding));
+      this.updateSourceChannels();
+      return {
+        success: false, handle, threadWebUrl,
+        error: `Teams thread retained but registration persistence failed: ${(e as Error).message}`,
+      };
+    }
+    if (cancelled()) {
+      if (reconnect && wasOnline && binding.online && this.findBinding(officeId, agentId) === binding) {
+        this.registrationThreads.delete(key);
+        return { success: false, handle, threadWebUrl, error: 'Registration cancelled; the existing Teams connection was preserved.' };
+      }
+      if (binding.pausedByUser && this.findBinding(officeId, agentId) === binding) {
+        this.registrationThreads.delete(key);
+      } else {
+        binding.online = false;
+        this.retainRegistrationThread(binding);
+        try {
+          await this.persist();
+        } catch (e) {
+          return {
+            success: false, handle, threadWebUrl,
+            error: `Registration cancelled; Teams thread retained but persistence failed: ${(e as Error).message}`,
+          };
+        }
+      }
+      return {
+        success: false, handle, threadWebUrl,
+        error: 'Registration cancelled by a newer Teams connection intent.',
+      };
+    }
+    this.registrationThreads.delete(key);
+    binding.online = !binding.pausedByUser;
+    binding.lastConnected = this.now();
     this.updateSourceChannels();
     // Keep event mirroring on for the WHOLE time the agent is online (not just during
     // a Teams-driven turn) so locally-driven turns are captured and streamed to the
@@ -625,11 +787,22 @@ export class TeamsService {
     this.deps.emitStatus(this.toStatus(binding));
     tlog(`${binding.pausedByUser ? 'PAUSED' : 'ONLINE'}: @${handle} (${officeId}:${agentId}). Active channels: ${activeChannelSet(this.bindings).size}.`);
 
-    return { success: true, handle, threadWebUrl: thread.webUrl };
+    if (reconnect && !wasOnline && binding.online) {
+      void this.safeReply(binding, `${this.agentLabel(binding)} 🔄 Reconnected — back online and ready. Reply here to continue.`);
+    }
+    return { success: true, state: binding.online ? 'online' : 'paused', handle, threadWebUrl };
+  }
+
+  private retainRegistrationThread(binding: OnlineAgentBinding): void {
+    this.rememberThread(binding.threadRootId);
+    const thread = this.knownThreads.find((t) => t.threadRootId === binding.threadRootId)!;
+    thread.registrationBinding = { ...binding, online: false };
   }
 
   /** Take an agent offline (connection only; session untouched). */
   async goOffline(officeId: string, agentId: string, postNotice = true): Promise<{ success: boolean }> {
+    const key = JSON.stringify([officeId, agentId]);
+    this.registrationIntents.set(key, (this.registrationIntents.get(key) ?? 0) + 1);
     const b = this.findBinding(officeId, agentId);
     if (!b) return { success: true };
     tlog(`OFFLINE: @${b.handle} (${officeId}:${agentId}).`);
@@ -1995,7 +2168,7 @@ export class TeamsService {
       .catch((err) => twarn('respondPermission (timeout) failed:', (err as Error).message));
     void this.safeReply(
       record.binding,
-      `${this.agentLabel(record.binding)} ⏱️ No approval within ${Math.round(PERMISSION_TIMEOUT_MS / 60000)} min — denied.`,
+      `${this.agentLabel(record.binding)} ⏱️ Approval timed out after ${Math.round(PERMISSION_TIMEOUT_MS / 60000)} min — the action was not executed. Ask again if you want to retry.`,
     );
   }
 
@@ -2399,6 +2572,8 @@ export class TeamsService {
       // Abort cleanly if the service is stopping — a reconnect below would otherwise
       // re-enable forwarding / post a "Reconnected" notice after shutdown began.
       if (!this.started) return;
+      const key = JSON.stringify([b.officeId, b.agentId]);
+      if (this.registrations.has(key) || this.registrationThreads.has(key)) continue;
       let current: string | null = null;
       try {
         current = await this.deps.gateway.getSessionId(b.officeId, b.agentId);
@@ -2406,6 +2581,8 @@ export class TeamsService {
         continue;
       }
       if (!this.started) return; // re-check after the await
+      if (this.findBinding(b.officeId, b.agentId) !== b ||
+          this.registrations.has(key) || this.registrationThreads.has(key)) continue;
       if (b.online) {
         if (current !== b.sessionId) {
           // Session was replaced or ended → tear down Teams (FR-022).
@@ -2430,6 +2607,8 @@ export class TeamsService {
           const ready = await this.deps.gateway.isAgentReady(b.officeId, b.agentId).catch(() => false);
           if (!ready) continue; // session exists but not ready yet — wait for a later pass
           if (!this.started) return; // service stopped during the await — don't reconnect
+          if (this.findBinding(b.officeId, b.agentId) !== b ||
+              this.registrations.has(key) || this.registrationThreads.has(key)) continue;
           // Re-check: a pause could have landed WHILE this await was in flight
           // (pauseAgentConnections runs synchronously once invoked, but this
           // loop yields at every `await`) — don't resurrect a binding that was

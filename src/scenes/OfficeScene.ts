@@ -480,18 +480,11 @@ export class OfficeScene extends Phaser.Scene {
       this.updateSessionBadges();
     }, this);
 
-    // Orchestrator (spec 016): activate a reserve agent on request. The
-    // orchestrator's bring-online execution (renderer, OfficeManager-owned)
-    // cannot call the private spawnReserveAgent directly, so it delegates via
-    // this event and awaits the outcome through the provided respond callback.
-    this.game.events.on(
-      'orchestrator:activate-reserve',
-      (payload: { deskId: string; respond?: (outcome: 'started' | 'already-active' | 'invalid-target') => void }) => {
-        const outcome = this.spawnReserveAgent(payload.deskId);
-        payload.respond?.(outcome);
-      },
-      this,
-    );
+    this.game.events.on('office:seat:persisted', (payload: { officeId: string; deskId: string }) => {
+      if (payload.officeId === officeManager.currentOfficeId) {
+        this.spawnReserveAgent(payload.deskId, false);
+      }
+    }, this);
 
     // FR-013: stall signal from the renderer's 1s ticker. Toggles the amber
     // stall ring on the matching NPC badge (distinct from the normal pulse).
@@ -607,14 +600,14 @@ export class OfficeScene extends Phaser.Scene {
     }, this);
 
     // Settings / modal overlay — disable game input while open
-    this.game.events.on('settings:open', () => {
+    this.game.events.on('settings:open', (owner?: string) => {
       this.player.disableMovement();
       this.playerMovementEnabled = false;
-      this.inputManager.suspendGameInput('settings:open');
+      this.inputManager.suspendGameInput('settings:open', owner);
     }, this);
-    this.game.events.on('settings:close', () => {
-      this.inputManager.resumeGameInput('settings:close');
-      if (this.playerInScene) {
+    this.game.events.on('settings:close', (owner?: string) => {
+      this.inputManager.resumeGameInput('settings:close', owner);
+      if (this.playerInScene && !this.inputManager.isInputSuspended()) {
         this.player.enableMovement();
         this.playerMovementEnabled = true;
       }
@@ -1701,17 +1694,22 @@ export class OfficeScene extends Phaser.Scene {
     if (this.currentLayout !== 'fleet-vteam') {
       npc.setBadgeVisible(true);
       const officeId = officeManager.currentOfficeId;
-      if (officeId) {
-        officeManager.setAgentThinking(officeId, agentId, 'Working on task');
-        this.game.events.emit('agent:status:changed', agentId);
+      if (RESERVE_AGENT_DESK[agentId]) {
+        const status = officeId ? officeManager.getAgentStatus(officeId, agentId) : undefined;
+        if (status) npc.updateAgentStatus(status);
+      } else {
+        if (officeId) {
+          officeManager.setAgentThinking(officeId, agentId, 'Working on task');
+          this.game.events.emit('agent:status:changed', agentId);
+        }
+        npc.updateAgentStatus({
+          agentId,
+          state: 'active',
+          subState: 'thinking',
+          thinkingDetail: 'Working on task',
+          currentTool: null,
+        });
       }
-      npc.updateAgentStatus({
-        agentId,
-        state: 'active',
-        subState: 'thinking',
-        thinkingDetail: 'Working on task',
-        currentTool: null,
-      });
     }
     // Remove from skip-tracking list (already seated)
     this.walkInAgents = this.walkInAgents.filter(a => a.agentId !== agentId);
@@ -1754,7 +1752,7 @@ export class OfficeScene extends Phaser.Scene {
 
   /** Spawn a reserve agent at the given unassigned desk and walk them in from the entrance.
    *  Returns the bring-online outcome so the orchestrator delegation can resolve it. */
-  private spawnReserveAgent(deskId: string): 'started' | 'already-active' | 'invalid-target' {
+  private spawnReserveAgent(deskId: string, startSession = true): 'started' | 'already-active' | 'invalid-target' {
     // Note: reserve agents may be hired while other agents are still walking in —
     // walk-ins are re-entrant, so no `animating` guard here.
     const reserveConfig = RESERVE_AGENTS[deskId];
@@ -1769,7 +1767,7 @@ export class OfficeScene extends Phaser.Scene {
     const officeId = officeManager.currentOfficeId;
     const office = officeId ? officeManager.getOffice(officeId)?.config : undefined;
     const launch = resolveOfficeAgentWorkingDir(office, reserveConfig.id);
-    const canStartTerminal = typeof window.copilotBridge?.terminalStart === 'function';
+    const canStartTerminal = typeof window.copilotBridge?.activateAgent === 'function';
     if (officeId && canStartTerminal && (!office || !launch)) {
       console.error(`[OfficeScene] No launch directory for ${officeId}/${reserveConfig.id}`);
       return 'invalid-target';
@@ -1811,19 +1809,17 @@ export class OfficeScene extends Phaser.Scene {
     npc.setLabelsVisible(true);
 
     // Start terminal in background immediately
-    if (officeId && office && launch && canStartTerminal) {
+    if (startSession && officeId && office && launch && canStartTerminal) {
       officeManager.setAgentStarting(officeId, reserveConfig.id);
       this.game.events.emit('agent:status:changed', reserveConfig.id);
-      window.copilotBridge.terminalStart(
-        officeId,
-        reserveConfig.id,
-        launch.workingDir,
-        undefined,
-        undefined,
-        undefined,
-        launch.launchMode,
-        office.workingDirectory,
-      ).catch(err => {
+      window.copilotBridge.activateAgent(officeId, reserveConfig.id).then((result) => {
+        if (result.outcome !== 'started' && result.outcome !== 'already-active') {
+          officeManager.setAgentError(officeId, reserveConfig.id, result.message, 'reserve_start_failed');
+          this.game.events.emit('agent:status:changed', reserveConfig.id);
+          console.error(`[OfficeScene] Failed to activate ${reserveConfig.id}: ${result.message}`);
+        }
+      }).catch(err => {
+        officeManager.setAgentError(officeId, reserveConfig.id, String(err), 'reserve_start_failed');
         console.error(`[OfficeScene] Failed to start terminal for ${reserveConfig.id}:`, err);
       });
     }

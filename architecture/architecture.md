@@ -15,7 +15,7 @@ Copilot Office is a desktop app that combines:
 - Electron main-process services for windows, IPC, persistence, notifications, and Teams connectivity
 - A forked terminal server process that owns PTYs, session state, event forwarding, and terminal backend selection
 - Real Copilot CLI sessions as the core user-facing agent runtime
-- A dedicated, always-gated **orchestrator agent** (a main-process SDK session) that manages the rest of the office through natural language
+- A dedicated **orchestrator agent** (a main-process SDK session) that manages the rest of the office through natural language, with configurable write approvals
 
 The architecture is governed by the repository constitution in `.specify/memory/constitution.md`. The most important architectural rules are:
 
@@ -448,7 +448,7 @@ Specs 016 and 017 add a higher management layer on top of an office: a dedicated
 The orchestrator is **not** an office NPC. It lives in `electron/orchestrator/` and runs as a separate SDK session in the **Electron main process**, not in the terminal server child and not in `activeAgentViewers`.
 
 - `orchestratorSessionManager.ts` owns the single `RuntimeConnection.forStdio` SDK session.
-- It is **always permission-gated**: its `onPermissionRequest` never consults `isYoloEnabled()`, so mutating tools stay gated regardless of the global YOLO toggle.
+- Writes require approval by default. **Settings > Ringleader > Allow all operations without approval** bypasses write gates independently of agent YOLO; the default-off flag persists in `.data/orchestrator-settings.json`. Reads always skip approval. Changes apply to subsequent operations, leaving pending approvals untouched.
 - The renderer surfaces it as a focused overlay panel — `src/ui/OrchestratorPanel.ts` — that dims the game behind it; there is no full-screen board.
 - It supports **minimize (keep running) vs. close (end session)** so it can keep answering in a Teams thread while its overlay is hidden.
 
@@ -458,7 +458,8 @@ The orchestrator's SDK tools are defined in `electron/orchestrator/tools.ts`. Re
 
 | Tool | Spec | Kind | Purpose |
 | --- | --- | --- | --- |
-| `list_office_agents`, `list_offices`, `switch_office` | 016 | read-only | Discover dormant candidates and navigate offices |
+| `list_office_agents`, `list_offices` | 016 | read-only | Discover dormant candidates and offices |
+| `switch_office` | 016 | gated write | Navigate offices (approval depends on Ringleader settings) |
 | `bring_agent_online` | 016 | gated | Start an idle/reserve agent (the single 016 mutation) |
 | `get_active_agents`, `list_agents_awaiting_input`, `get_agent_output`, `get_agent_status` | 017 | read-only | Situational awareness: what agents are doing, who is stuck |
 | `answer_agent`, `send_prompt`, `stop_agent` (and Teams bring-online) | 017 | gated | Act on already-online agents |
@@ -682,7 +683,7 @@ All status names, colors, icons, and animations come from `src/config/agentStatu
 
 ### 13.7 Orchestrator gating
 
-The orchestrator agent's mutating tools (`bring_agent_online`, `answer_agent`, `send_prompt`, `stop_agent`) must stay permission-gated regardless of the global YOLO toggle. Its `onPermissionRequest` must never consult `isYoloEnabled()`.
+The orchestrator agent's write tools use the Ringleader `allowAllOperations` setting (default off), never the global agent YOLO toggle. Read tools remain approval-free. Unknown tools are denied even when the Ringleader bypass is enabled.
 
 ## 14. What Has Changed Since the Older Architecture Doc
 

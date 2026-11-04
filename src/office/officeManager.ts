@@ -5,6 +5,7 @@ import type { AgentConfig } from '../config/agents';
 import { generateRandomOfficeAgents } from '../config/agents';
 import { logLifecycleTransition, type LifecycleState } from '../util/lifecycleLog';
 import type { ToolEntry } from '../util/toolStatus';
+import { buildAgentCatalog } from './agentCatalog';
 import {
   createBridgePersistencePort,
   deserializeOffices,
@@ -131,6 +132,7 @@ export class OfficeManager {
   // gated — they're fast, synchronous, and only matter for next cold boot.
   private durableLoadSettled = false;
   private pendingDurableWrite = false;
+  private durableLoadPromise: Promise<void> = Promise.resolve();
 
   // Callbacks for UI updates
   onOfficeChanged: ((officeId: string) => void) | null = null;
@@ -315,6 +317,27 @@ export class OfficeManager {
     const office = this.offices.get(officeId);
     return office?.config.seatedAgents ?? [];
   }
+
+  async ensureAgentSeat(officeId: string, agentId: string, deskId: string, deadline: number): Promise<void> {
+    await this.durableLoadPromise;
+    if (Date.now() >= deadline) throw new Error('Seat request expired.');
+    const office = this.offices.get(officeId);
+    const candidate = buildAgentCatalog(this.getAllOffices()).find((a) =>
+      a.officeId === officeId && a.agentId === agentId && a.deskId === deskId);
+    if (!office || !candidate) throw new Error('Agent or reserve seat no longer exists.');
+    const occupied = office.config.seatedAgents.find((s) => s.deskId === deskId);
+    if (occupied && occupied.agentId !== agentId) throw new Error('Reserve seat is occupied.');
+    if (!occupied) office.config.seatedAgents.push({ deskId, agentId });
+    const json = serializeOffices({ currentOfficeId: this._currentOfficeId, offices: this.getAllOffices() });
+    try {
+      await (this.persistence.saveDurableChecked?.(json) ?? this.persistence.saveDurable(json));
+    } catch (error) {
+      if (!occupied) office.config.seatedAgents = office.config.seatedAgents.filter((s) => s.agentId !== agentId || s.deskId !== deskId);
+      console.warn('[OfficeManager] Failed to persist agent seat:', error);
+      throw error;
+    }
+    localStorage.setItem('copilot-offices', serializeOffices({ currentOfficeId: this._currentOfficeId, offices: this.getAllOffices() }));
+  }
   
   // Persistence — saves to both localStorage (fast) and durable file via port.
   private saveToStorage(): void {
@@ -356,7 +379,7 @@ export class OfficeManager {
     this.applyStoredState(localStorage.getItem('copilot-offices'));
 
     // Then kick off an async durable load via the port — newer data overrides.
-    void this.persistence
+    this.durableLoadPromise = this.persistence
       .loadDurable()
       .then((data) => {
         if (data) {

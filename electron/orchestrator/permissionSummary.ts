@@ -24,6 +24,8 @@ export function describeOrchestratorPermission(
 ): string {
   const who = (agentName || args.agentId || 'an agent').trim();
   switch (toolName) {
+    case 'switch_office':
+      return 'Switch the desktop office';
     case 'bring_agent_online':
       return `Bring ${who} online`;
     case 'answer_agent':

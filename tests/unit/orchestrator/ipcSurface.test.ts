@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PermissionRequest, PermissionRequestResult } from '@github/copilot-sdk';
+import type { PermissionRequest, PermissionRequestResult, SessionConfig, Tool } from '@github/copilot-sdk';
 
 // Fake SDK so the manager can "open" without a real Copilot runtime.
 let createSessionCalls = 0;
+let configuredTools: Tool[] = [];
 const fakeSession = {
   sessionId: 'orc-session-1',
   on: vi.fn(() => () => {}),
@@ -16,7 +17,8 @@ vi.mock('@github/copilot-sdk', async (importOriginal) => {
     ...actual,
     CopilotClient: class {
       start = vi.fn().mockResolvedValue(undefined);
-      createSession = vi.fn(async () => {
+      createSession = vi.fn(async (config: SessionConfig) => {
+        configuredTools = config.tools ?? [];
         createSessionCalls += 1;
         return fakeSession;
       });
@@ -57,6 +59,21 @@ beforeEach(() => {
 });
 
 describe('orchestrator IPC surface / session lifecycle', () => {
+  it('always skips approvals for reads but sends every write through the permission handler', async () => {
+    const { manager } = makeManager();
+    await manager.open();
+    const readTools = new Set([
+      'list_office_agents', 'list_offices', 'get_active_agents',
+      'list_agents_awaiting_input', 'get_agent_transcript', 'get_agent_status',
+    ]);
+    expect(configuredTools.filter((tool) => tool.skipPermission).map((tool) => tool.name).sort())
+      .toEqual([...readTools].sort());
+    expect(configuredTools.find((tool) => tool.name === 'switch_office')?.skipPermission).not.toBe(true);
+    manager.setAllowAllOperations(true);
+    expect(configuredTools.filter((tool) => tool.skipPermission).map((tool) => tool.name).sort())
+      .toEqual([...readTools].sort());
+  });
+
   it('open() is idempotent — repeat calls reuse the single session', async () => {
     const { manager } = makeManager();
     const a = await manager.open();
@@ -97,7 +114,7 @@ describe('orchestrator IPC surface / session lifecycle', () => {
     } as PermissionRequest);
     expect(permissionRequests).toHaveLength(1);
     manager.close();
-    await expect(pending).resolves.toEqual({ kind: 'denied-interactively-by-user' });
+    await expect(pending).resolves.toEqual({ kind: 'reject' });
   });
 
   it('respondOffices / respondSwitch return false for an unknown requestId', async () => {

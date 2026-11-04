@@ -18,7 +18,10 @@ type Captured = Record<string, unknown>;
 describe('managed sessions register onUserInputRequest (requestUserInput prerequisite)', () => {
   it('ControlPlaneClient.createOrResumeSession registers the handler', async () => {
     let captured: Captured | undefined;
-    const fakeSession = { send: vi.fn(), disconnect: vi.fn() };
+    const fakeSession = {
+      send: vi.fn(), disconnect: vi.fn(),
+      rpc: { permissions: { setMode: vi.fn(async ({ mode }: { mode: string }) => ({ success: true, mode })) } },
+    };
     const underlying = {
       resumeSession: vi.fn((_id: string, config: Captured) => {
         captured = config;
@@ -56,10 +59,11 @@ describe('managed sessions register onUserInputRequest (requestUserInput prerequ
     );
     const session = await (backend as unknown as {
       resumeOrCreateSession(client: unknown, options: unknown): Promise<unknown>;
-    }).resumeOrCreateSession(fakeClient, { sessionId: 's2', cwd: '/cwd' });
+    }).resumeOrCreateSession(fakeClient, { sessionId: 's2', cwd: '/cwd', extraArgs: ['--model', 'auto', '--agent', 'anvil'] });
 
     expect(session).toBe(fakeSession);
     expect(typeof captured?.onUserInputRequest).toBe('function');
+    expect(captured).toMatchObject({ model: 'auto', agent: 'anvil' });
   });
 });
 
