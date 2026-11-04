@@ -1,36 +1,23 @@
-import { LayoutDefinition, LayoutBehaviors, OfficeLayout } from './types';
+import { LayoutDefinition, OfficeLayout } from './types';
+import { getLayoutBehaviors } from './behaviors';
 import { AGENTS, FLEET_AGENTS } from '../config/agents';
 import { defaultDashboard } from './default/DefaultDashboard';
 import { defaultClickHandler } from './default/DefaultClickHandler';
 import { fleetDashboard } from './fleet/FleetDashboard';
 import { fleetClickHandler } from './fleet/FleetClickHandler';
 
-const defaultBehaviors: LayoutBehaviors = {
-  supportsReserveAgents: true,
-  restrictsInteractionToArchitect: false,
-  hasPlayerPcTerminal: true,
-  supportsFleetExecution: false,
-};
-
-const fleetBehaviors: LayoutBehaviors = {
-  supportsReserveAgents: false,
-  restrictsInteractionToArchitect: true,
-  hasPlayerPcTerminal: false,
-  supportsFleetExecution: true,
-};
-
 const layouts: Record<OfficeLayout, LayoutDefinition> = {
   'default': {
     agents: AGENTS,
     dashboard: defaultDashboard,
     clickHandler: defaultClickHandler,
-    behaviors: defaultBehaviors,
+    behaviors: getLayoutBehaviors('default'),
   },
   'fleet-vteam': {
     agents: FLEET_AGENTS,
     dashboard: fleetDashboard,
     clickHandler: fleetClickHandler,
-    behaviors: fleetBehaviors,
+    behaviors: getLayoutBehaviors('fleet-vteam'),
   },
 };
 

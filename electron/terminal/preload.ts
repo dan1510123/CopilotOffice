@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { SessionHistoryEntry } from './protocol';
+import type { OrchestratorSettings } from '../orchestrator/orchestratorSettingsStore';
 
 // Copilot event types
 export interface CopilotEvent {
@@ -17,6 +18,12 @@ contextBridge.exposeInMainWorld('__copilotOfficeE2E', process.env.COPILOT_E2E ==
 
 // Expose protected methods to the renderer process
 contextBridge.exposeInMainWorld('copilotBridge', {
+  onVoiceEvent: (callback: (agentId: string, event: CopilotEvent, officeId?: string, sessionId?: string) => void) => {
+    const handler = (_event: unknown, agentId: string, event: CopilotEvent, officeId?: string, sessionId?: string) =>
+      callback(agentId, event, officeId, sessionId);
+    ipcRenderer.on('voice-event', handler);
+    return () => ipcRenderer.removeListener('voice-event', handler);
+  },
   // Terminal management
   terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string): Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }> => {
     return ipcRenderer.invoke('terminal-start', officeId, agentId, workingDir, cols, rows, preseededPrompt, launchMode, hostWorkingDir);
@@ -46,7 +53,7 @@ contextBridge.exposeInMainWorld('copilotBridge', {
     return ipcRenderer.invoke('terminal-kill', officeId, agentId);
   },
   // YOLO mode: push global flag to the PTY server so new copilot sessions launch with --yolo.
-  setYolo: (enabled: boolean): Promise<{ success: boolean }> => {
+  setYolo: (enabled: boolean): Promise<{ success: boolean; error?: string }> => {
     return ipcRenderer.invoke('set-yolo', enabled);
   },
   // Additional parameters: push the effective param string (empty = none) to the PTY server.
@@ -323,6 +330,21 @@ contextBridge.exposeInMainWorld('copilotBridge', {
   },
 
   // ── Office Orchestrator (spec 016) ─────────────────────────────
+  activateAgent: (officeId: string, agentId: string): Promise<OrchestratorResult> =>
+    ipcRenderer.invoke('agent:activate', { officeId, agentId }),
+  orchestratorListCandidates: (officeId?: string): Promise<OrchestratorCandidate[]> =>
+    ipcRenderer.invoke('orchestrator:candidates:list', officeId),
+  onOrchestratorSeatRequest: (callback: (payload: { requestId: string; officeId: string; agentId: string; deskId: string; deadline: number }) => void) => {
+    const handler = (_event: unknown, payload: { requestId: string; officeId: string; agentId: string; deskId: string; deadline: number }) => callback(payload);
+    ipcRenderer.on('orchestrator:seat:request', handler);
+    return () => ipcRenderer.removeListener('orchestrator:seat:request', handler);
+  },
+  orchestratorRespondSeat: (requestId: string, result: { success: boolean; error?: string }): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('orchestrator:seat:respond', { requestId, result }),
+  orchestratorGetSettings: (): Promise<{ success: boolean; settings: OrchestratorSettings }> =>
+    ipcRenderer.invoke('orchestrator:settings:get'),
+  orchestratorSaveSettings: (settings: OrchestratorSettings): Promise<{ success: boolean; settings?: OrchestratorSettings; error?: string }> =>
+    ipcRenderer.invoke('orchestrator:settings:save', settings),
   orchestratorOpen: (): Promise<{ sessionId: string; lifecycle: string; error?: string }> => {
     return ipcRenderer.invoke('orchestrator:open');
   },
@@ -530,13 +552,14 @@ declare global {
     __copilotOfficeDebug?: CopilotOfficeDebugApi;
     __copilotOfficeE2E?: boolean;
     copilotBridge: {
+      onVoiceEvent: (callback: (agentId: string, event: CopilotEvent, officeId?: string, sessionId?: string) => void) => () => void;
       terminalStart: (officeId: string, agentId: string, workingDir?: string, cols?: number, rows?: number, preseededPrompt?: string, launchMode?: 'copilot' | 'shell', hostWorkingDir?: string) => Promise<{ success: boolean; pid?: number; sessionId?: string; reused?: boolean; ready?: boolean; error?: string }>;
       terminalWrite: (officeId: string, agentId: string, data: string) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitAnswer: (officeId: string, agentId: string, a: { requestId?: string; answer: string; wasFreeform: boolean }) => Promise<{ success: boolean; error?: string }>;
       terminalSubmitPrompt: (officeId: string, agentId: string, prompt: string, label?: string) => Promise<{ success: boolean; error?: string }>;
       terminalResize: (officeId: string, agentId: string, cols: number, rows: number) => Promise<{ success: boolean; error?: string }>;
       terminalKill: (officeId: string, agentId: string) => Promise<{ success: boolean; error?: string }>;
-      setYolo: (enabled: boolean) => Promise<{ success: boolean }>;
+      setYolo: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
       setAdditionalParams: (params: string) => Promise<{ success: boolean }>;
       terminalExists: (officeId: string, agentId: string) => Promise<boolean>;
       terminalAttach: (officeId: string, agentId: string, foreground?: boolean) => Promise<{ success: boolean; scrollback?: string }>;
@@ -610,11 +633,17 @@ declare global {
       onTeamsStatusChanged: (callback: (status: TeamsAgentStatus) => void) => void;
       onTeamsToast: (callback: (toast: { level: string; message: string; durationMs?: number }) => void) => void;
       orchestratorOpen: () => Promise<{ sessionId: string; lifecycle: string; error?: string }>;
+      orchestratorGetSettings: () => Promise<{ success: boolean; settings: OrchestratorSettings }>;
+      orchestratorSaveSettings: (settings: OrchestratorSettings) => Promise<{ success: boolean; settings?: OrchestratorSettings; error?: string }>;
       orchestratorInput: (sessionId: string, text: string) => Promise<{ ok: boolean; error?: string }>;
       orchestratorRespondPermission: (sessionId: string, toolCallId: string, decision: 'approve' | 'deny') => Promise<{ ok: boolean }>;
       orchestratorClose: (sessionId: string) => Promise<{ ok: boolean }>;
       orchestratorEnd: (sessionId: string) => Promise<{ ok: boolean }>;
       orchestratorRespondCandidates: (requestId: string, candidates: OrchestratorCandidate[]) => Promise<{ ok: boolean }>;
+      activateAgent: (officeId: string, agentId: string) => Promise<OrchestratorResult>;
+      orchestratorListCandidates: (officeId?: string) => Promise<OrchestratorCandidate[]>;
+      onOrchestratorSeatRequest: (callback: (payload: { requestId: string; officeId: string; agentId: string; deskId: string; deadline: number }) => void) => () => void;
+      orchestratorRespondSeat: (requestId: string, result: { success: boolean; error?: string }) => Promise<{ ok: boolean }>;
       orchestratorRespondExecute: (requestId: string, result: OrchestratorResult) => Promise<{ ok: boolean }>;
       orchestratorRespondOffices: (requestId: string, offices: OrchestratorOfficeSummary[]) => Promise<{ ok: boolean }>;
       orchestratorRespondSwitch: (requestId: string, result: OrchestratorSwitchResult) => Promise<{ ok: boolean }>;
@@ -663,7 +692,10 @@ declare global {
 
   interface OrchestratorResult {
     agentId: string;
-    outcome: 'started' | 'denied' | 'invalid-target' | 'already-active' | 'failed';
+    outcome: 'started' | 'denied' | 'invalid-target' | 'already-active' | 'ambiguous-target' | 'target-became-active' | 'failed';
+    officeId?: string;
+    sessionId?: string;
+    ready?: boolean;
     message: string;
   }
 
@@ -727,6 +759,9 @@ declare global {
       | 'restarted'
       | 'taken-offline'
       | 'online-in-teams'
+      | 'paused'
+      | 'ambiguous-target'
+      | 'target-became-active'
       | 'title-set'
       | 'not-online'
       | 'not-waiting'

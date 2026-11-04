@@ -1,7 +1,8 @@
 import { DashboardRenderer, DashboardRenderContext, DynamicCardRegion, getDashboardTypography, DashboardTypography } from '../types';
 import { teamsLabel } from '../../ui/teamsIcon';
-import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
 import type { AgentConfig } from '../../config/agents';
+import { STATUS_PRESENTATION, resolveStatusKey, describeActivity } from '../../config/agentStatusPresentation';
+import { voiceControls } from '../../ui/voiceControls';
 
 /**
  * Dynamic (activity-driven) fragments of a single agent card. These are the only
@@ -51,10 +52,9 @@ function buildAgentDynamics(
   // Done + Waiting are the two "your turn" states — they share one loud visual
   // language (banner + solid border + wash) distinct from working/idle.
   const isAttention = statusKey === 'done' || statusKey === 'waiting';
-  // User-applied "Flagged / Needs attention" marker (orthogonal to status). When
-  // set it paints its own amber-gold chrome that takes precedence over the
-  // status attention chrome, and adds a flag pill beside the status pill.
+  // Manual flags remain secondary until Done/Waiting attention is resolved.
   const isFlagged = ctx.flaggedAgentIds?.has(agent.id) ?? false;
+  const flagLeads = isFlagged && !isAttention;
   // FR-011/FR-015: the "what it's doing" detail is rendered on its own fixed
   // slot (never concatenated into the label), so it cannot grow the card.
   // The bottom "Now doing" line shows the single most recent activity: the live
@@ -70,18 +70,16 @@ function buildAgentDynamics(
 
   const colorHex = '#' + agent.color.toString(16).padStart(6, '0');
   const isSelected = agent.id === selectedAgentId;
-  // Flag chrome (amber-gold) wins the border/bg over selection + attention so a
-  // flagged card always reads as "come back to me". Otherwise selection wins the
-  // border; failing that, attention paints it solid in the status color.
-  const cardBorderColor = isFlagged
-    ? 'var(--co-flag)'
-    : (isSelected
-        ? 'var(--co-sel-border)'
-        : (isAttention ? statusDot : 'var(--co-border-subtle)'));
-  const cardBg = isFlagged
-    ? `linear-gradient(115deg, color-mix(in srgb, var(--co-flag) 13%, transparent) 0%, ${isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'} 48%), ${isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'}`
-    : (isAttention
-        ? `linear-gradient(115deg, ${statusDot}18 0%, var(--co-bg-card) 45%), var(--co-bg-card)`
+  // Keep banner, card chrome, and pills aligned: attention > flag > selection.
+  const cardBorderColor = isAttention
+    ? statusDot
+    : (flagLeads
+        ? 'var(--co-flag)'
+        : (isSelected ? 'var(--co-sel-border)' : 'var(--co-border-subtle)'));
+  const cardBg = isAttention
+    ? `linear-gradient(115deg, ${statusDot}18 0%, var(--co-bg-card) 45%), var(--co-bg-card)`
+    : (flagLeads
+        ? `linear-gradient(115deg, color-mix(in srgb, var(--co-flag) 13%, transparent) 0%, ${isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'} 48%), ${isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'}`
         : (isSelected ? 'var(--co-bg-card-sel)' : 'var(--co-bg-card)'));
   const elapsed = liveStatus?.activityStartTime ? formatElapsed(liveStatus.activityStartTime) : '';
   const toolCount = tools.length;
@@ -96,10 +94,10 @@ function buildAgentDynamics(
   const ringOpacity = (isPulse || isAttention) ? '1' : '0.5';
 
   // ── Attention banner (signal only — the whole card remains the click target,
-  // which already opens the session to review output / reply). A user flag takes
-  // precedence over the status attention banner (confirmed precedence). ──
+  // which already opens the session to review output / reply). Done/Waiting
+  // take precedence; the manual flag resurfaces after attention is resolved. ──
   let bannerInner = '';
-  if (isFlagged) {
+  if (flagLeads) {
     bannerInner = `
         <div style="
           background: linear-gradient(90deg, var(--co-flag), color-mix(in srgb, var(--co-flag) 30%, transparent));
@@ -144,7 +142,6 @@ function buildAgentDynamics(
   //     shrinks to the secondary slot (so after you open a Done agent and it folds
   //     to Ready, the amber Flagged marker is what pops).
   // `flagLeads` is only true when flagged AND the status isn't itself attention.
-  const flagLeads = isFlagged && !isAttention;
   // Status pill sizing/emphasis: full when it leads (isAttention), reduced when a
   // flag has taken the lead, default otherwise.
   const statusPillFont = isAttention
@@ -414,6 +411,7 @@ export const defaultDashboard: DashboardRenderer = {
                 letter-spacing: 0.2px; max-width: 100%; text-align: center;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
               ">${agent.name}</span>
+              ${voiceControls(agent.id, hasSession, true)}
             </div>
 
             <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; overflow: hidden;">

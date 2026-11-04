@@ -34,8 +34,12 @@ import {
 import { repairDuplicateSessionIds } from './session-repair';
 import { registerPty, unregisterPty } from './pty-registry';
 import { resolveAccessibleWorkingDir } from './working-dir';
+import { parseAdditionalParams } from './session-params';
+import { installProcessDiagnostics } from '../diagnostics';
 import { evictUnbridgedReusedTerminal } from './unbridged-recovery';
 import { didTerminalBackendFallBack, parseTerminalBackend } from '../../src/config/terminalBackend';
+
+installProcessDiagnostics('terminal-server');
 
 // Pin the bundled runtime process-wide: the SDK's forStdio backend spawns the
 // Copilot runtime inheriting this process's env, so setting COPILOT_AUTO_UPDATE
@@ -782,7 +786,7 @@ async function startTerminalForAgentImpl(
       // Additional-parameters setting (e.g. "--model gpt-5.4"). node-pty appends
       // these to its `copilot --session-id` launch below; the sdk backend
       // appends them to the per-office headless host launch (once per office).
-      extraArgs: additionalParams ? additionalParams.split(/\s+/).filter(Boolean) : [],
+      extraArgs: parseAdditionalParams(additionalParams),
     };
 
     // Backend used for THIS session — may differ from the selected backend if the
@@ -1111,12 +1115,17 @@ async function startTerminalForAgentImpl(
           (event.type === 'tool.execution_start' && (event.data as { toolName?: string })?.toolName === 'task');
 
         if (isFleetCriticalEvent || hasActiveViewer(ck)) {
-          send({ type: 'copilot-event', agentId, event });
-        } else if (agentForwardKeys.has(ck)) {
-          // Teams-online agent with no active renderer viewer: mirror the event to
-          // main-process consumers (the Teams service captures assistant.message to
-          // post the reply back to the thread) but keep it out of the renderer.
-          send({ type: 'copilot-event', agentId, event, mainOnly: true });
+          send({ type: 'copilot-event', agentId, officeId, sessionId: ptyProcesses.get(terminalKey)?.sessionId, event });
+        } else if (agentForwardKeys.has(ck) || [
+          'user.message', 'assistant.message', 'assistant.turn_end', 'session.idle', 'session.error',
+        ].includes(event.type)) {
+          // Background Teams/voice consumers need replies without attaching a TUI
+          // viewer. mainOnly keeps the ordinary conversation renderer unchanged.
+          send({
+            type: 'copilot-event', agentId, officeId,
+            sessionId: ptyProcesses.get(terminalKey)?.sessionId, event, mainOnly: true,
+            voiceOnly: !agentForwardKeys.has(ck),
+          });
         } else {
           console.warn(`[TermServer] Dropped copilot-event ${event.type} for ${ck} — no active viewer (viewers: [${[...activeAgentViewers].join(', ')}])`);
         }
@@ -1263,6 +1272,16 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       // genuinely pre-existing, unbridged TUI is eligible for replacement.
       const existingKeyBeforeStart = getTerminalKey(msg.officeId, msg.agentId);
       const hadExistingTerminal = !!(existingKeyBeforeStart && ptyProcesses.has(existingKeyBeforeStart));
+      if (msg.deadline !== undefined && Date.now() >= msg.deadline) {
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: 'Startup request expired before execution.' } });
+        break;
+      }
+      if (msg.requireInactive && (hadExistingTerminal || inFlightStarts.has(ck))) {
+        send({ type: 'response', requestId: msg.requestId, result: {
+          success: false, alreadyActive: true, error: 'Agent already has an active or starting session.',
+        } });
+        break;
+      }
       // A main-process (background) start — the Teams ensure-online seam — must
       // never claim a renderer viewer. Renderer starts register through the
       // dual-key helper (R-002).
@@ -1277,21 +1296,53 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         msg.launchMode,
         msg.hostWorkingDir,
       );
+      if (msg.deadline !== undefined && Date.now() >= msg.deadline) {
+        const key = getTerminalKey(msg.officeId, msg.agentId) ?? ck;
+        const process = ptyProcesses.get(key);
+        if (!hadExistingTerminal && !result.reused && process && !hasActiveViewerForMaps(key, viewerMaps)) {
+          if (killPtyProcess(process)) {
+            ptyProcesses.delete(key);
+            agentToTerminal.delete(ck);
+          }
+        }
+        if (!hadExistingTerminal && !result.reused) send({ type: 'terminal-preload-status', agentId: msg.agentId, officeId: msg.officeId, status: 'failed' });
+        send({ type: 'response', requestId: msg.requestId, result: {
+          ...result, success: false, ready: false, error: 'Startup request expired before the backend became ready.',
+        } });
+        break;
+      }
       if (result.success && msg.readyTimeoutMs && msg.readyTimeoutMs > 0) {
         const readyKey = getTerminalKey(msg.officeId, msg.agentId) ?? ck;
         const readyProc = ptyProcesses.get(readyKey);
+        if (readyProc?.process.supportsProgrammaticControl !== true) {
+          if (!hadExistingTerminal && !result.reused && readyProc && !hasActiveViewerForMaps(readyKey, viewerMaps)) {
+            if (killPtyProcess(readyProc)) {
+              ptyProcesses.delete(readyKey);
+              agentToTerminal.delete(ck);
+            }
+          }
+          if (!hadExistingTerminal && !result.reused) {
+            send({ type: 'terminal-preload-status', agentId: msg.agentId, officeId: msg.officeId, status: 'failed' });
+          }
+          send({ type: 'response', requestId: msg.requestId, result: {
+            ...result, success: false, ready: false, error: 'This terminal backend does not support programmatic session control.',
+          } });
+          break;
+        }
         try {
           if (readyProc && typeof readyProc.process.whenReady === 'function') {
             // Native bridge readiness is live, not latched: a PTY can remain
             // alive while its extension reconnects after /clear or a socket loss.
-            await readyProc.process.whenReady(msg.readyTimeoutMs);
+            await readyProc.process.whenReady(Math.min(msg.readyTimeoutMs, Math.max(1, (msg.deadline ?? Infinity) - Date.now())));
+            if (msg.deadline !== undefined && Date.now() >= msg.deadline) throw new Error('Session readiness deadline exceeded.');
             result = {
               ...result,
               sessionId: readyProc.process.getSessionId?.() ?? readyProc.sessionId,
               ready: true,
             };
           } else {
-            await waitForAgentReady(readyKey, msg.readyTimeoutMs);
+            await waitForAgentReady(readyKey, Math.min(msg.readyTimeoutMs, Math.max(1, (msg.deadline ?? Infinity) - Date.now())));
+            if (msg.deadline !== undefined && Date.now() >= msg.deadline) throw new Error('Session readiness deadline exceeded.');
             result = { ...result, ready: true };
           }
         } catch (error) {
@@ -1301,6 +1352,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
             result = await activeRecovery;
           } else if (
             hadExistingTerminal
+            && (msg.deadline === undefined || Date.now() < msg.deadline)
             && readyProc
             && typeof readyProc.process.whenReady === 'function'
             && !hasActiveViewerForMaps(readyKey, viewerMaps)
@@ -1317,7 +1369,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
               ck,
               readyKey,
               readyProc,
-              msg.readyTimeoutMs,
+              Math.min(msg.readyTimeoutMs, Math.max(1, (msg.deadline ?? Infinity) - Date.now())),
               result,
             );
             unbridgedRecoveries.set(readyKey, recovery);
@@ -1338,6 +1390,9 @@ async function handleMessage(msg: MainToServer): Promise<void> {
             }
           }
         }
+      }
+      if (!result.success && !result.alreadyActive && !hadExistingTerminal && !result.reused) {
+        send({ type: 'terminal-preload-status', agentId: msg.agentId, officeId: msg.officeId, status: 'failed' });
       }
       send({ type: 'response', requestId: msg.requestId, result });
       break;
@@ -1444,9 +1499,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
         const backendProc = proc.process;
         const transport = answerTransport(backendProc);
         if (transport === 'bridge') {
-          // Native bridge: the pending interaction lives in the TUI's extension —
-          // resolve it there over the authenticated broker and report the REAL
-          // outcome (e.g. "No pending user-input request") to the caller.
+          // Native bridge and UI-server own their request-aware answer transport.
           try {
             await backendProc.submitAnswer!({
               requestId: msg.answerRequestId,
@@ -1456,7 +1509,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
             send({ type: 'response', requestId: msg.requestId, result: { success: true } });
           } catch (error) {
             const message = String((error as Error)?.message ?? error);
-            console.warn(`[TermServer] submit-answer via bridge failed for ${compositeKey(msg.officeId, msg.agentId)} (answerRequestId="${msg.answerRequestId ?? ''}"): ${message}`);
+            console.warn(`[TermServer] submit-answer via backend failed for ${compositeKey(msg.officeId, msg.agentId)} (answerRequestId="${msg.answerRequestId ?? ''}"): ${message}`);
             send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
           }
         } else if (transport === 'sdk') {
@@ -1464,16 +1517,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
           // The resolver is correlated by sessionId (the onUserInputRequest callback
           // carries no requestId — see terminal-backend module header); answerRequestId
           // is the event-derived id, kept for diagnostics only.
-          let resolved = handlePendingUserInput(proc.sessionId, { answer: msg.answer, wasFreeform: msg.wasFreeform });
-          const ck = compositeKey(msg.officeId, msg.agentId);
-          if (!resolved && officeForegroundCk.get(UI_SERVER_SHARED_HOST_ID) === ck && typeof msg.answer === 'string' && msg.answer.trim()) {
-            // Foreground agent: the TUI owns the question (no SDK resolver exists), so
-            // deliver the Teams answer as plain text + Enter. Only reached for an
-            // answer to a pending ask_user, never for general prompts.
-            backendProc.write(`${msg.answer.replace(/[\r\n]+/g, ' ')}\r`);
-            console.log(`[TermServer] submit-answer: typed answer into foreground TUI for ${ck}`);
-            resolved = true;
-          }
+          const resolved = handlePendingUserInput(proc.sessionId, { answer: msg.answer, wasFreeform: msg.wasFreeform });
           if (!resolved) {
             console.warn(`[TermServer] submit-answer: no pending user-input for session="${proc.sessionId}" (answerRequestId="${msg.answerRequestId ?? ''}", ${compositeKey(msg.officeId, msg.agentId)}) — no-op (already resolved or unknown)`);
           }
@@ -1615,6 +1659,14 @@ async function handleMessage(msg: MainToServer): Promise<void> {
     case 'set-yolo': {
       yoloEnabled = msg.enabled;
       console.log(`[TermServer] YOLO mode ${yoloEnabled ? 'ENABLED' : 'disabled'}`);
+      try {
+        await terminalBackend?.setYolo?.(yoloEnabled);
+        send({ type: 'response', requestId: msg.requestId, result: { success: true } });
+      } catch (error) {
+        const message = String(error);
+        console.error(`[TermServer] Failed to apply YOLO mode to active sessions: ${message}`);
+        send({ type: 'response', requestId: msg.requestId, result: { success: false, error: message } });
+      }
       break;
     }
 
@@ -1918,7 +1970,7 @@ async function handleMessage(msg: MainToServer): Promise<void> {
       try {
         const wtArgs = ['-d', cwd, 'copilot', '--session-id', sid, '--no-auto-update'];
         if (yoloEnabled) wtArgs.push('--yolo');
-        if (additionalParams) wtArgs.push(...additionalParams.split(/\s+/).filter(Boolean));
+        if (additionalParams) wtArgs.push(...parseAdditionalParams(additionalParams));
         spawn('wt', wtArgs, { detached: true, stdio: 'ignore' }).unref();
         send({ type: 'response', requestId: msg.requestId, result: { success: true } });
       } catch (error) {
@@ -2148,15 +2200,23 @@ async function handleMessage(msg: MainToServer): Promise<void> {
 
     case 'query-agent-statuses': {
       const { officeId } = msg as MsgQueryAgentStatuses;
-      const statuses: Record<string, { alive: boolean; ready: boolean; inTurn: boolean }> = {};
+      const statuses: Record<string, { alive: boolean; ready: boolean; inTurn: boolean; starting?: boolean }> = {};
       for (const [ck] of agentToTerminal) {
         if (officeId && !ck.startsWith(officeId + ':')) continue;
         const agentId = ck.split(':')[1] ?? ck;
         const key = agentToTerminal.get(ck);
         const alive = !!(key && ptyProcesses.has(key));
-        const ready = agentReadyState.get(ck) ?? false;
+        const process = key ? ptyProcesses.get(key)?.process : undefined;
+        const ready = alive && (nativeBridgeBroker && process?.whenReady
+          ? nativeBridgeBroker.isReady(key ?? ck)
+          : agentReadyState.get(ck) ?? false);
         const inTurn = agentInTurn.get(ck) ?? false;
         statuses[agentId] = { alive, ready, inTurn };
+      }
+      for (const [ck] of inFlightStarts) {
+        if (officeId && !ck.startsWith(officeId + ':')) continue;
+        const agentId = ck.slice(ck.indexOf(':') + 1);
+        statuses[agentId] = { ...(statuses[agentId] ?? { alive: false, ready: false, inTurn: false }), starting: true };
       }
       send({ type: 'response', requestId: msg.requestId, result: statuses });
       break;

@@ -5,9 +5,8 @@
 //   - runs in the Electron MAIN process (not the terminal child server),
 //   - is a separate `RuntimeConnection.forStdio` SDK session keyed by nothing in
 //     `activeAgentViewers` (it is NOT an office agent),
-//   - is ALWAYS permission-gated: its `onPermissionRequest` NEVER consults
-//     `isYoloEnabled()`, so `bring_agent_online` is structurally gated regardless
-//     of the global YOLO toggle (contracts/orchestrator-tools.md).
+//   - gates writes using its own persisted Ringleader setting, independent of
+//     the global agent YOLO toggle. Reads never require approval.
 //
 // The manager exposes candidate/execute round-trips that the two SDK tools call;
 // those round-trips are resolved late by the renderer (which owns OfficeManager)
@@ -42,8 +41,9 @@ import {
   type OrchestratorTranscriptStore,
 } from './orchestratorTranscriptStore';
 import type { CopilotEvent } from '../terminal/events-watcher';
+import { AgentTargetError, type AgentLifecycle } from './agentLifecycle';
 
-/** Gated act-on tool names (all always-gated, non-YOLO — FR-018). */
+/** Write tools governed by the Ringleader approval setting. */
 const ACT_ON_TOOLS = new Set([
   'answer_agent',
   'send_prompt_to_agent',
@@ -56,11 +56,11 @@ const ACT_ON_TOOLS = new Set([
 /** Union of all gated tool names (baseline bring_agent_online + act-on tools + the
  *  dedicated Teams-agents-pause tool, which uses its own request/respond pair
  *  rather than the shared ActOn plumbing). */
-const GATED_TOOLS = new Set(['bring_agent_online', 'set_teams_agents_connection', ...ACT_ON_TOOLS]);
+const GATED_TOOLS = new Set(['bring_agent_online', 'switch_office', 'set_teams_agents_connection', ...ACT_ON_TOOLS]);
 
 const ORCHESTRATOR_SYSTEM_PROMPT = [
   'You are the Office Orchestrator — a concierge that helps the user bring the right',
-  'Copilot agent "online" in the currently viewed virtual office.',
+  'Copilot agent "online" across ALL virtual offices. You are not present in any office.',
   '',
   'Workflow for every request:',
   '1. Call the `list_office_agents` tool to see who can be brought online right now',
@@ -69,26 +69,26 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '   `description`. The user will usually describe WHAT they need (e.g. "someone to',
   '   review my code", "help me deploy"), not an agent by name.',
   '3. When you find a good fit, call `bring_agent_online` with the concrete `agentId`',
-  '   and a short `reason` explaining why it fits. This action is always gated: the',
-  '   user must approve it before it takes effect, so state your pick clearly.',
+  '   and a short `reason` explaining why it fits. State your pick clearly.',
+  '   Write tools require approval unless Settings > Ringleader allows all operations.',
+  '   The host enforces the current setting; do not ask for approval conversationally.',
   '3a. If the user asks to bring an agent online WITHOUT naming one ("bring someone',
-  '   online", "add another agent", "spin one up"), do NOT ask them to choose — default',
-  '   to the FIRST candidate returned by `list_office_agents` (the next dormant agent in',
-  '   the office\'s list) and bring that one online, naming your pick in the approval.',
+  '   online", "add another agent", "spin one up"), search ALL offices. If multiple',
+  '   inactive candidates fit, ask which office/agent they mean. Never default to the',
+  '   currently viewed office or arbitrarily take the first candidate.',
   '4. If there is no good fit, or the candidate list is empty, DO NOT guess — tell the',
   '   user plainly that nothing matches and suggest they pick manually.',
   '',
   'Working across offices:',
-  '- `list_office_agents` and `bring_agent_online` default to the office currently shown',
-  '  on the desktop. To target a DIFFERENT office, first call `list_offices` to get its',
+  '- `list_office_agents` and `bring_agent_online` search ALL offices by default.',
+  '  To target ONE office, first call `list_offices` to get its',
   '  `officeId` (each office has `officeId`, `name`, `layout`, `isCurrent`, `activeAgentCount`).',
   '- To bring an agent online in another office, you do NOT need a separate `switch_office`',
   '  call: pass that `officeId` to `list_office_agents` (to see its candidates) and to',
-  '  `bring_agent_online`. Bringing an agent online in a non-current office automatically',
-  '  switches the desktop to that office, so mention that you are switching to it.',
+  '  `bring_agent_online`. Activation is background-only and NEVER switches the desktop.',
   '- The same agent NAME can exist in multiple offices (e.g. a "Rhys" in several offices).',
   '  When the user names an office, ALWAYS pass its `officeId` so you act on the right one.',
-  '- `switch_office` is still available for plain navigation; it is reversible, not gated,',
+  '- `switch_office` is still available for plain navigation; it follows the write approval setting',
   '  and changes what the desktop user sees, so mention when you switch.',
   '',
   'Keep replies concise and conversational. Never invent an agentId that was not',
@@ -126,12 +126,12 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '  take it offline there) call `set_agent_teams_presence` ({ agentId, online }). Bringing',
   '  an agent online in Teams automatically starts its session first if it is not up yet —',
   '  you do NOT need a separate step. When bringing online you may OMIT agentId (e.g. "bring',
-  '  the next agent online in Teams") to default to the next dormant agent in the office; a',
+  '  a new agent online in Teams") only when one inactive candidate exists; otherwise clarify. A',
   '  taking-offline call still needs a specific agentId. To rename an agent\'s session title call',
   '  `set_agent_title` ({ agentId, title }). If Teams is disabled the presence tool will',
   '  say so — relay that to the user.',
-  '- Every act-on tool (answer/send/stop/restart/teams-presence/title) is ALWAYS gated: the',
-  '  user must approve before it takes effect, so state your pick and target clearly. Only',
+  '- Every act-on tool (answer/send/stop/restart/teams-presence/title) follows the Ringleader',
+  '  write approval setting, so state your pick and target clearly. Only',
   '  ever use an `agentId`/`officeId` returned by a discovery/status tool — never invent',
   '  one. If a tool reports a typed outcome like `not-online`, `not-waiting`, or',
   '  `invalid-target`, relay it plainly and suggest the sensible next step.',
@@ -143,10 +143,17 @@ const ORCHESTRATOR_SYSTEM_PROMPT = [
   '  `set_agent_teams_presence`, etc.) and report its real, typed result. Only tell the',
   '  user to act manually (e.g. "open the terminal yourself") after a tool call has',
   '  actually failed with an outcome like `not-online`.',
+  '- NEW/another-agent requests must choose an agent WITHOUT an active or starting',
+  '  session. Done, busy, waiting and live-but-not-ready agents are not new candidates.',
+  '  For a NEW agent to Teams call set_agent_teams_presence with requireInactive:true:',
+  '  the host starts it, waits for actual readiness, then connects Teams in one operation.',
+  '  For Teams-only requests targeting a named existing session omit requireInactive.',
+  '  Preserve Teams pause and report paused/partial failures exactly as returned.',
 ].join('\n');
 
 /** Emitters the manager uses to push to the renderer (wired by orchestratorIpc). */
 export interface OrchestratorEmitter {
+  emitSeatRequest?(payload: { requestId: string; officeId: string; agentId: string; deskId: string; deadline: number }): void;
   emitEvent(sessionId: string, event: CopilotEvent): void;
   emitPermissionRequest(payload: {
     sessionId: string;
@@ -238,6 +245,45 @@ interface SdkModule {
 }
 
 export class OrchestratorSessionManager {
+  private agentLifecycle: AgentLifecycle | null = null;
+  private readonly approvedTargets = new Map<string, { agentId: string; officeId: string; requireInactive: boolean }>();
+  private readonly pendingSeats = new Map<string, (result: { success: boolean; error?: string }) => void>();
+  private permissionEpoch = 0;
+
+  setAgentLifecycle(lifecycle: AgentLifecycle): void {
+    this.agentLifecycle = lifecycle;
+  }
+
+  ensureSeat(officeId: string, agentId: string, deskId: string, deadline: number): Promise<void> {
+    const requestId = randomUUID();
+    return new Promise<{ success: boolean; error?: string }>((resolve) => {
+      this.trackRoundTrip(this.pendingSeats, requestId, resolve, { success: false, error: 'Seat synchronization timed out.' },
+        Math.max(1, Math.min(10_000, deadline - Date.now())));
+      this.emitter.emitSeatRequest?.({ requestId, officeId, agentId, deskId, deadline });
+    }).then((result) => {
+      if (!result.success) throw new Error(result.error ?? 'Could not persist the agent seat.');
+    });
+  }
+
+  respondSeat(requestId: string, result: { success: boolean; error?: string }): boolean {
+    const resolve = this.pendingSeats.get(requestId);
+    if (!resolve) return false;
+    resolve(result);
+    return true;
+  }
+
+  private trackRoundTrip<T>(map: Map<string, (value: T) => void>, id: string,
+    resolve: (value: T) => void, failure: T, timeoutMs = 15_000): void {
+    const timer = setTimeout(() => {
+      console.warn(`[Ringleader] Renderer request ${id} timed out.`);
+      map.get(id)?.(failure);
+    }, timeoutMs);
+    map.set(id, (value) => {
+      clearTimeout(timer);
+      map.delete(id);
+      resolve(value);
+    });
+  }
   private client: any | null = null;
   private session: any | null = null;
   private unsubscribe: (() => void) | null = null;
@@ -245,6 +291,7 @@ export class OrchestratorSessionManager {
   private openPromise: Promise<OrchestratorSessionInfo> | null = null;
   /** True while the orchestrator is online in a Teams thread (a remote approver exists). */
   private teamsRelayActive = false;
+  private allowAllOperations = false;
 
   private readonly pendingPermissions = new Map<string, (result: PermissionRequestResult) => void>();
   private readonly pendingCandidates = new Map<string, (candidates: BringOnlineCandidate[]) => void>();
@@ -291,6 +338,10 @@ export class OrchestratorSessionManager {
     /** Retention bound = panel xterm scrollback window (spec 017 T002 = 5000). */
     private readonly transcriptBound: number = 5000,
   ) {}
+
+  setAllowAllOperations(enabled: boolean): void {
+    this.allowAllOperations = enabled;
+  }
 
   /** Subscribe to the orchestrator's mapped CopilotEvent stream (main-process tap). */
   onSessionEvent(cb: (event: CopilotEvent) => void): () => void {
@@ -424,8 +475,12 @@ export class OrchestratorSessionManager {
     }
 
     const tools = buildOrchestratorTools({
+      approvedTarget: (toolCallId) => this.approvedTargets.get(toolCallId),
       requestCandidates: async (officeId?: string) => this.cacheAgentNames(await this.requestCandidates(officeId)),
-      requestExecute: (agentId, officeId) => this.requestExecute(agentId, officeId),
+      requestExecute: (agentId, officeId, toolCallId) => {
+        if (toolCallId) this.approvedTargets.delete(toolCallId);
+        return this.requestExecute(agentId, officeId);
+      },
       requestOffices: () => this.requestOffices(),
       requestSwitch: (officeId) => this.requestSwitch(officeId),
       getOfficeId: () => this.lastOfficeId,
@@ -437,7 +492,10 @@ export class OrchestratorSessionManager {
       requestSendPrompt: (a) => this.requestActOn('send_prompt_to_agent', a),
       requestStopAgent: (a) => this.requestActOn('stop_agent', a),
       requestRestartAgent: (a) => this.requestActOn('restart_agent', a),
-      requestTeamsPresence: (a) => this.requestActOn('set_agent_teams_presence', a),
+      requestTeamsPresence: (a) => {
+        if (a.toolCallId) this.approvedTargets.delete(a.toolCallId);
+        return this.agentLifecycle ? this.agentLifecycle.run(a) : this.requestActOn('set_agent_teams_presence', a);
+      },
       requestSetTitle: (a) => this.requestActOn('set_agent_title', a),
       requestTeamsAgentsPause: (paused) => this.requestTeamsAgentsPause(paused),
     });
@@ -581,8 +639,9 @@ export class OrchestratorSessionManager {
   }
 
   private rejectAllPending(): void {
+    this.permissionEpoch++;
     for (const [, resolve] of this.pendingPermissions) {
-      resolve({ kind: 'denied-interactively-by-user' });
+      resolve({ kind: 'reject' });
     }
     this.pendingPermissions.clear();
   }
@@ -594,6 +653,9 @@ export class OrchestratorSessionManager {
    * (and any in-flight tool round-trip) continues.
    */
   private clearPendingRoundTrips(): void {
+    this.approvedTargets.clear();
+    for (const resolve of this.pendingSeats.values()) resolve({ success: false, error: 'Orchestrator session ended.' });
+    this.pendingSeats.clear();
     const ended = 'Orchestrator session ended';
     for (const [, resolve] of this.pendingCandidates) resolve([]);
     this.pendingCandidates.clear();
@@ -630,12 +692,49 @@ export class OrchestratorSessionManager {
     this.pendingTeamsAgentsPause.clear();
   }
 
-  // ── Permission gate (non-YOLO, always gated) ─────────────────────────────
-  private readonly permissionHandler: PermissionHandler = (request, _invocation) => {
-    // NOTE: deliberately never consults isYoloEnabled(). The orchestrator session
-    // is always gated, independent of the global YOLO toggle (spec 016 FR-002,
-    // spec 017 FR-018 for the act-on tools).
+  // ── Permission gate (independent of agent YOLO) ─────────────────────────
+  private async prepareLifecyclePermission(
+    request: Parameters<PermissionHandler>[0], invocation: Parameters<PermissionHandler>[1],
+  ): Promise<Awaited<ReturnType<PermissionHandler>>> {
+    const epoch = this.permissionEpoch;
+    if (this.agentLifecycle && request.kind === 'custom-tool'
+      && (request.toolName === 'bring_agent_online' || request.toolName === 'set_agent_teams_presence')) {
+      const args = (request.args ?? {}) as { agentId?: string; officeId?: string; online?: boolean; requireInactive?: boolean };
+      try {
+        if (request.toolName === 'set_agent_teams_presence' && args.online === false && !args.agentId?.trim()) {
+          return { kind: 'reject', feedback: 'Taking an agent offline requires a specific target.' };
+        }
+        const requireInactive = request.toolName === 'bring_agent_online'
+          || (args.online !== false && (args.requireInactive === true || !args.agentId?.trim()));
+        const target = await this.agentLifecycle.resolve(args.agentId ?? '', args.officeId, requireInactive);
+        if (epoch !== this.permissionEpoch) return { kind: 'reject', feedback: 'The request was cancelled during target resolution.' };
+        if (!request.toolCallId) return { kind: 'reject', feedback: 'Missing tool call identity. No action was executed.' };
+        this.approvedTargets.set(request.toolCallId, { agentId: target.agentId, officeId: target.officeId, requireInactive });
+        this.agentNameCache.set(target.agentId, `${target.name} (${target.office.name})`);
+        request = { ...request, args: { ...args, agentId: target.agentId, officeId: target.officeId, requireInactive } };
+      } catch (error) {
+        return { kind: 'reject', feedback: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    return this.permissionGate(request, invocation);
+  }
+
+  private readonly permissionHandler: PermissionHandler = (request, invocation) => {
+      if (this.agentLifecycle && request.kind === 'custom-tool'
+        && (request.toolName === 'bring_agent_online' || request.toolName === 'set_agent_teams_presence')) {
+        return this.prepareLifecyclePermission(request, invocation);
+      }
+      return this.permissionGate(request, invocation);
+  };
+
+  private readonly permissionGate: PermissionHandler = (request, _invocation) => {
     if (request.kind === 'custom-tool' && GATED_TOOLS.has(request.toolName)) {
+      if (this.allowAllOperations) {
+        this.captureTurn('tool', `[gate] ${request.toolName} approved by Ringleader settings`, {
+          tool: { name: request.toolName, outcome: 'approved' },
+        });
+        return { kind: 'approved' };
+      }
       const toolName = request.toolName;
       const toolCallId = request.toolCallId ?? randomUUID();
       const args = (request.args ?? {}) as {
@@ -652,8 +751,9 @@ export class OrchestratorSessionManager {
       const agentName = args.agentId ? this.agentNameCache.get(args.agentId) : undefined;
       return new Promise<PermissionRequestResult>((resolve) => {
         // Wrap so we can record the approve/deny decision to the transcript (FR-023).
-        this.pendingPermissions.set(toolCallId, (result) => {
+        this.trackRoundTrip(this.pendingPermissions, toolCallId, (result) => {
           const approved = result.kind === 'approved';
+          if (!approved) this.approvedTargets.delete(toolCallId);
           this.captureTurn('tool', `[gate] ${toolName} ${approved ? 'approved' : 'denied'}`, {
             tool: {
               name: toolName,
@@ -662,7 +762,7 @@ export class OrchestratorSessionManager {
             },
           });
           resolve(result);
-        });
+        }, { kind: 'reject', feedback: 'Approval expired. No action was executed.' }, 90_000);
         this.emitter.emitPermissionRequest({
           sessionId,
           toolCallId,
@@ -685,7 +785,7 @@ export class OrchestratorSessionManager {
       });
     }
     // Any other kind (should not occur for this toolset) denies by default.
-    return { kind: 'denied-interactively-by-user' };
+    return { kind: 'reject' };
   };
 
   /** Record agentId → display name from read-tool results so the gate can label the action. */
@@ -703,7 +803,10 @@ export class OrchestratorSessionManager {
     resolve(
       decision.decision === 'approve'
         ? { kind: 'approved' }
-        : { kind: 'denied-interactively-by-user' },
+        : {
+            kind: 'reject',
+            feedback: 'Approval was denied or expired. The action was not executed. Do not retry unless the user asks.',
+          },
     );
     return true;
   }
@@ -712,10 +815,11 @@ export class OrchestratorSessionManager {
   private lastOfficeId = '';
 
   private requestCandidates(officeId?: string): Promise<BringOnlineCandidate[]> {
+    if (this.agentLifecycle) return this.agentLifecycle.candidates(officeId);
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<BringOnlineCandidate[]>((resolve) => {
-      this.pendingCandidates.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingCandidates, requestId, resolve, []);
       this.emitter.emitCandidatesRequest({ sessionId, requestId, officeId });
     });
   }
@@ -730,10 +834,11 @@ export class OrchestratorSessionManager {
   }
 
   private requestExecute(agentId: string, officeId?: string): Promise<BringOnlineResult> {
+    if (this.agentLifecycle) return this.agentLifecycle.bringOnline(agentId, officeId);
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<BringOnlineResult>((resolve) => {
-      this.pendingExecute.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingExecute, requestId, resolve, { agentId, outcome: 'failed', message: 'Renderer activation timed out.' });
       this.emitter.emitExecuteRequest({ sessionId, requestId, agentId, officeId });
     });
   }
@@ -750,7 +855,7 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<OfficeSummary[]>((resolve) => {
-      this.pendingOffices.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingOffices, requestId, resolve, []);
       this.emitter.emitOfficesRequest({ sessionId, requestId });
     });
   }
@@ -767,7 +872,7 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<SwitchOfficeResult>((resolve) => {
-      this.pendingSwitch.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingSwitch, requestId, resolve, { officeId, outcome: 'failed', message: 'Office switching timed out.' });
       this.emitter.emitSwitchRequest({ sessionId, requestId, officeId });
     });
   }
@@ -786,7 +891,7 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<ActiveAgentSnapshot[]>((resolve) => {
-      this.pendingActiveAgents.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingActiveAgents, requestId, resolve, []);
       this.emitter.emitActiveAgentsRequest?.({ sessionId, requestId, officeId });
     });
   }
@@ -803,7 +908,7 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<AwaitingAgent[]>((resolve) => {
-      this.pendingAwaitingAgents.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingAwaitingAgents, requestId, resolve, []);
       this.emitter.emitAwaitingAgentsRequest?.({ sessionId, requestId, officeId });
     });
   }
@@ -820,7 +925,7 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<AgentRecentOutput>((resolve) => {
-      this.pendingAgentOutput.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingAgentOutput, requestId, resolve, { agentId, officeId: officeId ?? '', hasOutput: false, lines: [] });
       this.emitter.emitAgentOutputRequest?.({ sessionId, requestId, agentId, officeId });
     });
   }
@@ -833,11 +938,26 @@ export class OrchestratorSessionManager {
     return true;
   }
 
-  private requestAgentStatus(agent: string, officeId?: string): Promise<AgentStatusLookup> {
+  private async requestAgentStatus(agent: string, officeId?: string): Promise<AgentStatusLookup> {
+    if (!this.agentLifecycle) return this.requestRendererAgentStatus(agent, officeId);
+    try {
+      const target = await this.agentLifecycle.resolve(agent, officeId);
+      const detail = await this.requestRendererAgentStatus(target.agentId, target.officeId);
+      return this.agentLifecycle.status(target, { ...detail, query: agent });
+    } catch (error) {
+      if (!(error instanceof AgentTargetError)) throw error;
+      return {
+        query: agent, outcome: error.outcome === 'ambiguous-target' ? 'ambiguous' : 'not-found', message: error.message,
+        matches: error.matches.map((a) => ({ agentId: a.agentId, officeId: a.officeId, name: a.name, officeName: a.office.name })),
+      };
+    }
+  }
+
+  private requestRendererAgentStatus(agent: string, officeId?: string): Promise<AgentStatusLookup> {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<AgentStatusLookup>((resolve) => {
-      this.pendingAgentStatus.set(requestId, resolve);
+      this.trackRoundTrip(this.pendingAgentStatus, requestId, resolve, { query: agent, outcome: 'not-found', message: 'Status request timed out.' });
       this.emitter.emitAgentStatusRequest?.({ sessionId, requestId, agent, officeId });
     });
   }
@@ -863,13 +983,13 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<ActOnResult>((resolve) => {
-      this.pendingActOn.set(requestId, (result) => {
+      this.trackRoundTrip(this.pendingActOn, requestId, (result) => {
         // Feed the act-on outcome (incl. failure) to the transcript (FR-023).
         this.captureTurn('tool', `[${toolName}] ${result.outcome}: ${result.message}`, {
           tool: { name: toolName, outcome: result.outcome, target: result.agentId || args.agentId },
         });
         resolve(result);
-      });
+      }, { agentId: args.agentId, officeId: args.officeId ?? '', outcome: 'failed', message: 'Agent operation timed out.' }, 45_000);
       switch (toolName) {
         case 'answer_agent':
           this.emitter.emitAnswerAgentRequest?.({
@@ -951,12 +1071,12 @@ export class OrchestratorSessionManager {
     const sessionId = this.session ? String(this.session.sessionId) : 'orchestrator';
     const requestId = randomUUID();
     return new Promise<TeamsAgentsPauseResult>((resolve) => {
-      this.pendingTeamsAgentsPause.set(requestId, (result) => {
+      this.trackRoundTrip(this.pendingTeamsAgentsPause, requestId, (result) => {
         this.captureTurn('tool', `[set_teams_agents_connection] ${result.outcome}: ${result.message}`, {
           tool: { name: 'set_teams_agents_connection', outcome: result.outcome },
         });
         resolve(result);
-      });
+      }, { outcome: 'failed', count: 0, message: 'Teams pause/resume timed out.' }, 45_000);
       this.emitter.emitTeamsAgentsPauseRequest?.({ sessionId, requestId, paused });
     });
   }

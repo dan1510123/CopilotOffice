@@ -12,6 +12,33 @@ import { SpriteCustomizerPanel } from '../../../src/ui/SpriteCustomizerPanel';
 import { createMockScene } from '../../setup/phaser-mocks';
 
 describe('input/Overlay focus save & restore (S1-A)', () => {
+  it('keeps a settings overlay suspended when voice releases its own input lock', () => {
+    const scene = createMockScene();
+    const manager = new InputManager(scene as never);
+    manager.switchToGame('start');
+    manager.suspendGameInput('voice:open', 'voice');
+    manager.suspendGameInput('settings:open');
+    manager.switchToGame('game click while recording');
+    expect(scene.input.keyboard.enabled).toBe(false);
+    manager.resumeGameInput('voice:close', 'voice');
+    expect(scene.input.keyboard.enabled).toBe(false);
+    expect(manager.isInputSuspended()).toBe(true);
+    manager.resumeGameInput('settings:close');
+    expect(scene.input.keyboard.enabled).toBe(true);
+    manager.destroy();
+  });
+
+  it('restores the current focus if terminal focus changes during a voice lock', () => {
+    const scene = createMockScene();
+    const manager = new InputManager(scene as never);
+    manager.switchToGame('start');
+    manager.suspendGameInput('voice:open', 'voice');
+    manager.switchToTerminal('terminal opened', vi.fn());
+    manager.resumeGameInput('voice:close', 'voice');
+    expect(scene.input.keyboard.enabled).toBe(false);
+    expect(manager.getCurrentFocus()).toBe('terminal');
+    manager.destroy();
+  });
   it('restores game focus after a modal overlay closes (was in game)', () => {
     const scene = createMockScene();
     const manager = new InputManager(scene as any);

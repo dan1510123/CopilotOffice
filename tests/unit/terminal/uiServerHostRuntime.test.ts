@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildUiServerHostOptions,
+  ControlPlaneClient,
+  UiServerBackend,
   UiServerHostRuntime,
   type StartTerminalOptions,
 } from '../../../electron/terminal/terminal-backend';
@@ -26,6 +28,102 @@ function makeFakePty() {
 }
 
 const opts = { cols: 80, rows: 24, cwd: process.cwd(), env: { PATH: '' } };
+
+describe('UiServerBackend shared-host failure isolation', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function makeBackend() {
+    const rawPty = {
+      pid: 999_999,
+      onData: vi.fn((callback: (data: string) => void) => {
+        queueMicrotask(() => callback('listening on port 51234\r\n'));
+        return { dispose: vi.fn() };
+      }),
+      onExit: vi.fn(() => ({ dispose: vi.fn() })),
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(),
+    };
+    const spawn = vi.fn(() => rawPty);
+    const backend = new UiServerBackend({ spawn } as unknown as typeof import('node-pty'), 'copilot');
+    const start = vi.spyOn(ControlPlaneClient.prototype, 'start').mockResolvedValue();
+    const stopClient = vi.spyOn(ControlPlaneClient.prototype, 'stop').mockResolvedValue();
+    // No OS process exists: do not let runtime teardown issue taskkill.
+    const stopRuntime = vi.spyOn(UiServerHostRuntime.prototype, 'stop').mockImplementation(function () {
+      this.status = 'stopped';
+    });
+    const session = { send: vi.fn().mockResolvedValue('message-id'), disconnect: vi.fn().mockResolvedValue(undefined) };
+    const createSession = vi.spyOn(ControlPlaneClient.prototype, 'createOrResumeSession').mockResolvedValue(session);
+    const setForeground = vi.spyOn(ControlPlaneClient.prototype, 'setForeground').mockResolvedValue();
+    const forgetSession = vi.spyOn(ControlPlaneClient.prototype, 'forgetSession');
+    const options: StartTerminalOptions = {
+      ...opts, shell: 'powershell.exe', officeId: 'office-1', sessionId: 'session-1',
+    };
+    return {
+      backend, options, spawn, rawPty, start, stopClient, stopRuntime,
+      session, createSession, setForeground, forgetSession,
+    };
+  }
+
+  it('keeps existing sessions and the shared foreground alive after another session fails', async () => {
+    const fixture = makeBackend();
+    const { backend, options, createSession, session, rawPty } = fixture;
+    const first = await backend.start(options);
+    const error = new Error('resume transport failed');
+    createSession.mockRejectedValueOnce(error);
+    await expect(backend.start({ ...options, officeId: 'office-2', sessionId: 'session-2' })).rejects.toBe(error);
+    expect(fixture.stopClient).not.toHaveBeenCalled();
+    expect(fixture.stopRuntime).not.toHaveBeenCalled();
+    expect(session.disconnect).not.toHaveBeenCalled();
+    await first.submitPrompt!('still connected');
+    first.write('human input');
+    expect(session.send).toHaveBeenCalledWith({ prompt: 'still connected', mode: 'enqueue' });
+    expect(rawPty.write).toHaveBeenCalledWith('human input');
+    await backend.start({ ...options, sessionId: 'session-3' });
+    expect(fixture.spawn).toHaveBeenCalledOnce();
+    expect(fixture.setForeground).toHaveBeenCalledExactlyOnceWith('session-1');
+  });
+
+  it.each(['port discovery failed', 'control plane connection failed'])(
+    'cleans up and evicts an initially failed host: %s',
+    async (message) => {
+      const fixture = makeBackend();
+      const error = new Error(message);
+      fixture.start.mockRejectedValueOnce(error);
+      await expect(fixture.backend.start(fixture.options)).rejects.toBe(error);
+      expect(fixture.stopClient).toHaveBeenCalledOnce();
+      expect(fixture.stopRuntime).toHaveBeenCalledOnce();
+      expect(fixture.createSession).not.toHaveBeenCalled();
+      await fixture.backend.start(fixture.options);
+      expect(fixture.spawn).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not tear down a ready host when its first session fails', async () => {
+    const fixture = makeBackend();
+    fixture.createSession.mockRejectedValueOnce(new Error('session policy failed'));
+    await expect(fixture.backend.start(fixture.options)).rejects.toThrow('session policy failed');
+    expect(fixture.stopClient).not.toHaveBeenCalled();
+    expect(fixture.stopRuntime).not.toHaveBeenCalled();
+    await fixture.backend.start(fixture.options);
+    expect(fixture.spawn).toHaveBeenCalledOnce();
+    expect(fixture.setForeground).toHaveBeenCalledExactlyOnceWith('session-1');
+  });
+
+  it('disconnects only a failed foreground session and lets the next start claim foreground', async () => {
+    const fixture = makeBackend();
+    const error = new Error('foreground RPC failed');
+    fixture.setForeground.mockRejectedValueOnce(error);
+    await expect(fixture.backend.start(fixture.options)).rejects.toBe(error);
+    expect(fixture.forgetSession).toHaveBeenCalledExactlyOnceWith('session-1');
+    expect(fixture.session.disconnect).toHaveBeenCalledOnce();
+    expect(fixture.stopClient).not.toHaveBeenCalled();
+    expect(fixture.stopRuntime).not.toHaveBeenCalled();
+    await fixture.backend.start({ ...fixture.options, sessionId: 'session-2' });
+    expect(fixture.spawn).toHaveBeenCalledOnce();
+    expect(fixture.setForeground).toHaveBeenLastCalledWith('session-2');
+  });
+});
 
 describe('ui-server host working directory', () => {
   it('uses the office host cwd without changing the session cwd', () => {

@@ -10,6 +10,7 @@ export function createMockCopilotBridge(
     terminalWrite: vi.fn().mockResolvedValue({ success: true }),
     terminalSubmitAnswer: vi.fn().mockResolvedValue({ success: true }),
     terminalSubmitPrompt: vi.fn().mockResolvedValue({ success: true }),
+    onVoiceEvent: vi.fn().mockReturnValue(() => {}),
     terminalResize: vi.fn().mockResolvedValue({ success: true }),
     terminalKill: vi.fn().mockResolvedValue({ success: true }),
     terminalExists: vi.fn().mockResolvedValue(false),

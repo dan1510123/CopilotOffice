@@ -1,5 +1,6 @@
 import { Terminal } from '@xterm/xterm';
 import { teamsLabel } from './teamsIcon';
+import { voiceControls } from './voiceControls';
 import { FitAddon } from '@xterm/addon-fit';
 import { ZIndex } from '../config/zIndex';
 import { DEBUG_SPRITE_SERIOUS } from './TerminalOverlay';
@@ -783,6 +784,14 @@ export class SeriousTerminalController {
     const colorHex = `#${(options.color ?? 0x6f8ed8).toString(16).padStart(6, '0')}`;
     this.spriteNameEl.style.color = colorHex;
     this.renderAgentSprite(options.agentId, options.color ?? 0x6f8ed8);
+    let voiceHost = this.spriteCardEl.querySelector<HTMLElement>('[data-voice-host]');
+    if (!voiceHost) {
+      voiceHost = document.createElement('div');
+      voiceHost.setAttribute('data-voice-host', '');
+      this.spriteCardEl.appendChild(voiceHost);
+    }
+    voiceHost.innerHTML = options.launchMode === 'shell' ? ''
+      : voiceControls(options.agentId, officeManager.getAgentStatus(options.officeId, options.agentId)?.state === 'active');
   }
 
   private updateSessionIdDisplay(): void {

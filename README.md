@@ -17,6 +17,7 @@ A 2D pixel-art RPG-style desktop game where you walk around a virtual office and
 - **Teams remote agents** — bring any agent online in a Microsoft Teams channel thread; anyone can reply in-thread to drive the agent's terminal session and get answers posted back (feature-flagged)
 - **Office Orchestrator** — a concierge agent (its own always-gated Copilot session) that you chat with in natural language ("someone to review my code") and that proposes and, on your approval, brings the right office agent online for you; it can also list and switch between offices to find the right agent
 - **Multi-office management** — switch between projects with independent agent state and working directories per office
+- **Push-to-talk voice** — hold an active agent's voice button to dictate an English prompt locally; hear its reply with an installed local system voice
 - **Meeting Mode** — a private meeting room where Arthur decomposes a complex request into a structured, reviewable plan
 - **Fleet execution** — approved plans spin up parallel agent sessions in a dedicated v-team office
 - **Real-time status badges** — agent states (slacking → starting → ready ↔ waiting/thinking) with animated indicators
@@ -44,6 +45,31 @@ The terminal server (`electron/terminal/server.ts`) selects a backend via the `C
 - **`native-bridge`** (default) — one pinned native Copilot TUI per agent under node-pty; a bundled CLI extension bridges it to the app over an authenticated local broker for programmatic prompts, session control, ask_user answers, plan decisions and events
 - **`sdk`** — one headless Copilot CLI host per office with SDK sessions and a custom conversation renderer; used automatically (with a notice) when the native bridge is unavailable
 - **`node-pty`** — spawns the real Copilot TUI via a shell, one PTY per agent (always used for the local shell); human typing only — programmatic prompts (Teams, fleet, pre-seeded) require `native-bridge` or `sdk`
+
+### Push-to-talk voice
+
+Start an agent session, then hold **Hold to talk** on its card or terminal footer.
+Release to transcribe and send. A focused button also supports holding Space or
+Enter. Only one agent can use voice at once. **Stop voice** or Escape cancels
+recording/playback; switching offices or hiding the app cancels voice too.
+Recordings are limited to 30 seconds. Busy agents and pending questions must be
+handled in the terminal before sending a new voice prompt.
+
+Recognition uses English Whisper tiny through Transformers.js on your own device,
+in a worker (WebGPU when available, otherwise CPU/WASM). First use downloads public
+model files from Hugging Face and caches them in Electron's browser storage; wait
+for loading to finish, then hold again if you released during setup. Runtime WASM
+assets ship with the application. Microphone audio is not uploaded or saved to
+disk; only the transcribed prompt is sent to the existing Copilot session and
+retained in its normal conversation history. Local transcription has no API fees;
+Copilot prompts still consume your normal Copilot usage.
+
+Spoken replies require an installed **local English system voice**. If none is
+available, a visible error explains that the text reply remains in the terminal.
+No cloud speech fallback is used. The raw `node-pty` backend and local PC shell
+cannot receive voice prompts. Microphone permission and OS microphone access must
+be enabled. Voice questions do not resolve `ask_user` forms; use the existing
+terminal interaction for those.
 
 ## Getting Started
 

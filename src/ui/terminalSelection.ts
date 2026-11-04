@@ -8,15 +8,15 @@
 // wants the indicator to stay VISIBLE on screen but NOT be copied.
 //
 // Strategy (deliberately conservative to avoid breaking normal copy):
-//   - Only a *trailing* glyph from a focused allowlist of vertical-bar /
+//   - A trailing glyph from a focused allowlist of vertical-bar /
 //     block-drawing characters is treated as a scrollbar artifact.
+//   - Padded scrollbar glyphs inside soft-wrapped selections restore the row
+//     break that xterm omitted before the next indented row.
 //   - When found, the glyph and the run of padding spaces immediately before it
 //     (the gap the CLI leaves between content and the right edge) are removed.
 //   - Any line that does not end in an allowlisted glyph is returned unchanged.
 //
-// Ordinary text/code lines essentially never end in a lone block-drawing glyph,
-// so this cannot alter normal selections. We intentionally do NOT trimEnd every
-// line or reimplement xterm's selection-to-text logic.
+// We intentionally do NOT trimEnd every line or remove ordinary ASCII pipes.
 
 // Vertical-bar and block-drawing glyphs the CLI may use to draw a right-edge
 // scrollbar / thumb. Kept focused on column-fill glyphs.
@@ -54,6 +54,11 @@ function endsWithScrollbarGlyph(line: string): boolean {
 // has exactly one interior space, so requiring >= 2 distinguishes a right-edge
 // scrollbar (content sits far from the bar) from table/box borders.
 const MIN_SCROLLBAR_GAP = 2;
+
+const JOINED_SCROLLBAR_ROW = new RegExp(
+  ` {${MIN_SCROLLBAR_GAP},}[${[...SCROLLBAR_GLYPHS].join('')}](?= +\\S)`,
+  'g',
+);
 
 // Counts the run of padding spaces immediately before a trailing scrollbar
 // glyph. Returns -1 if the line does not end in an allowlisted glyph.
@@ -94,15 +99,18 @@ function stripTrailingScrollbar(line: string): string {
  *     the non-empty lines (a bar rendered down the right edge). In that case
  *     even tight thumb/full-width rows in the block are stripped.
  *
- * Lines that aren't stripped are returned byte-for-byte unchanged. Original
- * line endings (\n and \r\n) are preserved.
+ * xterm can join soft-wrapped rows without a newline. A padded scrollbar
+ * followed by an indented continuation restores that missing row break.
+ * Existing line endings (\n and \r\n) are preserved.
  */
 export function sanitizeTerminalSelection(text: string): string {
   if (!text) return text;
 
   // Split on \n while preserving \r so CRLF round-trips. We analyse the content
   // portion of each segment (everything before an optional trailing \r).
-  const segments = text.split('\n').map((segment) => {
+  const newline = text.includes('\r\n') ? '\r\n' : '\n';
+  const unwrapped = text.replace(JOINED_SCROLLBAR_ROW, (match) => `${match}${newline}`);
+  const segments = unwrapped.split('\n').map((segment) => {
     const hasCr = segment.endsWith('\r');
     return { content: hasCr ? segment.slice(0, -1) : segment, hasCr };
   });

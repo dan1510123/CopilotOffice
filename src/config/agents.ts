@@ -291,7 +291,7 @@ export const AGENTS: AgentConfig[] = [
 
 // ===== Snapshots of office-0 defaults (immutable) =====
 export const DEFAULT_AGENTS: readonly AgentConfig[] = [...AGENTS];
-const DEFAULT_RESERVE_MAP: Readonly<Record<string, AgentConfig>> = { ...RESERVE_AGENTS };
+export const DEFAULT_RESERVE_MAP: Readonly<Record<string, AgentConfig>> = { ...RESERVE_AGENTS };
 
 // ===== Random sprite pool — 20 diverse appearance presets =====
 export const RANDOM_POOL_CONFIGS: { heroConfig: HeroConfig; color: number }[] = [

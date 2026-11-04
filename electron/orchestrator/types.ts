@@ -54,10 +54,15 @@ export type BringOnlineOutcome =
   | 'denied'
   | 'invalid-target'
   | 'already-active'
+  | 'ambiguous-target'
+  | 'target-became-active'
   | 'failed';
 
 export interface BringOnlineResult {
   agentId: string;
+  officeId?: string;
+  sessionId?: string;
+  ready?: boolean;
   outcome: BringOnlineOutcome;
   message: string;
 }
@@ -209,6 +214,9 @@ export type ActOnOutcome =
   | 'restarted' // restart_agent success
   | 'taken-offline' // set_agent_teams_presence off / stop_agent variant
   | 'online-in-teams' // set_agent_teams_presence on
+  | 'paused'
+  | 'ambiguous-target'
+  | 'target-became-active'
   | 'title-set' // set_agent_title success
   | 'not-online' // target not online (send/answer/stop/restart/teams)
   | 'not-waiting' // answer_agent: target isn't awaiting input
@@ -225,6 +233,9 @@ export interface ActOnResult {
   message: string;
   /** Present for `online-in-teams` (US8 scenario 1). */
   threadWebUrl?: string;
+  sessionId?: string;
+  ready?: boolean;
+  activated?: boolean;
 }
 
 /** Outcome of the `switch_office` tool (ungated navigation). */
@@ -259,4 +270,3 @@ export interface TeamsAgentsPauseResult {
   count: number;
   message: string;
 }
-

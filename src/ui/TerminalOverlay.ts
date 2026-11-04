@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { teamsLabel } from './teamsIcon';
+import { voiceControls } from './voiceControls';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AgentConfig, ADMIN_AGENT_ID } from '../config/agents';
@@ -598,6 +599,9 @@ export class TerminalOverlay {
     // Show the SpriteCard
     if (this.spriteCardElement) {
       this.spriteCardElement.style.display = 'flex';
+      const voiceHost = this.spriteCardElement.querySelector('[data-voice-host]');
+      if (voiceHost) voiceHost.innerHTML = this.isReadOnly || this.launchMode === 'shell'
+        ? '' : voiceControls(agent.id, officeManager.getAgentStatus(officeId, agent.id)?.state === 'active');
     }
     this.applySpriteCardResponsiveStyles();
     this.updateMobileKeyboardButtonVisibility();
@@ -1079,6 +1083,11 @@ export class TerminalOverlay {
     `;
 
     injectUiKit();
+
+    const voiceHost = document.createElement('div');
+    voiceHost.setAttribute('data-voice-host', '');
+    voiceHost.style.cssText = 'display: flex; gap: 8px;';
+    buttonGrid.appendChild(voiceHost);
 
     const historyBtn = document.createElement('button');
     historyBtn.textContent = 'Session History';

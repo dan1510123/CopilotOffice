@@ -82,5 +82,6 @@ The persistence boundary now lives in `src/office/officePersistence.ts`:
 
 `OfficeManager`'s constructor accepts an optional port (defaults to `createBridgePersistencePort()`). The schema is unchanged; legacy backfill (`layout`, `seatedAgents`, UUID id → `office-N` reindexing, `index` field drop) lives in `deserializeOffices` and matches the prior inline `loadFromJson` behaviour exactly.
 
-Every `setAgent*` mutation also emits a structured `[lifecycle]` log line via `src/util/lifecycleLog.ts` — see `src-main.instructions.md` for the telemetry contract.
+`agentCatalog.ts` builds each office's roster from its own config and immutable defaults, never the mutable displayed `AGENTS` array. Ringleader seat requests use `ensureAgentSeat` and checked durable persistence before acknowledgment; NPC projection and session activation remain separate.
 
+Every `setAgent*` mutation also emits a structured `[lifecycle]` log line via `src/util/lifecycleLog.ts` — see `src-main.instructions.md` for the telemetry contract.

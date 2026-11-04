@@ -35,6 +35,31 @@ describe('sanitizeTerminalSelection', () => {
     expect(sanitizeTerminalSelection(input)).toBe('first command\nsecond command\nthird');
   });
 
+  it('restores joined command rows and removes their embedded scrollbar glyphs', () => {
+    const commands = [
+      "   $env:FIRST = 'first'",
+      "   $env:SECOND = 'second'",
+      "   $env:THIRD = 'third'",
+    ];
+    const input = commands.map((command) => command.padEnd(170) + '\u2503').join('');
+    expect(sanitizeTerminalSelection(input)).toBe(commands.join('\n'));
+  });
+
+  it('handles joined rows mixed with real newlines and a partial final row', () => {
+    const input = '   first       \u2503   second       \u2503   third\n\n   fourth       \u2503';
+    expect(sanitizeTerminalSelection(input)).toBe('   first\n   second\n   third\n\n   fourth');
+  });
+
+  it('uses CRLF for restored row breaks in a CRLF selection', () => {
+    const input = 'first   \u2503   second   \u2503\r\nlast';
+    expect(sanitizeTerminalSelection(input)).toBe('first\r\n   second\r\nlast');
+  });
+
+  it('preserves ordinary pipes, inline tables, and runs of block glyphs', () => {
+    const input = 'echo first  |  second\n\u2502 key \u2502 value \u2502\nprogress  ████  remaining';
+    expect(sanitizeTerminalSelection(input)).toBe(input);
+  });
+
   it('only strips the trailing glyph, not glyphs in the middle of a line', () => {
     expect(sanitizeTerminalSelection('a │ b')).toBe('a │ b');
   });

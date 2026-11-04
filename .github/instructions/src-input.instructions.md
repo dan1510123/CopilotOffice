@@ -73,6 +73,9 @@ The two phases are **independent**: F10 can be active while shortcuts are inacti
 
 - **NEVER** enable/disable Phaser keyboard directly — always go through `InputManager`
 - All `InputManager` switch methods are idempotent; duplicate calls are harmless
+- Overlapping voice/modal input suspensions use distinct owners: pass `'voice'`
+  for voice capture and leave the default owner for existing overlays. Release
+  only your own owner; input stays suspended until every owner has released.
 - `GlobalInputListener` must **NEVER** call `preventDefault` or `stopPropagation` on regular keys (reload shortcuts are the sole exception)
 - `TerminalInputListener` phases are independent — do not assume one implies the other
 - Focus transfer to xterm requires a delay (~100 ms); use `focusTerminalXterm()` which retries

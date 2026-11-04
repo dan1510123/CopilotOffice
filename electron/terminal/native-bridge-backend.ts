@@ -282,6 +282,7 @@ function defaultKillTree(pty: NativePty): boolean {
 
 /** One agent's native TUI plus its authenticated bridge channel. */
 export class NativeBridgeProcess implements TerminalProcess {
+  readonly supportsProgrammaticControl = true;
   private closed = false;
   /** Result of the one OS-level kill attempt made via {@link kill}. A failed
    *  attempt must not be masked as success by the `closed` short-circuit on a

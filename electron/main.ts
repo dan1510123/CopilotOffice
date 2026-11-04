@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, Notification, safeStorage } from 'electron';
+import { app, BrowserWindow, crashReporter, ipcMain, Menu, Notification, safeStorage } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
@@ -29,6 +29,20 @@ import { registerTeamsIpc, makeStatusEmitter, makeToastEmitter } from './teams/t
 import { OrchestratorSessionManager } from './orchestrator/orchestratorSessionManager';
 import { registerOrchestratorIpc, makeOrchestratorEmitter } from './orchestrator/orchestratorIpc';
 import { FileOrchestratorTranscriptStore } from './orchestrator/orchestratorTranscriptStore';
+import { registerVoicePermissions } from './voicePermissions';
+import { installProcessDiagnostics } from './diagnostics';
+import { AgentLifecycle } from './orchestrator/agentLifecycle';
+import { deserializeOffices } from '../src/office/officePersistence';
+import { resolveOfficeAgentWorkingDir } from '../src/office/launchWorkingDir';
+import { parseChannelLink } from './teams/channelLink';
+import { resolveChannel } from './teams/channelResolver';
+
+const diagnosticLog = installProcessDiagnostics('main');
+crashReporter.start({ uploadToServer: false });
+diagnosticLog('native-crash-directory', { path: app.getPath('crashDumps') });
+app.on('child-process-gone', (_event, details) => diagnosticLog('child-process-gone', details));
+app.on('before-quit', () => diagnosticLog('before-quit'));
+app.on('will-quit', () => diagnosticLog('will-quit'));
 
 // ── Feature Flags ───────────────────────────────────────────────
 // Defaults preserve existing local workflow. Installed CLI launcher sets both to "0".
@@ -122,6 +136,11 @@ function createWindow(): void {
   });
 
   mainWindow.maximize();
+  mainWindow.webContents.on('render-process-gone', (_event, details) => diagnosticLog('renderer-gone', details));
+  mainWindow.on('unresponsive', () => diagnosticLog('window-unresponsive'));
+  mainWindow.on('responsive', () => diagnosticLog('window-responsive'));
+  mainWindow.on('close', () => diagnosticLog('window-close-request'));
+  registerVoicePermissions(mainWindow, path.join(__dirname, '../../src/index.html'));
   mainWindow.loadFile(path.join(__dirname, '../../src/index.html'));
 
   if (OPEN_DEVTOOLS_ON_START) {
@@ -143,6 +162,7 @@ function createWindow(): void {
   });
 
   mainWindow.on('closed', () => {
+    diagnosticLog('window-closed');
     // Cleanup is handled by 'before-quit' — just clear the reference.
     if (watcherProcess) {
       watcherProcess.kill();
@@ -191,6 +211,60 @@ app.whenReady().then(async () => {
     5000,
   );
   registerOrchestratorIpc({ manager: orchestratorManager });
+  const activationSettingsStore = createTeamsSettingsStore(process.cwd());
+  const agentLifecycle = new AgentLifecycle({
+    getOffices: async () => {
+      const loaded = officeStore.load();
+      if (!loaded.success) throw new Error(loaded.error ?? 'Office catalog could not be loaded.');
+      if (loaded.data === null) return [];
+      const parsed: unknown = JSON.parse(loaded.data);
+      if (!parsed || typeof parsed !== 'object' || !('offices' in parsed) || !Array.isArray(parsed.offices)) {
+        throw new Error('Office catalog is malformed.');
+      }
+      return deserializeOffices(loaded.data).offices;
+    },
+    getStatuses: (officeId) => relay.mainAgentStatuses(officeId),
+    ensureSeat: (officeId, agentId, deskId, deadline) => orchestratorManager.ensureSeat(officeId, agentId, deskId, deadline),
+    ensureSession: (agent, requireInactive, deadline) => {
+      const launch = resolveOfficeAgentWorkingDir(agent.office, agent.agentId);
+      if (!launch) throw new Error('Agent launch configuration is unavailable.');
+      return relay.mainStartBackground(agent.officeId, agent.agentId, launch.workingDir,
+        agent.office.workingDirectory, requireInactive, deadline);
+    },
+    teamsPreflight: async (agent) => {
+      if (!teamsService) throw new Error('Teams service is unavailable.');
+      const settings = activationSettingsStore.load();
+      if (!settings.enabled) throw new Error('Teams is disabled in settings.');
+      if (!parseChannelLink(resolveChannel({ teamsChannelUrl: agent.office.teamsChannelUrl }, settings))) {
+        throw new Error('No valid Teams channel is configured for this office.');
+      }
+    },
+    registerTeams: (agent, sessionId, deadline) => {
+      if (!teamsService) throw new Error('Teams service is unavailable.');
+      const launch = resolveOfficeAgentWorkingDir(agent.office, agent.agentId);
+      if (!launch) throw new Error('Agent launch configuration is unavailable.');
+      return teamsService.register({
+        officeId: agent.officeId, agentId: agent.agentId, displayName: agent.name,
+        workingDir: launch.workingDir, readySessionId: sessionId, deadline,
+        officeChannelUrl: agent.office.teamsChannelUrl,
+        officeMentionType: agent.office.teamsMentionType, officeMentionValue: agent.office.teamsMentionValue,
+      });
+    },
+    stopTeams: (agent) => {
+      if (!teamsService) throw new Error('Teams service is unavailable.');
+      return teamsService.goOffline(agent.officeId, agent.agentId);
+    },
+    teamsPresence: async (agent) => {
+      const enabled = activationSettingsStore.load().enabled;
+      if (enabled && !teamsService) throw new Error('Teams service is unavailable.');
+      const binding = teamsService?.getStatus(agent.officeId, agent.agentId);
+      return { enabled, online: !!binding?.online, ...(binding?.threadWebUrl ? { threadWebUrl: binding.threadWebUrl } : {}) };
+    },
+  });
+  orchestratorManager.setAgentLifecycle(agentLifecycle);
+  ipcMain.handle('agent:activate', (_event, args: { officeId: string; agentId: string }) =>
+    agentLifecycle.bringOnline(args.agentId, args.officeId));
+  ipcMain.handle('orchestrator:candidates:list', (_event, officeId?: string) => agentLifecycle.candidates(officeId));
 
   await relay.spawnServer(__dirname);
 
@@ -451,4 +525,3 @@ app.on('before-quit', (event) => {
     });
   });
 });
-

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { TeamsService } from '../../../electron/teams/teamsService';
+import { UiServerProcess } from '../../../electron/terminal/terminal-backend';
 import { InMemoryTeamsOnlineStore } from '../../../electron/teams/onlineAgentsStore';
 import type { GraphSender } from '../../../electron/teams/graphClient';
 import type { MessageSource } from '../../../electron/teams/chatsvcClient';
@@ -184,6 +185,50 @@ describe('ask-user hardening h1 — precise SDK local-resolution', () => {
 });
 
 describe('ask-user hardening h2 — re-openable on transport failure', () => {
+  it.each([true, false])('handles the UI-server resolution result without a local SDK resolver (success=%s)', async (success) => {
+    const handlePendingUserInput = vi.fn(async (_request: {
+      requestId: string;
+      response: { answer: string; wasFreeform: boolean };
+    }) => ({ success }));
+    const send = vi.fn(async () => 'msg-id');
+    const write = vi.fn();
+    const proc = new UiServerProcess(
+      'session-1',
+      { send, disconnect: vi.fn(), rpc: { ui: { handlePendingUserInput } } },
+      { status: 'ready', rawPty: { write } } as never,
+      { setForeground: vi.fn() } as never,
+    );
+    const h = makeHarness({
+      submitAnswer: async (_office, _agent, payload) => proc.submitAnswer(payload),
+    });
+    await online(h);
+    askUser(h, 'req-ui');
+    await tick();
+
+    h.inbound()(reply('A'));
+    await tick();
+
+    expect(handlePendingUserInput).toHaveBeenCalledExactlyOnceWith({
+      requestId: 'req-ui',
+      response: { answer: 'PostgreSQL', wasFreeform: false },
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    if (success) {
+      expect(h.replies.join('\n')).not.toContain("couldn't deliver");
+    } else {
+      expect(h.replies.join('\n')).toContain("couldn't deliver");
+      handlePendingUserInput.mockResolvedValue({ success: true });
+      h.inbound()(reply('B'));
+      await tick();
+      expect(handlePendingUserInput).toHaveBeenLastCalledWith({
+        requestId: 'req-ui',
+        response: { answer: 'MySQL', wasFreeform: false },
+      });
+    }
+    await h.service.stop();
+  });
+
   it('keeps the question open and re-prompts when submitAnswer fails, then resolves on retry', async () => {
     let failNext = true;
     const delivered: Array<{ answer: string; wasFreeform: boolean }> = [];

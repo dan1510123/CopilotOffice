@@ -118,11 +118,14 @@ describe('TeamsService orchestrator permission relay (spec 016 B)', () => {
   });
 
   it('auto-denies when nobody replies within the timeout', async () => {
-    const { fireEvent, respondPermission } = await startWithBinding();
+    const { fireEvent, respondPermission, replyToThread } = await startWithBinding();
     fireEvent(PERM_EVENT);
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
     expect(respondPermission).toHaveBeenCalledWith(ORCHESTRATOR_OFFICE_ID, ORCHESTRATOR_AGENT_ID, 'tc-42', 'deny');
+    const html = (replyToThread.mock.calls.at(-1)?.[0] as { html: string }).html;
+    expect(html).toContain('Approval timed out after 5 min');
+    expect(html).toContain('the action was not executed');
   });
 
   it('an unrecognized reply leaves the gate pending (no decision)', async () => {

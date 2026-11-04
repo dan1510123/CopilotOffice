@@ -49,19 +49,29 @@ function teamsTool(deps: OrchestratorToolDeps) {
 }
 
 describe('set_agent_teams_presence default target', () => {
-  it('defaults a blank agentId to the next dormant candidate when bringing online', async () => {
+  it('selects the only inactive candidate and carries new-agent intent and office scope', async () => {
     const { deps, requestTeamsPresence, requestCandidates } = makeDeps([
       candidate('office-6-reserve-4', 'Rhys'),
-      candidate('office-6-reserve-5', 'Luna'),
     ]);
     const res = (await teamsTool(deps)({ online: true }, {} as any)) as ActOnResult;
     expect(requestCandidates).toHaveBeenCalledTimes(1);
     expect(requestTeamsPresence).toHaveBeenCalledWith({
       agentId: 'office-6-reserve-4',
-      officeId: undefined,
+      officeId: 'office-3',
       online: true,
+      requireInactive: true,
     });
+
     expect(res.outcome).toBe('online-in-teams');
+  });
+
+  it('does not arbitrarily select the first of multiple inactive candidates', async () => {
+    const { deps, requestTeamsPresence } = makeDeps([
+      candidate('one', 'Rhys'), candidate('two', 'Luna'),
+    ]);
+    const result = await teamsTool(deps)({ online: true }, {} as any) as ActOnResult;
+    expect(result.outcome).toBe('ambiguous-target');
+    expect(requestTeamsPresence).not.toHaveBeenCalled();
   });
 
   it('passes an explicit agentId straight through without listing candidates', async () => {

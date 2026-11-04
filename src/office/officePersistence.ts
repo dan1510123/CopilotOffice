@@ -317,6 +317,7 @@ export interface OfficePersistencePort {
   loadDurable(): Promise<string | null>;
   /** Write the durable JSON payload (file-backed). Best-effort. */
   saveDurable(json: string): Promise<void>;
+  saveDurableChecked?(json: string): Promise<void>;
   /** Notify the host that a new office session file should be created. */
   createOfficeSession(officeId: string): Promise<void>;
   /** Notify the host that an office's session file should be removed. */
@@ -369,6 +370,12 @@ export function createBridgePersistencePort(): OfficePersistencePort {
       } catch (e) {
         console.warn('[OfficePersistence] saveOffices failed:', e);
       }
+    },
+    async saveDurableChecked(json: string): Promise<void> {
+      const bridge = getBridge();
+      if (!bridge?.saveOffices) throw new Error('Office persistence bridge is unavailable.');
+      const result = await bridge.saveOffices(json);
+      if (result?.success !== true) throw new Error(result?.error ?? 'Failed to persist office state.');
     },
     async createOfficeSession(officeId: string): Promise<void> {
       const bridge = getBridge();

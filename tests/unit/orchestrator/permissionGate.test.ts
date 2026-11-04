@@ -67,24 +67,27 @@ describe('orchestrator permission gate', () => {
     await expect(result).resolves.toEqual({ kind: 'approved' });
   });
 
-  it('resolves as denied-interactively-by-user when the user denies', async () => {
+  it('rejects with runtime-compatible feedback when the user denies', async () => {
     const { manager, captured } = makeManager();
     const result = handlerOf(manager)(bringOnlineRequest()) as Promise<PermissionRequestResult>;
     manager.respondToPermission({ toolCallId: captured[0].toolCallId, decision: 'deny' });
-    await expect(result).resolves.toEqual({ kind: 'denied-interactively-by-user' });
+    await expect(result).resolves.toEqual({
+      kind: 'reject',
+      feedback: 'Approval was denied or expired. The action was not executed. Do not retry unless the user asks.',
+    });
   });
 
   it('resolves pending requests as deny on dismiss (close)', async () => {
     const { manager } = makeManager();
     const result = handlerOf(manager)(bringOnlineRequest()) as Promise<PermissionRequestResult>;
     manager.close();
-    await expect(result).resolves.toEqual({ kind: 'denied-interactively-by-user' });
+    await expect(result).resolves.toEqual({ kind: 'reject' });
   });
 
   it('denies any non-bring_agent_online request by default', () => {
     const { manager, captured } = makeManager();
     const other = handlerOf(manager)(bringOnlineRequest({ toolName: 'something_else' }));
-    expect(other).toEqual({ kind: 'denied-interactively-by-user' });
+    expect(other).toEqual({ kind: 'reject' });
     expect(captured).toHaveLength(0);
   });
 

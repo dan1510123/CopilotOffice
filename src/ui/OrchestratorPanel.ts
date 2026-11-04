@@ -4,8 +4,8 @@
 // A DOM-modal overlay that dims the game and hosts an xterm.js chat with the
 // orchestrator SDK session (main process). The user describes what they need in
 // natural language; the orchestrator proposes an agent and raises an approve/deny
-// prompt; approval brings that agent online — always gated, regardless of the
-// global YOLO toggle.
+// prompt when Ringleader settings require write approval, independent of the
+// global agent YOLO toggle.
 //
 // Focus is coordinated through optional `onOpen` / `onClose` callbacks the host
 // wires to the `settings:open` / `settings:close` event bus

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { defaultDashboard } from '../../../src/layouts/default/DefaultDashboard';
 import { defaultClickHandler } from '../../../src/layouts/default/DefaultClickHandler';
 import { AgentConfig } from '../../../src/config/agents';
-import { OfficeData } from '../../../src/office/officeManager';
+import { OfficeManager, type AgentStatus, type OfficeData } from '../../../src/office/officeManager';
+import { createNoopPersistencePort } from '../../../src/office/officePersistence';
+import { STATUS_PRESENTATION } from '../../../src/config/agentStatusPresentation';
 import { DashboardRenderContext } from '../../../src/layouts/types';
 
 // Minimal AgentConfig stub. The dashboard renderer reads `color` and a handful
@@ -42,6 +44,17 @@ function ctx(meta: Record<string, { title: string; sessionId?: string }>): Dashb
 }
 
 describe('DefaultDashboard — partial refresh (renderDynamicRegions)', () => {
+  it('keeps compact voice controls outside the session action row and gates inactive agents', () => {
+    const context = ctx({});
+    document.body.innerHTML = defaultDashboard.renderCards(context);
+    const voice = document.querySelector<HTMLButtonElement>('[data-voice-agent="a1"]')!;
+    expect(voice.disabled).toBe(false);
+    expect(voice.closest('.session-meta-panel')).toBeNull();
+    expect(document.querySelector('[data-agent="pc-terminal"] [data-voice-agent]')).toBeNull();
+    context.office!.agents.get('a1')!.state = 'slacking';
+    document.body.innerHTML = defaultDashboard.renderCards(context);
+    expect(document.querySelector<HTMLButtonElement>('[data-voice-agent="a1"]')!.disabled).toBe(true);
+  });
   it('exposes stable data-* wrappers for each dynamic region and the session panel', () => {
     const html = defaultDashboard.renderCards(ctx({ a1: { title: 'My session' } }));
     expect(html).toContain('data-badge-slot-agent="a1"');
@@ -317,9 +330,15 @@ describe('DefaultDashboard — user flag (Needs attention) marker', () => {
   // Adaptive chip emphasis: exactly one pill leads. When the status is itself an
   // attention state (Done/Waiting) the status pill leads; when the status is quiet
   // (e.g. Ready after acknowledging Done) the flag pill leads instead.
-  function statusFlagCtx(st: any): DashboardRenderContext {
-    const agents = new Map<string, any>();
-    agents.set('a1', st);
+  function statusFlagCtx(st: Partial<AgentStatus>): DashboardRenderContext {
+    const agents = new Map<string, AgentStatus>();
+    agents.set('a1', {
+      agentId: 'a1', state: 'active', subState: 'ready',
+      thinkingDetail: null, currentTool: null, completionPendingAck: false,
+      unreadCount: 0, lastEvent: null, activityStartTime: null,
+      lastCompletedAction: null, recentActions: [], taskSummary: null,
+      ...st,
+    });
     const off = {
       config: { id: 'office-0', name: 'O', workingDirectory: '.', createdAt: 1, layout: 'default' as const, seatedAgents: [] },
       agents,
@@ -364,6 +383,84 @@ describe('DefaultDashboard — user flag (Needs attention) marker', () => {
     expect(flagPillIdx).toBeLessThan(statusPillIdx);
     // The leading flag pill carries the emphasis glow (box-shadow on the flag var).
     expect(html).toContain('box-shadow: 0 0 14px -2px var(--co-flag)');
+  });
+
+  it.each([
+    { key: 'done', selected: false },
+    { key: 'done', selected: true },
+    { key: 'waiting', selected: false },
+    { key: 'waiting', selected: true },
+  ] as const)('prioritizes $key over Flagged in full and partial cards (selected=$selected)', ({ key, selected }) => {
+    const context = statusFlagCtx({
+      subState: key === 'done' ? 'ready' : 'waiting',
+      completionPendingAck: key === 'done',
+    });
+    context.selectedAgentId = selected ? 'a1' : null;
+    document.body.innerHTML = defaultDashboard.renderCards(context);
+    const card = document.querySelector<HTMLElement>('.agent-card[data-agent="a1"]')!;
+    const banner = card.querySelector<HTMLElement>('[data-attn-banner-agent="a1"]')!;
+    const statusPanel = card.querySelector<HTMLElement>('[data-status-panel-agent="a1"]')!;
+    const color = STATUS_PRESENTATION[key].colorHex;
+    const bannerText = key === 'done' ? 'DONE' : 'NEEDS YOU';
+
+    expect(banner.textContent).toContain(bannerText);
+    expect(banner.textContent).not.toContain('FLAGGED');
+    expect(card.getAttribute('style')).toContain(`border: 1.5px solid ${color}`);
+    expect(card.getAttribute('style')).toContain(`linear-gradient(115deg, ${color}18`);
+    expect(statusPanel.textContent!.indexOf(STATUS_PRESENTATION[key].label))
+      .toBeLessThan(statusPanel.textContent!.indexOf('Flagged'));
+    expect(card.querySelector('.session-flag-btn')?.textContent).toContain('Resolve');
+
+    const regions = defaultDashboard.renderDynamicRegions!(context)!;
+    const cardRegion = regions.find(r => r.selector === '.agent-card[data-agent="a1"]')!;
+    const bannerRegion = regions.find(r => r.selector === '[data-attn-banner-agent="a1"]')!;
+    expect(cardRegion.style?.borderColor).toBe(color);
+    expect(cardRegion.style?.background).toContain(`linear-gradient(115deg, ${color}18`);
+    expect(bannerRegion.html).toBe(banner.innerHTML);
+    expect(bannerRegion.html).not.toContain('FLAGGED');
+  });
+
+  it.each(['done', 'waiting'] as const)('preserves the flag and live session when opening a %s card', (key) => {
+    localStorage.clear();
+    const manager = new OfficeManager(createNoopPersistencePort());
+    manager.ensureDefaultOffice();
+    const officeId = manager.currentOfficeId!;
+    const agentId = 'generalist';
+    manager.setAgentReady(officeId, agentId);
+    manager.toggleAgentFlag(officeId, agentId);
+    manager.assignSessionToOffice('flagged-session', officeId);
+    if (key === 'done') manager.setAgentDonePendingAck(officeId, agentId);
+    else manager.setAgentWaiting(officeId, agentId, 'ask_user');
+    const context: DashboardRenderContext = {
+      ...statusFlagCtx({}),
+      agents: [agent(agentId)],
+      office: manager.getOffice(officeId)!,
+      flaggedAgentIds: manager.getFlaggedAgentIds(officeId),
+      selectedAgentId: null,
+    };
+    const renderBanner = () => {
+      document.body.innerHTML = defaultDashboard.renderCards(context);
+      return document.querySelector(`[data-attn-banner-agent="${agentId}"]`)!.textContent;
+    };
+    expect(renderBanner()).toContain(key === 'done' ? 'DONE' : 'NEEDS YOU');
+
+    defaultClickHandler.handleCardClick(agentId, {
+      setSelectedAgent: id => { context.selectedAgentId = id; },
+      clearUnread: id => manager.clearUnread(officeId, id),
+      updateContent: () => {},
+      emitOpenTerminal: id => { manager.acknowledgeAgentCompletion(officeId, id); },
+    });
+
+    expect(manager.isAgentFlagged(officeId, agentId)).toBe(true);
+    expect(manager.getAgentStatus(officeId, agentId)).toMatchObject({
+      state: 'active', subState: key === 'done' ? 'ready' : 'waiting',
+      completionPendingAck: false,
+    });
+    expect(manager.getOfficeForSession('flagged-session')).toBe(officeId);
+    expect(renderBanner()).toContain(key === 'done' ? 'FLAGGED' : 'NEEDS YOU');
+    const regions = defaultDashboard.renderDynamicRegions!(context)!;
+    const cardRegion = regions.find(r => r.selector === `.agent-card[data-agent="${agentId}"]`)!;
+    expect(cardRegion.style?.borderColor).toBe(key === 'done' ? 'var(--co-flag)' : STATUS_PRESENTATION.waiting.colorHex);
   });
 
   it('offers the flag button even for a slacking (no-session) agent', () => {
