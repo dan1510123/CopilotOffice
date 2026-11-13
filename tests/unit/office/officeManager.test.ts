@@ -280,6 +280,20 @@ describe('office/officeManager', () => {
   });
 
   describe('user flag markers (Flagged / Needs attention)', () => {
+    it('clears only the requested flag persistently and never flags an unflagged session', () => {
+      const manager = new OfficeManager();
+      manager.ensureDefaultOffice();
+      manager.toggleAgentFlag('office-0', 'generalist');
+      manager.toggleAgentFlag('office-0', 'debugger');
+
+      manager.clearAgentFlag('office-0', 'generalist');
+      manager.clearAgentFlag('office-0', 'generalist');
+      expect(manager.isAgentFlagged('office-0', 'generalist')).toBe(false);
+      expect(manager.isAgentFlagged('office-0', 'debugger')).toBe(true);
+      const persisted = JSON.parse(localStorage.getItem('copilot-offices')!);
+      expect(persisted.offices[0].flaggedAgents).toEqual(['debugger']);
+    });
+
     it('toggles a flag on and off, returning the new state', () => {
       const manager = new OfficeManager();
       manager.ensureDefaultOffice();

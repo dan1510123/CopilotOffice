@@ -3163,11 +3163,13 @@ async function closeSessionFromOverview(agentId: string): Promise<void> {
   if (!window.copilotBridge) return;
   const officeId = officeManager.currentOfficeId || 'office-0';
   try {
-    await window.copilotBridge.resetSession(officeId, agentId);
+    const result = await window.copilotBridge.resetSession(officeId, agentId);
+    if (!result.success) throw new Error('Session close was unsuccessful');
   } catch (error) {
     console.warn(`[Office] Failed to close session from overview for ${agentId}:`, error);
     return;
   }
+  officeManager.clearAgentFlag(officeId, agentId);
   // Optimistic local state — the server's status event will reconcile.
   const meta = cachedSessionMeta[agentId];
   if (meta) {

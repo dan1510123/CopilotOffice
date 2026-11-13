@@ -636,6 +636,10 @@ export class OfficeManager {
     return new Set(this.offices.get(officeId)?.config.flaggedAgents ?? []);
   }
 
+  clearAgentFlag(officeId: string, agentId: string): void {
+    if (this.isAgentFlagged(officeId, agentId)) this.toggleAgentFlag(officeId, agentId);
+  }
+
   /**
    * Toggle an agent's flag. Returns the new flagged state (true = now flagged).
    * Persists on every change. No-op returns current state when the office is

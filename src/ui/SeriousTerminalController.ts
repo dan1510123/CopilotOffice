@@ -967,11 +967,16 @@ export class SeriousTerminalController {
 
   private async handleCloseSession(): Promise<void> {
     if (!window.copilotBridge || !this.activeOfficeId || !this.activeAgentId) return;
+    const officeId = this.activeOfficeId;
+    const agentId = this.activeAgentId;
     try {
-      await window.copilotBridge.resetSession(this.activeOfficeId, this.activeAgentId);
+      const result = await window.copilotBridge.resetSession(officeId, agentId);
+      if (!result.success) throw new Error('Session close was unsuccessful');
+      officeManager.clearAgentFlag(officeId, agentId);
       this.terminal?.writeln('\r\n[session closed]');
     } catch {
       this.terminal?.writeln('\r\n[failed to close session]');
+      return;
     }
     await this.closeView({ detach: true });
   }
