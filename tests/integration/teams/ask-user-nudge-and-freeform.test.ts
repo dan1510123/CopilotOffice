@@ -127,6 +127,7 @@ describe('nudge + freeform + race (US2)', () => {
     const joined = h.replies.join('\n');
     expect(joined).toContain('Alpha'); // nudge re-lists options
     expect(joined).toContain('Beta');
+    expect(joined).not.toContain('✅ Answered.');
 
     // still pending → a valid label now resolves it
     h.inbound()(reply('B'));
@@ -151,6 +152,7 @@ describe('nudge + freeform + race (US2)', () => {
       wasFreeform: true,
     });
     expect(h.submitted).toHaveLength(0);
+    expect(h.replies.filter((html) => html.includes('✅ Answered.'))).toHaveLength(1);
   });
 
   it('near-simultaneous double reply → exactly one submitAnswer (SC-004)', async () => {
@@ -164,5 +166,6 @@ describe('nudge + freeform + race (US2)', () => {
     await tick(60);
 
     expect(h.answers).toHaveLength(1);
+    expect(h.replies.filter((html) => html.includes('✅ Answered.'))).toHaveLength(1);
   });
 });

@@ -2220,6 +2220,7 @@ export class TeamsService {
       tlog(`answer → @${record.binding.handle}: label "${matched.label}" ⇒ "${truncate(matched.text, 60)}"`);
       const ok = await this.submitAnswerSafe(record, matched.text, false);
       this.settleResolution(record, ok);
+      if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered.`);
       return;
     }
 
@@ -2229,6 +2230,7 @@ export class TeamsService {
       tlog(`answer → @${record.binding.handle}: freeform "${truncate(rawText, 60)}"`);
       const ok = await this.submitAnswerSafe(record, rawText.trim(), true);
       this.settleResolution(record, ok);
+      if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered.`);
       return;
     }
 

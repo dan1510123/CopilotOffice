@@ -216,8 +216,10 @@ describe('ask-user hardening h2 — re-openable on transport failure', () => {
     expect(write).not.toHaveBeenCalled();
     if (success) {
       expect(h.replies.join('\n')).not.toContain("couldn't deliver");
+      expect(h.replies.filter((html) => html.includes('✅ Answered.'))).toHaveLength(1);
     } else {
       expect(h.replies.join('\n')).toContain("couldn't deliver");
+      expect(h.replies.join('\n')).not.toContain('✅ Answered.');
       handlePendingUserInput.mockResolvedValue({ success: true });
       h.inbound()(reply('B'));
       await tick();
@@ -251,10 +253,12 @@ describe('ask-user hardening h2 — re-openable on transport failure', () => {
     await tick(40);
     expect(delivered).toHaveLength(0);
     expect(h.replies.join('\n').toLowerCase()).toMatch(/couldn.t deliver|reply again/);
+    expect(h.replies.join('\n')).not.toContain('✅ Answered.');
 
     // Second reply for the SAME still-open question now succeeds.
     h.inbound()(reply('B'));
     await tick(40);
     expect(delivered).toEqual([{ answer: 'MySQL', wasFreeform: false }]);
+    expect(h.replies.filter((html) => html.includes('✅ Answered.'))).toHaveLength(1);
   });
 });
