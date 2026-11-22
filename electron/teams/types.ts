@@ -97,7 +97,7 @@ export interface OnlineAgentBinding {
    * tool) — distinct from a binding that went offline for any other reason
    * (session replaced/exited). `online` is also false while paused, but this
    * flag additionally tells `reconcile()`'s periodic auto-reconnect pass to
-   * SKIP it, so a paused agent stays paused until an explicit resume (instead
+   * SKIP it, so a paused agent stays paused until an explicit or in-thread resume (instead
    * of silently reconnecting on the next tick). Never set for the orchestrator's
    * synthetic binding — pausing agent connections never touches it.
    */

@@ -1438,20 +1438,27 @@ export class TerminalOverlay {
 
     // Snapshot office ID — see handleNewSession comment for rationale
     const officeId = this.attachedOfficeId ?? this.getOfficeId();
+    const agentId = this.currentAgentId;
     console.log(`[TerminalOverlay] handleCloseSession: agent=${this.currentAgentId}, office=${officeId}`);
 
     perfMark('overlay', 'session:close-request', `${officeId}:${this.currentAgentId}`);
     try {
       const result = await withTimeout(
-        window.copilotBridge.resetSession(officeId, this.currentAgentId),
+        window.copilotBridge.resetSession(officeId, agentId),
         IPC_TIMEOUT, 'resetSession'
       );
-      if (result.success && result.sessionId) {
+      if (!result.success) throw new Error('Session close was unsuccessful');
+      officeManager.clearAgentFlag(officeId, agentId);
+      if (result.sessionId) {
         this.sessionId = result.sessionId;
         this.updateSessionDisplay();
         this.updateSessionTitleDisplay(null);
       }
-    } catch { /* ignore */ }
+    } catch (error) {
+      console.warn('[TerminalOverlay] Failed to close session:', error);
+      showClipboardToast('Failed to close session', 'error');
+      return;
+    }
     perfMark('overlay', 'session:close-done', `${officeId}:${this.currentAgentId}`);
 
     // Notify the app to set this agent to slacking

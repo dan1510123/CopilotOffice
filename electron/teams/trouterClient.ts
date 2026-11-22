@@ -25,6 +25,7 @@ const V2_REGISTRAR = 'https://teams.cloud.microsoft/registrar/prod/V2/registrati
 const ORIGIN = 'https://teams.cloud.microsoft';
 const HEARTBEAT_MS = 30_000;
 const REREGISTER_MS = 45 * 60 * 1000;
+const RECONNECT_MS = 5000;
 
 interface TrouterConnected {
   surl?: string;
@@ -121,6 +122,7 @@ export function parseEventMessage(body: unknown): InboundMessage | null {
 export class TrouterClient implements MessageSource {
   public health: 'connected' | 'disconnected' | 'error' = 'disconnected';
   private ws: WebSocket | null = null;
+  private generation = 0;
   private running = false;
   private frameCounter = 0;
   private surl = '';
@@ -138,20 +140,24 @@ export class TrouterClient implements MessageSource {
 
   async start(onMessage: (m: InboundMessage) => void): Promise<void> {
     this.onMessage = onMessage;
+    if (this.running) return;
     this.running = true;
-    await this.connect();
+    await this.connect(++this.generation);
   }
 
   async stop(): Promise<void> {
     this.running = false;
+    this.generation += 1;
     this.clearTimers();
-    if (this.ws) {
+    const ws = this.ws;
+    this.ws = null;
+    this.onMessage = null;
+    if (ws) {
       try {
-        this.ws.close();
+        ws.close();
       } catch {
         /* ignore */
       }
-      this.ws = null;
     }
     this.health = 'disconnected';
   }
@@ -168,12 +174,24 @@ export class TrouterClient implements MessageSource {
     if (!this.running || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.running) this.connect().catch((e) => twarn('Trouter reconnect failed:', e.message));
-    }, 5000);
+      if (this.running) void this.connect(this.generation);
+    }, RECONNECT_MS);
   }
 
-  private async connect(): Promise<void> {
-    const token = await this.tokens.getToken('ic3');
+  private async connect(generation: number): Promise<void> {
+    try {
+      const token = await this.tokens.getToken('ic3');
+      if (this.generation !== generation) return;
+      this.openSocket(token);
+    } catch (e) {
+      if (this.generation !== generation) return;
+      this.health = 'error';
+      twarn('Trouter connect failed:', (e as Error).message);
+      this.scheduleReconnect();
+    }
+  }
+
+  private openSocket(token: string): void {
     const epid = crypto.randomUUID();
     this.registrationId = epid;
     const tc = JSON.stringify({ cv: '2026.03.01.1', ua: 'TeamsCDL', hr: '', v: '1415/26020101120' });
@@ -196,17 +214,21 @@ export class TrouterClient implements MessageSource {
     });
 
     ws.on('message', (data: WebSocket.RawData) => {
+      if (this.ws !== ws) return;
       this.handleRaw(String(data), token, epid).catch((e) =>
         twarn('Trouter frame handler error:', (e as Error).message),
       );
     });
 
     ws.on('error', (err) => {
+      if (this.ws !== ws) return;
       this.health = 'error';
       twarn('Trouter socket error:', err.message);
     });
 
     ws.on('close', () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
       this.health = 'disconnected';
       this.clearTimers();
       this.scheduleReconnect();
@@ -254,10 +276,18 @@ export class TrouterClient implements MessageSource {
         const info = (evt.args?.[0] || {}) as TrouterConnected;
         this.surl = info.surl || '';
         this.registrarUrl = info.registrarUrl || V2_REGISTRAR;
-        this.health = 'connected';
         tlog('Trouter connected — registering for channel push…');
-        await this.register(token);
-        this.startHeartbeat(token);
+        const ws = this.ws;
+        if (!ws) return;
+        const registered = await this.register(token);
+        if (this.ws !== ws) return;
+        if (!registered) {
+          this.health = 'error';
+          ws.close();
+          return;
+        }
+        this.health = 'connected';
+        this.startHeartbeat(ws);
         return;
       }
       if (evt.name === 'ping') {
@@ -290,18 +320,32 @@ export class TrouterClient implements MessageSource {
     }
   }
 
-  private startHeartbeat(token: string): void {
+  private startHeartbeat(ws: WebSocket): void {
     this.clearTimers();
     this.heartbeatTimer = setInterval(() => {
       this.frameCounter += 1;
       this.send(`5:${this.frameCounter}+::{"name":"ping"}`);
     }, HEARTBEAT_MS);
     this.reregisterTimer = setInterval(() => {
-      this.register(token).catch((e) => twarn('Trouter re-register failed:', e.message));
+      void this.renewRegistration(ws);
     }, REREGISTER_MS);
   }
 
-  private async register(token: string): Promise<void> {
+  private async renewRegistration(ws: WebSocket): Promise<void> {
+    try {
+      const token = await this.tokens.getToken('ic3');
+      if (this.ws !== ws) return;
+      if (await this.register(token)) return;
+    } catch (e) {
+      twarn('Trouter re-register failed:', (e as Error).message);
+    }
+    if (this.ws === ws) {
+      this.health = 'error';
+      ws.close();
+    }
+  }
+
+  private async register(token: string): Promise<boolean> {
     const payload = {
       clientDescription: {
         appId: 'TeamsCDLWebWorker',
@@ -321,15 +365,19 @@ export class TrouterClient implements MessageSource {
       Origin: ORIGIN,
     };
     const urls = Array.from(new Set([this.registrarUrl, V2_REGISTRAR].filter(Boolean)));
+    let registered = false;
     for (const url of urls) {
       try {
         const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
-        if (!res.ok && res.status !== 202) {
+        if (res.ok) {
+          registered = true;
+        } else {
           twarn(`Registrar ${url.slice(0, 60)} returned ${res.status}`);
         }
       } catch (e) {
         twarn(`Registrar ${url.slice(0, 60)} failed:`, (e as Error).message);
       }
     }
+    return registered;
   }
 }

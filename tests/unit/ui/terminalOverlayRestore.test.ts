@@ -1,5 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { TerminalOverlay } from '../../../src/ui/TerminalOverlay';
+import { SeriousTerminalController } from '../../../src/ui/SeriousTerminalController';
+import { officeManager } from '../../../src/office/officeManager';
 import { installMockCopilotBridge, type MockCopilotBridge } from '../../setup/copilot-bridge-mock';
 
 /**
@@ -21,7 +23,41 @@ interface OverlayInternals {
   show: (...args: unknown[]) => Promise<void>;
   awaitNextRefitSettled: (...args: unknown[]) => Promise<void>;
   handleRestoreSession: (entry: { id: string; title?: string }) => Promise<void>;
+  handleCloseSession: () => Promise<void>;
 }
+
+describe('Close Session resolves manual flags', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([true, false])('game terminal clears the flag only on success=%s', async success => {
+    const bridge = installMockCopilotBridge();
+    vi.mocked(bridge.resetSession).mockResolvedValue({ success });
+    const clearFlag = vi.spyOn(officeManager, 'clearAgentFlag').mockImplementation(() => {});
+    const { overlay, internals } = makeOverlay(bridge);
+    vi.spyOn(overlay, 'hide').mockImplementation(() => {});
+    await internals.handleCloseSession();
+    if (success) expect(clearFlag).toHaveBeenCalledWith('office-1', 'agent-1');
+    else expect(clearFlag).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('serious terminal clears the flag only on success=%s', async success => {
+    const bridge = installMockCopilotBridge();
+    vi.mocked(bridge.resetSession).mockResolvedValue({ success });
+    const clearFlag = vi.spyOn(officeManager, 'clearAgentFlag').mockImplementation(() => {});
+    const controller = Object.create(SeriousTerminalController.prototype) as {
+      handleCloseSession: () => Promise<void>;
+    };
+    Object.assign(controller, {
+      activeOfficeId: 'office-1',
+      activeAgentId: 'agent-1',
+      terminal: { writeln: vi.fn() },
+      closeView: vi.fn(),
+    });
+    await controller.handleCloseSession();
+    if (success) expect(clearFlag).toHaveBeenCalledWith('office-1', 'agent-1');
+    else expect(clearFlag).not.toHaveBeenCalled();
+  });
+});
 
 function makeOverlay(bridge: MockCopilotBridge): { overlay: TerminalOverlay; internals: OverlayInternals } {
   void bridge;

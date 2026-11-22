@@ -158,6 +158,7 @@ describe('ask-user post + labeled answer (US1)', () => {
     });
     // the answer was NOT dispatched as a prompt
     expect(h.submitted).toHaveLength(0);
+    expect(h.replies.filter((html) => html.includes('✅ Answered.'))).toHaveLength(1);
 
     // record cleared → a subsequent reply is treated as a normal prompt (dispatch), not an answer
     h.answers.length = 0;

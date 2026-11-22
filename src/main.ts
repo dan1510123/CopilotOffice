@@ -5,6 +5,7 @@ import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { OfficeScene } from './scenes/OfficeScene';
 import { MeetingScene } from './scenes/MeetingScene';
+import { OfficeShortcutListener } from './input/OfficeShortcutListener';
 import { officeManager, OfficeLayout, OfficeData } from './office/officeManager';
 import { resolveOfficeAgentWorkingDir } from './office/launchWorkingDir';
 import { AGENTS, AgentConfig, swapActiveAgents, restoreSeatedReserveAgents, ARCHITECT_AGENT_ID } from './config/agents';
@@ -1870,6 +1871,41 @@ seriousTerminalController = new SeriousTerminalController(terminalHost, {
   onOverlayClose: () => { phaserGameRef?.events.emit('settings:close'); },
 });
 
+const officeShortcuts = new OfficeShortcutListener({
+  getFocus: () => {
+    if (settingsPanel.isOpen() || teamsSettingsOverlay.isOpen() || spriteCustomizerPanel.isOpen()) return null;
+    if (appMode === 'serious') {
+      return document.activeElement?.closest('.xterm, .copilot-conversation') ? 'terminal' : 'game';
+    }
+    const scene = phaserGameRef?.scene.getScene('OfficeScene');
+    return scene instanceof OfficeScene ? scene.getOfficeShortcutFocus() : null;
+  },
+  getAgentIds: () => {
+    const roster = new Set(getCurrentAgents().map(agent => agent.id));
+    return Array.from(overviewContent.querySelectorAll<HTMLElement>('.agent-card[data-agent]'))
+      .map(card => card.dataset.agent!)
+      .filter(id => id !== PC_TERMINAL_ID && roster.has(id));
+  },
+  canSelectAgent: (agentId) =>
+    !getLayout(getCurrentLayout()).behaviors.restrictsInteractionToArchitect || agentId === ARCHITECT_AGENT_ID,
+  selectAgent: (agentId) => {
+    selectedAgentId = agentId;
+    clearCompletionAck(agentId);
+    const officeId = officeManager.currentOfficeId;
+    if (officeId) officeManager.clearUnread(officeId, agentId);
+    updateTerminalContent();
+    updateStatusBar();
+  },
+  openTerminal: (agentId) => {
+    void openAgentTerminal(agentId).catch(error => {
+      console.error('[OfficeShortcuts] Failed to open terminal:', error);
+      showClipboardToast('Failed to open terminal', 'error');
+    });
+  },
+  hasPcTerminal: () => getLayout(getCurrentLayout()).behaviors.hasPlayerPcTerminal,
+});
+window.addEventListener('beforeunload', () => officeShortcuts.destroy(), { once: true });
+
 // Spec 009 e2e diag: count how many times the auto-start headless warm
 // helper invoked terminalStart. Used by tests/e2e/auto-startup.e2e.ts
 // scenarios A3 (second-visit no respawn) and A7 (double-click coalescing).
@@ -3127,11 +3163,13 @@ async function closeSessionFromOverview(agentId: string): Promise<void> {
   if (!window.copilotBridge) return;
   const officeId = officeManager.currentOfficeId || 'office-0';
   try {
-    await window.copilotBridge.resetSession(officeId, agentId);
+    const result = await window.copilotBridge.resetSession(officeId, agentId);
+    if (!result.success) throw new Error('Session close was unsuccessful');
   } catch (error) {
     console.warn(`[Office] Failed to close session from overview for ${agentId}:`, error);
     return;
   }
+  officeManager.clearAgentFlag(officeId, agentId);
   // Optimistic local state — the server's status event will reconcile.
   const meta = cachedSessionMeta[agentId];
   if (meta) {

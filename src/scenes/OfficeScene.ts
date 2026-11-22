@@ -151,6 +151,13 @@ export class OfficeScene extends Phaser.Scene {
     super({ key: 'OfficeScene' });
   }
 
+  getOfficeShortcutFocus(): 'game' | 'terminal' | null {
+    if (!this.scene.isActive() || !this.inputManager || this.inputManager.isInputSuspended() ||
+        this.animating || this.basketballGame?.getIsVisible() ||
+        this.galaxianGame?.getIsVisible() || this.pongGame?.getIsVisible()) return null;
+    return this.inputManager.getCurrentFocus() === 'terminal' ? 'terminal' : 'game';
+  }
+
   private setAnimating(value: boolean): void {
     this.animating = value;
     this.game.registry.set('animating', value);

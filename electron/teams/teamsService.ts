@@ -320,6 +320,7 @@ export class TeamsService {
    * / {@link resumeAgentConnections}.
    */
   private agentsPaused = false;
+  private inboundWake: { bindings: Set<OnlineAgentBinding>; promise: Promise<TeamsAgentsPauseResult> } | null = null;
   private readonly registrations = new Map<string, { signature: string; promise: Promise<RegisterResult> }>();
   private readonly registrationIntents = new Map<string, number>();
   private registrationEpoch = 0;
@@ -376,6 +377,7 @@ export class TeamsService {
     await this.deps.source.start((m) => {
       void this.handleInbound(m);
     });
+    this.updateSourceChannels();
     tlog(`Receive transport started (health=${this.deps.source.health}).`);
 
     this.reconcileTimer = setInterval(() => void this.reconcile(), RECONCILE_MS);
@@ -437,9 +439,9 @@ export class TeamsService {
   /**
    * Pause Teams streaming for every online, non-orchestrator binding: disables
    * forwarding (stops mirroring the agent's activity out) and marks the binding
-   * offline + `pausedByUser` (stops inbound replies routing to it — see
-   * `handleInbound`'s `activeChannelSet`/filter, which only admits ONLINE
-   * bindings). Deliberately does NOT touch the shared receive transport (the
+   * offline + `pausedByUser`. The shared receive transport stays subscribed so
+   * a valid reply to a paused thread can resume agent connections. This does
+   * NOT touch the shared receive transport (the
    * orchestrator's own binding needs it to stay connected) and does NOT remove
    * the binding or its thread mapping — `resumeAgentConnections()` reconnects
    * every one of them back into its EXISTING thread via the normal event-driven
@@ -501,6 +503,7 @@ export class TeamsService {
     const toResume = this.bindings.filter((b) => b.pausedByUser);
     for (const b of toResume) b.pausedByUser = false;
     this.agentsPaused = false;
+    for (const b of toResume) this.deps.emitStatus(this.toStatus(b));
     if (toResume.length > 0) {
       await this.persist();
     }
@@ -883,17 +886,12 @@ export class TeamsService {
       tlog(`Inbound dropped (own echo) id=${msg.messageId}.`);
       return;
     }
-    // A deliberately paused binding's thread looks identical to a genuinely
-    // orphaned one to classifyThread() (offline, but still a known thread) —
-    // without this check, the FIRST reply during a pause would wrongly post
-    // "no longer active" and latch `noticePosted`, so later real orphan
-    // notices for that thread would be (silently, correctly) suppressed.
-    // Silently ignore instead; resumeAgentConnections() reconnects normally.
-    if (msg.threadRootId && this.bindings.some((b) => b.pausedByUser && b.threadRootId === msg.threadRootId)) {
-      tlog(`Inbound dropped (binding paused) thread=${msg.threadRootId}.`);
-      return;
-    }
-    const result = this.filter.evaluate(msg, this.bindings, this.knownThreads);
+    // Validate paused threads through the same dedup, self-post, bot, stale,
+    // channel and injection checks as online threads, before allowing a wake.
+    const routableBindings = this.bindings.map((b) =>
+      b.pausedByUser || this.inboundWake?.bindings.has(b) ? { ...b, online: true } : b,
+    );
+    const result = this.filter.evaluate(msg, routableBindings, this.knownThreads);
     if (result.action === 'ignore') {
       tlog(`Ignored inbound (${result.reason ?? 'unspecified'}) from "${msg.senderName}".`);
       return;
@@ -906,8 +904,32 @@ export class TeamsService {
     }
 
     // dispatch
-    const binding = result.binding;
+    const binding = result.binding && this.findBinding(result.binding.officeId, result.binding.agentId);
     if (!binding) return;
+
+    if (binding.pausedByUser || this.inboundWake?.bindings.has(binding)) {
+      if (!this.inboundWake) {
+        const bindings = new Set(this.bindings.filter((b) => b.pausedByUser));
+        this.inboundWake = { bindings, promise: this.resumeAgentConnections() };
+      }
+      const wake = this.inboundWake;
+      try {
+        await wake.promise;
+      } catch (e) {
+        twarn('Failed to resume agent Teams connections:', (e as Error).message);
+        if (this.started && this.findBinding(binding.officeId, binding.agentId) === binding) {
+          await this.safeReply(binding, `${this.agentLabel(binding)} ⚠️ Couldn't resume the Teams connection. Resume it in the app, then try your message again.`);
+        }
+        return;
+      } finally {
+        if (this.inboundWake === wake) this.inboundWake = null;
+      }
+      if (!this.started || this.findBinding(binding.officeId, binding.agentId) !== binding) return;
+      if (!binding.online || binding.pausedByUser) {
+        await this.safeReply(binding, `${this.agentLabel(binding)} ⚠️ This agent isn't ready yet. Please try your message again when it is ready.`);
+        return;
+      }
+    }
 
     const content = msg.content.trim();
     // Teams slash-command interception: an allow-listed command is executed via the
@@ -2220,6 +2242,7 @@ export class TeamsService {
       tlog(`answer → @${record.binding.handle}: label "${matched.label}" ⇒ "${truncate(matched.text, 60)}"`);
       const ok = await this.submitAnswerSafe(record, matched.text, false);
       this.settleResolution(record, ok);
+      if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered.`);
       return;
     }
 
@@ -2229,6 +2252,7 @@ export class TeamsService {
       tlog(`answer → @${record.binding.handle}: freeform "${truncate(rawText, 60)}"`);
       const ok = await this.submitAnswerSafe(record, rawText.trim(), true);
       this.settleResolution(record, ok);
+      if (ok) await this.safeReply(record.binding, `${this.agentLabel(record.binding)} ✅ Answered.`);
       return;
     }
 
@@ -2613,7 +2637,7 @@ export class TeamsService {
           // (pauseAgentConnections runs synchronously once invoked, but this
           // loop yields at every `await`) — don't resurrect a binding that was
           // just paused out from under this in-progress reconnect.
-          if (b.pausedByUser) continue;
+          if (b.pausedByUser || b.online) continue;
           b.online = true;
           b.lastConnected = this.now();
           // Re-enable online-lifetime event mirroring (see register).
@@ -2698,11 +2722,11 @@ export class TeamsService {
     return null;
   }
 
-  /** Push the current active-channel set to a pollable source (chatsvc fallback). */
+  /** Keep paused channels subscribed so a reply can wake their agents. */
   private updateSourceChannels(): void {
     const src = this.deps.source as MessageSource & { setChannels?: (c: string[]) => void };
     if (typeof src.setChannels === 'function') {
-      src.setChannels([...activeChannelSet(this.bindings)]);
+      src.setChannels([...new Set(this.bindings.filter((b) => b.online || b.pausedByUser).map((b) => b.channelId).filter(Boolean))]);
     }
   }
 
