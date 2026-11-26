@@ -124,10 +124,13 @@ function startFileWatcher(): void {
 // ── Window ──────────────────────────────────────────────────────
 
 function createWindow(): void {
+  const icon = path.join(__dirname, '../../assets/app-icon.png');
+  if (app.dock) app.dock.setIcon(icon);
   mainWindow = new BrowserWindow({
     width: 2560,
     height: 1440,
     title: 'Copilot Office',
+    icon,
     webPreferences: {
       preload: path.join(__dirname, 'terminal', 'preload.js'),
       contextIsolation: true,

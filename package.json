@@ -17,7 +17,8 @@
   "files": [
     "bin/",
     "dist/",
-    "src/index.html"
+    "src/index.html",
+    "assets/app-icon.png"
   ],
   "scripts": {
     "build:voice": "node scripts/build-voice.mjs",
